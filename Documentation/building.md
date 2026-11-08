@@ -310,6 +310,14 @@ subsystem per ISA) or `CI_TIER=rows` with `CI_ROWS` (the rows named); `CI_JOBS` 
 canary: that row must fail). Per-row timing goes to `$AZOS_OUT/build/ci-logs/timing.tsv`. The
 gate is run by hand; there is no hosted CI.
 
+Every aarch64 row starts QEMU through `tools/gate/qemu_a64.py`, which chooses the accelerator:
+HVF on an Apple silicon host whose QEMU can use it, TCG otherwise (`ACCEL=tcg` forces TCG, `ACCEL=hvf`
+refuses to start where there is no HVF). A row stays on TCG when HVF cannot do what it asks: `-icount`, a
+machine that enters at EL2 (`virtualization=on`), a machine other than `virt`, a CPU model other than
+`max`, a counter frequency, or the `--tcg` tag of a row that tests CPU features the host lacks (the ktests,
+the 64 KiB granule, the ID-register probe). `tools/lint/qemu_accel_lint.py` (n0) fails a gate script that
+names `qemu-system-aarch64` itself or an untagged feature row.
+
 A QEMU row that reached its marker also fails when its console printed a warning (`tools/gate/console_judge.py`):
 a console program that gave up, a component or program that did not run or is not on the volume, lockdep, a
 `WARN`/`WARNING` line, a recovery fallback, a ktest bail-out. Every row gets this through `ok()`, so no row calls it:

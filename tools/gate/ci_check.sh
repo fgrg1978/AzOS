@@ -58,6 +58,12 @@ CARGO="$CI_CHECK_DIR/gate/ci_cargo.py"
 QEMU="${QEMU:-qemu-system-riscv64}"
 REPO_ROOT="$(cd "$CI_CHECK_DIR/.." && pwd)"
 . "$REPO_ROOT/tools/lib/qemu_count.sh"
+# Every aarch64 row starts QEMU through $QEMU_A64, which picks the accelerator
+# (tools/gate/qemu_a64.py: HVF where the host has it, TCG where the row needs it).
+# One probe here; the helper and the rows below read the answer. ACCEL=tcg|hvf overrides.
+QEMU_A64="$CI_CHECK_DIR/gate/qemu_a64.py"
+AZOS_HVF_OK="$(sh "$CI_CHECK_DIR/dev/qemu_hvf.sh" && echo 1 || echo 0)"
+export QEMU_A64 AZOS_HVF_OK
 . "$REPO_ROOT/tools/lib/brain_dir.sh"
 . "$REPO_ROOT/tools/lib/volume_stale.sh"
 # The recovery console's prompt is `<preset>> ` (azos_limits::PRESET_PROMPT), and
@@ -1058,7 +1064,7 @@ entseed_boot() { # entseed_boot <riscv64|aarch64> <disk|-> <log> <rng yes|no> <s
             -global virtio-mmio.force-legacy=false $diskarg $rngarg </dev/null >"$log" 2>&1 &
     else
         # shellcheck disable=SC2086
-        qemu-system-aarch64 -M "virt,gic-version=3" -cpu max,pauth=on -smp 2 -nographic \
+        "$QEMU_A64" -M "virt,gic-version=3" -cpu max,pauth=on -smp 2 -nographic \
             -kernel "${ENTSEED_A64_IMG}" -global virtio-mmio.force-legacy=false \
             ${nocpu:+-append "$nocpu"} $diskarg $rngarg </dev/null >"$log" 2>&1 &
     fi
@@ -1273,7 +1279,7 @@ entseed_orderly_row() { # entseed_orderly_row <riscv64|aarch64>
             -device virtio-rng-device </dev/null >"$log" 2>&1 &
     else
         par_ready
-        qemu-system-aarch64 -M "virt,gic-version=3" -cpu max,pauth=on -smp 2 -nographic -no-reboot \
+        "$QEMU_A64" -M "virt,gic-version=3" -cpu max,pauth=on -smp 2 -nographic -no-reboot \
             -kernel "${ENTSEED_ORD_A64_IMG}" -global virtio-mmio.force-legacy=false \
             -drive file="$disk",if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 \
             -device virtio-rng-device </dev/null >"$log" 2>&1 &
@@ -1336,7 +1342,7 @@ blk_stall_qemu() {
             -drive file="$disk",if=none,format=raw,id=hd0,throttling.iops-total=$BLK_STALL_IOPS -device virtio-blk-device,drive=hd0 \
             -device virtio-rng-device </dev/null >"$log" 2>&1 &
     else
-        qemu-system-aarch64 -M "virt,gic-version=3" -cpu max,pauth=on -smp 2 -nographic \
+        "$QEMU_A64" -M "virt,gic-version=3" -cpu max,pauth=on -smp 2 -nographic \
             -kernel "$kimg" -global virtio-mmio.force-legacy=false \
             -drive file="$disk",if=none,format=raw,id=hd0,throttling.iops-total=$BLK_STALL_IOPS -device virtio-blk-device,drive=hd0 \
             -device virtio-rng-device </dev/null >"$log" 2>&1 &
@@ -2670,7 +2676,7 @@ shell_help_row() { # shell_help_row <label> <isa: rv|arm>
     if [ "$isa" = rv ]; then
         "$QEMU" -machine virt -nographic -bios default -kernel "$kcopy" -smp 4 <"$fifo" >"$log" 2>&1 &
     else
-        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+        "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
             -kernel "$kcopy" <"$fifo" >"$log" 2>&1 &
     fi
     local pid=$! i=0 sent=0 last_send=0 verdict="" e
@@ -2959,7 +2965,7 @@ fi
 a64_elf_boot_hits() { # <file>...: one line per aarch64 QEMU boot handed the ELF
     local q="qemu-system-""aarch64"
     awk -v q="$q" '
-        index($0, q) { n = 6 }
+        index($0, q) || index($0, "QEMU_A64") { n = 6 }
         /qemu-system-riscv64|"\$QEMU"/ { n = 0 }
         n > 0 {
             if ($0 ~ /-kernel[[:space:]]+"?\$\{?(A64_KERNEL|kelf|elf)\}?"?([[:space:]]|$)/ \
@@ -3486,7 +3492,7 @@ aarch64_kernel_row() { # aarch64_kernel_row <label> <machine-extra> <expected en
     # actually exercises task 1's whole point: x0 carries a real FDT only
     # for a recognised Image load.
     par_ready
-    qemu-system-aarch64 -M "virt,gic-version=$gic$mach" -cpu "$cpu" -smp "$smp" \
+    "$QEMU_A64" -M "virt,gic-version=$gic$mach" -cpu "$cpu" -smp "$smp" \
         -nographic -kernel "$A64_IMG" >"$log" 2>&1 &
     local pid=$! i=0
     while [ "$i" -lt 40 ]; do
@@ -3774,7 +3780,7 @@ aarch64_hv_row() {
     local img_copy="$CI_LOG_DIR/kernel-aarch64-hv.img"
     cp "$A64_IMG" "$img_copy"
     par_ready
-    qemu-system-aarch64 -M virt,virtualization=on,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+    "$QEMU_A64" -M virt,virtualization=on,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
         -kernel "$img_copy" >"$log" 2>&1 &
     local pid=$! i=0
     while [ "$i" -lt 120 ]; do
@@ -3886,7 +3892,7 @@ hyp_monitor_row() { # hyp_monitor_row <label> <select> <want: pass|canary> [mark
     # HYP_APPEND: the kernel command line (runtime canaries); HYP_WAIT: what ends the wait;
     # HYP_CPU: the -cpu model (cortex-a76 has no FEAT_FGT); HYP_MACHINE: the -M string (iommu=smmuv3);
     # HYP_QEMU: more QEMU options (-icount, -global).
-    qemu-system-aarch64 -M "${HYP_MACHINE:-virt,virtualization=on,gic-version=3}" -cpu "${HYP_CPU:-max,pauth=on}" -smp 4 -nographic \
+    "$QEMU_A64" -M "${HYP_MACHINE:-virt,virtualization=on,gic-version=3}" -cpu "${HYP_CPU:-max,pauth=on}" -smp 4 -nographic \
         ${HYP_QEMU:-} -kernel "$img" ${HYP_APPEND:+-append "$HYP_APPEND"} >"$log" 2>&1 &
     local pid=$! i=0
     while [ "$i" -lt 120 ]; do
@@ -4050,7 +4056,7 @@ hyp_cost_row() { # hyp_cost_row <label> <features> <blob-feature|""> <judge: spl
     fi
     local img="$CI_LOG_DIR/kernel-hyp-cost-$want-${as}${pin:+-$pin}.img"; cp "$A64_IMG" "$img"
     par_ready
-    qemu-system-aarch64 -M "virt,virtualization=on,gic-version=3" -cpu "${HYP_CPU:-max,pauth=on}" -smp 2 -nographic \
+    "$QEMU_A64" -M "virt,virtualization=on,gic-version=3" -cpu "${HYP_CPU:-max,pauth=on}" -smp 2 -nographic \
         -icount shift=0,sleep=off -kernel "$img" >"$log" 2>&1 &
     local pid=$! i=0
     while [ "$i" -lt 120 ]; do
@@ -4091,7 +4097,7 @@ hyp_vsbench_split_row() {
     if [ "${HYP_MON_ROWS:-0}" != 1 ]; then echo "skip (HYP_MON_ROWS=0)"; return; fi
     mkdir -p "$CI_LOG_DIR"
     local log="$CI_LOG_DIR/hyp-vsbench-split.log"
-    if QEMU_AARCH64=qemu-system-aarch64 WAIT_SECS=90 bash "${REPO_ROOT}/tools/bench/vsbench_split.sh" >"$log" 2>&1; then
+    if QEMU_AARCH64="$QEMU_A64" WAIT_SECS=90 bash "${REPO_ROOT}/tools/bench/vsbench_split.sh" >"$log" 2>&1; then
         ok; rm -f "$log"
     else
         bad; sed 's/^/      /' "$log"; echo "      logs in $AZOS_OUT/build/vsbench-split/"
@@ -4283,7 +4289,7 @@ raspi3b_row() { # raspi3b_row <label> <shell|usb|reboot>
     [ "$mode" = usb ] && usb=(-device usb-net,netdev=n0 -netdev user,id=n0)
     par_ready
     while [ $(qemu_count) -ge 4 ]; do sleep 2; done
-    qemu-system-aarch64 -M raspi3b -dtb "$dtb" -kernel "$kimg" -nographic -monitor none \
+    "$QEMU_A64" -M raspi3b -dtb "$dtb" -kernel "$kimg" -nographic -monitor none \
         -serial null -serial stdio ${usb[@]+"${usb[@]}"} <"$fifo" >"$log" 2>&1 &
     local pid=$! i=0 sent=0 done=""
     exec 9>"$fifo"
@@ -4387,7 +4393,7 @@ pl011_rx_irq_row() {
     cp "$A64_IMG" "$kcopy"
     par_ready
     pl011_paced_input() { while :; do printf x || break; sleep 0.05; done; }
-    pl011_paced_input 2>/dev/null | qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 \
+    pl011_paced_input 2>/dev/null | "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 \
         -nographic -kernel "$kcopy" >"$log" 2>&1 &
     local qpid=$! i=0
     while [ "$i" -lt 90 ]; do
@@ -4468,7 +4474,7 @@ $AZOS_OUT/build/disk-aarch64-systest.img"
     local systest_disk="$CI_LOG_DIR/disk-aarch64-systest.img"
     cp $AZOS_OUT/build/disk-aarch64-systest.img "$systest_disk"
     par_ready
-    qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+    "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
         -kernel "$img_copy" \
         -global virtio-mmio.force-legacy=false \
         -drive file="$hello_disk",if=none,format=raw,id=hd0 \
@@ -4506,7 +4512,7 @@ reaped (do_schedule's Zombie arm never ran)"
     # ── Boot 2: syscall_test ────────────────────────────────────────────
     local log2="$CI_LOG_DIR/aarch64-userspace-systest.log"
     rm -f "$log2"
-    qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+    "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
         -kernel "$img_copy" \
         -global virtio-mmio.force-legacy=false \
         -drive file="$systest_disk",if=none,format=raw,id=hd0 \
@@ -4560,7 +4566,7 @@ aarch64_net_probe_row() {
     local img_copy="$CI_LOG_DIR/kernel-aarch64-netprobe.img"
     cp "$A64_IMG" "$img_copy"
     par_ready
-    qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+    "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
         -kernel "$img_copy" \
         -global virtio-mmio.force-legacy=false \
         -netdev user,id=net0 -device virtio-net-device,netdev=net0 \
@@ -4674,7 +4680,7 @@ aarch64_dhcp_row() {
     local img_copy="$CI_LOG_DIR/kernel-aarch64-dhcp.img"
     cp "$dhcp_img" "$img_copy"
     par_ready
-    qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+    "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
         -kernel "$img_copy" \
         -global virtio-mmio.force-legacy=false \
         -netdev user,id=net0 -device virtio-net-device,netdev=net0 \
@@ -4728,7 +4734,7 @@ net_tx_batch_row() { # net_tx_batch_row <label> <rv|arm> <PASS|FAIL> [kernel com
         "$QEMU" -machine virt -nographic -bios default -kernel "$img" ${app:+-append "$app"} \
             -netdev user,id=net0 -device virtio-net-device,netdev=net0 </dev/null >"$log" 2>&1 &
     else
-        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+        "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
             -kernel "$img" ${app:+-append "$app"} -global virtio-mmio.force-legacy=false \
             -netdev user,id=net0 -device virtio-net-device,netdev=net0 </dev/null >"$log" 2>&1 &
     fi
@@ -4807,7 +4813,7 @@ aarch64_flight_recorder_row() {
     cp "$fr_img" "$img_copy"
 
     # Boot 1: fresh disk, writes the durable latching record.
-    qemu-system-aarch64 -M "virt,gic-version=3" -cpu max,pauth=on -smp 2 -nographic \
+    "$QEMU_A64" -M "virt,gic-version=3" -cpu max,pauth=on -smp 2 -nographic \
         -kernel "$img_copy" \
         -global virtio-mmio.force-legacy=false \
         -drive file=$AZOS_OUT/build/disk-aarch64.img,if=none,format=raw,id=hd0 \
@@ -4833,7 +4839,7 @@ aarch64_flight_recorder_row() {
     fi
 
     # Boot 2: SAME image. Replay must read boot 1's record back.
-    qemu-system-aarch64 -M "virt,gic-version=3" -cpu max,pauth=on -smp 2 -nographic \
+    "$QEMU_A64" -M "virt,gic-version=3" -cpu max,pauth=on -smp 2 -nographic \
         -kernel "$img_copy" \
         -global virtio-mmio.force-legacy=false \
         -drive file=$AZOS_OUT/build/disk-aarch64.img,if=none,format=raw,id=hd0 \
@@ -4957,7 +4963,7 @@ boot_good_row() { # boot_good_row <riscv64|aarch64>
                 -drive file="$disk_copy",if=none,format=raw,id=hd0 \
                 -device virtio-blk-device,drive=hd0 </dev/null >"$1" 2>&1 &
         else
-            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+            "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
                 -kernel "$img_copy" \
                 -global virtio-mmio.force-legacy=false \
                 -drive file="$disk_copy",if=none,format=raw,id=hd0 \
@@ -5084,7 +5090,7 @@ otae2e_qemu() {
                 -drive file="$disk",if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 \
                 ${OTAE2E_APPEND:+-append "$OTAE2E_APPEND"} ${netargs[@]+"${netargs[@]}"} </dev/null >"$log" 2>&1 &
         else
-            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 4 -nographic -kernel "$kernel" -no-reboot \
+            "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 4 -nographic -kernel "$kernel" -no-reboot \
                 -global virtio-mmio.force-legacy=false \
                 -drive file="$disk",if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 \
                 ${OTAE2E_APPEND:+-append "$OTAE2E_APPEND"} ${netargs[@]+"${netargs[@]}"} </dev/null >"$log" 2>&1 &
@@ -5691,7 +5697,7 @@ otabun_qemu() {
             -drive file="$disk",if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 \
             -netdev "user,id=net0,tftp=$tftp" -device virtio-net-device,netdev=net0 -device virtio-rng-device <"$in" >"$log" 2>&1 &
     else
-        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 4 -nographic -kernel "$kernel" -no-reboot \
+        "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 4 -nographic -kernel "$kernel" -no-reboot \
             -global virtio-mmio.force-legacy=false \
             -drive file="$disk",if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 \
             -netdev "user,id=net0,tftp=$tftp" -device virtio-net-device,netdev=net0 -device virtio-rng-device <"$in" >"$log" 2>&1 &
@@ -6060,7 +6066,7 @@ aarch64_abitest_row() {
     cp "$A64_IMG" "$img_copy"
     cp $AZOS_OUT/build/disk-aarch64-abitest.img "$disk_copy"
     par_ready
-    qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+    "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
         -kernel "$img_copy" \
         -global virtio-mmio.force-legacy=false \
         -drive file="$disk_copy",if=none,format=raw,id=hd0 \
@@ -6176,7 +6182,7 @@ aarch64_sdktest_row() { # aarch64_sdktest_row <label> <PASS|CANARY>
     while [ "$(qemu_count)" -ge 4 ]; do sleep 2; done
     # A std program draws on the entropy pool (`HashMap`'s keys); the device
     # makes the pool seeded whatever the CPU model offers (`-cpu max` has FEAT_RNG).
-    qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+    "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
         -kernel "$img" -global virtio-mmio.force-legacy=false -device virtio-rng-device \
         -drive file="$dimg",if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
     local pid=$! i=0
@@ -6272,7 +6278,7 @@ sup_row() { # sup_row <label> <isa: rv|arm> <features> <expect: PASS|NOT-RESTART
         kimg="$CI_LOG_DIR/${tag}-kernel.img"
         cp "$A64_IMG" "$kimg"
         par_ready
-        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp "${SUP_SMP:-4}" -nographic \
+        "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp "${SUP_SMP:-4}" -nographic \
             -kernel "$kimg" \
             -global virtio-mmio.force-legacy=false \
             -drive file="$img",if=none,format=raw,id=hd0 \
@@ -6410,7 +6416,7 @@ aarch64_ipctest_row() {
     cp "$A64_IMG" "$img_copy"
     cp $AZOS_OUT/build/disk-aarch64-ipctest.img "$disk_copy"
     par_ready
-    qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+    "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
         -kernel "$img_copy" \
         -global virtio-mmio.force-legacy=false \
         -drive file="$disk_copy",if=none,format=raw,id=hd0 \
@@ -6486,7 +6492,7 @@ aarch64_phase3_qemu_row() {
     local img_copy="$CI_LOG_DIR/kernel-aarch64-phase3-qemu.img"
     cp "$A64_IMG" "$img_copy"
     par_ready
-    qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+    "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
         -kernel "$img_copy" >"$log" 2>&1 &
     local pid=$! i=0
     while [ "$i" -lt 120 ]; do
@@ -6530,7 +6536,7 @@ aarch64_captest_row() {
     cp "$A64_IMG" "$img_copy"
     cp $AZOS_OUT/build/disk-aarch64-captest.img "$disk_copy"
     par_ready
-    qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 4 -nographic \
+    "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 4 -nographic \
         -kernel "$img_copy" \
         -global virtio-mmio.force-legacy=false \
         -drive file="$disk_copy",if=none,format=raw,id=hd0 \
@@ -6730,7 +6736,7 @@ aarch64_frame_canary_group() {
     fi
     cp "$A64_IMG" "$img"; cp $AZOS_OUT/build/disk-aarch64-captest.img "$disk"
     par_ready
-    qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 4 -nographic -kernel "$img" \
+    "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 4 -nographic -kernel "$img" \
         -append canary=frame-blank -global virtio-mmio.force-legacy=false \
         -drive file="$disk",if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
     local pid=$! i=0
@@ -6772,7 +6778,7 @@ aarch64_ring3_drivers_row() {
     cp "$A64_IMG" "$img_copy"
     cp $AZOS_OUT/build/disk-aarch64-drv.img "$disk_copy"
     par_ready
-    qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 4 -nographic \
+    "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 4 -nographic \
         -kernel "$img_copy" \
         -global virtio-mmio.force-legacy=false \
         -drive file="$disk_copy",if=none,format=raw,id=hd0 \
@@ -6922,7 +6928,7 @@ rng3_row() { # rng3_row rv|a64 <label> <extra kernel features or ""> fed|silent|
                  ${append:+-append "$append"} -global virtio-mmio.force-legacy=false \
                  -drive file="$disk",if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 \
                  -device virtio-rng-device >"$log" 2>&1 & ;;
-        a64) qemu-system-aarch64 -M virt,gic-version=3 -cpu max -smp 2 -nographic -kernel "$kimg" \
+        a64) "$QEMU_A64" -M virt,gic-version=3 -cpu max -smp 2 -nographic -kernel "$kimg" \
                  ${append:+-append "$append"} -global virtio-mmio.force-legacy=false \
                  -drive file="$disk",if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 \
                  -device virtio-rng-device >"$log" 2>&1 & ;;
@@ -7005,7 +7011,7 @@ supall_row() { # <label> <isa: rv|arm> <extra features, comma-led or empty> <exp
         kimg="$CI_LOG_DIR/${tag}-kernel.img"
         cp "$A64_IMG" "$kimg"
         par_ready
-        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 4 -nographic \
+        "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 4 -nographic \
             -kernel "$kimg" \
             -global virtio-mmio.force-legacy=false \
             -drive file="$img",if=none,format=raw,id=hd0 \
@@ -7097,7 +7103,7 @@ hung_row() { # <label> <isa: rv|arm> <action: RESTART|SAFE_STOP> <canary: yes|no
                 -drive file="$img",if=none,format=raw,id=hd0 \
                 -device virtio-blk-device,drive=hd0 >"$out" 2>&1 &
         else
-            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 4 -nographic \
+            "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 4 -nographic \
                 -kernel "$kimg" ${app[@]+"${app[@]}"} \
                 -global virtio-mmio.force-legacy=false \
                 -drive file="$img",if=none,format=raw,id=hd0 \
@@ -7244,7 +7250,7 @@ drvplace_row() { # drvplace_row <label> <isa: rv|arm> <features> <kind>
         kimg="$CI_LOG_DIR/${tag}-kernel.img"
         cp "$A64_IMG" "$kimg"
         par_ready
-        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 4 -nographic \
+        "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 4 -nographic \
             -kernel "$kimg" \
             -global virtio-mmio.force-legacy=false \
             -drive file="$img",if=none,format=raw,id=hd0 \
@@ -7472,7 +7478,7 @@ fork_refusal_probe_row() { # <label> <isa: rv|arm>
         img_copy="$CI_LOG_DIR/kernel-fork-probe.img"
         cp "$A64_IMG" "$img_copy"
         par_ready
-        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+        "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
             -kernel "$img_copy" >"$log" 2>&1 &
     fi
     local pid=$! i=0
@@ -7563,7 +7569,7 @@ exit_storm_row() { # <label> <isa: rv|arm>
         fi
         cp "$A64_IMG" "$kcopy"; cp $AZOS_OUT/build/disk-aarch64-abitest.img "$dcopy"
         par_ready
-        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+        "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
             -kernel "$kcopy" -global virtio-mmio.force-legacy=false \
             -drive file="$dcopy",if=none,format=raw,id=hd0 \
             -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
@@ -7647,7 +7653,7 @@ zombie_row() { # <label> <isa: rv|arm>
         fi
         cp "$A64_IMG" "$kcopy"; cp $AZOS_OUT/build/disk-aarch64-abitest.img "$dcopy"
         par_ready
-        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+        "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
             -kernel "$kcopy" -global virtio-mmio.force-legacy=false \
             -drive file="$dcopy",if=none,format=raw,id=hd0 \
             -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
@@ -7730,7 +7736,7 @@ dead_client_row() { # <label> <isa: rv|arm>
         fi
         cp "$A64_IMG" "$kcopy"; cp $AZOS_OUT/build/disk-aarch64-ipctest.img "$dcopy"
         par_ready
-        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+        "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
             -kernel "$kcopy" -global virtio-mmio.force-legacy=false \
             -drive file="$dcopy",if=none,format=raw,id=hd0 \
             -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
@@ -7806,7 +7812,7 @@ fork_stale_canary_row() { # <label> <isa: rv|arm>
         fi
         cp "$A64_IMG" "$kcopy"; cp $AZOS_OUT/build/disk-aarch64-ipctest.img "$dcopy"
         par_ready
-        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+        "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
             -kernel "$kcopy" -global virtio-mmio.force-legacy=false \
             -drive file="$dcopy",if=none,format=raw,id=hd0 \
             -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
@@ -7884,7 +7890,7 @@ views_row() { # <label> <isa: rv|arm> <features> <held|canary|stale>
         fi
         cp "$A64_IMG" "$kcopy"; cp $AZOS_OUT/build/disk-aarch64-abitest.img "$dcopy"
         par_ready
-        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+        "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
             -kernel "$kcopy" -global virtio-mmio.force-legacy=false \
             -drive file="$dcopy",if=none,format=raw,id=hd0 \
             -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
@@ -7981,7 +7987,7 @@ sysabi_canary_row() { # <label> <isa: rv|arm>
         fi
         cp "$A64_IMG" "$kcopy"; cp $AZOS_OUT/build/disk-aarch64-abitest.img "$dcopy"
         par_ready
-        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+        "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
             -kernel "$kcopy" -global virtio-mmio.force-legacy=false \
             -drive file="$dcopy",if=none,format=raw,id=hd0 \
             -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
@@ -8052,7 +8058,7 @@ foreign_canary_row() { # <label> <isa: rv|arm>
         fi
         cp "$A64_IMG" "$kcopy"; cp $AZOS_OUT/build/disk-aarch64-abitest.img "$dcopy"
         par_ready
-        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+        "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
             -kernel "$kcopy" -global virtio-mmio.force-legacy=false \
             -drive file="$dcopy",if=none,format=raw,id=hd0 \
             -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
@@ -8123,7 +8129,7 @@ udp_empty_canary_row() { # <label> <isa: rv|arm>
         fi
         cp "$A64_IMG" "$kcopy"; cp $AZOS_OUT/build/disk-aarch64-abitest.img "$dcopy"
         par_ready
-        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+        "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
             -kernel "$kcopy" -global virtio-mmio.force-legacy=false \
             -drive file="$dcopy",if=none,format=raw,id=hd0 \
             -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
@@ -8222,7 +8228,7 @@ threads_row() { # <label> <isa: rv|arm> <features> <ok|privtable|futexnoop|nocle
         fi
         cp "$A64_IMG" "$kcopy"; cp $AZOS_OUT/build/disk-aarch64-abitest.img "$dcopy"
         par_ready
-        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+        "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
             -kernel "$kcopy" -global virtio-mmio.force-legacy=false \
             -drive file="$dcopy",if=none,format=raw,id=hd0 \
             -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
@@ -8329,7 +8335,7 @@ thread_objects_row() { # <label> <isa: rv|arm> <features> <ok|objects|regs|tls>
         fi
         cp "$A64_IMG" "$kcopy"; cp $AZOS_OUT/build/disk-aarch64-abitest.img "$dcopy"
         par_ready
-        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+        "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
             -kernel "$kcopy" -global virtio-mmio.force-legacy=false \
             -drive file="$dcopy",if=none,format=raw,id=hd0 \
             -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
@@ -8415,7 +8421,7 @@ wx_row() { # <label> <isa: rv|arm> <features> <ok>
         fi
         cp "$A64_IMG" "$kcopy"; cp $AZOS_OUT/build/disk-aarch64-abitest.img "$dcopy"
         par_ready
-        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+        "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
             -kernel "$kcopy" -global virtio-mmio.force-legacy=false \
             -drive file="$dcopy",if=none,format=raw,id=hd0 \
             -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
@@ -8495,7 +8501,7 @@ elfperm_row() { # <label> <isa: rv|arm> <features> <ok|canary>
         fi
         cp "$A64_IMG" "$kcopy"; cp $AZOS_OUT/build/disk-aarch64-abitest.img "$dcopy"
         par_ready
-        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+        "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
             -kernel "$kcopy" -global virtio-mmio.force-legacy=false \
             -drive file="$dcopy",if=none,format=raw,id=hd0 \
             -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
@@ -8607,7 +8613,7 @@ mprot_row() { # <label> <isa: rv|arm> <features> <ok|canary>
         fi
         cp "$A64_IMG" "$kcopy"; cp $AZOS_OUT/build/disk-aarch64-abitest.img "$dcopy"
         par_ready
-        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+        "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
             -kernel "$kcopy" -global virtio-mmio.force-legacy=false \
             -drive file="$dcopy",if=none,format=raw,id=hd0 \
             -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
@@ -8691,7 +8697,7 @@ orphan_row() { # <label> <isa: rv|arm> <features> <adopted|canary>
         fi
         cp "$A64_IMG" "$kcopy"; cp $AZOS_OUT/build/disk-aarch64-abitest.img "$dcopy"
         par_ready
-        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+        "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
             -kernel "$kcopy" -global virtio-mmio.force-legacy=false \
             -drive file="$dcopy",if=none,format=raw,id=hd0 \
             -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
@@ -8788,7 +8794,7 @@ console_splice_row() { # <label> <isa: rv|arm> <smp>
         fi
         cp "$A64_IMG" "$kcopy"
         par_ready
-        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp "$smp" -nographic \
+        "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp "$smp" -nographic \
             -kernel "$kcopy" >"$log" 2>&1 &
     fi
     local pid=$! i=0
@@ -8848,7 +8854,7 @@ console_tx_row() { # <label> <isa: rv|arm> <smp> <async|sync>
         fi
         cp "$A64_IMG" "$kcopy"
         par_ready
-        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp "$smp" -nographic \
+        "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp "$smp" -nographic \
             -kernel "$kcopy" >"$log" 2>&1 &
     fi
     local pid=$! i=0
@@ -8945,7 +8951,7 @@ rt_watchdog_record_row() { # <label> <isa: rv|arm> <extra features, comma-led or
             -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
     else
         par_ready
-        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+        "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
             -kernel "$kimg" \
             -global virtio-mmio.force-legacy=false \
             -drive file="$img",if=none,format=raw,id=hd0 \
@@ -9070,7 +9076,7 @@ rt_io_canary_row() { # <label> <isa: rv|arm>
         make_disk $AZOS_OUT/build/disk-aarch64.img; cp $AZOS_OUT/build/disk-aarch64.img "$img"
         kimg="$CI_LOG_DIR/${tag}-kernel.img"; cp "$A64_IMG" "$kimg"
         par_ready
-        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+        "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
             -kernel "$kimg" -global virtio-mmio.force-legacy=false \
             -drive file="$img",if=none,format=raw,id=hd0 \
             -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
@@ -9128,7 +9134,7 @@ blk_discard_row() { # blk_discard_row <label> <rv|arm> <pass|canary>
         make_disk $AZOS_OUT/build/disk-aarch64.img; cp $AZOS_OUT/build/disk-aarch64.img "$img"
         kimg="$CI_LOG_DIR/${tag}-kernel.img"; cp "$A64_IMG" "$kimg"
         par_ready
-        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+        "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
             -kernel "$kimg" -global virtio-mmio.force-legacy=false \
             -drive file="$img",if=none,format=raw,id=hd0 \
             -device virtio-blk-device,drive=hd0 </dev/null >"$log" 2>&1 &
@@ -9309,7 +9315,7 @@ panic_splice_row() { # panic_splice_row <label> <isa: rv|arm> <want: pass|stop|s
             "$QEMU" -machine virt -nographic -bios default -kernel "$kimg" -smp 3 \
                 ${app:+-append "$app"} </dev/null >"$log" 2>&1 &
         else
-            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 3 -nographic \
+            "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 3 -nographic \
                 -kernel "$kimg" ${app:+-append "$app"} </dev/null >"$log" 2>&1 &
         fi
         pid=$!; i=0
@@ -9428,7 +9434,7 @@ ml_data_sig_row() { # <label> <isa: rv|arm> <mode: signed|tampered|nosig>
             -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
     else
         par_ready
-        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+        "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
             -kernel "$kimg" \
             -global virtio-mmio.force-legacy=false \
             -drive file="$img",if=none,format=raw,id=hd0 \
@@ -9721,7 +9727,7 @@ aarch64_guard_fault_row() { # aarch64_guard_fault_row <label> <feature>
     local img_copy="$CI_LOG_DIR/kernel-$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-').img"
     cp "$A64_IMG" "$img_copy"
     par_ready
-    qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+    "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
         -kernel "$img_copy" >"$log" 2>&1 &
     local pid=$! i=0
     while [ "$i" -lt 20 ]; do
@@ -9777,7 +9783,7 @@ kstack_overflow_row() { # kstack_overflow_row <label> <rv|arm> <ERE of the repor
     while [ "$(qemu_count)" -ge 4 ]; do sleep 2; done
     case "$isa" in
         rv)  "$QEMU" -machine virt -nographic -bios default -kernel "$img" -smp 2 >"$log" 2>&1 & ;;
-        arm) qemu-system-aarch64 -M virt,gic-version=3 -cpu max -smp 2 -nographic -kernel "$img" >"$log" 2>&1 & ;;
+        arm) "$QEMU_A64" -M virt,gic-version=3 -cpu max -smp 2 -nographic -kernel "$img" >"$log" 2>&1 & ;;
     esac
     local pid=$! i=0
     while [ "$i" -lt 60 ]; do
@@ -9831,7 +9837,7 @@ aarch64_console_route_row() {
     # next run that reads it.
     cp $AZOS_OUT/build/disk-aarch64.img "$disk_copy"
     par_ready
-    qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+    "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
         -kernel "$img_copy" \
         -drive file="$disk_copy",if=none,format=raw,id=hd0 \
         -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
@@ -9920,7 +9926,7 @@ aarch64_entropy_row() {
 
     # Boot 1: device present.
     par_ready
-    qemu-system-aarch64 -M "virt,gic-version=3" -cpu max,pauth=on -smp 2 -nographic \
+    "$QEMU_A64" -M "virt,gic-version=3" -cpu max,pauth=on -smp 2 -nographic \
         -kernel "$img_copy" -device virtio-rng-device >"$log_seeded" 2>&1 &
     local pid=$! i=0
     while [ "$i" -lt 60 ]; do
@@ -9956,7 +9962,7 @@ aarch64_entropy_row() {
     # the specific "pool unseeded" line. `-cpu max` has FEAT_RNG, so the CPU
     # source is skipped by its runtime canary: no entropy source at all.
     par_ready
-    qemu-system-aarch64 -M "virt,gic-version=3" -cpu max,pauth=on -smp 2 -nographic \
+    "$QEMU_A64" -M "virt,gic-version=3" -cpu max,pauth=on -smp 2 -nographic \
         -kernel "$img_copy" -append "canary=entropy-cpu-skip" >"$log_absent" 2>&1 &
     pid=$! i=0
     while [ "$i" -lt 60 ]; do
@@ -10010,7 +10016,7 @@ aarch64_watchdog_row() {
     local img_copy="$CI_LOG_DIR/kernel-aarch64-watchdog.img"
     cp "$A64_IMG" "$img_copy"
     par_ready
-    qemu-system-aarch64 -M "virt,gic-version=3" -cpu max,pauth=on -smp 2 -nographic \
+    "$QEMU_A64" -M "virt,gic-version=3" -cpu max,pauth=on -smp 2 -nographic \
         -kernel "$img_copy" >"$log" 2>&1 &
     local pid=$! i=0
     while [ "$i" -lt 60 ]; do
@@ -10188,7 +10194,7 @@ behavior_arp_sleep_row() { # behavior_arp_sleep_row rv|a64
         make_disk $AZOS_OUT/build/disk-aarch64.img
         kern="$CI_LOG_DIR/behavior-arp-sleep-a64.kimg"
         cp "$A64_IMG" "$kern"; cp $AZOS_OUT/build/disk-aarch64.img "$disk"
-        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 4 -nographic \
+        "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 4 -nographic \
             -kernel "$kern" \
             -global virtio-mmio.force-legacy=false \
             -drive file="$disk",if=none,format=raw,id=hd0 \
@@ -10299,7 +10305,7 @@ aarch64_granule_row() { # aarch64_granule_row <16|64>
     "$a64_objcopy" -O binary "$kelf" "$img" 2>/dev/null || { bad; echo "      objcopy failed"; return; }
     cp "$AZOS_OUT/build/disk-aarch64-${g}k-abitest.img" "$disk"
     par_ready
-    qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+    "$QEMU_A64" --tcg -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
         -kernel "$img" -global virtio-mmio.force-legacy=false \
         -drive file="$disk",if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
     local pid=$! i=0
@@ -10968,7 +10974,7 @@ power_off_durable_row() { # power_off_durable_row <riscv64|aarch64> <pass|canary
             -drive file="$disk",if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 \
             -device virtio-rng-device </dev/null >"$log" 2>&1 &
     else
-        qemu-system-aarch64 -M "virt,gic-version=3" -cpu max,pauth=on -smp 2 -nographic -no-reboot \
+        "$QEMU_A64" -M "virt,gic-version=3" -cpu max,pauth=on -smp 2 -nographic -no-reboot \
             -kernel "$kimg" -global virtio-mmio.force-legacy=false ${app:+-append "$app"} \
             -drive file="$disk",if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 \
             -device virtio-rng-device </dev/null >"$log" 2>&1 &
@@ -11061,7 +11067,7 @@ pstore_row() { # pstore_row <isa: rv|arm> <mode: valid|corrupt>
             -device virtio-blk-device,drive=hd0 </dev/null >"$log" 2>&1 &
     else
         par_ready
-        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+        "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
             -kernel "$kimg" -global virtio-mmio.force-legacy=false \
             -drive file="$disk",if=none,format=raw,id=hd0 \
             -device virtio-blk-device,drive=hd0 </dev/null >"$log" 2>&1 &
@@ -11281,7 +11287,7 @@ rt7_row() { # rt7_row <isa: rv|arm> <mode: contain|spin|reset>
             -device virtio-blk-device,drive=hd0 </dev/null >"$log" 2>&1 &
     else
         par_ready
-        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+        "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
             -icount shift=0,sleep=off \
             -kernel "$kimg" -global virtio-mmio.force-legacy=false \
             -drive file="$disk",if=none,format=raw,id=hd0 \
@@ -11530,7 +11536,7 @@ drvcontain_row() { # drvcontain_row <label> <isa: rv|arm> [features] [PASS|FAIL-
             -drive file="$disk",if=none,format=raw,id=hd0 \
             -device virtio-blk-device,drive=hd0 </dev/null >"$log" 2>&1 &
     else
-        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+        "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
             -kernel "$kimg" -global virtio-mmio.force-legacy=false \
             -drive file="$disk",if=none,format=raw,id=hd0 \
             -device virtio-blk-device,drive=hd0 </dev/null >"$log" 2>&1 &
@@ -11605,7 +11611,7 @@ theap_row() { # theap_row <isa: rv|arm> [features]
     if [ "$isa" = rv ]; then
         "$QEMU" -machine virt -nographic -bios default -kernel "$kimg" -smp 4 </dev/null >"$log" 2>&1 &
     else
-        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 4 -nographic \
+        "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 4 -nographic \
             -kernel "$kimg" </dev/null >"$log" 2>&1 &
     fi
     local pid=$! i=0
@@ -11676,7 +11682,7 @@ nrcpus_row() { # nrcpus_row <isa: rv|arm> <NR_CPUS> <smp> <features> <expect: PA
     if [ "$isa" = rv ]; then
         "$QEMU" -machine virt -nographic -bios default -kernel "$kimg" -smp "$smp" </dev/null >"$log" 2>&1 &
     else
-        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp "$smp" -nographic \
+        "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp "$smp" -nographic \
             -kernel "$kimg" </dev/null >"$log" 2>&1 &
     fi
     local pid=$! i=0
@@ -11797,7 +11803,7 @@ selftests_off_row() { # selftests_off_row <rv|arm>
     if [ "$isa" = rv ]; then
         "$QEMU" -machine virt -nographic -bios default -kernel "$kimg" -smp 2 </dev/null >"$log" 2>&1 &
     else
-        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+        "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
             -kernel "$kimg" </dev/null >"$log" 2>&1 &
     fi
     pid=$!
@@ -12133,7 +12139,7 @@ cpuid_probe_row() { # <label> <isa: rv|arm> <smp>
         img_copy="$CI_LOG_DIR/$tag-kernel.img"
         cp "$A64_IMG" "$img_copy"
         par_ready
-        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp "$smp" -nographic \
+        "$QEMU_A64" --tcg -M virt,gic-version=3 -cpu max,pauth=on -smp "$smp" -nographic \
             -kernel "$img_copy" -global virtio-mmio.force-legacy=false \
             -drive file="$disk",if=none,format=raw,id=hd0 \
             -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
@@ -15595,7 +15601,7 @@ sys.exit(0 if (len(key) == 32 and any(key) and key in img) else 1)
         local disk_copy="$CI_LOG_DIR/${slug}-disk.img"
         cp "$A64_IMG" "$img_copy"; cp "$disk" "$disk_copy"
         par_ready
-        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+        "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
             -kernel "$img_copy" \
             -global virtio-mmio.force-legacy=false \
             -drive file="$disk_copy",if=none,format=raw,id=hd0 \
@@ -15725,7 +15731,7 @@ sys.exit(0 if (len(key) == 32 and any(key) and key in img) else 1)
         local disk_copy="$CI_LOG_DIR/aarch64-secboot-recovery-disk.img"
         cp "$A64_IMG" "$img_copy"; cp $AZOS_OUT/build/disk-aarch64-recovery.img "$disk_copy"
         par_ready
-        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+        "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
             -kernel "$img_copy" \
             -global virtio-mmio.force-legacy=false \
             -drive file="$disk_copy",if=none,format=raw,id=hd0 \
@@ -15814,7 +15820,7 @@ sys.exit(0 if (len(key) == 32 and any(key) and key in img) else 1)
         local img_copy="$CI_LOG_DIR/kernel-aarch64-pci.img"
         cp "$A64_IMG" "$img_copy"
         par_ready
-        qemu-system-aarch64 -M virt,gic-version=3,iommu=smmuv3 -cpu max,pauth=on -smp 2 -nographic \
+        "$QEMU_A64" -M virt,gic-version=3,iommu=smmuv3 -cpu max,pauth=on -smp 2 -nographic \
             -drive file="$CI_LOG_DIR/pci-blk-a64.img",if=none,format=raw,id=hd0 \
             -device virtio-blk-pci,drive=hd0,disable-legacy=on \
             -drive file="$CI_LOG_DIR/pci-nvme-a64.img",if=none,format=raw,id=hd1 \
@@ -15857,7 +15863,7 @@ sys.exit(0 if (len(key) == 32 and any(key) and key in img) else 1)
         local log="$1" img_copy="${1%.log}-kernel.img"
         rm -f "$log"; cp "$A64_IMG" "$img_copy"
         par_ready
-        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+        "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
             -kernel "$img_copy" \
             -netdev user,id=net0 -device virtio-net-pci,netdev=net0,disable-legacy=on \
             >"$log" 2>&1 &
@@ -15928,7 +15934,7 @@ sys.exit(0 if (len(key) == 32 and any(key) and key in img) else 1)
         local log="$1" img_copy="${1%.log}-kernel.img" stop="${3:-NET\] msix counts \(after dhcp\)}"
         rm -f "$log"; cp "$A64_IMG" "$img_copy"
         par_ready
-        qemu-system-aarch64 -M "virt,gic-version=3${2:+,$2}" -cpu max,pauth=on -smp 2 -nographic \
+        "$QEMU_A64" -M "virt,gic-version=3${2:+,$2}" -cpu max,pauth=on -smp 2 -nographic \
             -kernel "$img_copy" \
             -netdev user,id=net0 -device "virtio-net-pci,netdev=net0,disable-legacy=on${2:+,iommu_platform=on}" \
             ${SECOND_NIC:+-netdev user,id=net1 -device virtio-net-pci,netdev=net1,disable-legacy=on,iommu_platform=on} \
@@ -16915,7 +16921,7 @@ PY
         else
             # Kconfig KTEST_SEMIHOSTING_EXIT: the runner's exit status rides
             # on semihosting SYS_EXIT (PSCI SYSTEM_OFF has none).
-            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp "${KTEST_SMP:-4}" ${KTEST_QEMU_EXTRA:-} -nographic \
+            "$QEMU_A64" --tcg -M virt,gic-version=3 -cpu max,pauth=on -smp "${KTEST_SMP:-4}" ${KTEST_QEMU_EXTRA:-} -nographic \
                 -semihosting-config enable=on,target=native \
                 -kernel "$kimg" ${app[@]+"${app[@]}"} ${drv[@]+"${drv[@]}"} ${STALL_ARGS[@]+"${STALL_ARGS[@]}"} </dev/null >"$log" 2>&1 &
         fi
@@ -17027,7 +17033,7 @@ PY
         cp "$A64_IMG" "$kimg"
         par_ready
         while [ $(qemu_count) -ge 4 ]; do sleep 2; done
-        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 1 -m 5G -nographic \
+        "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 1 -m 5G -nographic \
             -semihosting-config enable=on,target=native -kernel "$kimg" -append "canary=a64-boot-alias-narrow" \
             </dev/null >"$log" 2>&1 &
         pid=$!
@@ -17381,7 +17387,7 @@ PY
         while [ $(qemu_count) -ge 4 ]; do sleep 2; done
         case "$isa" in
         rv) "$QEMU" -machine virt -nographic -bios default -kernel "$kimg" -smp 4 -append "canary=$can" </dev/null >"$log" 2>&1 & ;;
-        arm) qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 4 -nographic -kernel "$kimg" -append "canary=$can" </dev/null >"$log" 2>&1 & ;;
+        arm) "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 4 -nographic -kernel "$kimg" -append "canary=$can" </dev/null >"$log" 2>&1 & ;;
         x86) qemu-system-x86_64 -M microvm -cpu max -m 256M -nographic -no-reboot -smp 4 -kernel "$kimg" -append "canary=$can" </dev/null >"$log" 2>&1 & ;;
         esac
         pid=$!
@@ -19527,7 +19533,7 @@ CPU 5 lacks hwcap bits"
                 "$QEMU" -machine virt -nographic -bios default -kernel "$kimg" -smp 4 -global virtio-mmio.force-legacy=false \
                     -drive file="$disk",if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 </dev/null >"$log" 2>&1 &
             else
-                qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic -kernel "$kimg" -global virtio-mmio.force-legacy=false \
+                "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic -kernel "$kimg" -global virtio-mmio.force-legacy=false \
                     -drive file="$disk",if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 </dev/null >"$log" 2>&1 &
             fi
             local pid=$! i=0
@@ -20259,7 +20265,7 @@ CPU 5 lacks hwcap bits"
             done
             kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null ;;
         arm)
-            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 3 -nographic -kernel "$img" </dev/null >"$log" 2>&1 &
+            "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 3 -nographic -kernel "$img" </dev/null >"$log" 2>&1 &
             pid=$!; i=0
             while [ "$i" -lt 120 ]; do
                 grep -aq 'Crash counter = \|\[TRACE\] cpu0' "$log" 2>/dev/null && { sleep 1; break; }
@@ -20877,7 +20883,7 @@ CPU 5 lacks hwcap bits"
                     -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
             else
                 par_ready
-                qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+                "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
                     -kernel "$kimg" -global virtio-mmio.force-legacy=false \
                     -drive file="$img",if=none,format=raw,id=hd0 \
                     -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
@@ -20964,7 +20970,7 @@ CPU 5 lacks hwcap bits"
                 -device virtio-blk-device,drive=hd0 </dev/null >"$log" 2>&1 &
         else
             par_ready
-            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+            "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
                 -kernel "$k" -global virtio-mmio.force-legacy=false \
                 -drive file="$img",if=none,format=raw,id=hd0 \
                 -device virtio-blk-device,drive=hd0 </dev/null >"$log" 2>&1 &
@@ -21224,7 +21230,7 @@ PY
                 -device virtio-blk-device,drive=hd0 </dev/null >"$log" 2>&1 &
         else
             par_ready
-            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+            "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
                 -kernel "$kimg" -global virtio-mmio.force-legacy=false \
                 -drive file="$img",if=none,format=raw,id=hd0 \
                 -device virtio-blk-device,drive=hd0 </dev/null >"$log" 2>&1 &
@@ -21312,7 +21318,7 @@ PY
                     -drive file="$img",if=none,format=raw,id=hd0 \
                     -device virtio-blk-device,drive=hd0 </dev/null >"$log" 2>&1 &
             else
-                qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+                "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
                     -kernel "$kimg" -global virtio-mmio.force-legacy=false \
                     -drive file="$img",if=none,format=raw,id=hd0 \
                     -device virtio-blk-device,drive=hd0 </dev/null >"$log" 2>&1 &
@@ -23124,7 +23130,7 @@ PYEOF
             "$QEMU" -machine virt,aia=aplic-imsic -nographic -bios default -smp 1 -m 256M -kernel "$kimg" ${append[@]+"${append[@]}"} \
                 -drive file="$disk",if=none,format=raw,id=nv -device nvme,serial=x,drive=nv <"$in" >"$log" 2>&1 &
         else
-            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -m 256M -nographic -kernel "$kimg" ${append[@]+"${append[@]}"} \
+            "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -m 256M -nographic -kernel "$kimg" ${append[@]+"${append[@]}"} \
                 -drive file="$disk",if=none,format=raw,id=nv -device nvme,serial=x,drive=nv <"$in" >"$log" 2>&1 &
         fi
     }
@@ -23320,7 +23326,7 @@ PYEOF
         if [ "$isa" = riscv64 ]; then
             "$QEMU" -machine virt -nographic -bios default -smp 2 -kernel "$kcopy" "${dev[@]}" <"$fifo" >"$log" 2>&1 &
         else
-            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic -kernel "$kcopy" "${dev[@]}" <"$fifo" >"$log" 2>&1 &
+            "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic -kernel "$kcopy" "${dev[@]}" <"$fifo" >"$log" 2>&1 &
         fi
         local pid=$!
         exec 9>"$fifo"
@@ -23365,7 +23371,7 @@ PYEOF
         if [ "$isa" = riscv64 ]; then
             "$QEMU" -machine virt -nographic -bios default -smp 2 -kernel "$kcopy" "${dev[@]}" </dev/null >"$log" 2>&1 &
         else
-            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic -kernel "$kcopy" "${dev[@]}" </dev/null >"$log" 2>&1 &
+            "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic -kernel "$kcopy" "${dev[@]}" </dev/null >"$log" 2>&1 &
         fi
         if [ "$mode" = once ]; then
             dev_boot_wait $! "$log" 90 "mass storage sector 0 read|volume mounted at /usb|xhci timed out again"
@@ -24618,7 +24624,7 @@ PYEOF
             fi
             cp $AZOS_OUT/build/disk-aarch64-ipctest.img "$disk"
             kimg="$CI_LOG_DIR/${slug}-kernel.img"; cp "$A64_IMG" "$kimg"
-            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 1 \
+            "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 1 \
                 -icount shift=0,sleep=off -nographic -kernel "$kimg" \
                 -global virtio-mmio.force-legacy=false \
                 -drive file="$disk",if=none,format=raw,id=hd0 \
@@ -24859,7 +24865,7 @@ PYEOF
             fi
             cp $AZOS_OUT/build/disk-aarch64-ipctest.img "$disk"
             kimg="$CI_LOG_DIR/${slug}-kernel.img"; cp "$A64_IMG" "$kimg"
-            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 1 \
+            "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 1 \
                 -icount shift=0,sleep=off -nographic -kernel "$kimg" \
                 -global virtio-mmio.force-legacy=false \
                 -drive file="$disk",if=none,format=raw,id=hd0 \
@@ -24973,7 +24979,7 @@ PYEOF
             fi
             cp $AZOS_OUT/build/disk-aarch64-ipctest.img "$disk"
             kimg="$CI_LOG_DIR/${slug}-kernel.img"; cp "$A64_IMG" "$kimg"
-            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 1 \
+            "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 1 \
                 -icount shift=0,sleep=off -nographic -kernel "$kimg" \
                 -global virtio-mmio.force-legacy=false \
                 -drive file="$disk",if=none,format=raw,id=hd0 \
@@ -25083,7 +25089,7 @@ PYEOF
         fi
         local log="$CI_LOG_DIR/tickless-idle-aarch64${mode:+-$mode}.log" kimg="$CI_LOG_DIR/tickless-idle-aarch64.img"
         rm -f "$log"; cp "$A64_IMG" "$kimg"
-        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 1 -m 128M \
+        "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 1 -m 128M \
             -nographic -kernel "$kimg" -gdb tcp::1236 >"$log" 2>&1 </dev/null &
         local qpid=$!
         sleep 10
@@ -25143,7 +25149,7 @@ PYEOF
         local log="$1" mach="$2" marker="$3" secs="$4" img="$5" i=0
         cp "$A64_IMG" "$img"
         par_ready
-        qemu-system-aarch64 -M "virt,gic-version=3$mach" -cpu max,pauth=on -smp 2 \
+        "$QEMU_A64" -M "virt,gic-version=3$mach" -cpu max,pauth=on -smp 2 \
             -nographic -kernel "$img" >"$log" 2>&1 &
         local pid=$!
         while [ "$i" -lt $((secs * 2)) ]; do
@@ -25215,7 +25221,7 @@ PYEOF
         # `virtualization=on`: the kernel enters at EL2 and `_azos_drop_to_el1`
         # is what leaves CNTVOFF_EL2 nonzero under the canary feature.
         par_ready
-        qemu-system-aarch64 -M virt,gic-version=3,virtualization=on -cpu max,pauth=on -smp 4 -nographic \
+        "$QEMU_A64" -M virt,gic-version=3,virtualization=on -cpu max,pauth=on -smp 4 -nographic \
             -kernel "$kimg" -global virtio-mmio.force-legacy=false \
             -drive file="$disk",if=none,format=raw,id=hd0 \
             -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
@@ -25301,7 +25307,7 @@ PYEOF
             fi
             kimg="$CI_LOG_DIR/${slug}-kernel.img"; cp "$A64_IMG" "$kimg"
             par_ready
-            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 1 \
+            "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 1 \
                 -icount shift=0,sleep=off -nographic -kernel "$kimg" >"$log" 2>&1 &
         fi
         # 900 x 0.5 s: the CBS canary alone took 111 s of host time (a task
@@ -25422,7 +25428,7 @@ PYEOF
             fi
             kimg="$CI_LOG_DIR/${slug}-kernel.img"; cp "$A64_IMG" "$kimg"
             par_ready
-            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp "$smp" \
+            "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp "$smp" \
                 -icount shift=0,sleep=off -nographic -kernel "$kimg" ${app[@]+"${app[@]}"} >"$log" 2>&1 &
         fi
         # 900 x 0.5 s: about 35 s of host time when it passes (the phases
@@ -25530,7 +25536,7 @@ PYEOF
             cp $AZOS_OUT/build/disk-aarch64-ipctest.img "$disk"
             kimg="$CI_LOG_DIR/${slug}-kernel.img"; cp "$A64_IMG" "$kimg"
             par_ready
-            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 1 \
+            "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 1 \
                 -icount shift=0,sleep=off -nographic -kernel "$kimg" \
                 -global virtio-mmio.force-legacy=false \
                 -drive file="$disk",if=none,format=raw,id=hd0 \
@@ -25637,7 +25643,7 @@ PYEOF
             cp $AZOS_OUT/build/disk-aarch64-ipctest.img "$disk"
             kimg="$CI_LOG_DIR/${slug}-kernel.img"; cp "$A64_IMG" "$kimg"
             par_ready
-            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+            "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
                 -kernel "$kimg" -global virtio-mmio.force-legacy=false \
                 -drive file="$disk",if=none,format=raw,id=hd0 \
                 -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
@@ -25935,7 +25941,7 @@ PYEOF
                 -drive "file=$disk,if=none,format=raw,id=hd0" \
                 -device virtio-blk-device,drive=hd0 </dev/null >"$log" 2>&1 &
         else
-            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 1 \
+            "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 1 \
                 -icount shift=0,sleep=off -nographic \
                 -kernel "$kimg" -global virtio-mmio.force-legacy=false \
                 -drive "file=$disk,if=none,format=raw,id=hd0" \
@@ -26124,7 +26130,7 @@ PYEOF
                 -device virtio-blk-device,drive=hd0 -device virtio-rng-device ${vkbd[@]+"${vkbd[@]}"} ${STALL_ARGS[@]+"${STALL_ARGS[@]}"} <"$fifo" >"$log" 2>&1 &
         else
             par_ready
-            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp "${USH_SMP:-2}" ${USH_QEMU_EXTRA:-} -nographic \
+            "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp "${USH_SMP:-2}" ${USH_QEMU_EXTRA:-} -nographic \
                 -kernel "$kimg" -global virtio-mmio.force-legacy=false \
                 -drive file="$img",if=none,format=raw,id=hd0 \
                 -device virtio-blk-device,drive=hd0 -device virtio-rng-device ${vkbd[@]+"${vkbd[@]}"} ${STALL_ARGS[@]+"${STALL_ARGS[@]}"} <"$fifo" >"$log" 2>&1 &
@@ -26250,7 +26256,7 @@ PYEOF
             a64_kbuild "qemu,trace-wx-canary" || { bad; echo "      aarch64 canary kernel did not build"; return; }
             cp "$A64_IMG" "$kimg"
             par_ready
-            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 4 -nographic -kernel "$kimg" </dev/null >"$log" 2>&1 &
+            "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 4 -nographic -kernel "$kimg" </dev/null >"$log" 2>&1 &
         fi
         local pid=$! i=0
         while [ "$i" -lt 90 ] && ! grep -aq "FATAL" "$log" 2>/dev/null && kill -0 "$pid" 2>/dev/null; do
@@ -27856,7 +27862,7 @@ input watch -n 100 &
                 -drive file="$img",if=none,format=raw,id=hd0 \
                 -device virtio-blk-device,drive=hd0 <"$fifo" >"$log" 2>&1 &
         else
-            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+            "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
                 -kernel "$kimg" ${qa[@]+"${qa[@]}"} -global virtio-mmio.force-legacy=false \
                 -drive file="$img",if=none,format=raw,id=hd0 \
                 -device virtio-blk-device,drive=hd0 <"$fifo" >"$log" 2>&1 &
@@ -28155,7 +28161,7 @@ busybox sh -c 'x=box; echo bb-\$x-ok'
                     -device virtio-blk-device,drive=hd0 </dev/null >"$log" 2>&1 &
             else
                 par_ready
-                qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic -no-reboot \
+                "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic -no-reboot \
                     -kernel "$A64_IMG" -global virtio-mmio.force-legacy=false \
                     -drive file="$disk",if=none,format=raw,id=hd0 \
                     -device virtio-blk-device,drive=hd0 </dev/null >"$log" 2>&1 &
@@ -28473,7 +28479,7 @@ busybox sh -c 'x=box; echo bb-\$x-ok'
                 -drive file="$img",if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 -device virtio-rng-device \
                 ${vkbd[@]+"${vkbd[@]}"} <"$fifo" >"$log" 2>&1 &
         else
-            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic -kernel "$kimg" \
+            "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic -kernel "$kimg" \
                 -global virtio-mmio.force-legacy=false -drive file="$img",if=none,format=raw,id=hd0 \
                 -device virtio-blk-device,drive=hd0 -device virtio-rng-device ${vkbd[@]+"${vkbd[@]}"} <"$fifo" >"$log" 2>&1 &
         fi
@@ -28692,7 +28698,7 @@ sys.exit(0 if "login: alice" in t else 1)' "$log" || missing="$missing [login: a
             par_ready   # the wait below happens in the job, not in the gate
             while [ $(qemu_count) -ge 4 ]; do sleep 2; done
             par_ready
-            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+            "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
                 -kernel "$img" -global virtio-mmio.force-legacy=false \
                 -drive file="$disk",if=none,format=raw,id=hd0 \
                 -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
@@ -28876,7 +28882,7 @@ sys.exit(0 if "login: alice" in t else 1)' "$log" || missing="$missing [login: a
             fi
             kimg="$CI_LOG_DIR/${slug}-kernel.img"; cp "$A64_IMG" "$kimg"
             par_ready
-            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 \
+            "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 \
                 -icount shift=0,sleep=off -nographic -kernel "$kimg" ${app:+-append "$app"} >"$log" 2>&1 &
         fi
         # Measured: about 60 s of host time per run.
@@ -28983,7 +28989,7 @@ sys.exit(0 if "login: alice" in t else 1)' "$log" || missing="$missing [login: a
             fi
             kimg="$CI_LOG_DIR/${slug}-kernel.img"; cp "$A64_IMG" "$kimg"
             par_ready
-            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 \
+            "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 \
                 -icount shift=0,sleep=off -nographic -kernel "$kimg" >"$log" 2>&1 &
         fi
         local pid=$! i=0
@@ -29322,7 +29328,7 @@ PY
             -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
     else
         par_ready
-        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 4 -nographic \
+        "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 4 -nographic \
             -kernel "$kimg" -global virtio-mmio.force-legacy=false \
             -drive file="$disk",if=none,format=raw,id=hd0 \
             -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
@@ -29544,7 +29550,7 @@ rcfence_row() { # rcfence_row <label> <isa: rv|arm> <features> <property: failsa
         cp $AZOS_OUT/build/disk-aarch64-ipctest.img "$disk"
         kimg="$CI_LOG_DIR/${slug}-kernel.img"; cp "$A64_IMG" "$kimg"
         par_ready
-        qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 4 -nographic \
+        "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 4 -nographic \
             -kernel "$kimg" -global virtio-mmio.force-legacy=false \
             -drive file="$disk",if=none,format=raw,id=hd0 \
             -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
@@ -30000,7 +30006,7 @@ par -s -h "supply chain: reproducible build" repro_row
 # build` would, from a config of its own ($AZOS_OUT/build/preset-<cell>.config),
 # so the rows are serial and come last. PRESET_BOOT_LIMIT is the seconds a cell
 # has to reach its prompt (default 240).
-hvf_host() { "$REPO_ROOT/tools/dev/qemu_hvf.sh"; }
+hvf_host() { [ "$AZOS_HVF_OK" = 1 ]; }
 preset_boot_row() { # preset_boot_row <preset> <riscv64|aarch64|x86_64> [accelerator, default tcg]
     local preset="$1" isa="$2" accel="${3:-tcg}" label="preset boot: $1 $2" status
     [ "$accel" = tcg ] || label="$label ($accel)"
@@ -30139,7 +30145,7 @@ hvf_writeback_canary_row() {
     local kimg="$CI_LOG_DIR/hvf-writeback.img" hlog="$CI_LOG_DIR/hvf-writeback-hvf.log" tlog="$CI_LOG_DIR/hvf-writeback-tcg.log"
     rm -f "$hlog" "$tlog"; cp "$A64_IMG" "$kimg"
     par_ready
-    qemu-system-aarch64 -M virt,gic-version=3 -accel hvf -cpu max,pauth=on -smp 2 -nographic \
+    "$QEMU_A64" -M virt,gic-version=3 -accel hvf -cpu max,pauth=on -smp 2 -nographic \
         -kernel "$kimg" -append "canary=mmio-writeback" </dev/null >"$hlog" 2>&1 &
     local pid=$! i=0 alive=0
     # Redirected: bash reports the aborted job on its own stderr when it reaps it.
@@ -30155,7 +30161,7 @@ hvf_writeback_canary_row() {
         bad; echo "      under HVF the post-indexed GIC store did not end the VM at the GIC"
         tr -d '\r' <"$hlog" | tail -3 | sed 's/^/        /'; echo "      log kept: $hlog"; rm -f "$kimg"; return
     fi
-    qemu-system-aarch64 -M virt,gic-version=3 -accel tcg -cpu max,pauth=on -smp 2 -nographic \
+    "$QEMU_A64" -M virt,gic-version=3 -accel tcg -cpu max,pauth=on -smp 2 -nographic \
         -kernel "$kimg" -append "canary=mmio-writeback" </dev/null >"$tlog" 2>&1 &
     pid=$!; i=0
     while [ "$i" -lt 240 ] && kill -0 "$pid" 2>/dev/null; do
@@ -30211,7 +30217,7 @@ clock_scale_row() { # clock_scale_row <label> <hvf|tcg> <extra cpu options> <pas
     local -a app=(); [ "$verdict" = fail ] && { app=(-append "canary=clock-scale-skip"); want="^not ok [0-9]+ - clock_timeout_holds_against_counter"; }
     rm -f "$log"; cp "$A64_IMG" "$kimg"
     par_ready
-    qemu-system-aarch64 -M virt,gic-version=3 -accel "$accel" -cpu "max,pauth=on$cpuopt" -smp 2 -nographic \
+    "$QEMU_A64" -M virt,gic-version=3 -accel "$accel" -cpu "max,pauth=on$cpuopt" -smp 2 -nographic \
         -semihosting-config enable=on,target=native -kernel "$kimg" ${app[@]+"${app[@]}"} </dev/null >"$log" 2>&1 &
     local pid=$! i=0
     {

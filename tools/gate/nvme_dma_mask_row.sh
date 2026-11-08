@@ -41,7 +41,7 @@ riscv64)
     qargs=(-bios default -smp 1 -m 256M)
     ;;
 aarch64)
-    qemu=qemu-system-aarch64
+    qemu="$(dirname "$0")/qemu_a64.py"
     machine="virt,gic-version=3"
     qargs=(-cpu max,pauth=on -smp 2 -m 256M)
     ;;

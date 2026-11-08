@@ -8,7 +8,7 @@ isa="$1" n="$2" out="$3"
 if [ "$isa" = rv ]; then
     qemu-system-riscv64 -machine virt,dumpdtb="$out" -nographic -bios default -smp "$n" >/dev/null 2>&1
 else
-    qemu-system-aarch64 -M virt,gic-version=3,dumpdtb="$out" -cpu max,pauth=on -smp "$n" -nographic >/dev/null 2>&1
+    "$(dirname "$0")/qemu_a64.py" --tcg -M virt,gic-version=3,dumpdtb="$out" -cpu max,pauth=on -smp "$n" -nographic >/dev/null 2>&1
 fi
 c=0
 while [ "$c" -lt "$n" ]; do

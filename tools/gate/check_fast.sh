@@ -143,7 +143,7 @@ boot() {
     case $isa in
         rv) qemu-system-riscv64 -machine virt -nographic -bios default -kernel "$k" \
                 -smp 4 ${dev[@]+-global virtio-mmio.force-legacy=false} ${ap[@]+"${ap[@]}"} ${dev[@]+"${dev[@]}"} </dev/null >"$log" 2>&1 & ;;
-        arm) qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp "$([ "$kind" = system ] && echo 2 || echo 4)" -nographic \
+        arm) tools/gate/qemu_a64.py -M virt,gic-version=3 -cpu max,pauth=on -smp "$([ "$kind" = system ] && echo 2 || echo 4)" -nographic \
                 -semihosting-config enable=on,target=native -kernel "$k" \
                 ${dev[@]+-global virtio-mmio.force-legacy=false} ${ap[@]+"${ap[@]}"} ${dev[@]+"${dev[@]}"} </dev/null >"$log" 2>&1 & ;;
         x86) qemu-system-x86_64 -M microvm -cpu max -m 256M -nographic -no-reboot \

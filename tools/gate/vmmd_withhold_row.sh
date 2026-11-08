@@ -55,7 +55,7 @@ cp "$volume" "$out/boot.img"
 
 while [ $(qemu_count) -ge 4 ]; do sleep 2; done
 # EL1: no `virtualization=on`, as `make qemu` boots.
-qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -m 1G -nographic \
+"$(dirname "$0")/qemu_a64.py" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -m 1G -nographic \
     -global virtio-mmio.force-legacy=false \
     -drive file="$out/boot.img",if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 \
     -device virtio-rng-device -kernel "$kernel" </dev/null >"$log" 2>&1 &

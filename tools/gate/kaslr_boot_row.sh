@@ -46,7 +46,7 @@ mkdir -p "$logdir"
 # The machine, as the Makefile boots this ISA (mk/vars.mk, mk/qemu.mk).
 case "$isa" in
     riscv64) qemu=qemu-system-riscv64; args=(-machine virt -nographic -bios default -m 256M -smp 2 -kernel "$img") ;;
-    aarch64) qemu=qemu-system-aarch64; args=(-M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic -kernel "$img") ;;
+    aarch64) qemu="$(dirname "$0")/qemu_a64.py"; args=(-M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic -kernel "$img") ;;
     x86_64)  qemu=qemu-system-x86_64;  args=(-M microvm -cpu max -m 256M -nographic -no-reboot -device isa-debug-exit,iobase=0xf4,iosize=0x04 -kernel "$img") ;;
 esac
 

@@ -320,6 +320,10 @@ fi
 # (tools/lint/isa_neutral_names.py: Cpu::wait_for_interrupt, IdleChoice::Shallow).
 [ "$tier" = n0 ] && { printf "  %-26s" "isa-neutral names lint..."; if out="$(python3 tools/lint/isa_neutral_names.py --self-test 2>&1 && python3 tools/lint/isa_neutral_names.py 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'; fi; }
 
+# Every aarch64 QEMU line of the gate goes through tools/gate/qemu_a64.py, which picks
+# HVF or TCG (tools/lint/qemu_accel_lint.py): the rows that need TCG are tagged or detected.
+[ "$tier" = n0 ] && { printf "  %-26s" "arm accelerator lint..."; if out="$(python3 tools/lint/qemu_accel_lint.py --self-test 2>&1 && python3 tools/lint/qemu_accel_lint.py 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'; fi; }
+
 # The unsafe budget (tools/lint/unsafe_budget.py): a crate may not carry more
 # `unsafe` than tools/lint/unsafe_budget.tsv says, lose its #![forbid(unsafe_code)],
 # or (a kernel crate) raise its share of code lines in files with unsafe; the
