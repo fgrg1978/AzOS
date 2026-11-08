@@ -13,6 +13,7 @@ mechanisms, from "why was this refused" to "what was every CPU doing":
 | Trace | What happened, in order, on each CPU? | `tracectl stream` |
 | Kernel log | What is the kernel saying right now? | The console, and `KLOGn.TXT` (`log`) |
 | Flight recorder | What durable events and refusals preceded a reset? | `/LOG/LOGnnnnn.BIN` |
+| Sealed security log | Was a microphone, camera, egress, denial, image-load or update record removed or rewritten? | `make seclog-verify` over `KLOGn.TXT` |
 | Lockdep | Which lock order, interrupt-safety or hold-time rule did the kernel break? | The console |
 | Fault injection | Does the kernel survive an allocation, IPC, timer or disk fault? | `chaos/` in the inspect tree |
 
@@ -671,7 +672,7 @@ affected by the level: the shell's and ring-3 programs' console output, the pani
 report, and the durable records (flight recorder, `/fat/CRASH.LOG`, pstore).
 
 **Record substrate** (`crates/core/records`, layout and reader `azos_rings::region::record`).
-The kernel log and the decision records are rings of one region, every record behind one
+The kernel log, the decision records, the telemetry and the security records are rings of one region, every record behind one
 32-byte envelope: an 8-byte stamp, the sequence number (the record's index in its ring since
 boot), the timestamp and the clock it is on, the source, the source's own kind, the payload
 length, the CPU and flags. A producer claims a slot with one atomic add on its ring's head and
@@ -690,6 +691,18 @@ before the page allocator exists sit in a small region in `.bss` (the kernel log
 `KLOG_EARLY_ENTRIES`, the decision ring at its full depth) until `kernel_main` creates the
 object (`kernel/src/boot/klog_region.rs`) and the handover copies them under their own
 sequence numbers, so a decision's id names the same record before and after.
+
+**Security records** (Kconfig `SEC_LOG`, `crates/core/seclog`) are the substrate's fourth
+ring, `SEC_LOG_ENTRIES` slots of an 80-byte payload, with an early ring at its full depth: the
+decision records of the security rules (a microphone or camera stream, a first packet off the
+node, a capability denial, an image load, an update step, a login, a USB authorization),
+copied as they are written, and the records of the `seclog` task that chains and seals them
+(`anchor`, `seal`, `loss`). `logd` writes every one, never filtered or rate-limited, as a line of
+module `@security` whose message carries every field the chain hashes
+(`v1 <seq> <ts> <clock> <kind> <cpu> <flags> <payload hex>`, then a readable kind and class),
+resumes the ring by its last such line, and writes a `logd` line `v1 seam` when it starts
+reading the ring afresh. The console gets one `seclog: seal ...` line per seal. What is sealed
+by what, and the forensic check, are in [security.md](security.md#sealed-security-log).
 
 **Actuation telemetry** (`crates/core/actuation/src/logger.rs`) is the substrate's third ring,
 `TELEMETRY_RING_ENTRIES` slots: a motor command, a mode change, a skill start or end, a

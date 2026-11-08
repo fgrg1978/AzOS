@@ -778,6 +778,91 @@ The kernel uses the TPM for three things:
    derived from public inputs (`azos_ota::floor::nv_auth`): it keeps out software
    that does not know the scheme, not an attacker who has read the source, who
    can raise the floor and so refuse images. A policy bound to PCRs is not used.
+4. The sealed security log's anchor, an NV index of type extend (below).
+
+## Sealed security log
+
+Source: `crates/core/seclog` (format, chain, sealer, verifier),
+`kernel/src/boot/seclog.rs` (the `seclog` task), `kernel/src/boot/tpm.rs`
+(the anchor index), `userspace/services/logd`, `tools/forensic/seclog_verify`;
+Kconfig `SEC_LOG`, `SEC_LOG_ENTRIES`, `SEC_LOG_SEAL_S`, `SEC_LOG_SEAL`
+(`config/kernel/Kconfig.trace`). On by default with the Hardened,
+Separation-static and Confidential postures; it needs `KLOG`, so it is off where
+the kernel log is (the embedded hardware class).
+
+What spyware does on a device is visible in a handful of records: a microphone
+or camera stream opened, a first packet to a new destination, a capability
+refused, an image loaded, an update applied, a login. Those records are kept so
+that removing or rewriting one later is itself evidence.
+
+**What is recorded.** The decision records of these rules are copied, as they
+are written, into the record substrate's security ring (one substrate, one
+sink: `logd` writes them as `@security` lines in its `KLOGn.TXT` files,
+unfiltered and never rate-limited):
+
+| Class | Rules (producers) |
+|-------|-------------------|
+| `microphone` | `AudioCapture` (`azos_syscall::sound_host`) |
+| `camera` | `CamCapture` (`azos_syscall::frame_host`) |
+| `egress` | `EnvelopeEgress` (a Domain's first packet off the node), `GuestEgress` |
+| `cap-denial` | `CapDenial`, `Neverallow` |
+| `image-load` | `ExecGrant`, `Livepatch`, `BootChain`, `MeasuredBoot` |
+| `update` | `EnvelopeOta`, `PackageInstall` |
+| `login` | `Login` |
+| `usb` | `UsbAuthorize` |
+| `limited` | `RefusalLimited` naming one of the rules above |
+
+Screen capture has no producer (no rule records it) and neither has a
+debugger's attach (`Rule::ThreadControl` has no caller); their class numbers (3
+and 8) are reserved. A capability denial passes the same per-Domain bucket as
+its durable receipt: what the bucket holds back is not copied, and the
+bucket's `RefusalLimited` report is, so a flood of denials cannot push a
+microphone record out of the ring unseen.
+
+**The chain.** Per boot, the `seclog` task folds every record of the ring, in
+sequence order, into `head_i = SHA-256(head_{i-1} || canon_i)` (`canon`: the
+format version, every envelope field but the source, the payload). Every
+`SEC_LOG_SEAL_S`, when records came, it seals: the head goes to the backend,
+whose value becomes `anchor_k = SHA-256(anchor_{k-1} || head_k)`, and a `seal`
+record (the head, the first sequence number it does not cover, the anchor, the
+backend and whether the hardware took it) goes to the ring, so it is in the
+next head. A record the ring overwrote before the task read it, or one a
+producer never finished, is declared by a `loss` record. The boot's first record
+of the task, `anchor`, names `anchor_0`: the value the backend held at boot.
+
+**What seals it, by board class.** The backend is what the boot found, never
+what Kconfig asked for, and every record says which:
+
+| Board class | Seal | Link to the previous boot |
+|-------------|------|----------------------------|
+| A TPM 2.0 (x86_64 ACPI `TPM2`; a `tcg,tpm_tis-spi` node on riscv64 and aarch64), `SEC_LOG_SEAL_TPM_NV` | `TPM2_NV_Extend` of each head into an NV index of type `TPM_NT_EXTEND` (`0x01500003`): the OS can add to it and never set it | the index's value at boot is the previous boot's last seal |
+| No TPM: QEMU, the VF2, the K1, the Raspberry Pi 3 and 5, a microVM | forward-only: each seal is printed on the console (`seclog: seal <n> through <seq> head <hex> anchor <hex> <backend>`) for a receiver to keep; the local seal is advisory, and the records say so | none on the device (`anchor_0` is zero); the receiver's capture links the boots |
+| eMMC RPMB, a secure element, a TEE | not a backend: no driver in the tree | |
+
+A TPM extend that fails ends the hardware seals for the boot; the later ones are
+advisory, and the next boot's anchor does not match, which the verifier reports.
+Each seal is one NV write: `SEC_LOG_SEAL_S` (60 s) bounds the wear, and an idle
+system seals nothing. The index's password is derived from public inputs, as the
+floor's: whoever has it can only extend the index, which breaks the chain
+visibly. What the TPM cannot stop: the owner hierarchy can undefine and redefine
+the index (its value starts again from zero), which the next export shows as a
+broken link, and records written after the last seal can still be rewritten by a
+compromised kernel.
+
+**Checking an export.** `make seclog-verify SECLOG_EXPORT=<the KLOGn.TXT files
+or their directory>` (no network) reads the files in the order of their serials
+and reports, per boot: records missing from the export (and whether the kernel
+declared the loss), a seal whose head the records before it do not give
+(a rewritten, inserted or removed record), records out of order, a seal whose
+anchor does not follow from the previous one (a forged seal), a boot whose
+anchor is not the previous boot's last seal, records after the last seal, and
+advisory seals. Offline, an export rewritten whole, every head and anchor
+recomputed, is consistent with itself; two references refute it:
+`SECLOG_TPM_ANCHOR=<hex>`, the index's value read from the live TPM (a whole
+export ends with it), and `SECLOG_WITNESS=<console capture>`, whose every seal
+must be in the export. The verdict is `Intact`, `Incomplete` (rotated files, a
+declared loss, an unsealed tail, advisory seals, or no reference given) or
+`Evidence` (exit 0, 1, 2).
 
 ## Node identity
 
