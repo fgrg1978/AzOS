@@ -12544,6 +12544,11 @@ host_job host_canary_row "logger: rotation sync canary" behavior-tests durable-r
 host_job host_canary_row "logger: gap wait canary" behavior-tests durable-gap-skip-canary the_flusher_waits_for_a_number_in_flight
 host_job host_canary_row "logger: spill canary" actuation-tests durable-spill-canary a_full_queue_hands_a_stop_and_a_latch_to_another_queue_in_order
 host_job host_canary_row "logger: watermark wake canary" actuation-tests durable-nowake-canary a_push_that_reaches_the_watermark_asks_for_a_flush
+host_job host_canary_row "logger: carried latch canary" behavior-tests durable-resnap-canary a_release_carried_across_a_rotation_does_not_outlive_a_later_latch
+host_job host_canary_row "logger: rotation trust canary" behavior-tests durable-rotate-trust-canary a_rotation_does_not_trust_its_fsync_after_the_batchs_own_failed
+host_job host_canary_row "logger: stall cap canary" behavior-tests durable-stall-cap-canary a_stepped_over_number_holds_the_durable_mark
+host_job host_canary_row "logger: full mask canary" behavior-tests durable-full-mask-canary a_queue_seen_full_is_not_waited_for
+host_job host_canary_row "logger: own queue canary" behavior-tests durable-full-mask-canary an_effect_whose_queue_has_room_waits_for_it
 # Proxy execution (`rt_core::proxy_chain`): a reservation whose holder is blocked
 # in a call never finds the passive server that works on it.
 host_job host_canary_row "sched: proxy execution canary" sched-policy-tests rt-proxy-canary \

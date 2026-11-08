@@ -23,7 +23,10 @@ releases yet. The ABI crate keeps its own file,
   goes to another queue; every push that reaches the flush watermark wakes the
   flusher. The flusher writes the records in push order across CPUs and keeps
   a batch in RAM until an `Ok` fsync of a file that holds it (the rotation's
-  fsync result included), writing it again otherwise
+  fsync result included, and never on the rotation's word after the batch's own
+  fsync failed), writing it again otherwise; a latch or release carried into a
+  newer file is written as history (record flag 2), which the replay does not
+  take the latch from
   ([Documentation/effects.md](Documentation/effects.md#durability-invariants-of-the-recorder)).
 
 - kibi, the ported terminal editor, is back as `KIBI.ELF` (Kconfig

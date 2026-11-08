@@ -752,7 +752,7 @@ monotonic session serial), rotating when a file exceeds `LOG_FILE_ROTATE_BYTES`.
 | Part | Layout |
 |------|--------|
 | File header (16 bytes) | `RBL1`, version u16, state records u8, reserved u8, session serial u32, open timestamp (low word) u32; the state records (the e-stop latch, the release nonce floor, the release-key pin as of the open) follow it |
-| Record (32 bytes) | timestamp u64, kind u8, flags u8, 2 bytes padding, 20-byte payload |
+| Record (32 bytes) | timestamp u64, kind u8, flags u8 (1: a write-ahead effect record; 2: a latch or release written after newer opening state records, history the replay does not take the latch from), 2 bytes padding, 20-byte payload |
 
 Nothing is evicted: a queue with no room for a record refuses it, counted in
 `events_dropped` (a reversible effect is refused with a receipt instead), so a
