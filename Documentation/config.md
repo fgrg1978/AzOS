@@ -1222,7 +1222,7 @@ The index lists every declared option: 1312.
 | `TASK_AUTORUN_PLACE` | `config/kernel/Kconfig.tasks` | autorun loader: placement class |
 | `TASK_AUTORUN_PRIORITY` | `config/kernel/Kconfig.tasks` | autorun loader: priority (12 .. 30) |
 | `TASK_BEHAVIOR_PLACE` | `config/kernel/Kconfig.tasks` | Robot behavior (behavior, brain-tx, camera-tx, ml-infer): placement class |
-| `TASK_CONTROL_PLACE` | `config/kernel/Kconfig.tasks` | Robot control loops (rt-motor, flight-ctrl): placement class |
+| `TASK_CONTROL_PLACE` | `config/kernel/Kconfig.tasks` | Effect loops a driver registers (rt-motor, flight-ctrl): placement class |
 | `TASK_IOMMU_FAULTS_PRIORITY` | `config/kernel/Kconfig.tasks` | iommu-faults: priority (12 .. 30) |
 | `TASK_NET_POLL_PLACE` | `config/kernel/Kconfig.tasks` | net-poll: placement class |
 | `TASK_NET_POLL_PRIORITY` | `config/kernel/Kconfig.tasks` | net-poll: priority (0 most urgent .. 31) |
