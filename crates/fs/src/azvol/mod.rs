@@ -80,7 +80,7 @@
 
 pub mod check;
 pub mod engine;
-pub mod crc32c;
+pub use azos_common::crc32c;
 pub mod dev;
 pub mod dir;
 pub mod extent;

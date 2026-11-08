@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 #![no_std]
 
+pub mod crc32c;
 pub mod envelope;
 pub mod error;
 pub mod hook;

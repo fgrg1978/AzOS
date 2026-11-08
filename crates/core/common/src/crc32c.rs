@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! CRC-32C (Castagnoli, reflected, polynomial 0x82F63B78), the checksum of
-//! every azvol block. Not the IEEE CRC-32 that `pstore.rs` and the partition
+//! every azvol block and of ext4's `metadata_csum` structures. Not the IEEE CRC-32 that `pstore.rs` and the partition
 //! parser carry: Castagnoli is the one with hardware support on all three
 //! ISAs (SSE4.2 `crc32`, ARMv8 `crc32c*`, Zbc on RISC-V), so the kernel mount
 //! can swap the table loop for the instruction without a format change.
