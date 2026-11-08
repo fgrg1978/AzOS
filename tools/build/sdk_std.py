@@ -9,7 +9,8 @@ The toolchain pinned by rust-toolchain.toml ships its library source (the
 source to `$AZOS_OUT/build/sdk/rust-src/library` and adds the port:
 
   * `sdk/std/sys/**` (the files of the port) is copied into
-    `library/std/src/sys/`;
+    `library/std/src/sys/`, and `sdk/std/os/**` (`std::os::azos`, the
+    platform's extensions) into `library/std/src/os/`;
   * the dispatch sites (the `cfg_select!` blocks that choose a platform's
     module) get an `azos` arm: the EDITS table below, each an exact one-time
     replacement that fails loudly when the pinned library text moved;
@@ -40,6 +41,7 @@ from out_dir import out_root  # noqa: E402
 
 ROOT = os.path.realpath(azos_tools.ROOT)
 OVERLAY = os.path.join(ROOT, "sdk", "std", "sys")
+OVERLAY_OS = os.path.join(ROOT, "sdk", "std", "os")
 DEST = os.path.join(out_root(), "build", "sdk", "rust-src", "library")
 STDRT = os.path.join(ROOT, "crates", "core", "stdrt")
 
@@ -73,6 +75,9 @@ EDITS = [
      "    target_os = \"azos\" => {\n        mod azos;\n        pub use azos::fill_bytes;\n    }\n    target_os = \"motor\" => {\n        mod motor;\n        pub use motor::fill_bytes;\n    }\n"),
     # No errno: the generic error mapping (every code is "uncategorized").
     ("src/sys/io/error/mod.rs", "    any(\n        target_os = \"vexos\",\n", "    any(\n        target_os = \"azos\",\n        target_os = \"vexos\",\n"),
+    # std::os::azos, the platform's extensions (sdk/std/os/azos).
+    ("src/os/mod.rs", "#[cfg(target_os = \"motor\")]\npub mod motor;\n",
+     "#[cfg(target_os = \"azos\")]\npub mod azos;\n#[cfg(target_os = \"motor\")]\npub mod motor;\n"),
     # std::fs: files over the node ops (sdk/std/sys/fs/azos.rs).
     ("src/sys/fs/mod.rs", "    target_os = \"motor\" => {\n        mod motor;\n        use motor as imp;\n    }\n",
      "    target_os = \"azos\" => {\n        mod azos;\n        use azos as imp;\n    }\n    target_os = \"motor\" => {\n        mod motor;\n        use motor as imp;\n    }\n"),
@@ -99,15 +104,15 @@ def sysroot_src():
     return src, ver
 
 
-def overlay_files():
-    for d, _, names in sorted(os.walk(OVERLAY)):
+def overlay_files(root=OVERLAY):
+    for d, _, names in sorted(os.walk(root)):
         for n in sorted(names):
             yield os.path.join(d, n)
 
 
 def stamp(ver):
     h = hashlib.sha256(ver.encode())
-    for p in [__file__] + list(overlay_files()):
+    for p in [__file__] + list(overlay_files()) + list(overlay_files(OVERLAY_OS)):
         h.update(p[len(ROOT):].encode())
         with open(p, "rb") as f:
             h.update(f.read())
@@ -133,11 +138,12 @@ def apply_edits(dest):
            f"azos_stdrt = {{ path = \"{STDRT}\", features = ['rustc-dep-of-std'], public = true }}\n\n")
     with open(p, "w") as f:
         f.write(s.replace(CARGO_ANCHOR, dep + CARGO_ANCHOR))
-    for src in overlay_files():
-        rel = os.path.relpath(src, OVERLAY)
-        out = os.path.join(dest, "std", "src", "sys", rel)
-        os.makedirs(os.path.dirname(out), exist_ok=True)
-        shutil.copyfile(src, out)
+    for root, sub in ((OVERLAY, "sys"), (OVERLAY_OS, "os")):
+        for src in overlay_files(root):
+            rel = os.path.relpath(src, root)
+            out = os.path.join(dest, "std", "src", sub, rel)
+            os.makedirs(os.path.dirname(out), exist_ok=True)
+            shutil.copyfile(src, out)
 
 
 def main():

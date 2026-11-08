@@ -19,6 +19,8 @@
 //! * `futex`: the wait and the wake `std`'s locks are built on.
 //! * `console`: the console and the files behind fds 0..2 (no console read).
 //! * [`entropy`]: the kernel pool, through the `Entropy` interface.
+//! * [`terminal`]: a job's own terminal, through the `Terminal` interface on
+//!   the capability its shell lent it as fd 0.
 //! * `fs` and [`fspure`]: files and directories over the `*at` node ops beneath the task's
 //!   root `Cap<Dir>`, with the working directory kept here; the path arithmetic and the open
 //!   flags are the pure half.
@@ -27,7 +29,7 @@
 //!   address layout, error mapping and back-off they share with the host tests.
 //!
 //! The modules that issue a trap exist only on `target_os = "azos"`; [`pure`],
-//! [`tls`], [`netpure`] and [`entropy`] build anywhere, which is how `tests/host/stdrt-tests`
+//! [`tls`], [`netpure`], [`entropy`] and [`terminal`] build anywhere, which is how `tests/host/stdrt-tests`
 //! checks them.
 #![no_std]
 
@@ -36,6 +38,7 @@ pub mod pure;
 
 pub mod entropy;
 pub mod fspure;
+pub mod terminal;
 pub mod netpure;
 pub mod tls;
 
