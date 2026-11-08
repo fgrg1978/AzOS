@@ -312,6 +312,28 @@ fn the_serial_key_ends_the_session_and_takes_the_input() {
     assert_eq!(s.d.line(), b"", "the new terminal is a fresh one");
 }
 
+/// **The secure attention key is the way back from a raw job.** The job holds
+/// the terminal raw, so ^C is its byte; the key still ends the session and
+/// takes the input before the discipline sees it, and the job's terminal is
+/// revoked.
+///
+/// **Canary.** Push the chunk into the discipline before looking for the key:
+/// the job's read returns the bytes, including the key, and the session stays.
+#[test]
+fn the_serial_key_ends_a_session_whose_job_holds_the_terminal_raw() {
+    use azos_term::Terminal;
+    let mut s = gated(typed(&[&[b'a', 0x03, SAK, b'b', b'o', b'b', b'\r', b'p', b'w', b'\r']]), state::SESSION, &[status::STARTED]);
+    assert!(s.lend_job(9).get().is_some());
+    s.set_foreground(9);
+    s.caller = 9;
+    s.set_mode(true);
+    let e = unpack_event(&s.read_event(WAIT_FOREVER)).unwrap();
+    assert_eq!(e.kind, Kind::Timeout, "the key took the input from the raw job");
+    assert_eq!(s.gate.ended, 1);
+    assert_eq!(s.gate.logins, vec![asked(b"bob", b"pw")]);
+    assert_eq!(s.con.revoked, [1009], "the raw job's terminal outlived the session");
+}
+
 /// A shell that survives the forced stop keeps the session: the secure prompt
 /// is not drawn (the shell could draw over it or read it), nothing typed after
 /// the key reaches the login service, and the next key asks the service to end

@@ -266,7 +266,8 @@ Delete (`^D` on a non-empty line), `^A`/`^E` and Home/End, left and right (and
 through a 32-line history, `^L` redraw. A focus rule keeps a running job's typing out of
 the shell: while a job holds the focus the server delivers only interrupts and
 holds other bytes (256 of them) as type-ahead for the next line. The key `^C`
-is an event in both modes; **nothing is signalled**, the client decides what an
+is an event, in both modes for the client and in cooked mode for a job (in raw
+mode a job gets the byte); **nothing is signalled**, the client decides what an
 interrupt means. A client's output does not pass through the server. Console
 output has many writers (the kernel, the tools the shell starts and the shell),
 so each writes the console directly with the console's write op, at most 4096
@@ -292,7 +293,9 @@ for `size`, `set_mode`, `set_echo`, `read_event` and `line_chunk`, and nothing
 else: the job reads what is typed (lines in cooked mode, bytes in raw mode; its
 lines stay out of the shell's history, its line editing recalls none of it, and
 it reads nothing the shell read before the lend) and the interrupt key remains
-the shell's. One `read_event` of a job waits at most 50 ms in the server
+the shell's while the terminal is cooked; once the job sets raw mode, `^C` is the
+byte 3 of its input (kibi binds it) and the way back from a stuck raw job is the
+secure attention key. One `read_event` of a job waits at most 50 ms in the server
 (`JOB_WAIT_MAX_MS`), whatever it asks, so a job never holds the server's one
 accept loop.
 When the shell takes the focus back (`set_foreground(0)` when the job ends, or a

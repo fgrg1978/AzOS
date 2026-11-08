@@ -374,6 +374,42 @@ mod discipline {
         assert_eq!(evs, vec![Event::Bytes(2), Event::Interrupt(0), Event::Bytes(2)]);
     }
 
+    /// **In raw mode the interrupt key is the job's byte.** A job that holds
+    /// the terminal raw (an editor) reads 3 as data, in order with what is
+    /// typed around it, and no interrupt is counted for the client.
+    ///
+    /// **Canary.** Count the key in `push` whatever the mode (drop `!self.raw_mode`):
+    /// the job reads `ab` and `cd` with no byte 3 between them and the
+    /// client's interrupt is pending, both assertions red.
+    #[test]
+    fn a_raw_job_reads_the_interrupt_key_as_a_byte() {
+        let mut d = Discipline::new();
+        d.set_foreground(7);
+        d.set_raw(true);
+        d.set_echo(false);
+        d.push(b"ab\x03cd");
+        assert!(!d.interrupt_pending(), "a raw job's key is not the client's interrupt");
+        assert_eq!(d.step(), None, "the client reads nothing while a job has the focus");
+        assert_eq!(d.step_job(), Some(Event::Bytes(5)));
+        assert_eq!(&d.raw()[..5], b"ab\x03cd");
+    }
+
+    /// The same key typed while the job's terminal is cooked is the client's
+    /// interrupt, and one typed raw and read after the job went back to
+    /// cooked reaches the job's focus tag, not the client's (0).
+    #[test]
+    fn a_cooked_job_still_leaves_the_interrupt_key_to_the_client() {
+        let mut d = Discipline::new();
+        d.set_foreground(7);
+        d.push(b"\x03");
+        assert!(d.interrupt_pending());
+        assert_eq!(d.step(), Some(Event::Interrupt(7)));
+        d.set_raw(true);
+        d.push(b"\x03");
+        d.set_raw(false);
+        assert_eq!(d.step_job(), Some(Event::Interrupt(7)), "tagged with the job that has the focus");
+    }
+
     #[test]
     fn a_job_in_focus_gets_interrupts_tagged_with_its_id_and_nothing_else() {
         let mut d = cooked();
@@ -741,21 +777,20 @@ mod served {
         assert_eq!(j.size(), Err(IdlError::Refused), "answered after the focus came back");
     }
 
-    /// **The interrupt key is the client's**: a job reading in raw mode gets a
-    /// timeout (its read gives way), and the client's read gets the interrupt
-    /// tagged with the job.
+    /// **The interrupt key is the client's while the job's terminal is
+    /// cooked**: a job reading lines gets a timeout (its read gives way), and
+    /// the client's read gets the interrupt tagged with the job.
     ///
     /// **Canary.** Drop the give-way test in `read_event`: the job's read goes
     /// on past the interrupt key and returns the `x` typed after it, and the
     /// first assertion goes red.
     #[test]
     fn the_interrupt_key_stays_the_clients_and_the_job_gives_way() {
-        let s = server(&[b"\x03", b"x"]);
+        let s = server(&[b"\x03", b"x\r"]);
         let mut c = TerminalClient::new(Loop(&s));
         let mut j = TerminalClient::new(Badged(&s, 9));
         assert!(c.lend_job(9).unwrap().get().is_some());
         c.set_foreground(9).unwrap();
-        j.set_mode(true).unwrap();
         let e = unpack_event(&j.read_event(WAIT_FOREVER).unwrap()).unwrap();
         assert_eq!(e.kind, Kind::Timeout, "the job read on past an interrupt key the client has not heard");
         let e = unpack_event(&j.read_event(WAIT_FOREVER).unwrap()).unwrap();
@@ -763,7 +798,27 @@ mod served {
         let e = event(&mut c, 0);
         assert_eq!((e.kind, e.job), (Kind::Interrupt, 9));
         let e = unpack_event(&j.read_event(WAIT_FOREVER).unwrap()).unwrap();
-        assert_eq!((e.kind, e.inline()), (Kind::Bytes, &b"x"[..]), "what came after it is the job's");
+        assert_eq!((e.kind, e.inline()), (Kind::Line, &b"x"[..]), "what came after it is the job's");
+    }
+
+    /// **A job in raw mode is handed the interrupt key as a byte**, through the
+    /// server: its read returns it, in order, and the client hears no interrupt.
+    ///
+    /// **Canary.** Count the key for the client whatever the mode (`push`):
+    /// the job's read gives way with a timeout and the client's read returns
+    /// an interrupt, both assertions red.
+    #[test]
+    fn a_raw_jobs_read_returns_the_interrupt_key_as_data() {
+        let s = server(&[b"a\x03b"]);
+        let mut c = TerminalClient::new(Loop(&s));
+        let mut j = TerminalClient::new(Badged(&s, 9));
+        assert!(c.lend_job(9).unwrap().get().is_some());
+        c.set_foreground(9).unwrap();
+        j.set_mode(true).unwrap();
+        j.set_echo(false).unwrap();
+        let e = unpack_event(&j.read_event(WAIT_FOREVER).unwrap()).unwrap();
+        assert_eq!((e.kind, e.inline()), (Kind::Bytes, &b"a\x03b"[..]), "the key is the job's byte");
+        assert!(!s.borrow().d.interrupt_pending(), "the client has an interrupt it was not owed");
     }
 
     /// **A job's line is the job's**: in cooked mode it reads the line, and

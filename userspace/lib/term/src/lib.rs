@@ -28,7 +28,8 @@
 //!   at spawn (`SYS_SPAWN_EX`, `MOVE_KIND_ENDPOINT`, into a row that
 //!   `receives = ["term"]`), and while that job has the focus it reads the
 //!   input itself (lines, or bytes in raw mode) and sets its mode and echo
-//!   ([`JOB_OPS`]); the interrupt key stays the client's. The badge is
+//!   ([`JOB_OPS`]); the interrupt key stays the client's, except while the
+//!   job has the terminal raw: then it is the byte 3 of the job's input. The badge is
 //!   answered only while its job has the focus. When the focus moves the
 //!   server revokes the capability wherever it sits and puts back the mode and
 //!   echo the client had: an editor that dies in raw mode leaves a cooked
@@ -131,7 +132,8 @@ pub trait Terminal {
     fn set_size(&mut self, cols: u16, rows: u16);
     /// Raw (`true`): no line editing, bytes come back as [`Kind::Bytes`].
     /// Cooked (`false`, the default): the server edits and delivers lines.
-    /// The interrupt key is an event in both.
+    /// The interrupt key is an event in both, but for a lent job in raw mode:
+    /// its input carries the byte 3 (the secure attention key is the way back).
     fn set_mode(&mut self, raw: bool);
     /// Echo typed input (default on). The prompt and the interrupt echo
     /// (`^C`) follow it; the prompt does not (see [`Terminal::begin_line`]).

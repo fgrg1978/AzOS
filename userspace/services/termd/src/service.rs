@@ -44,9 +44,10 @@
 //! request is served through [`serve`], which takes the caller from the badge
 //! the kernel stamped: 0 is the client (it may call everything), the lent job
 //! may call [`JOB_OPS`] while it has the focus, anyone else nothing. While the
-//! job reads, the input is its ([`Discipline::step_job`]); an interrupt key is
-//! the client's, and the job's read gives way to the client's (it returns a
-//! timeout) so the client hears it at once. When the focus leaves the job the
+//! job reads, the input is its ([`Discipline::step_job`]); an interrupt key
+//! typed while the terminal is cooked is the client's, and the job's read gives
+//! way to the client's (it returns a timeout) so the client hears it at once.
+//! In raw mode the key is a byte of the job's. When the focus leaves the job the
 //! lend ends: the capability is revoked wherever it sits
 //! ([`Console::revoke_job`]) and the mode and echo the client had come back.
 //!

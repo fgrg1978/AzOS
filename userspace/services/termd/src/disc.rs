@@ -14,9 +14,13 @@
 //! * **Echo**: what the editor (or, in raw mode, the byte) would show is
 //!   dropped when off. The prompt of [`Discipline::begin_line`] is shown
 //!   either way; it is the client's text, not an echo.
-//! * **The interrupt key (0x03)** is an event in both modes: [`Event::Interrupt`]
-//!   carrying the foreground job. The line being edited is cleared and `^C`
-//!   shown (if echo is on). Nothing is signalled.
+//! * **The interrupt key (0x03)** is an event: [`Event::Interrupt`] carrying
+//!   the foreground job. The line being edited is cleared and `^C` shown (if
+//!   echo is on). Nothing is signalled. While a job has the focus and the
+//!   terminal is raw, the key is not an event: it is the byte 3, the job's
+//!   like any other (an editor binds it); the system's way back from such a
+//!   job is the secure attention key, which the server takes before the
+//!   discipline sees a byte.
 //! * **Focus** ([`Discipline::set_foreground`]): job 0 is the client. While a
 //!   job has the focus the discipline delivers the client only interrupts;
 //!   every other byte is held (type-ahead, [`HELD_MAX`] bytes) and replayed
@@ -203,12 +207,13 @@ impl Discipline {
 
     // ── bytes in, events out ────────────────────────────────────────────────
 
-    /// Take typed bytes. While a job has the focus the interrupt key is
-    /// counted (it is delivered first) and the rest held; otherwise all of it
-    /// is held for [`Discipline::step`].
+    /// Take typed bytes. While a job has the focus and the terminal is cooked
+    /// the interrupt key is counted (it is delivered first) and the rest
+    /// held; otherwise all of it is held for [`Discipline::step`], the key
+    /// of a raw job's terminal included.
     pub fn push(&mut self, bytes: &[u8]) {
         for &b in bytes {
-            if b == 0x03 && self.fg != 0 {
+            if b == 0x03 && self.fg != 0 && !self.raw_mode {
                 self.intr = self.intr.saturating_add(1);
             } else if self.held_n < HELD_MAX {
                 self.held[(self.head + self.held_n) % HELD_MAX] = b;
@@ -299,7 +304,7 @@ impl Discipline {
                 EdEvent::Interrupt => {
                     self.clear_line();
                     self.show_interrupt();
-                    return Some(Event::Interrupt(0));
+                    return Some(Event::Interrupt(self.fg));
                 }
                 EdEvent::Eof => return Some(Event::Eof),
             }
@@ -308,7 +313,9 @@ impl Discipline {
     }
 
     fn step_raw(&mut self) -> Option<Event> {
-        if self.peek() == Some(0x03) {
+        // The client's raw read hears the key; a job's does not (`push`).
+        let key = self.fg == 0;
+        if key && self.peek() == Some(0x03) {
             self.pop();
             self.show_interrupt();
             return Some(Event::Interrupt(0));
@@ -316,7 +323,8 @@ impl Discipline {
         let mut n = 0;
         while n < RAW_MAX {
             match self.peek() {
-                Some(0x03) | None => break,
+                Some(0x03) if key => break,
+                None => break,
                 Some(b) => {
                     self.pop();
                     self.raw[n] = b;
