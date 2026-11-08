@@ -12,6 +12,7 @@ azos_abi = { path = "../../../crates/core/abi" }
 azos_idl = { path = "../../../crates/core/idl" }
 azos_term = { path = "../../lib/term" }
 azos_names = { path = "../../lib/names" }
+azos_coreutils = { path = "../../lib/coreutils" }
 
 [profile.release]
 opt-level = "s"

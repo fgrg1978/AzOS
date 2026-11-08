@@ -280,6 +280,16 @@ mod paths {
         }
         assert!(!is_applet(b"cd"));
     }
+
+    #[test]
+    fn the_basic_utilities_are_applets_and_the_refused_ones_too() {
+        for a in azos_coreutils::NAMES {
+            assert!(is_applet(a), "{}", String::from_utf8_lossy(a));
+        }
+        for a in ["cp", "mv", "rm", "mkdir", "grep", "sort", "chmod", "ln"] {
+            assert!(is_applet(a.as_bytes()), "{a}");
+        }
+    }
 }
 
 #[cfg(test)]

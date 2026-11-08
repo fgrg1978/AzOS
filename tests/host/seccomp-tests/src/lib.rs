@@ -1474,7 +1474,7 @@ mod image_profiles {
             src!("userspace/services/sh/src/req.rs"),
             src!("userspace/lib/ualloc/src/native.rs"),
         ]),
-        ("TOOLBOX.ELF", Lang::Rust, &[src!("userspace/services/toolbox/src/main.rs"), src!("userspace/services/toolbox/src/beep.rs"), src!("userspace/services/toolbox/src/fsck.rs"), src!("userspace/services/toolbox/src/host.rs"), src!("userspace/services/toolbox/src/log_view.rs"), src!("userspace/services/toolbox/src/metrics_view.rs"), src!("userspace/services/toolbox/src/ntp.rs"), src!("userspace/services/toolbox/src/ps_view.rs"), src!("userspace/services/toolbox/src/sound.rs"), src!("userspace/services/toolbox/src/vm.rs"), src!("crates/drivers/sys/src/klog/wire.rs"), src!("userspace/services/toolbox/src/input.rs"), src!("userspace/services/toolbox/src/window.rs")]),
+        ("TOOLBOX.ELF", Lang::Rust, &[src!("userspace/services/toolbox/src/main.rs"), src!("userspace/services/toolbox/src/beep.rs"), src!("userspace/services/toolbox/src/fsck.rs"), src!("userspace/services/toolbox/src/host.rs"), src!("userspace/services/toolbox/src/log_view.rs"), src!("userspace/services/toolbox/src/metrics_view.rs"), src!("userspace/services/toolbox/src/ntp.rs"), src!("userspace/services/toolbox/src/ps_view.rs"), src!("userspace/services/toolbox/src/sound.rs"), src!("userspace/services/toolbox/src/vm.rs"), src!("crates/drivers/sys/src/klog/wire.rs"), src!("userspace/services/toolbox/src/input.rs"), src!("userspace/services/toolbox/src/window.rs"), src!("userspace/services/toolbox/src/native.rs")]),
         ("POWER.ELF", Lang::Rust, &[
             src!("userspace/services/power/src/main.rs"),
             src!("userspace/services/power/src/policy.rs"),

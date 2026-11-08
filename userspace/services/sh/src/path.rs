@@ -19,7 +19,8 @@ pub const TOOLBOX: &[u8] = b"/fat/TOOLBOX.ELF";
 /// The search path when `PATH` is unset.
 pub const DEFAULT_PATH: &[u8] = b"/fat";
 
-/// Names `TOOLBOX.ELF` answers to (its `argv[0]` dispatch).
+/// Names `TOOLBOX.ELF` answers to (its `argv[0]` dispatch), besides the basic
+/// utilities of `azos_coreutils`.
 pub const APPLETS: &[&[u8]] = &[
     b"args", b"beep", b"cat", b"echo", b"false", b"fsck", b"host", b"input", b"inspect", b"log", b"ls", b"ntp", b"ps", b"sleep", b"spin", b"true", b"vm", b"wc", b"window",
     b"yes",
@@ -27,7 +28,7 @@ pub const APPLETS: &[&[u8]] = &[
 
 /// Is `name` an applet of `TOOLBOX.ELF`?
 pub fn is_applet(name: &[u8]) -> bool {
-    APPLETS.iter().any(|a| *a == name)
+    APPLETS.iter().any(|a| *a == name) || azos_coreutils::is_tool(name)
 }
 
 /// Why a name or path did not resolve.

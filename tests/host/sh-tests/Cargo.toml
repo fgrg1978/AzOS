@@ -10,6 +10,7 @@ description = "Host-side tests for the user shell's pure modules (userspace/serv
 
 [dependencies]
 azos_abi = { path = "../../../crates/core/abi" }
+azos_coreutils = { path = "../../../userspace/lib/coreutils" }
 
 [profile.release]
 overflow-checks = true

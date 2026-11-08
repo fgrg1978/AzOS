@@ -596,8 +596,11 @@ impl Shell {
         match &name[..nl] {
             b"help" => {
                 o.put(b"builtins: help echo cd pwd exit export unset env jobs wait kill history\n\
-                        \x20         true false ls cat mkdir rm uptime type\n\
+                        \x20         true false ls cat uptime type\n\
                         tools (TOOLBOX.ELF): args beep cat echo false host input inspect log ls ntp ps sleep spin true vm wc window yes\n\
+                        \x20         cp mv rm mkdir rmdir touch stat du df find head tail grep sort uniq tr cut tee\n\
+                        \x20         date env pwd basename dirname seq printf\n\
+                        refused (no native meaning, they say what to use): chmod chown chgrp umask ln kill mkfifo\n\
                         privileged tools: power flight behavior config ota (own row each)\n\
                         other commands: /fat/<NAME>.ELF (8.3 names), run under their own row\n\
                         syntax: a | b | c, < f, > f, >> f, 2> f, 2>&1, &, 'quotes', \"$VAR\", $?\n");
@@ -784,33 +787,6 @@ impl Shell {
                             err_line(&pb[..al], b"no such file");
                             st = 1;
                         }
-                    }
-                }
-                st
-            }
-            b"mkdir" | b"rm" => {
-                let mut st = 0;
-                for i in 1..argc {
-                    let mut abs = [0u8; path::PATH_MAX + 1];
-                    let mut tmp = [0u8; path::PATH_MAX];
-                    let Some(n) = self.absolute(self.arg(i), &mut tmp) else { return 1 };
-                    abs[..n].copy_from_slice(&tmp[..n]);
-                    abs[n] = 0;
-                    let r = sys::beneath_root(&abs[..n + 1]).and_then(|(root, entry)| {
-                        if &name[..nl] == b"mkdir" {
-                            sys::mkdir_at(root, entry)
-                        } else {
-                            // `unlink` refuses a directory; `rm` removes an
-                            // empty one, as `rmdir` does.
-                            match sys::unlink_at(root, entry) {
-                                Err(sys::Errno::EISDIR) => sys::rmdir_at(root, entry),
-                                r => r,
-                            }
-                        }
-                    });
-                    if let Err(e) = r {
-                        err_line(&abs[..n], if e == sys::Errno::EACCES { b"permission denied" } else { b"failed" });
-                        st = 1;
                     }
                 }
                 st
@@ -1209,7 +1185,7 @@ fn spawn_error(name: &[u8], rc: isize) {
 
 const BUILTINS: &[&[u8]] = &[
     b"help", b"echo", b"cd", b"pwd", b"exit", b"export", b"unset", b"env", b"jobs", b"wait", b"kill",
-    b"history", b"true", b"false", b"ls", b"cat", b"mkdir", b"rm", b"uptime", b"type",
+    b"history", b"true", b"false", b"ls", b"cat", b"uptime", b"type",
 ];
 
 fn is_builtin(name: &[u8]) -> bool {

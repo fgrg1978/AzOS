@@ -44,6 +44,10 @@ name = "azos_common"
 version = "0.1.0"
 
 [[package]]
+name = "azos_coreutils"
+version = "0.1.0"
+
+[[package]]
 name = "azos_crypto"
 version = "0.1.0"
 dependencies = [
@@ -404,6 +408,7 @@ name = "sshd"
 version = "0.1.0"
 dependencies = [
  "azos_abi",
+ "azos_coreutils",
  "azos_crypto",
  "azos_inspect_lib",
  "azos_libsys",
