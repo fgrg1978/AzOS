@@ -26502,6 +26502,34 @@ echo pear > /fat/Q1/F.TXT
 cp /fat/Q1/F.TXT /fat/Q1/A/G.TXT
 sort -r /fat/Q1/A/G.TXT | head -n 1 | tr a-z A-Z" 200 \
             "3 3 30" "PLUM"
+        # The ported tools (third_party/ports, Kconfig USERSPACE_RG and USERSPACE_FD):
+        # `rg` reads a file beneath the read-only root directory its row grants and
+        # prints the replacement of its match, `fd` lists a directory. The printed
+        # text (`FOUND:ONE`, the path of ONE.TXT) is made by the tool: the typed lines
+        # never contain it. The canaries search for what is not there, so the same
+        # markers must be missing.
+        USH_FORBID="$RECOVERY_PROMPT_RE|PAGE FAULT|Killing user task" par_row ushell_row "sh: rg finds a string in a file ($ush_isa)" "$ush_isa" "$ush_feat,CONFIG_USERSPACE_RG=y" PASS \
+            "echo alpha-ONE > /fat/RGT.TXT
+rg -r 'FOUND:\$1' 'alpha-(\w+)' /fat/RGT.TXT" 150 \
+            "FOUND:ONE"
+        USH_FORBID="$RECOVERY_PROMPT_RE|PAGE FAULT|Killing user task" par_row ushell_row "sh: rg finds a string in a file canary ($ush_isa)" "$ush_isa" "$ush_feat,CONFIG_USERSPACE_RG=y" FAIL \
+            "echo alpha-ONE > /fat/RGT.TXT
+rg -r 'FOUND:\$1' 'zeta-(\w+)' /fat/RGT.TXT" 150 \
+            "FOUND:ONE"
+        USH_FORBID="$RECOVERY_PROMPT_RE|PAGE FAULT|Killing user task" par_row ushell_row "sh: fd lists a directory ($ush_isa)" "$ush_isa" "$ush_feat,CONFIG_USERSPACE_FD=y" PASS \
+            "mkdir /fat/FDT
+cd /fat/FDT
+echo x > ONE.TXT
+echo y > TWO.LOG
+fd -e txt . /fat/FDT" 150 \
+            "/fat/FDT/ONE.TXT"
+        USH_FORBID="$RECOVERY_PROMPT_RE|PAGE FAULT|Killing user task" par_row ushell_row "sh: fd lists a directory canary ($ush_isa)" "$ush_isa" "$ush_feat,CONFIG_USERSPACE_FD=y" FAIL \
+            "mkdir /fat/FDT
+cd /fat/FDT
+echo x > ONE.TXT
+echo y > TWO.LOG
+fd -e zzz . /fat/FDT" 150 \
+            "/fat/FDT/ONE.TXT"
         # The images that ask for more stack than a task gets by default, run:
         # MLSRV.ELF (64 KiB for its main thread, started by the behavior task,
         # steady when it serves the Infer interface) and TOOLBOX.ELF's `ps`
