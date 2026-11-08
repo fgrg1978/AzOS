@@ -23,8 +23,10 @@ use azos_abi::exit_status as es;
 use super::frame::{Cow, Demand, Disposition, FaultServices, Frame, KernelFault};
 
 /// A ktest's expected kernel fault: `arm` names where to resume, the first
-/// fault from the kernel then steps there instead of ending the kernel, and
-/// `disarm` says whether one was taken and its cause. Only ktest builds have it.
+/// fault from the kernel at an instruction just before that address (the asm
+/// block's own store or branch target) then steps there instead of ending the
+/// kernel, and `disarm` says whether one was taken and its cause. A kernel
+/// fault anywhere else stays fatal while armed. Only ktest builds have it.
 #[cfg(feature = "ktest")]
 #[cfg_attr(not(any(feature = "pt-protection", target_arch = "aarch64")), allow(dead_code))]
 pub mod expected {
@@ -33,8 +35,10 @@ pub mod expected {
 
     static RESUME: AtomicUsize = AtomicUsize::new(0);
     static CAUSE: AtomicU32 = AtomicU32::new(0);
+    /// How far before the resume address the faulting instruction may start.
+    const SPAN: usize = 16;
 
-    /// The next fault from the kernel resumes at `resume`.
+    /// The next fault from the kernel in the `SPAN` bytes before `resume` resumes there.
     pub fn arm(resume: usize) {
         CAUSE.store(0, Ordering::Relaxed);
         RESUME.store(resume, Ordering::Release);
@@ -56,8 +60,11 @@ pub mod expected {
         if frame.came_from_user() {
             return false;
         }
-        let at = RESUME.swap(0, Ordering::AcqRel);
-        if at == 0 {
+        let at = RESUME.load(Ordering::Acquire);
+        if at == 0 || !(at.saturating_sub(SPAN)..at).contains(&(frame.pc() as usize)) {
+            return false;
+        }
+        if RESUME.compare_exchange(at, 0, Ordering::AcqRel, Ordering::Relaxed).is_err() {
             return false;
         }
         CAUSE.store(frame.fault_cause() + 1, Ordering::Release);

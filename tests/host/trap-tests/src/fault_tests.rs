@@ -317,16 +317,19 @@ fn an_isa_decides_its_own_exceptions_before_the_policy() {
 }
 
 /// A ktest's expected kernel fault (`trap::fault::expected`, ktest builds only): the
-/// first fault from the kernel after `arm` resumes at the target with its cause
-/// recorded, in both the page-fault and the exception arm, and the next one is
-/// fatal again; a fault from user mode never takes it. Canary: make `take` return
-/// false and the first assert fails.
+/// first fault from the kernel just before the target after `arm` resumes at the
+/// target with its cause recorded, and the next one is fatal again; a kernel fault
+/// elsewhere (the fakes' pc, the other tests' faults) stays fatal and leaves it
+/// armed; a fault from user mode never takes it. Canary: make `take` return false
+/// and the first assert fails.
 #[cfg(feature = "ktest")]
 #[test]
 fn an_armed_kernel_fault_resumes_at_its_target_once() {
     use crate::trap::fault::expected;
     on_each_isa!(false, true, 0xC000, |f| {
         expected::arm(0x9000);
+        assert!(matches!(pf(&mut f), Ended::Halted), "a fault away from the target is not taken");
+        f.set_pc(0x9000 - 4);
         assert!(matches!(pf(&mut f), Ended::Returned));
         assert_eq!(f.pc(), 0x9000);
         assert!(expected::disarm().is_some(), "the cause is recorded");
