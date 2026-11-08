@@ -173,8 +173,13 @@ def out_dir():
 
 
 def extra_path():
-    return os.pathsep.join([os.environ.get("PATH", ""), "/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin",
-                            os.path.join(HOME, ".cargo/bin"), os.path.join(HOME, "azos-tools/cbindgen/bin")])
+    """PATH plus the package manager's prefix (asked of brew when it is on PATH) and the user tool dirs the build searches."""
+    dirs = [os.environ.get("PATH", "")]
+    if shutil.which("brew"):
+        r = subprocess.run(["brew", "--prefix"], capture_output=True, text=True)
+        if r.returncode == 0 and r.stdout.strip():
+            dirs += [os.path.join(r.stdout.strip(), "bin"), os.path.join(r.stdout.strip(), "sbin")]
+    return os.pathsep.join(dirs + [os.path.join(HOME, ".cargo/bin"), os.path.join(HOME, "azos-tools/cbindgen/bin")])
 
 
 def which(cmd):

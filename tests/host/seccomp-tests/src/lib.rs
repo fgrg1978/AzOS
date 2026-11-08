@@ -3395,8 +3395,21 @@ mod image_profiles {
             .find(|l| l.starts_with("USPACE_BUILD :="))
             .expect("the Makefile defines no USPACE_BUILD");
         assert!(
-            def.contains("RUSTC_WRAPPER='$(CURDIR)/userspace/rustc_stable_metadata.py' $(BUILDQ_BIN) $(CARGO) +nightly build --release"),
+            def.contains("RUSTC_WRAPPER='$(CURDIR)/userspace/rustc_stable_metadata.py' $(BUILDQ_BIN) $(CARGO) +$(RUST_CHANNEL) build --release"),
             "{def}",
+        );
+        // The channel is the dated one of rust-toolchain.toml, read by one script.
+        let channel = MAKEFILE
+            .lines()
+            .find(|l| l.starts_with("RUST_CHANNEL :="))
+            .expect("the Makefile defines no RUST_CHANNEL");
+        assert!(channel.contains("tools/lib/rust_channel.sh"), "{channel}");
+        assert!(include_str!("../../../../tools/lib/rust_channel.sh").contains("rust-toolchain.toml"));
+        assert!(
+            include_str!("../../../../rust-toolchain.toml")
+                .lines()
+                .any(|l| l.starts_with("channel") && l.contains("nightly-20")),
+            "rust-toolchain.toml pins no dated nightly",
         );
         // Cargo does not rebuild when only RUSTC_WRAPPER changes, so the flags
         // carry a digest of the wrapper: a changed wrapper changes the fingerprint.
