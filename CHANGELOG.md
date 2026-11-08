@@ -28,6 +28,19 @@ releases yet. The ABI crate keeps its own file,
   newer file is written as history (record flag 2), which the replay does not
   take the latch from
   ([Documentation/effects.md](Documentation/effects.md#durability-invariants-of-the-recorder)).
+- An ext4 volume, read-only, parsed and served in ring 3 (Kconfig
+  `FS_EXT4_RING3`, on for the desktop and server presets): `EXT4D.ELF` reads its
+  partition through its block capability with a native parser
+  (`userspace/lib/ext4`: extents and the block map, htree directories read as
+  linear, symlinks, `64bit`, `metadata_csum` checked; `inline_data`,
+  `encrypt`, `casefold`, `meta_bg`, `mmp`, `bigalloc`, blocks over 4 KiB and a
+  journal that needs recovery refused at mount with the reason) and serves the
+  file protocol on `endpoint.ext4`; the kernel mounts it from a `[volume.NAME]`
+  row with `format = "ext4"` through `azos_fs::endpoint::EndpointFs`, so a
+  program reading the mount cannot tell it from FAT32. The server's row holds
+  `READ` on its partition, its endpoint and the shared region `MemObj
+  fs.share`, nothing else; a short read the server does not call the end is
+  refused ([Documentation/storage.md](Documentation/storage.md)).
 
 - kibi, the ported terminal editor, is back as `KIBI.ELF` (Kconfig
   `USERSPACE_KIBI`, on for the desktop and server presets): the shell lends the

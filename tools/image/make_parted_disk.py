@@ -3,7 +3,7 @@
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 """Build the gate's partitioned disk images (wave 9; GPT: records partition).
 
-Usage: make_parted_disk.py [--gpt] SRC.img OUT.img
+Usage: make_parted_disk.py [--gpt | --part1 VOL.img] SRC.img OUT.img
 
 SRC is one of the Makefile's bare FAT32 images (a `mkfs.fat` superfloppy:
 the FAT32 boot sector at LBA 0). Without `--gpt`, OUT is a classic-MBR medium:
@@ -12,7 +12,9 @@ the FAT32 boot sector at LBA 0). Without `--gpt`, OUT is a classic-MBR medium:
   LBA 2048               partition 0, type 0x0C: SRC's FAT32 volume, exactly
                          its BPB `tot_sec32` sectors
   after it               partition 1, type 0xDA (non-filesystem data): 64
-                         zeroed sectors, the range `disk.part.1` names
+                         zeroed sectors, the range `disk.part.1` names; with
+                         `--part1 VOL.img`, type 0x83 (Linux) holding VOL's
+                         bytes (the ext4 volume of the ring-3 ext4 rows)
   last 8 sectors         the reserved tail `kernel/src/reserved_tail.rs` keeps
                          (TAIL_SECTORS), inside no partition,
                          copied from SRC's own tail: it holds the device
@@ -108,19 +110,22 @@ def gpt_image(vol, tot, tail):
                  f"backup header LBA {total - 1}, {total} sectors")
 
 
-def mbr_image(vol, tot, tail):
+def mbr_image(vol, tot, tail, part1=None):
     p1 = BASE + tot
-    total = p1 + PART1_SECTORS + TAIL_SECTORS
+    n1 = PART1_SECTORS if part1 is None else (len(part1) + SECTOR - 1) // SECTOR
+    total = p1 + n1 + TAIL_SECTORS
     mbr = bytearray(SECTOR)
     mbr_entry(mbr, 0, 0x0C, BASE, tot)
-    mbr_entry(mbr, 1, 0xDA, p1, PART1_SECTORS)
+    mbr_entry(mbr, 1, 0xDA if part1 is None else 0x83, p1, n1)
     mbr[510:512] = b"\x55\xaa"
     img = bytearray(total * SECTOR)
     img[:SECTOR] = mbr
     img[BASE * SECTOR : BASE * SECTOR + len(vol)] = vol
+    if part1 is not None:
+        img[p1 * SECTOR : p1 * SECTOR + len(part1)] = part1
     if tail is not None:
         img[-TAIL_SECTORS * SECTOR:] = tail
-    return img, f"part 0 LBA {BASE}+{tot}, part 1 LBA {p1}+{PART1_SECTORS}, {total} sectors"
+    return img, f"part 0 LBA {BASE}+{tot}, part 1 LBA {p1}+{n1}, {total} sectors"
 
 
 def main():
@@ -128,8 +133,12 @@ def main():
     gpt = args[:1] == ["--gpt"]
     if gpt:
         args = args[1:]
+    part1 = None
+    if args[:1] == ["--part1"] and len(args) > 1:
+        part1 = open(args[1], "rb").read()
+        args = args[2:]
     if len(args) != 2:
-        sys.exit("usage: make_parted_disk.py [--gpt] SRC.img OUT.img")
+        sys.exit("usage: make_parted_disk.py [--gpt | --part1 VOL.img] SRC.img OUT.img")
     src, out = args
     data = open(src, "rb").read()
     boot = data[:SECTOR]
@@ -142,7 +151,7 @@ def main():
     tail = None
     if len(data) >= (tot + TAIL_SECTORS) * SECTOR:
         tail = data[-TAIL_SECTORS * SECTOR:]
-    img, what = (gpt_image if gpt else mbr_image)(vol, tot, tail)
+    img, what = gpt_image(vol, tot, tail) if gpt else mbr_image(vol, tot, tail, part1)
     with open(out, "wb") as f:
         f.write(img)
     print(f"[DISK] partitioned image: {out} ({what})")

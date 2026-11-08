@@ -323,9 +323,19 @@ $(COREUTIL_ELF): $(COREUTIL_SRC) $(LIBSYS_SRC)
 	$(AARCH64_OBJCOPY) --strip-all $(COREUTIL_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(EXT4D_ELF): $(EXT4D_SRC) $(LIBSYS_SRC)
+# Extra ext4d cargo features: its gate canary (`EXT4D_FEATURES=short-read-canary`,
+# the ext4 canary row: every read answers half and never says the file
+# ended). The stamp as ina_drv's, so a canary ELF is never reused.
+EXT4D_FEATURES ?=
+EXT4D_FEATURES_ARG := $(if $(strip $(EXT4D_FEATURES)),--features $(strip $(EXT4D_FEATURES)))
+$(OUT_BUILD)/ext4d.features: FORCE
 	@mkdir -p $(OUT_BUILD)
-	cd $(EXT4D_DIR) && export CARGO_TARGET_DIR="$(UTGT_RV64)" && $(USPACE_BUILD) $(RV_UFLAGS)
+	@printf '%s\n' '$(strip $(EXT4D_FEATURES))' | cmp -s - $@ \
+	    || printf '%s\n' '$(strip $(EXT4D_FEATURES))' >$@
+
+$(EXT4D_ELF): $(EXT4D_SRC) $(LIBSYS_SRC) $(OUT_BUILD)/ext4d.features
+	@mkdir -p $(OUT_BUILD)
+	cd $(EXT4D_DIR) && export CARGO_TARGET_DIR="$(UTGT_RV64)" && $(USPACE_BUILD) $(RV_UFLAGS) $(EXT4D_FEATURES_ARG)
 	$(AARCH64_OBJCOPY) --strip-all $(EXT4D_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
@@ -963,9 +973,9 @@ $(COREUTIL_ELF_AARCH64): $(COREUTIL_SRC) $(LIBSYS_SRC)
 	$(AARCH64_OBJCOPY) --strip-all $(UTGT_AARCH64)/$(TARGET_AARCH64)/release/coreutil $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(EXT4D_ELF_AARCH64): $(EXT4D_SRC) $(LIBSYS_SRC)
+$(EXT4D_ELF_AARCH64): $(EXT4D_SRC) $(LIBSYS_SRC) $(OUT_BUILD)/ext4d.features
 	@mkdir -p $(AARCH64_DIR)
-	cd $(EXT4D_DIR) && export CARGO_TARGET_DIR="$(UTGT_AARCH64)" && $(USPACE_BUILD) $(AARCH64_UFLAGS)
+	cd $(EXT4D_DIR) && export CARGO_TARGET_DIR="$(UTGT_AARCH64)" && $(USPACE_BUILD) $(AARCH64_UFLAGS) $(EXT4D_FEATURES_ARG)
 	$(AARCH64_OBJCOPY) --strip-all $(UTGT_AARCH64)/$(TARGET_AARCH64)/release/ext4d $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
@@ -1346,9 +1356,9 @@ $(COREUTIL_ELF_X86_64): $(COREUTIL_SRC) $(LIBSYS_SRC) $(X86_64_KCONFIG)
 	cd $(COREUTIL_DIR) && export CARGO_TARGET_DIR="$(UTGT_X86_64)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
 	$(AARCH64_OBJCOPY) --strip-all $(UTGT_X86_64)/$(X86_64_UBUILT)/coreutil $@
 
-$(EXT4D_ELF_X86_64): $(EXT4D_SRC) $(LIBSYS_SRC) $(X86_64_KCONFIG)
+$(EXT4D_ELF_X86_64): $(EXT4D_SRC) $(LIBSYS_SRC) $(X86_64_KCONFIG) $(OUT_BUILD)/ext4d.features
 	@mkdir -p $(X86_64_DIR)
-	cd $(EXT4D_DIR) && export CARGO_TARGET_DIR="$(UTGT_X86_64)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
+	cd $(EXT4D_DIR) && export CARGO_TARGET_DIR="$(UTGT_X86_64)" && $(USPACE_BUILD) $(X86_64_UFLAGS) $(EXT4D_FEATURES_ARG)
 	$(AARCH64_OBJCOPY) --strip-all $(UTGT_X86_64)/$(X86_64_UBUILT)/ext4d $@
 
 $(TOOLBOX_ELF_X86_64): $(TOOLBOX_SRC) $(LIBSYS_SRC) $(X86_64_KCONFIG)

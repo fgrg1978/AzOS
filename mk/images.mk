@@ -628,6 +628,24 @@ $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-sh.img: $(OUT_BUILD)/disk-aarch64$
 	mcopy -i $@ $(VMMD_ELF_AARCH64) ::VMMD.ELF
 	@echo "[DISK] aarch64 FAT32 image: $@ (user shell SH.ELF, TOOLBOX.ELF, POWER.ELF, FLIGHT/BEHAVIOR/CONFIG/OTA.ELF, TRACECTL.ELF, DECISD.ELF, LOGD.ELF, WHY.ELF, PKGD.ELF, PKG.ELF, RPCSRV.ELF, ZENOHD.ELF, PTPD.ELF, RPCQUIC.ELF, MCPD.ELF, SSHD.ELF)"
 
+# The ring-3 ext4 rows (Kconfig FS_EXT4_RING3, tools/gate/ci_check.sh
+# `ext4_ring3_rows`): the ext4 volume they read, made by the host's mke2fs
+# (tools/image/make_ext4_fixture.py for its tree), and the shell volume with
+# EXT4D.ELF on it as partition 1 of an MBR medium whose partition 2 is that
+# volume (`FS_EXT4_RING3_PARTITION`'s default).
+EXT4_FIXTURE := $(OUT_BUILD)/ext4-fixture.img
+$(EXT4_FIXTURE): tools/image/make_ext4_fixture.py
+	@mkdir -p $(OUT_BUILD)
+	python3 tools/image/make_ext4_fixture.py $@
+
+$(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-ext4.img: $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-sh.img $(EXT4D_ELF_AARCH64) \
+		$(EXT4_FIXTURE) tools/image/make_parted_disk.py
+	cp $< $@.vol
+	mcopy -o -i $@.vol $(EXT4D_ELF_AARCH64) ::EXT4D.ELF
+	python3 tools/image/make_parted_disk.py --part1 $(EXT4_FIXTURE) $@.vol $@
+	@rm -f $@.vol
+	@echo "[DISK] aarch64 ext4 medium: $@ (the shell volume with EXT4D.ELF, and partition 2 ext4)"
+
 # See `build/disk-lx.img`.
 $(OUT_BUILD)/disk-aarch64-lx.img: $(OUT_BUILD)/disk-aarch64-drvbase.img $(LXSRV_ELF_AARCH64) $(COMPMGR_ELF_AARCH64) $(LXTEST_KO_AARCH64) $(LX_KO_A64) $(LX_XZTEST)
 	cp $(OUT_BUILD)/disk-aarch64-drvbase.img $@

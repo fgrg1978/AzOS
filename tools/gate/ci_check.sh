@@ -26732,6 +26732,45 @@ tr a-z A-Z < /fat/KB.TXT"
             make "$AZOS_OUT/build/disk-aarch64-sh.img" "$AZOS_OUT/build/image_hashes_aarch64.rs" >/dev/null 2>&1 \
                 && cp -p "$AZOS_OUT/build/disk-aarch64-sh.img" "$AZOS_OUT/build/disk-aarch64-sh.img.pristine"
         fi
+        # NOT RUN YET (arm phase): written without a QEMU run; `CI_EXT4=1` includes
+        # them; until they have passed once on arm they are not part of the gate.
+        # An ext4 volume parsed in ring 3 (Kconfig FS_EXT4_RING3): the medium's
+        # partition 2 holds tools/image/make_ext4_fixture.py's volume, the kernel
+        # mounts it at /ext4 from its `[volume.ext4]` row (kernel/src/boot/ext4.rs)
+        # and EXT4D.ELF serves it; the shell lists, reads, counts and searches it
+        # as any volume (the client cannot tell). The canary's server answers half
+        # of every read and never says the file ended (EXT4D_FEATURES=
+        # short-read-canary, a volume of its own): the mount refuses those reads,
+        # so `wc` counts nothing and the row must not see the file's count.
+        if [ "$ush_isa" = arm ] && [ "${CI_EXT4:-0}" = 1 ]; then
+            ext4_script="#wait \[EXT4D\] (serving|refused|no )
+ls /ext4
+cat /ext4/hello.txt
+wc < /ext4/lines.txt
+rg needle /ext4
+cat /ext4/link"
+            par_drain
+            rm -f "$AZOS_OUT/build/disk-aarch64-ext4.img" "$AZOS_OUT/build/disk-aarch64-ext4.img.pristine"
+            USH_DISK=ext4 USH_FORBID="$RECOVERY_PROMPT_RE|PAGE FAULT|Killing user task|\[EXT4D\] refused" par_row ushell_row "ext4: a ring-3 volume through the VFS ($ush_isa)" "$ush_isa" "$ush_feat,CONFIG_FS_EXT4_RING3=y" PASS \
+                "$ext4_script" 200 \
+                "[EXT4] volume ext4 (partition 2) mounted read-only at /ext4, served by EXT4D.ELF on endpoint.ext4" \
+                "[EXT4D] serving a read-only ext4 volume on endpoint.ext4" \
+                "lost+found" "hello from ext4" "1000 3000 15000" "the needle is here"
+            par_drain
+            ext4_canary_img="$CI_LOG_DIR/ush-ext4-short-read.img"
+            rm -f "$ext4_canary_img" "$AZOS_OUT/build/disk-aarch64-ext4.img"
+            if make EXT4D_FEATURES=short-read-canary "$AZOS_OUT/build/disk-aarch64-ext4.img" "$AZOS_OUT/build/image_hashes_aarch64.rs" \
+                    >"$CI_LOG_DIR/ext4-canary-disk.log" 2>&1; then
+                cp "$AZOS_OUT/build/disk-aarch64-ext4.img" "$ext4_canary_img"
+                USH_IMG="$ext4_canary_img" USH_FORBID="$RECOVERY_PROMPT_RE|PAGE FAULT" par_row ushell_row "ext4: a server's short read canary ($ush_isa)" "$ush_isa" "$ush_feat,CONFIG_FS_EXT4_RING3=y" FAIL \
+                    "$ext4_script" 200 "1000 3000 15000"
+                par_drain
+            else
+                printf "  %-26s" "ext4: a server's short read canary ($ush_isa)..."; bad; echo "      the canary volume did not build (see $CI_LOG_DIR/ext4-canary-disk.log)"
+            fi
+            rm -f "$AZOS_OUT/build/disk-aarch64-ext4.img" "$AZOS_OUT/build/disk-aarch64-ext4.img.pristine"
+            make "$AZOS_OUT/build/image_hashes_aarch64.rs" >/dev/null 2>&1 || true
+        fi
         # The images that ask for more stack than a task gets by default, run:
         # MLSRV.ELF (64 KiB for its main thread, started by the behavior task,
         # steady when it serves the Infer interface) and TOOLBOX.ELF's `ps`

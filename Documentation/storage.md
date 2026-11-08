@@ -1007,17 +1007,58 @@ the errnos of the kernel's form are one mapping (`ERRNO_CODES`). A read moves
 `min(len, READ_MAX)` bytes unless the file ends, and says so; a client refuses
 a shorter answer that does not (`read_checked`, `SHORT_READ`).
 
-A mount served by a ring-3 server (a `FileSystem` that forwards to an endpoint)
-is not built: it lands with its first user, ext4 through `lxsrv`, which first
-needs the Linux VFS emulation in `lxsrv`
-([ext4 and the Linux module set](#ext4-and-the-linux-module-set)).
+A mount served by a ring-3 server is `azos_fs::endpoint::EndpointFs`, a
+`FileSystem` that forwards each operation to the server in this protocol; its
+first user is the read-only ext4 server ([ext4 served from ring 3](#ext4-served-from-ring-3)).
+
+## ext4 served from ring 3
+
+Kconfig `FS_EXT4_RING3` (on for the desktop and server presets) mounts an ext4
+volume read-only. The image is untrusted data, so the kernel never parses it:
+
+| Part | What it does | Where |
+|------|--------------|-------|
+| The parser | Superblock and group descriptors; inodes; files mapped by extents (depth at most 5) or the legacy block map (direct to triple indirect), holes and unwritten extents read as zeros; directories read linearly (an htree's index blocks hold no names); fast and slow symlinks, followed beneath the volume's root (`..` never climbs above it, at most 8 links); 1, 2 and 4 KiB blocks, 128 to 1024-byte inodes; `64bit`; with `metadata_csum` the checksums of the superblock, every descriptor, every inode read, every extent block and every directory leaf. no_std, no alloc, no unsafe; every on-disk number is checked before it addresses anything and a damaged structure is a typed `Error::Corrupt` | `userspace/lib/ext4` |
+| The server | `EXT4D.ELF`: serves `Dir` (the unbadged capability on `endpoint.ext4` is the volume's root) and `Node` (each open file a right derived with the badge of its slot and lent to the opener; 32 slots, the oldest revoked when they run out). Every change is refused `READ_ONLY`. Reads its partition through the io_ring's block entries; caches metadata blocks (16 windows of 4 KiB), not file data | `userspace/services/ext4d` |
+| The mount | `EndpointFs` behind the VFS: names go to the server and records and data come back in the region `MemObj fs.share`, which the kernel creates at boot and grants to the server's row alone; each answer is copied out before it is checked; a read shorter than asked that does not say the file ended is refused (`read_checked`) and the next read seeks again. The calls are made by the kernel task `ext4-call` with capabilities in its own table, so the client that reads the mount never holds one on the server; a client waits at most `FS_EXT4_RING3_REPLY_MS` | `crates/fs/src/endpoint.rs`, `kernel/src/boot/ext4.rs` |
+| The rows | A `[volume.NAME]` row with `format = "ext4"` (it must say `read_only = true` and carries no `aead` or `verity_root`); the built-in topology declares `[volume.ext4]` at `FS_EXT4_RING3_PARTITION` (default 2) and `FS_EXT4_RING3_MOUNT` (default `/ext4`). `EXT4D.ELF`'s row holds `READ` on that partition (`block.part.<n - 1>`), `endpoint.ext4` (`READ`, and `WRITE` with `transfer` to lend) and `fs.share`, nothing else; its seccomp profile lists the block ring, the calls and the region | `crates/core/topology/src/builder.rs`, `crates/core/sched/src/seccomp.rs` |
+
+What is refused at mount, with the reason the server prints (`[EXT4D] refused:`):
+the incompatible features it does not read (`inline_data`, `encrypt`,
+`casefold`, `meta_bg`, `mmp`, `dirdata`, `compression`, a journal device, any
+unknown bit), `bigalloc`, blocks over 4 KiB, a journal that needs recovery (it
+is not replayed), a checksum type other than crc32c, a superblock or
+descriptor whose checksum does not match, and a geometry that does not add
+up. `has_journal` on a clean volume is read as it stands. One ext4 row is
+served per boot (one region, one endpoint).
+
+Limits of this stage, by design: one operation in flight per mount; the mount
+is not page-cached (a backing read cannot fail through `read_at`, so a page
+filled from a refused read would hold zeros), so every read crosses to the
+server, which keeps only metadata; the server reads 2 KiB per block entry (the
+ring's data window); a path through the VFS is at most 72 bytes beneath the
+mount (`INODE_KEY_LEN`); a listed entry's size is a `u32`. The supply-pages
+pager (the server's cached pages are the cache's, no second copy) and writes
+without a journal (block and inode allocation, `write_at`, create, unlink,
+rename, truncate, the orphan list; a volume with a journal still refused for
+writing) are the next stages.
+
+Tests: `tests/host/ext4-tests` (eleven mke2fs-made images, feature sets and
+1, 2 and 4 KiB blocks, read against the fixture tree; refusals; byte flips and mangled
+directory entries over four images; the server's protocol through the
+generated clients), `tests/host/fs-tests` (`endpoint_fs`: the mount behind the
+real VFS), `tests/host/topology-tests` (the row, its authority, the format
+field). The QEMU rows (`ext4: a ring-3 volume through the VFS`, and its
+canary, a server that answers short reads) boot `tools/image/make_ext4_fixture.py`'s
+volume on partition 2.
 
 ## ext4 and the Linux module set
 
 The ext4 module set is the unmodified Linux `fs/ext4` code, built as
-relocatable modules that the module loader lays out and relocates. No Kconfig
-symbol selects them yet, and nothing loads the modules or mounts an ext4
-volume: the imports listed below and the ring-3 filesystem server are not there.
+relocatable modules that the module loader lays out and relocates, for a
+journaled read-write ext4 later. No Kconfig symbol selects them yet, and
+nothing loads the modules: the imports listed below are not there. A read-only
+ext4 volume is served natively ([ext4 served from ring 3](#ext4-served-from-ring-3)).
 
 The tree contains:
 
