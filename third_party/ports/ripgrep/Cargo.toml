@@ -157,7 +157,9 @@ default-features = false
 inherits = "release-lto"
 
 [profile.release]
-debug = 1
+debug = 0
+strip = "symbols"
+panic = "abort"
 
 [profile.release-lto]
 opt-level = 3

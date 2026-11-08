@@ -1424,6 +1424,35 @@ $(RPCQUIC_ELF_X86_64): $(RPCQUIC_SRC) $(X86_64_KCONFIG) $(SDK_KEY_x86_64)
 	cp $(TLSPROBE_TGT)/x86_64-unknown-azos/release/rpcquic $@
 	@echo "[SDK] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
+# The ported programs (third_party/ports: ripgrep `rg`, fd-find `fd`, kibi) on the same
+# vendored tree and target directory as the probe. `make ports` builds the three for the
+# three ISAs. None is on a system volume: std has no `fs` for the azos target yet (see
+# third_party/ports/README.md).
+PORTS_DIR := third_party/ports
+PORTS_BIN_ripgrep := rg
+PORTS_BIN_fd-find := fd
+PORTS_BIN_kibi    := kibi
+PORTS_NAMES       := ripgrep fd-find kibi
+PORTS_SRC          = $(shell find $(PORTS_DIR) -type f) third_party/VENDOR_PIN
+PORTS_ELF_riscv64  = $(foreach p,$(PORTS_NAMES),$(OUT_BUILD)/ports/riscv64/$(PORTS_BIN_$(p)).elf)
+PORTS_ELF_aarch64  = $(foreach p,$(PORTS_NAMES),$(OUT_BUILD)/ports/aarch64$(AARCH64_PG_SUFFIX)/$(PORTS_BIN_$(p)).elf)
+PORTS_ELF_x86_64   = $(foreach p,$(PORTS_NAMES),$(OUT_BUILD)/ports/x86_64/$(PORTS_BIN_$(p)).elf)
+
+# port_rule(port, isa, target triple, output dir, target-dir suffix, expanded kconfig)
+define port_rule
+$(4)/$$(PORTS_BIN_$(1)).elf: $$(PORTS_SRC) $(6) $$(SDK_KEY_$(2))
+	@mkdir -p $$(dir $$@)
+	$$(SDK_CARGO_$(2)) --target-dir $$(TLSPROBE_TGT)$(5) --vendored -- build --release --manifest-path $$(PORTS_DIR)/$(1)/Cargo.toml
+	cp $$(TLSPROBE_TGT)$(5)/$(3)/release/$$(PORTS_BIN_$(1)) $$@
+	@echo "[SDK] Built $$@ ($$$$(wc -c < $$@ | tr -d ' ') bytes)"
+endef
+$(foreach p,$(PORTS_NAMES),$(eval $(call port_rule,$(p),riscv64,riscv64imac-unknown-azos,$(OUT_BUILD)/ports/riscv64,,$(RV_USER_KCONFIG))))
+$(foreach p,$(PORTS_NAMES),$(eval $(call port_rule,$(p),aarch64,aarch64-unknown-azos,$(OUT_BUILD)/ports/aarch64$(AARCH64_PG_SUFFIX),$(AARCH64_PG_SUFFIX),$(AARCH64_USER_KCONFIG))))
+$(foreach p,$(PORTS_NAMES),$(eval $(call port_rule,$(p),x86_64,x86_64-unknown-azos,$(OUT_BUILD)/ports/x86_64,,$(X86_64_KCONFIG))))
+
+.PHONY: ports
+ports: $(PORTS_ELF_riscv64) $(PORTS_ELF_aarch64) $(PORTS_ELF_x86_64)
+
 # The SDK's own test (userspace/tests/sdktest): a std program that runs the user-code
 # harness over the port. Built here; booting it needs an image whose topology
 # row grants it the entropy capability and the `net` op class (nothing ships it

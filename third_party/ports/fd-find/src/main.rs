@@ -312,7 +312,10 @@ fn construct_config(mut opts: Opts) -> Result<Config> {
         read_parent_ignore: !opts.no_ignore_parent,
         read_global_ignore: !(opts.no_ignore || opts.no_global_ignore_file),
         follow_links: opts.follow,
+        #[cfg(any(unix, windows))]
         one_file_system: opts.one_file_system,
+        #[cfg(not(any(unix, windows)))]
+        one_file_system: false,
         null_separator: opts.null_separator,
         quiet: opts.quiet,
         max_depth: opts.max_depth(),

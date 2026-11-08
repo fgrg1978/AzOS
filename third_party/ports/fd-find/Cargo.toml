@@ -85,7 +85,7 @@ features = [
 [dependencies.crossbeam-channel]
 version = "0.5.15"
 
-[dependencies.ctrlc]
+[target.'cfg(any(unix, windows))'.dependencies.ctrlc]
 version = "3.5"
 
 [dependencies.etcetera]

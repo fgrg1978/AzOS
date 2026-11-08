@@ -29,3 +29,29 @@ a source file:
   where the requirements allow (`libc`, `memchr`, `cc`, `find-msvc-tools`).
 
 Changes to sources are in later commits, each with the reason.
+
+## Source changes for `*-unknown-azos`
+
+The target has no `unix` and no `windows` cfg. Each change is the smallest one that
+makes the program build there; `make ports` builds all three for the three ISAs.
+
+- ripgrep: none (it builds as published; `memmap2` falls back to its stub). The
+  release profile has `debug = 0`, `strip` and `panic = "abort"` instead of `debug = 1`.
+- fd-find: `ctrlc` (signal handlers) is a dependency of `cfg(any(unix, windows))` and
+  its one call in `src/walk.rs` has the same cfg; the device-type probes in
+  `src/filesystem.rs` (`is_block_device` and the other three) answer `false` on every
+  target that is neither unix nor redox, where upstream had only a windows arm;
+  `one_file_system` is `false` where the flag does not exist (`src/main.rs`).
+- kibi: `src/azos.rs`, the terminal backend selected by `target_os = "azos"`
+  (`src/lib.rs`), shaped like `wasi.rs`. A program reads fd 0, the handle its spawner
+  passed, and writes the console. The terminal server switches cooked and raw mode
+  only for its one client, the shell, so `enable_raw_mode` returns `Unsupported` and
+  the editor stops with that error instead of running on line-buffered input.
+
+## Not yet usable on a volume
+
+The three build, but none can do its job on AzOS until the SDK `std` has a
+filesystem: `sdk/std/sys/` has no `fs`, so `std::fs` (`File::open`, `read_dir`,
+`metadata`) is the `unsupported` implementation and every call fails at run time.
+ripgrep and fd need it to read a tree; kibi needs it to open a file and, in
+addition, a raw terminal mode for a child program.

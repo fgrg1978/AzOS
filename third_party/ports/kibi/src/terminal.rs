@@ -32,7 +32,7 @@ fn read_value_until<T: std::str::FromStr>(stop_byte: u8) -> Result<T, Error> {
     std::str::from_utf8(&buf).or(Err(Error::CursorPosition))?.parse().or(Err(Error::CursorPosition))
 }
 
-#[cfg_attr(any(windows, target_os = "wasi"), expect(clippy::trivially_copy_pass_by_ref))]
+#[cfg_attr(any(windows, target_os = "wasi", target_os = "azos"), expect(clippy::trivially_copy_pass_by_ref))]
 pub fn restore_terminal(orig_term_mode: &sys::TermMode) -> io::Result<()> {
     // Restore the original terminal mode.
     sys::set_term_mode(orig_term_mode)?;
