@@ -117,9 +117,6 @@ By default, ripgrep will respect your .gitignore and automatically skip hidden
 files/directories and binary files.
 """
 
-[features]
-pcre2 = ["grep/pcre2"]
-
 [[bin]]
 name = "rg"
 path = "crates/core/main.rs"
@@ -172,5 +169,10 @@ overflow-checks = false
 incremental = false
 inherits = "release"
 strip = "symbols"
+
+# The facade crate without its optional PCRE2 engine (a C library): the same
+# sources, no `pcre2` feature (third_party/patches/grep).
+[patch.crates-io]
+grep = { path = "../../patches/grep" }
 
 [workspace]

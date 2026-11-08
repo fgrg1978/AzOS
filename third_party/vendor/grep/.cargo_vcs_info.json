@@ -1,6 +1,0 @@
-{
-  "git": {
-    "sha1": "2ea06d69aaff19d53a0260f271a30cc28a39f1de"
-  },
-  "path_in_vcs": "crates/grep"
-}

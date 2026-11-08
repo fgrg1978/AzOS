@@ -11,8 +11,8 @@
 
 [package]
 edition = "2024"
-name = "pcre2"
-version = "0.2.11"
+name = "grep"
+version = "0.4.1"
 authors = ["Andrew Gallant <jamslam@gmail.com>"]
 build = false
 autolib = false
@@ -20,30 +20,41 @@ autobins = false
 autoexamples = false
 autotests = false
 autobenches = false
-description = "High level wrapper library for PCRE2."
-homepage = "https://github.com/BurntSushi/rust-pcre2"
-documentation = "https://docs.rs/pcre2"
-readme = "README.md"
+description = """
+Fast line oriented regex searching as a library.
+"""
+homepage = "https://github.com/BurntSushi/ripgrep/tree/master/crates/grep"
+documentation = "https://docs.rs/grep"
 keywords = [
-    "pcre",
-    "pcre2",
     "regex",
-    "jit",
-    "perl",
+    "grep",
+    "egrep",
+    "search",
+    "pattern",
 ]
-categories = ["text-processing"]
 license = "Unlicense OR MIT"
-repository = "https://github.com/BurntSushi/rust-pcre2"
+repository = "https://github.com/BurntSushi/ripgrep/tree/master/crates/grep"
+
+[features]
+avx-accel = []
+simd-accel = []
 
 [lib]
-name = "pcre2"
+name = "grep"
 path = "src/lib.rs"
 
-[dependencies.libc]
-version = "0.2.146"
+[dependencies.grep-cli]
+version = "0.1.12"
 
-[dependencies.log]
-version = "0.4.19"
+[dependencies.grep-matcher]
+version = "0.1.8"
 
-[dependencies.pcre2-sys]
-version = "0.2.10"
+[dependencies.grep-printer]
+version = "0.3.1"
+
+[dependencies.grep-regex]
+version = "0.1.14"
+
+[dependencies.grep-searcher]
+version = "0.1.16"
+

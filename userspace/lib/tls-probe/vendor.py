@@ -18,9 +18,8 @@ because -Zbuild-std resolves them through the same source replacement
 a toolchain bump is a `regen`.
 
 Pruning: cargo vendors every platform, and the crates of other platforms are most of the
-bytes: windows-*, winapi*, the Apple ones (objc2*, block2, dispatch2), linux-raw-sys (the
-raw-syscall backend of rustix) and pcre2-sys (the C library behind ripgrep's optional
-pcre2 feature, which is off). None is built for an azos target or the host tests, so the tree keeps
+bytes: windows-*, winapi*, the Apple ones (objc2*, block2, dispatch2) and linux-raw-sys (the
+raw-syscall backend of rustix). None is built for an azos target or the host tests, so the tree keeps
 their manifest and licences and replaces the sources with a stub whose library
 is a `compile_error!`: a build that does reach one fails loudly instead of
 silently using a hollow crate. The `package` checksum in each
@@ -44,7 +43,7 @@ PROBE = os.path.join(ROOT, "userspace", "lib", "tls-probe")
 PORTS = os.path.join(ROOT, "third_party", "ports")
 MANIFESTS = [os.path.join(PROBE, "Cargo.toml")] + [os.path.join(PORTS, p, "Cargo.toml") for p in ("ripgrep", "fd-find", "kibi")]
 VENDOR_CONFIG = ["--config", 'source.crates-io.replace-with="azos-vendor"', "--config", f'source.azos-vendor.directory="{VENDOR}"']
-PRUNE = re.compile(r"^(windows[-_]|winapi|objc2|block2$|dispatch2$|linux-raw-sys$|pcre2-sys$)")
+PRUNE = re.compile(r"^(windows[-_]|winapi|objc2|block2$|dispatch2$|linux-raw-sys$)")
 KEEP = re.compile(r"^(Cargo\.toml|Cargo\.toml\.orig|LICEN[CS]E.*|license.*|COPYING.*)$")
 
 HEADER = """# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only

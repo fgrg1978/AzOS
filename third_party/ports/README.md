@@ -35,7 +35,9 @@ Changes to sources are in later commits, each with the reason.
 The target has no `unix` and no `windows` cfg. Each change is the smallest one that
 makes the program build there; `make ports` builds all three for the three ISAs.
 
-- ripgrep: none (it builds as published; `memmap2` falls back to its stub). The
+- ripgrep: no source change (it builds as published; `memmap2` falls back to its stub). The `pcre2` feature
+  is gone from its manifest and `grep` is taken from `third_party/patches/grep` (the same crate
+  without the optional PCRE2 engine), so no C library is in the lock or the vendor tree. The
   release profile has `debug = 0`, `strip` and `panic = "abort"` instead of `debug = 1`.
 - fd-find: `ctrlc` (signal handlers) is a dependency of `cfg(any(unix, windows))` and
   its one call in `src/walk.rs` has the same cfg; the device-type probes in
