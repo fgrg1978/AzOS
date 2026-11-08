@@ -41,7 +41,9 @@ use core::arch::global_asm;
 //                              FP/SIMD, SVE and SME not trapped to
 //                              EL2 (B2-07 — see comment below)
 //   HCRX_EL2 = 0 | TCR2En      where FEAT_HCX: GCSEn 0 (no EL1&0 GCS);
-//                              TCR2En only with A64_POE on an S1POE core
+//                              TCR2En only with A64_POE on an S1POE core or
+//                              A64_S1PIE on an S1PIE core, and then
+//                              TCR2_EL1 = 0 (UNKNOWN out of reset)
 //   CNTHCTL_EL2 EL1PCEN+PCTEN  EL1 may use the physical counter/timer (the
 //                              kernel itself runs on the VIRTUAL ones, which
 //                              EL1 reaches without any grant; kept so a
@@ -158,8 +160,11 @@ _azos_drop_to_el1:
     // GCSEn (bit 22: guarded control stacks at EL1 and EL0) and TCR2En (bit
     // 14: TCR2_EL1, itself UNKNOWN out of reset, takes effect). So it is
     // written whole on every core that has it, as Linux's `__init_el2_hcrx`
-    // does: 0, plus TCR2En with A64_POE on a core with S1POE (POR_EL1's grant
-    // is the FGT block below; a missing grant traps the first write to EL2).
+    // does: 0, plus TCR2En with A64_POE on a core with S1POE or A64_S1PIE on
+    // one with S1PIE (POR_EL1's and the PIR registers' grants are the FGT
+    // block below; a missing grant traps the first write to EL2). With TCR2En,
+    // TCR2_EL1 is zeroed here, so the MMU comes up under the direct
+    // permissions until the kernel's own composed write (`mmu::pie`).
     // GCSEn stays 0: the kernel runs no GCS (cpu/cfi.rs, "GCS"), so a
     // GCSCR_EL1 left set by reset or firmware never takes effect. SCR_EL3.HXEn,
     // TCR2En and PIEn are the firmware's.
@@ -174,6 +179,16 @@ _azos_drop_to_el1:
     mov     x11, #{tcr2en}
 7:
 .endif
+.if {pie}
+    mrs     x10, S3_0_C0_C7_3       // ID_AA64MMFR3_EL1
+    ubfx    x10, x10, #8, #4        // S1PIE
+    cbz     x10, 5f
+    mov     x11, #{tcr2en}
+5:
+.endif
+    cbz     x11, 4f
+    msr     S3_0_C2_C0_3, xzr       // TCR2_EL1
+4:
     msr     S3_4_C1_C2_2, x11       // HCRX_EL2
 8:
 
@@ -184,7 +199,8 @@ _azos_drop_to_el1:
     // `__init_el2_fgt`, they are written whole: 0 (no plain trap; every n-bit
     // traps a register the kernel never touches) plus the n-bits the kernel
     // does use, `ptwin`'s HFGXTR_NPOR_EL1 (nPOR_EL1, bit 60) with A64_POE on a
-    // core with S1POE. SCR_EL3.FGTEn is the firmware's.
+    // core with S1POE and `pie`'s nPIR_EL1 (58) and nPIRE0_EL1 (57) with
+    // A64_S1PIE on a core with S1PIE. SCR_EL3.FGTEn is the firmware's.
     mrs     x10, ID_AA64MMFR0_EL1
     ubfx    x10, x10, #56, #4       // FGT
     cbz     x10, 9f
@@ -195,6 +211,13 @@ _azos_drop_to_el1:
     cbz     x10, 6f
     movz    x11, #{npor_hw}, lsl #48 // nPOR_EL1
 6:
+.endif
+.if {pie}
+    mrs     x10, S3_0_C0_C7_3       // ID_AA64MMFR3_EL1
+    ubfx    x10, x10, #8, #4        // S1PIE
+    cbz     x10, 3f
+    orr     x11, x11, #{npir}       // nPIR_EL1 | nPIRE0_EL1
+3:
 .endif
     msr     S3_4_C1_C1_4, x11       // HFGRTR_EL2
     msr     S3_4_C1_C1_5, x11       // HFGWTR_EL2
@@ -272,6 +295,8 @@ _azos_drop_to_el1:
     hv = const cfg!(all(feature = "hv", target_os = "none")) as u8,
     hyp_mon = const cfg!(all(feature = "hyp-monitor", target_os = "none")) as u8,
     poe = const (!azos_limits::A64_POE_NEVER) as u8,
+    pie = const (!azos_limits::A64_S1PIE_NEVER) as u8,
+    npir = const crate::mmu::pie::HFGXTR_NPIR_EL1 | crate::mmu::pie::HFGXTR_NPIRE0_EL1,
     npor_hw = const (crate::mmu::ptwin::HFGXTR_NPOR_EL1 >> 48) as u16,
     tcr2en = const crate::mmu::ptwin::HCRX_TCR2EN,
 );
@@ -288,6 +313,13 @@ const _: () = assert!(!(cfg!(feature = "hv") && cfg!(feature = "hyp-monitor")));
 // never in an image with it (Kconfig: A64_POE_PROBE / _REQUIRE depend on !HV).
 #[cfg(target_arch = "aarch64")]
 const _: () = assert!(!(cfg!(all(feature = "hv", target_os = "none")) && !azos_limits::A64_POE_NEVER));
+
+// Nor TCR2_EL1 and the PIR registers, and the split monitor zeroes TCR2_EL1:
+// A64_S1PIE is in neither image (Kconfig: depends on !HV && !HYP_MONITOR).
+#[cfg(target_arch = "aarch64")]
+const _: () = assert!(
+    !((cfg!(feature = "hv") || cfg!(feature = "hyp-monitor")) && cfg!(target_os = "none") && !azos_limits::A64_S1PIE_NEVER)
+);
 
 /// Drop the calling thread from EL2 to EL1.
 ///

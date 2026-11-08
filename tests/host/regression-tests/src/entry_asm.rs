@@ -121,8 +121,12 @@ fn the_el2_drop_writes_the_fine_grained_traps_whole() {
 /// arch/arm64/tools/sysreg `HCRX_EL2`), which would let a GCSCR_EL1 left set
 /// by reset or firmware turn on a guarded control stack the kernel never set
 /// up, so the next `bl` would push through an UNKNOWN GCSPR_EL1. The value
-/// is 0 or `TCR2En` and nothing else. Canaries: move the block back inside
-/// `.if {poe}` (first assert), or OR in `#(1 << 22)` (second).
+/// is 0 or `TCR2En` and nothing else (A64_POE and A64_S1PIE both ask for
+/// TCR2En), and where it is TCR2En, `TCR2_EL1` (S3_0_C2_C0_3, UNKNOWN out of
+/// reset) is zeroed first, so no PIE or POE bit of its reset value takes
+/// effect at the first MMU-on. Canaries: move the block back inside
+/// `.if {poe}` (first assert), OR in `#(1 << 22)` (second), or drop the
+/// `TCR2_EL1` zeroing (third).
 #[test]
 fn the_el2_drop_writes_hcrx_whole_without_gcsen() {
     let drop = between("arch/aarch64/src/mmu/boot.rs", "//", "_azos_drop_to_el1:", "eret");
@@ -130,9 +134,13 @@ fn the_el2_drop_writes_hcrx_whole_without_gcsen() {
     let gated = drop[..w].iter().filter(|l| l.starts_with(".if")).count() > drop[..w].iter().filter(|l| *l == ".endif").count();
     assert!(!gated, "HCRX_EL2 is written only inside an `.if` block");
     let hcx = at(&drop, "ubfx    x10, x10, #40, #4");
-    let set: Vec<&String> = drop[hcx..w].iter().filter(|l| l.contains("x11")).collect();
+    let writes_x11 = |l: &&String| l.split_whitespace().nth(1) == Some("x11,") && !l.starts_with("cb") && !l.starts_with("msr");
+    let set: Vec<&String> = drop[hcx..w].iter().filter(writes_x11).collect();
     assert!(set.iter().all(|l| *l == "mov     x11, #0" || *l == "mov     x11, #{tcr2en}"),
         "HCRX_EL2 takes more than 0 or TCR2En: {set:?}");
+    let zero = drop[hcx..w].iter().position(|l| l == "msr     S3_0_C2_C0_3, xzr").map(|i| i + hcx);
+    let zero = zero.expect("TCR2_EL1 is not zeroed before TCR2En takes effect");
+    assert_eq!(drop[zero - 1], "cbz     x11, 4f", "TCR2_EL1 is zeroed on a core where it may not exist");
     assert!(!drop.iter().any(|l| l.starts_with("mrs") && l.ends_with("S3_4_C1_C2_2")), "HCRX_EL2 is read back and ORed into its reset value");
 }
 
