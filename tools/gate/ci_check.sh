@@ -5577,12 +5577,12 @@ seclog_row() { # seclog_row <riscv64|aarch64> <pass|tamper>
     if otae2e_trap "$log"; then bad; echo "      the boot trapped"; echo "      log kept: $log"; return; fi
     files="$work/export"; mkdir -p "$files"
     for n in 0 1 2 3 4 5 6 7 8 9 A B C D E F; do mtype -i "$disk" "::KLOG$n.TXT" 2>/dev/null | tr -d '\r' >"$files/KLOG$n.TXT"; done
-    if ! grep -aqE '^[0-9]+ [0-9]+ [0-9]+ I @security v1 [0-9]+ [0-9]+ 0 1 [0-9]+ [0-9]+ [0-9a-f]+ event cap-denial ' "$files"/KLOG*.TXT; then
+    if ! grep -aqE '^[0-9]+ [0-9]+ [0-9]+ I @security v2 [0-9]+ [0-9]+ 0 1 [0-9]+ [0-9]+ [0-9a-f]+ event cap-denial ' "$files"/KLOG*.TXT; then
         bad; echo "      the files hold no @security capability denial (log kept: $log, volume: $disk)"; return
     fi
     if [ "$mode" = tamper ]; then
-        local f; f="$(grep -alE ' @security v1 [0-9]+ [0-9]+ 0 1 ' "$files"/KLOG*.TXT | sed -n 1p)"
-        awk '!done && / @security v1 [0-9]+ [0-9]+ 0 1 / { n = split($0, t, " "); h = t[13]; c = substr(h, 1, 1); t[13] = (c == "0" ? "1" : "0") substr(h, 2); $0 = t[1]; for (i = 2; i <= n; i++) $0 = $0 " " t[i]; done = 1 } { print }' "$f" >"$f.t" && mv "$f.t" "$f"
+        local f; f="$(grep -alE ' @security v2 [0-9]+ [0-9]+ 0 1 ' "$files"/KLOG*.TXT | sed -n 1p)"
+        awk '!done && / @security v2 [0-9]+ [0-9]+ 0 1 / { n = split($0, t, " "); h = t[13]; c = substr(h, 1, 1); t[13] = (c == "0" ? "1" : "0") substr(h, 2); $0 = t[1]; for (i = 2; i <= n; i++) $0 = $0 " " t[i]; done = 1 } { print }' "$f" >"$f.t" && mv "$f.t" "$f"
     fi
     out="$(cd "$REPO_ROOT" && make -s seclog-verify SECLOG_EXPORT="$files" SECLOG_WITNESS="$log" 2>&1)"
     if [ "$mode" = pass ]; then
@@ -14232,6 +14232,31 @@ else
 fi
 fi; ci_row_end
 
+# The decision layer's copies to the sealed security log's ring (decisions-
+# tests `seclog`): built from a copy of the gate's host configuration with
+# SEC_LOG on, so the ring exists; the `seclog_` tests read it back after
+# `record` and check the rate cap. Canary: `canary-no-security-copy` (nothing
+# is copied) must turn them red.
+if ci_row_begin "decisions(seclog)"; then
+printf "  %-26s" "decisions(seclog)..."
+ds_cfg="$CI_LOG_DIR/decisions-seclog.config"; mkdir -p "$CI_LOG_DIR"
+cp "${KCONFIG_CONFIG:-$REPO_ROOT/.config}" "$ds_cfg" 2>/dev/null; printf 'CONFIG_KLOG=y\nCONFIG_SEC_LOG=y\n' >>"$ds_cfg"
+if ! (cd "$REPO_ROOT" && KCONFIG_CONFIG="$ds_cfg" python3 -m olddefconfig >/dev/null 2>&1) || ! grep -q '^CONFIG_SEC_LOG=y$' "$ds_cfg"; then
+    bad; echo "      $ds_cfg: olddefconfig lost SEC_LOG"
+else
+    ds_run() { (cd "${REPO_ROOT}/tests/host/decisions-tests" && KCONFIG_CONFIG="$ds_cfg" CARGO_TARGET_DIR="$AZOS_OUT/target/host-canary/decisions-seclog" "$CARGO" test --release --features "seclog$1" -- seclog_ 2>&1); }
+    if ds_out=$(ds_run "") && echo "$ds_out" | qgrep -qE "^test result: ok\. 3 passed"; then
+        if ds_c=$(ds_run ",canary-no-security-copy"); echo "$ds_c" | qgrep -qE "^test result: FAILED\. 0 passed; 3 failed"; then
+            ok
+        else
+            bad; echo "      the canary (nothing copied) did not turn both seclog_ tests red:"; echo "$ds_c" | grep -m3 "^test result" | sed 's/^/      /'
+        fi
+    else
+        bad; echo "$ds_out" | grep -m5 -E "^error|panicked at|FAILED|^test result" | sed 's/^/      /'; ci_debug_dump "decisions-seclog" "$ds_out"
+    fi
+fi
+fi; ci_row_end
+
 # Thermal framework: heat never lowers a clock below the real-time deadline
 # floor or the WCET safety floor (`Thermal::limit`). The canary removes the
 # floor from the result and exactly the floor tests must fail. Same three
@@ -19041,6 +19066,75 @@ CPU 5 lacks hwcap bits"
     }
     par "x86_64: TPM over CRB (q35 tpm-crb)" x86_tpm_crb_row "x86_64: TPM over CRB (q35 tpm-crb)" PASS
     par "x86_64: TPM over CRB canary (no START)" x86_tpm_crb_row "x86_64: TPM over CRB canary (no START)" FAIL
+    # The sealed security log on the TPM (kernel/src/boot/seclog.rs,
+    # kernel/src/boot/tpm.rs `install_seclog`): a kernel with SEC_LOG and a seal
+    # every second boots twice against one swtpm state on q35's tpm-crb. Boot 1
+    # defines the anchor (extend) and counter indexes and seals to them; boot 2
+    # must start from what boot 1 left: its anchor is boot 1's last seal's, its
+    # counter boot 1's last counter, and its seals are tpm-nv, not advisory.
+    # `fresh` (the canary) gives boot 2 a TPM state of its own: the anchor is
+    # zero and the counter 0, and the row must go red on the link it checks.
+    # This also holds, on swtpm, what the docs rely on: a counter's first
+    # increment starts above the TPM's highest counter. Without swtpm the row
+    # SKIPs (no download here). First boot: not run when this was written.
+    x86_seclog_tpm_row() { # x86_seclog_tpm_row <label> <same|fresh>
+        local label="$1" mode="$2" why=""
+        if ! command -v swtpm >/dev/null 2>&1; then
+            SKIP=$((SKIP + 1)); printf "  %-26s%s\n" "${label}..." "SKIP (no swtpm on this host: QEMU's tpm-crb needs it)"; return 0
+        fi
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local tag; tag="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-')"
+        local kimg="$CI_LOG_DIR/kernel-x86-${tag}" def="$CI_LOG_DIR/x86-${tag}.defconfig" t1="$CI_LOG_DIR/swtpm1.$$.${tag}" t2
+        { cat config/defconfigs/robot-sbc-x86_64-dev+qemu+linux+pci.config; echo 'CONFIG_SEC_LOG=y'; echo 'CONFIG_SEC_LOG_SEAL_S=1'; } >"$def"
+        make x86_64 X86_64_DEFCONFIG="$def" X86_64_KCONFIG="$AZOS_OUT/build/x86_64-seclog-${tag}.config" \
+            X86_64_TARGET_DIR="$AZOS_OUT/target/x86_64-seclog" X86_64_IMG="$kimg" >/dev/null 2>&1 \
+            && builtin printf '\n' >"$kimg.features" \
+            || { bad; echo "      make x86_64 (+ SEC_LOG, a seal a second) did not build"; return; }
+        grep -q '^CONFIG_SEC_LOG_SEAL_TPM_NV=y$' "$AZOS_OUT/build/x86_64-seclog-${tag}.config" \
+            || { bad; echo "      the configuration does not seal to the TPM"; return; }
+        t2="$t1"; [ "$mode" = fresh ] && t2="$CI_LOG_DIR/swtpm2.$$.${tag}"
+        rm -rf "$t1" "$t2"; mkdir -p "$t1" "$t2"
+        local n
+        for n in 1 2; do
+            local tdir="$t1"; [ "$n" = 2 ] && tdir="$t2"
+            swtpm socket --tpm2 --tpmstate dir="$tdir" --ctrl type=unixio,path="$tdir/sock" --terminate >"$tdir/swtpm.log" 2>&1 &
+            local spid=$! i=0
+            while [ ! -S "$tdir/sock" ] && [ "$i" -lt 20 ] && kill -0 "$spid" 2>/dev/null; do i=$((i + 1)); sleep 0.5; done
+            if [ ! -S "$tdir/sock" ]; then
+                kill "$spid" 2>/dev/null; wait "$spid" 2>/dev/null; bad; echo "      swtpm did not open its socket"; return
+            fi
+            par_ready
+            X86_MACHINE=q35 x86_qemu "$kimg" "$CI_LOG_DIR/x86-${tag}-$n.log" 90 'seclog: seal 3 through|KERNEL PANIC' -smp 1 \
+                -chardev socket,id=chrtpm,path="$tdir/sock" -tpmdev emulator,id=tpm0,chardev=chrtpm -device tpm-crb,tpmdev=tpm0 \
+                || { kill "$spid" 2>/dev/null; wait "$spid" 2>/dev/null; return; }
+            kill "$spid" 2>/dev/null; wait "$spid" 2>/dev/null
+        done
+        local l1="$CI_LOG_DIR/x86-${tag}-1.log" l2="$CI_LOG_DIR/x86-${tag}-2.log" last a2 c1 c2
+        for f in "$l1" "$l2"; do
+            grep -aqE 'KERNEL PANIC|\[X86-TRAP\]' "$f" && why="$f: $(grep -aE 'KERNEL PANIC|\[X86-TRAP\]' "$f" | sed -n 1p)"
+            [ -z "$why" ] && ! grep -aqE '^seclog: seal [0-9]+ through [0-9]+ counter [1-9][0-9]* nonce [0-9a-f]{16} head [0-9a-f]{64} anchor [0-9a-f]{64} tpm-nv' "$f" \
+                && why="$f: no seal the TPM took"
+        done
+        if [ -z "$why" ]; then
+            last="$(tr -d '\r' <"$l1" | grep -aE '^seclog: seal ' | sed -n '$p')"
+            a2="$(tr -d '\r' <"$l2" | grep -aoE '\[SECLOG\] sealing to tpm-nv every [0-9]+ s, boot [0-9a-f]{16}, anchor [0-9a-f]{64}, counter [0-9]+' | sed -n 1p)"
+            c1="$(echo "$last" | awk '{print $7}')"; c2="$(echo "$a2" | awk '{print $NF}')"
+            [ -n "$a2" ] || why="boot 2 did not seal to the TPM"
+            [ -z "$why" ] && [ "$(echo "$a2" | awk '{print $(NF-2)}' | tr -d ,)" != "$(echo "$last" | awk '{print $13}')" ] \
+                && why="boot 2's anchor is not boot 1's last seal"
+            [ -z "$why" ] && [ "$c2" != "$c1" ] && why="boot 2's counter ($c2) is not boot 1's last ($c1)"
+        fi
+        rm -rf "$t1" "$t2" "$kimg" "$kimg.features"
+        if [ "$mode" = fresh ]; then
+            if [ -z "$why" ]; then bad; echo "      boot 2 on a TPM of its own linked to boot 1: the row does not discriminate"; return; fi
+            ok; echo "      canary failed as it must: $why"; rm -f "$l1" "$l2"; return
+        fi
+        if [ -z "$why" ]; then ok; rm -f "$l1" "$l2"; return; fi
+        bad; echo "      $why"; echo "      logs kept: $l1 $l2"
+    }
+    par "x86_64: sealed security log on the TPM" x86_seclog_tpm_row "x86_64: sealed security log on the TPM" same
+    par "x86_64: sealed security log TPM link canary" x86_seclog_tpm_row "x86_64: sealed security log TPM link canary" fresh
     # The TSC watchdog (Kconfig X86_TSC_WATCHDOG, arch/x86_64/src/
     # timer.rs `watch`, kernel/src/entry/x86_64/ext/tsc_watchdog.rs) on QEMU q35,
     # the machine with an HPET to watch the TSC against (microvm has none, so

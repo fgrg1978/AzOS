@@ -1,0 +1,85 @@
+// SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+// SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+//! The decision layer's copies to the sealed security log's ring (Kconfig
+//! `SEC_LOG`): what `record` writes there, what the per-Domain bucket and the
+//! rate cap hold back, and that they are counted. Run with a configuration
+//! with `SEC_LOG` on (the gate row `decisions(seclog)`).
+//!
+//! **Canary.** `canary-no-security-copy` (nothing is copied): every test red.
+
+use azos_decision::{Rule, SecClass, Verdict};
+use azos_seclog::{kind, Event};
+
+/// The events in the security ring from sequence number `from`: `(class,
+/// rule, verdict, subject)`, and the ring's head.
+fn events(from: u64) -> (Vec<(u8, u8, u8, u32)>, u64) {
+    let ring = azos_records::reader(azos_records::SOURCE_SECURITY).expect("a security ring: SEC_LOG on");
+    let (mut c, mut env, mut p) = (from, azos_records::record::Envelope::default(), [0u8; azos_seclog::PAYLOAD]);
+    let mut v = Vec::new();
+    while ring.read(&mut c, &mut env, &mut p) == azos_records::record::Read::Record {
+        if env.kind == kind::EVENT {
+            let e = Event::decode(&p).unwrap();
+            v.push((e.class as u8, e.rule, e.verdict, e.subject));
+        }
+    }
+    (v, ring.head())
+}
+
+fn head() -> u64 {
+    azos_records::reader(azos_records::SOURCE_SECURITY).map_or(0, |r| r.head())
+}
+
+static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[test]
+fn seclog_a_security_rules_record_is_copied_with_its_class() {
+    let _g = ONE.lock().unwrap_or_else(|e| e.into_inner());
+    assert!(azos_records::SECURITY, "run with SEC_LOG on");
+    let from = head();
+    azos_decision::record(Rule::AudioCapture, Verdict::Admit, 7, [1, 2, 3]);
+    azos_decision::record(Rule::Placement, Verdict::Place, 8, [0, 0, 0]);
+    let (ev, _) = events(from);
+    assert_eq!(ev, vec![(SecClass::Microphone as u8, Rule::AudioCapture as u8, Verdict::Admit as u8, 7)], "the placement is not a security record");
+}
+
+/// More copies of one class a task can raise in a loop than its share of the
+/// cap: the rest are held back and counted, and a microphone's record still
+/// goes in.
+#[test]
+fn seclog_the_rate_cap_holds_a_flood_back_and_counts_it() {
+    let _g = ONE.lock().unwrap_or_else(|e| e.into_inner());
+    let from = head();
+    let (_, held0) = azos_decision::security_tally();
+    // A denial of a rule that is not paced by the durable bucket: Neverallow.
+    for i in 0..(azos_limits::SEC_LOG_PER_S as u32) {
+        azos_decision::record(Rule::Neverallow, Verdict::Refuse, 100 + i, [0, 0, 0]);
+    }
+    azos_decision::record(Rule::CamCapture, Verdict::Admit, 9, [0, 0, 0]);
+    let (ev, _) = events(from);
+    let denials = ev.iter().filter(|e| e.0 == SecClass::CapDenial as u8).count() as u32;
+    assert!(denials <= azos_limits::SEC_LOG_PER_S as u32 / 4, "{denials} denials copied");
+    assert!(ev.contains(&(SecClass::Camera as u8, Rule::CamCapture as u8, Verdict::Admit as u8, 9)), "{ev:?}");
+    let (copied, held) = azos_decision::security_tally();
+    assert!(held[SecClass::CapDenial as usize] > held0[SecClass::CapDenial as usize]);
+    assert!(copied[SecClass::Camera as usize] >= 1);
+}
+
+/// A flood of one Domain's capability denials: the per-Domain bucket of the
+/// durable receipts admits its burst and holds the rest back; what it holds
+/// back is not copied, and its `RefusalLimited` report is (class `limited`).
+#[test]
+fn seclog_what_the_durable_bucket_holds_back_is_its_report() {
+    let _g = ONE.lock().unwrap_or_else(|e| e.into_inner());
+    azos_decision::set_durable_sink(|_| {});
+    let from = head();
+    for _ in 0..(azos_limits::DECISION_DENY_DURABLE_BURST as u32 + 4) {
+        azos_decision::record(Rule::CapDenial, Verdict::Refuse, 4242, [0, 0, 0]);
+    }
+    let (ev, _) = events(from);
+    let denials = ev.iter().filter(|e| e.0 == SecClass::CapDenial as u8 && e.3 == 4242).count() as u64;
+    assert!(denials <= azos_limits::DECISION_DENY_DURABLE_BURST as u64, "{denials} copied: the held ones too");
+    assert!(
+        ev.iter().any(|e| e.0 == SecClass::Limited as u8 && e.1 == Rule::RefusalLimited as u8 && e.3 == 4242),
+        "the bucket's report of what it held back: {ev:?}"
+    );
+}

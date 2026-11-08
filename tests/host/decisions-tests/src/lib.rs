@@ -822,6 +822,9 @@ mod tests {
 /// **Canary.** Rename a field of the `login` rule in `crates/core/decision`
 /// (`attempt` to `tries`): the gate rows' markers stop matching, and this
 /// test is red first.
+#[cfg(all(test, feature = "seclog"))]
+mod seclog;
+
 #[cfg(test)]
 mod login_lines {
     use azos_decision::{ProvenanceRecord, Rule, Verdict};

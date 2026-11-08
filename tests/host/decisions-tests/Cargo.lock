@@ -39,7 +39,9 @@ dependencies = [
  "azos_decision",
  "azos_decisions",
  "azos_idl",
+ "azos_limits",
  "azos_records",
+ "azos_seclog",
 ]
 
 [[package]]

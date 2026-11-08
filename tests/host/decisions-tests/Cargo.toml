@@ -15,6 +15,8 @@ azos_decisions = { path = "../../../userspace/lib/decisions" }
 azos_decision = { path = "../../../crates/core/decision", features = ["durable"] }
 # The substrate the ring is (read back by `ring_` tests).
 azos_records = { path = "../../../crates/core/records", optional = true }
+azos_seclog = { path = "../../../crates/core/seclog", optional = true, default-features = false }
+azos_limits = { path = "../../../crates/core/limits", optional = true }
 
 [features]
 # The ring too (Kconfig DECISION_RECORDS_DEV, the gate's dev cell): the gate
@@ -22,6 +24,10 @@ azos_records = { path = "../../../crates/core/records", optional = true }
 # records make the durable ids sparse.
 ring = ["azos_decision/on", "dep:azos_records"]
 mem-kill-unrecorded-canary = ["azos_decision/mem-kill-unrecorded-canary"]
+# The security ring's copies (gate row `decisions(seclog)`, run with a
+# configuration with SEC_LOG on): the `seclog_` tests.
+seclog = ["dep:azos_records", "dep:azos_seclog", "dep:azos_limits"]
+canary-no-security-copy = ["azos_decision/canary-no-security-copy"]
 
 [profile.release]
 overflow-checks = true
