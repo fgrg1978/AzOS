@@ -47,6 +47,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("buddy-mer
 pt-pool = []
 hyp-monitor = ["pt-pool"]
 pt-protection = ["pt-pool"]
+pt-protection-soft = ["pt-protection"]
 # `cfg(feature = "budget-racy-charge-canary")` in the pulled-in `budget.rs`
 # (the Domain ledgers of the subtree policy's Domain table).
 budget-racy-charge-canary = []
