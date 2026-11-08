@@ -1049,6 +1049,41 @@ fn a_refused_drivetrain_effect_publishes_nothing() {
     assert_eq!(azos_robot::shim_take_motor_cmds(), vec![Some((0, 0))]);
 }
 
+/// `(wheel, landed)` of every op the right-refusing gate saw run.
+static LANDED: Mutex<Vec<(u32, bool)>> = Mutex::new(Vec::new());
+
+/// The real gate's order for a refusal and a failed op: the right wheel's
+/// motion is refused (its record does not fit); an op that ran and did not
+/// land is compensated, which would put the kernel's hold on its wheel.
+fn refuse_right_gate(e: &MotorEffect, op: &mut dyn FnMut() -> bool) -> bool {
+    if e.wheel == 1 && !e.toward_safe {
+        return false;
+    }
+    let landed = op();
+    LANDED.lock().unwrap_or_else(|x| x.into_inner()).push((e.wheel, landed));
+    true
+}
+
+/// **A refused right wheel publishes nothing and compensates nothing.** The
+/// left's op ran and landed (no inverse, so no hold on wheel 0); the right's
+/// refusal is `REFUSED` with nothing on the loop's channel.
+///
+/// **Canary.** Publish from the left wheel's op and report it unlanded when
+/// the right is refused (the nested form): the left wheel reads unlanded.
+#[test]
+fn a_refused_right_wheel_compensates_nothing() {
+    let _g = serial();
+    let s = scene();
+    LANDED.lock().unwrap().clear();
+    set_effect_gate(refuse_right_gate);
+    let _ = azos_robot::shim_take_motor_cmds();
+    let _right = holding(&s, 1, CapPerms::RW);
+    let mut left = holding(&s, 0, CapPerms::RW);
+    assert_eq!(left.command(30, 30).code, outcome::REFUSED);
+    assert_eq!(*LANDED.lock().unwrap(), vec![(0, true)]);
+    assert_eq!(azos_robot::shim_take_motor_cmds(), vec![]);
+}
+
 /// **One wheel is not the drivetrain**, and a percentage past 100 is refused,
 /// not clamped: `DENIED` (recorded) or `BAD_ARGUMENT`, nothing published.
 ///

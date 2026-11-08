@@ -309,13 +309,17 @@ pub fn wheel_speed(id: u32, tid: u32, pct: u32) -> Result<(i32, Option<u32>), Un
     Ok((rc, applied))
 }
 
-/// The drivetrain's `command` op for task `tid`: both wheels' effects through
-/// the gate (each wheel's write-ahead record, a held wheel's refusal, the
-/// deadline watch, `tid`'s provenance), the left's admitting the right's, and
-/// only with both admitted the command published to the drivetrain's effect
-/// loop; then each wheel noted against `tid`, so its exit stops them. A wheel
-/// the right's gate refused after the left's record is undone by the left's
-/// gate as a failed command. The halt rule is the caller's.
+/// The drivetrain's `command` op for task `tid`: each wheel's effect through
+/// the gate in turn (its write-ahead record, a held wheel's refusal, the
+/// deadline watch, `tid`'s provenance), the command published to the
+/// drivetrain's effect loop inside the right wheel's, so it reaches the loop
+/// only with both admitted; then each wheel noted against `tid`, so its exit
+/// stops them. Neither op can fail once admitted (the loop applies the
+/// command later, under its own envelope and halt rule), so the gate never
+/// compensates, and a wheel's inverse never puts a hold on it for a command
+/// that moved nothing. A right wheel refused after the left's record leaves
+/// that record without an effect, which is harmless. The halt rule is the
+/// caller's.
 pub fn drivetrain_command(left: i32, right: i32, tid: u32) -> Result<(), Unissued> {
     let effect = |wheel: u32, v: i32| {
         let (dir, pct) = if v < 0 { (DIR_BACKWARD, v.unsigned_abs()) } else { (DIR_FORWARD, v as u32) };
@@ -324,15 +328,11 @@ pub fn drivetrain_command(left: i32, right: i32, tid: u32) -> Result<(), Unissue
                       timing: timing_of(safe, wheel, azos_devif::motor::MotorIdl::OP_COMMAND) }
     };
     let (l, r) = (effect(0, left), effect(1, right));
-    through_gate(&l, || {
-        let published = through_gate(&r, || {
-            azos_robot::motor_cmd_publish(left, right);
-            ((), true)
-        })
-        .is_ok();
-        (published, published)
-    })
-    .and_then(|published| if published { Ok(()) } else { Err(Unissued::Refused) })?;
+    through_gate(&l, || ((), true))?;
+    through_gate(&r, || {
+        azos_robot::motor_cmd_publish(left, right);
+        ((), true)
+    })?;
     crate::motor_commander::note(0, tid, Some(l.pct));
     crate::motor_commander::note(1, tid, Some(r.pct));
     Ok(())
