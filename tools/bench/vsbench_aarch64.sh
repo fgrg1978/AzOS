@@ -92,8 +92,8 @@
 # The column REPORTS: a Linux lane failure is printed and does not change
 # the exit status (a distribution kernel may lack what a lane needs, e.g.
 # `vfat` built as a module fails the `disk` lanes), and an aarch64 AzOS lane
-# with no Linux number is listed by name. The default is Linux 6.12 LTS
-# (EEVDF; arm64 defconfig with virtio/vfat/devtmpfs/initramfs/TCP built in,
+# with no Linux number is listed by name. The default is the pinned Linux
+# tree's release (EEVDF; arm64 defconfig with virtio/vfat/devtmpfs/initramfs/TCP built in,
 # PREEMPT_NONE, HZ=250). The previous reference, Ubuntu 20.04.5's
 # 5.4.0-125-generic (CFS), out of its installer ISO's `casper/vmlinuz`, stays
 # selectable through the env var (it also needs `lpa2=off`, see `LINUX_A_CPU`).
@@ -285,7 +285,7 @@ kill -9 "$A_PID" 2>/dev/null; wait "$A_PID" 2>/dev/null
 LINUX_A_IMAGE="${VSBENCH_AARCH64_LINUX_IMAGE:-$("$REPO_ROOT/tools/bench/vsbench_linux_image.sh" aarch64)}"
 case "$LINUX_A_IMAGE" in "~/"*) LINUX_A_IMAGE="$HOME/${LINUX_A_IMAGE#\~/}" ;; esac
 echo "vsbench_aarch64: Linux/aarch64 column: ${LINUX_A_IMAGE:-(none configured)}" >&2
-# The AzOS line's CPU, unchanged: 6.12 boots on this QEMU's `max` with
+# The AzOS line's CPU, unchanged: the pinned Linux boots on this QEMU's `max` with
 # FEAT_LPA2 offered (it detects and uses 52-bit VA). The old reference,
 # Ubuntu 20.04's 5.4.0-125, predates FEAT_LPA2 and, offered it, prints
 # nothing at all (measured: no `Linux version` line in 90 s); run it with
@@ -304,7 +304,7 @@ if [ -f "$LINUX_A_IMAGE" ]; then
     ( cd "$REPO_ROOT/userspace/bench/vsbench" \
       && CARGO_TARGET_DIR="$BENCH_TARGET/vsbench-linux" \
          RUSTFLAGS="-C relocation-model=static -C link-arg=-e_start" \
-         $CARGO +nightly build --release -Zjson-target-spec --target "$REPO_ROOT/sdk/targets/aarch64-unknown-azos.json" --no-default-features \
+         $CARGO +"$(sh "$REPO_ROOT/tools/lib/rust_channel.sh")" build --release -Zjson-target-spec --target "$REPO_ROOT/sdk/targets/aarch64-unknown-azos.json" --no-default-features \
              --features "linux${VSBENCH_BENCH_FEATURES:+,$VSBENCH_BENCH_FEATURES}" \
     ) >"$WORK/build-linux-aarch64.log" 2>&1 \
         || die "could not build the Linux/aarch64 vsbench ELF — see $WORK/build-linux-aarch64.log"

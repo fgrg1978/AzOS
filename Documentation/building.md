@@ -41,14 +41,17 @@ everything the build takes from outside the checkout: the five pinned source tre
 Rust toolchain with `rust-src` and `llvm-tools-preview`, the host tools the recipes call
 (Homebrew on macOS: the exact `brew install` line is printed and run; on Linux the apt or dnf
 line is printed and not run), `cbindgen` at its pinned version, the Python packages
-(in a venv under `$AZOS_OUT/venv` when the host interpreter lacks them), the RustSec snapshot
-when it is older than its 45-day limit, and the `make lx-kbuild` container image. Anything
+(in a venv under `$AZOS_OUT/venv` when the host interpreter lacks them), the `make lx-kbuild`
+container image and, from the pinned Linux tree, the kernels of vsbench's Linux column
+(`$AZOS_OUT/build/vsbench-linux`, `tools/bench/vsbench_linux_in.sh`). Every explicit
+`cargo +<channel>` uses the dated channel of `rust-toolchain.toml` (`RUST_CHANNEL`). Anything
 already present at the right version is skipped; the end is a table of what was fetched,
 installed or already OK. The vendored crates are in the tree and need no network.
 
 | Command | Effect |
 |---|---|
 | `make fetch` | Everything above. A tree is skipped when its `HEAD` is the pinned gitlink. |
+| `make fetch ADVISORIES=1` | Also rewrites the tracked RustSec snapshot (`third_party/advisory-db`) when it is older than its 45-day limit. Without it `make fetch` changes no tracked file; `fetch-check` shows the snapshot's age. |
 | `make fetch CONFIG=1` | Only the trees the `.config` consumes: `BUSYBOX` gives `busybox`, `RELIBC` gives `relibc`, `X86_BOOT_LIMINE` gives `limine`, `LINUX_DRIVERS` gives `linux`. `u-boot` has no symbol (only the riscv64 netboot gate row builds it) and comes with plain `make fetch`. |
 | `make fetch BRAIN=1` | Also the AzOSRobotBrain venv from its hashed lock files; `BRAIN_OPTIONAL=1` adds matplotlib, Pillow, scipy, opencv-python and astropy. |
 | `make fetch-check` | Read-only. For each tree: the pin, the checkout state, the newest stable upstream tag (`git ls-remote --tags`; `OFFLINE=1` skips it), the CVEs of `known_cves.tsv` and whether an update exists; the RustSec result for the lockfiles; every inventory item with its state, where it is used, its pinned version, source and checksum. |

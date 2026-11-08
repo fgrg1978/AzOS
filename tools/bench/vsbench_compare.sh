@@ -738,7 +738,7 @@ if [ -n "$L_LOG" ]; then
     ( cd "$REPO_ROOT/userspace/bench/vsbench" \
       && CARGO_TARGET_DIR="$BENCH_TARGET/vsbench-linux" \
          RUSTFLAGS="$LINUX_RUSTFLAGS" \
-         $CARGO +nightly build --release -Zjson-target-spec --target "$LINUX_SPEC" --no-default-features --features "linux${VSBENCH_BENCH_FEATURES:+,$VSBENCH_BENCH_FEATURES}" \
+         $CARGO +"$(sh "$REPO_ROOT/tools/lib/rust_channel.sh")" build --release -Zjson-target-spec --target "$LINUX_SPEC" --no-default-features --features "linux${VSBENCH_BENCH_FEATURES:+,$VSBENCH_BENCH_FEATURES}" \
       ) >/dev/null 2>&1 || die "could not build the Linux-side vsbench ELF"
 
     # The ELF alone, as /init: PID 1, and when it returns Linux panics by design.
@@ -760,7 +760,7 @@ if [ -n "$L_LOG" ] && [ "$VSBENCH_SECCOMP" = "1" ]; then
     if ( cd "$REPO_ROOT/tools/bench/linux_seccomp_launch" \
          && CARGO_TARGET_DIR="$BENCH_TARGET/seccomp-launch" \
             RUSTFLAGS="$LINUX_RUSTFLAGS" \
-            $CARGO +nightly build --release -Zjson-target-spec --target "$LINUX_SPEC" \
+            $CARGO +"$(sh "$REPO_ROOT/tools/lib/rust_channel.sh")" build --release -Zjson-target-spec --target "$LINUX_SPEC" \
                 -Z build-std=core -Z build-std-features=compiler-builtins-mem \
        ) >"$WORK/seccomp-launch-build.log" 2>&1; then
         mkdir -p "$WORK/root-seccomp"

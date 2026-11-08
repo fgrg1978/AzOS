@@ -3,7 +3,7 @@
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 #
 # vsbench_x86_64: the SAME vsbench work tools/bench/vsbench_compare.sh (riscv64)
-# and tools/bench/vsbench_aarch64.sh run, on x86_64: AzOS against Linux 6.12, both
+# and tools/bench/vsbench_aarch64.sh run, on x86_64: AzOS against the pinned Linux, both
 # on QEMU `-M microvm` (the x86_64 line tools/gate/check_fast.sh boots), under
 # `-icount shift=0,sleep=off`.
 #
@@ -162,7 +162,7 @@ if [ -n "$LINUX_X_IMAGE" ] && [ -f "$LINUX_X_IMAGE" ]; then
     ( cd "$REPO_ROOT/userspace/bench/vsbench" \
       && CARGO_TARGET_DIR="$BENCH_TARGET/vsbench-linux" \
          RUSTFLAGS="-C relocation-model=static -C link-arg=-e_start $(python3 "$REPO_ROOT/tools/build/kconfig_to_cargo.py" --user-rustflags "$X_CONFIG")" \
-         $CARGO +nightly build --release -Zjson-target-spec --target "$REPO_ROOT/sdk/targets/x86_64-unknown-azos.json" \
+         $CARGO +"$(sh "$REPO_ROOT/tools/lib/rust_channel.sh")" build --release -Zjson-target-spec --target "$REPO_ROOT/sdk/targets/x86_64-unknown-azos.json" \
              --no-default-features --features "linux${VSBENCH_BENCH_FEATURES:+,$VSBENCH_BENCH_FEATURES}" \
     ) >"$WORK/build-linux-x86_64.log" 2>&1 \
         || die "could not build the Linux/x86_64 vsbench ELF — see $WORK/build-linux-x86_64.log"

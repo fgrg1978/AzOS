@@ -14254,7 +14254,7 @@ lx_emul_nostd_row() {
     local t out
     for t in riscv64imac-unknown-none-elf aarch64-unknown-none x86_64-unknown-none; do
         if ! out="$( (cd "${REPO_ROOT}/crates/drivers/lx/emul" && CARGO_TARGET_DIR="$AZOS_OUT/tgt/lx/emul/cross" \
-                "$CARGO" +nightly build --release --target "$t" -Zbuild-std=core) 2>&1)" \
+                "$CARGO" +"$(sh "$REPO_ROOT/tools/lib/rust_channel.sh")" build --release --target "$t" -Zbuild-std=core) 2>&1)" \
            || printf '%s\n' "$out" | qgrep -qE "^warning"; then
             bad; printf '%s\n' "$out" | grep -m3 -E "^(error|warning)" | sed 's/^/      /'; return
         fi
@@ -25736,7 +25736,7 @@ PYEOF
     par -s "bench: scale hold canary" scale_hold_canary_row
 
     # vsbench on x86_64 (tools/bench/vsbench_x86_64.sh): the same ring-3 work on
-    # AzOS and on Linux 6.12, both on `-M microvm` under -icount at one CPU, as
+    # AzOS and on the pinned Linux, both on `-M microvm` under -icount at one CPU, as
     # the riscv64 row above runs it with vsbench_compare.sh. It asserts the
     # AzOS half: the bench-minimal kernel reaches its last lane, no lane fails,
     # and its log shows the bench-minimal banner. Unlike the riscv64 row, an

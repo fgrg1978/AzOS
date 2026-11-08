@@ -68,12 +68,9 @@ def pkg(brew, apt=None, dnf=None, tap=None):
 
 INVENTORY = [
     dict(id="rust-pinned", cat="build", kind="rustup", toolchain="@rust-toolchain.toml",
-         used="Everything (rust-toolchain.toml); -Zbuild-std from rust-src, so no prebuilt target std",
+         used="Everything (rust-toolchain.toml), including every explicit `cargo +<channel>` (RUST_CHANNEL, tools/lib/rust_channel.sh); -Zbuild-std from rust-src, so no prebuilt target std",
          pinned="@rust-toolchain.toml", source="https://static.rust-lang.org (rustup)", sum="-",
          provides=["cargo", "rustc", "llvm-objcopy", "llvm-objdump", "llvm-nm", "llvm-readelf", "llvm-readobj", "llvm-strip", "llvm-size", "llvm-cov", "llvm-profdata", "llvm-tools", "llvm-ar", "rust-lld", "ld.lld"]),
-    dict(id="rust-nightly", cat="build", kind="rustup", toolchain="nightly", components=["rust-src"],
-         used="`cargo +nightly` of USPACE_BUILD (mk/vars.mk), the ring-3 images",
-         pinned="rolling (the newest nightly; not dated)", source="https://static.rust-lang.org (rustup)", sum="-", provides=[]),
     dict(id="zig", cat="build", kind="pkg", pkg=pkg("zig"), provides=["zig"],
          used="make busybox, make relibc (C compiler and linker: tools/build/busybox_cc.sh, relibc_cc.sh)",
          pinned="the formula's current release", source="https://ziglang.org (Homebrew zig)", sum="-"),
@@ -115,7 +112,7 @@ INVENTORY = [
     dict(id="cargo-fuzz", cat="dev", kind="cargo", crate="cargo-fuzz", version=None, root=None, provides=["cargo-fuzz"],
          used="tools/gate/fuzz.sh", pinned="latest (unpinned)", source="https://crates.io/crates/cargo-fuzz", sum="-"),
     dict(id="advisory-db", cat="gate", kind="advisory", provides=[],
-         used="tools/lint/advisories.sh check (offline, against third_party/advisory-db); refreshed here when older than its own 45-day limit",
+         used="tools/lint/advisories.sh check (offline, against third_party/advisory-db); `make fetch ADVISORIES=1` refreshes the tracked snapshot when it is older than its 45-day limit",
          pinned="@third_party/advisory-db/SNAPSHOT", source="https://github.com/RustSec/advisory-db", sum="@third_party/advisory-db/SNAPSHOT"),
     dict(id="brain-python", cat="optional", kind="pip", venv="brain", requirements="../AzOSRobotBrain/requirements.lock",
          optional_requirements="../AzOSRobotBrain/requirements-optional.lock", provides=[],
@@ -514,6 +511,9 @@ def cmd_fetch(root, config_only, config_file, dry, brain=False):
                 note(it["id"], "already OK" if st == "ok" else st)
             elif st == "ok":
                 note(it["id"], "already OK")
+            elif it["kind"] == "advisory":
+                note(it["id"], "already OK" if st == "ok" else
+                     (install(root, it, dry) if os.environ.get("ADVISORIES") == "1" else f"{st}; tracked files are not rewritten (make fetch ADVISORIES=1)"))
             elif it["kind"] in ("pkg", "qemu-fw"):
                 todo_pkg.append(it)
             else:
@@ -767,6 +767,11 @@ def self_test():
         subprocess.run(["git", "config", "-f", os.path.join(d, ".gitmodules"), "submodule.third_party/limine.tag", "v1.0.0-binary"], check=True)
         assert tpv.check_manifest(d, manifest(d)), "canary: a stale .gitmodules tag is not caught"
     assert version_of("1_36_1") == "1.36.1" and version_of("v10.8.5-binary") == "10.8.5" and version_of("v2025.07") == "2025.07"
+    # 3a. every explicit toolchain in mk/ and tools/ is the dated channel
+    undated = [f"{os.path.relpath(p, root)}:{n}" for p in scan_files(root) if os.path.relpath(p, root) != "tools/build/fetch.py"
+               for n, ln in enumerate(open(p, errors="replace").read().splitlines(), 1)
+               if re.search(r"\+nightly\b", ln) and not ln.lstrip().startswith("#")]
+    assert not undated, "undated `+nightly` (use RUST_CHANNEL / tools/lib/rust_channel.sh): " + " ".join(undated)
     # 3. the inventory covers every download and every tool the scripts call
     found = scan_findings(root)
     assert not found, "not in the inventory:\n  " + "\n  ".join(found)
@@ -793,6 +798,7 @@ def self_test():
             env=dict(os.environ, AZOS_OUT="/o")).stdout.strip()) for i in ("riscv64", "aarch64", "x86_64")} != set(vs["files"]), "canary"
     vs["files"].pop()
     assert len({it["id"] for it in INVENTORY}) == len(INVENTORY)
+    assert re.match(r"^nightly-\d{4}-\d{2}-\d{2}$", subprocess.run(["sh", os.path.join(root, "tools/lib/rust_channel.sh")], capture_output=True, text=True).stdout.strip())
     print("fetch self-test ok")
     return 0
 

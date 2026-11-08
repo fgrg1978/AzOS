@@ -567,7 +567,9 @@ RV_USER_ISA = $(if $(shell grep -qs '^CONFIG_ARCH_RISCV64=y$$' '$(RV_USER_KCONFI
 # Cargo hashes the target spec's contents into every artifact's fingerprint,
 # so an edit of sdk/targets/*.json relinks every image; a crate's build.rs (the
 # stack an image asks for, `-z stack-size`) is tracked by cargo itself.
-USPACE_BUILD := RUSTC_WRAPPER='$(CURDIR)/userspace/rustc_stable_metadata.py' $(BUILDQ_BIN) $(CARGO) +nightly build --release -Zjson-target-spec
+# The dated toolchain of rust-toolchain.toml, for every explicit `cargo +<channel>`.
+RUST_CHANNEL := $(shell sh tools/lib/rust_channel.sh)
+USPACE_BUILD := RUSTC_WRAPPER='$(CURDIR)/userspace/rustc_stable_metadata.py' $(BUILDQ_BIN) $(CARGO) +$(RUST_CHANNEL) build --release -Zjson-target-spec
 # Each ISA's target and rustflags: the wrapper's digest (above) and the Kconfig
 # codegen flags. A recipe adds exactly one of RV_UFLAGS, AARCH64_UFLAGS and
 # X86_64_UFLAGS after $(USPACE_BUILD).

@@ -250,7 +250,7 @@ build_cargo_artifact() {
     encoded="$(encode_rustflags "${flags[@]}")"
 
     local -a cmd=("$CARGO")
-    [[ "$nightly" == "1" ]] && cmd+=("+nightly")
+    [[ "$nightly" == "1" ]] && cmd+=("+$(sh "$(dirname "$0")/../lib/rust_channel.sh")")
     cmd+=(build --release "${target[@]}")
     # shellcheck disable=SC2206 # extra_args is a small, fixed, space-safe set
     [[ -n "$extra_args" ]] && cmd+=($extra_args)

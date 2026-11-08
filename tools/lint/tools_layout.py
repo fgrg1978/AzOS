@@ -115,7 +115,7 @@ ROLES = {
         "symbolize_bt.py", "test_debug.py", "test_farm.py", "test_rr.py", "test_stall_attach.py",
         "tftp_serve.py", "worktree_seed.py",
     ],
-    "lib": ["azos_tools.py", "out_dir.py", "qemu_count.sh", "volume_stale.sh"],
+    "lib": ["azos_tools.py", "out_dir.py", "qemu_count.sh", "rust_channel.sh", "volume_stale.sh"],
 }
 
 # Entries in flight on other branches (2026-10-23): placed here so that --apply
