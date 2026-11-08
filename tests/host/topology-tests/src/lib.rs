@@ -7004,7 +7004,7 @@ mod linkkey_mask_seed_tests {
             Some(t.hosted_op_mask(h))
         })
         .flatten();
-        assert_eq!(mask, Some(azos_devif::keys::SIGNER_OPS));
+        assert_eq!(mask, Some(azos_devif::keys::SSH_OPS));
     }
 
     /// An `ops` mask names ops of a kernel-hosted interface and nothing else:
@@ -7262,8 +7262,8 @@ mod mcp_row_tests {
         assert_eq!((caps[0].kind, caps[0].perms, caps[0].target.as_bytes()), (CapKind::Endpoint, CapPerms::READ, &b"entropy"[..]));
         assert_eq!(
             (caps[1].kind, caps[1].perms, caps[1].target.as_bytes(), caps[1].transfer, caps[1].ops),
-            (CapKind::Endpoint, CapPerms::RW, &b"keys"[..], false, azos_devif::keys::SIGNER_OPS),
-            "the host key is opened, read and signed with, and nothing else of the keystore",
+            (CapKind::Endpoint, CapPerms::RW, &b"keys"[..], false, azos_devif::keys::SSH_OPS),
+            "the host key is opened, read and signed with, the logins reported, and nothing else of the keystore",
         );
         assert!(
             caps.iter().all(|c| c.target.as_bytes() != b"linkkey"),
@@ -7324,6 +7324,8 @@ mod mcp_row_tests {
         assert_eq!(azos_topology::builder::KEYS_SIGNER_OPS, azos_devif::keys::SIGNER_OPS);
         let bit = |name: &str| azos_devif::KeysIdl::OPS.iter().find(|o| o.name == name).map(|o| 1u64 << o.op).expect("an op of that name");
         assert_eq!(azos_devif::keys::SIGNER_OPS, bit("generate") | bit("public") | bit("sign"));
+        assert_eq!(azos_topology::builder::KEYS_SSH_OPS, azos_devif::keys::SSH_OPS);
+        assert_eq!(azos_devif::keys::SSH_OPS, azos_devif::keys::SIGNER_OPS | bit("login_report"));
     }
 
     /// **The builder's copy of the login mask is the interface's**: one op,

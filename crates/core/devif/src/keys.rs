@@ -262,6 +262,16 @@ pub trait Keys {
     /// table of accounts that cannot be read is not one with nobody in it).
     /// Needs `EXEC`.
     fn login(&mut self, user: [u64; NAME_WORDS], credential: [u64; BLOCK_WORDS]) -> Out<u32>;
+
+    /// A login over SSH that the caller decided by public key (the SSH
+    /// server: the signature verified against an authorized key, or not):
+    /// written as the kernel's own `login` decision record (`Rule::Login`,
+    /// method 2 key, the caller as subject), so it is in the sealed security
+    /// log like the console's. `admitted` non-zero: admitted; `attempt`: the
+    /// refusals in a row before it; `reason`: the record's reason (0
+    /// admitted, 1 wrong secret, 2 locked out, 3 the method is not allowed);
+    /// another reason is `BAD_ARGUMENT`. Grants nothing. Needs `WRITE`.
+    fn login_report(&mut self, admitted: u32, attempt: u32, reason: u32) -> Out<()>;
 }
 
 /// The op numbers, counted from 1 as the trait lists them: what an `OP_MASK`
@@ -278,11 +288,16 @@ pub mod op {
     pub const UNWRAP: u64 = 9;
     pub const DESTROY: u64 = 10;
     pub const LOGIN: u64 = 11;
+    pub const LOGIN_REPORT: u64 = 12;
 }
 
 /// The `OP_MASK` of a holder that opens a named key, reads its public part
 /// and signs, and does nothing else (the SSH server's host key). Bit n is op n.
 pub const SIGNER_OPS: u64 = 1 << op::GENERATE | 1 << op::PUBLIC | 1 << op::SIGN;
+
+/// The `OP_MASK` of the SSH server: the signer's ops, and the report of the
+/// logins it decides.
+pub const SSH_OPS: u64 = SIGNER_OPS | 1 << op::LOGIN_REPORT;
 
 /// The `OP_MASK` of the login service (`LOGIND.ELF`): `login` and nothing
 /// else. It holds `EXEC` on `keys` with this mask, so it cannot make, use,

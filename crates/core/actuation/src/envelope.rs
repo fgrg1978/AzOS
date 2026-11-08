@@ -75,7 +75,10 @@ pub fn delete_gate(op: DeleteOp, volume: u64) -> bool {
     effect_gate::record(&e).is_ok()
 }
 
-/// `azos_net`'s egress gate: the socket's owner is the Domain's task.
+/// `azos_net`'s egress gate: the socket's owner is the Domain's task. A
+/// destination let out is a security record too (Kconfig `SEC_LOG`), each
+/// time a socket starts talking to it, whatever the Domain's row: the
+/// refusal is the gate's own record.
 fn egress_gate(owner: u32, class: DestClass, dest: u32, port: u16) -> bool {
     let e = Effect {
         kind: KIND_NET_EGRESS,
@@ -85,7 +88,16 @@ fn egress_gate(owner: u32, class: DestClass, dest: u32, port: u16) -> bool {
         a0: dest,
         a1: class as u32,
     };
-    effect_gate::record(&e).is_ok()
+    let ok = effect_gate::record(&e).is_ok();
+    if ok && azos_records::SECURITY {
+        azos_decision::record(
+            azos_decision::Rule::EnvelopeEgress,
+            azos_decision::Verdict::Admit,
+            owner,
+            [dest as u64, class as u64, 0],
+        );
+    }
+    ok
 }
 
 /// The ask gate: a configuration write or an update step is the calling

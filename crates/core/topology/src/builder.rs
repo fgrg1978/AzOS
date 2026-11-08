@@ -411,16 +411,22 @@ const RESOURCE_KEYS:       &[u8] = b"keys";
 /// crate does not depend on `azos_devif`; `tests/host/topology-tests` holds it to
 /// `azos_devif::keys::SIGNER_OPS`.
 pub const KEYS_SIGNER_OPS: u64 = 1 << 1 | 1 << 4 | 1 << 5;
+/// The SSH server's ops: the signer's, and `login_report`, the twelfth (the
+/// logins it decides, as the kernel's records). `tests/host/topology-tests`
+/// holds it to `azos_devif::keys::SSH_OPS`.
+pub const KEYS_SSH_OPS: u64 = KEYS_SIGNER_OPS | 1 << 12;
 /// The grant of a task that signs with a key the kernel keeps (`SSHD.ELF`: its
 /// host key): `READ` (the public part, the signature) and `WRITE` (to open the
 /// key) on `keys`, with an op mask that lists those three ops and nothing else.
 /// The task cannot bring a key of its own in, derive from one, wrap one so that it
 /// leaves, or destroy one: the kernel holds every call through the capability to
 /// the mask before the interface runs. `EXEC` (wrapping) is not granted at all.
+/// The mask also lists `login_report`: the logins the server decides are the
+/// kernel's records.
 const KEYS_SIGNER: CapSpec = CapSpec {
     kind: CapKind::Endpoint,
     perms: CapPerms::RW,
-    target: MaybeStr::from_bytes(RESOURCE_KEYS), transfer: false, ops: KEYS_SIGNER_OPS,
+    target: MaybeStr::from_bytes(RESOURCE_KEYS), transfer: false, ops: KEYS_SSH_OPS,
 };
 /// The one op of `keys` the login service may call: `login`, the eleventh op
 /// of the interface (bit n = op n, counted from 1). Restated here because this
@@ -3671,9 +3677,22 @@ const LOGD_KLOG_RING: CapSpec = CapSpec {
     perms: CapPerms::READ.union(CapPerms::MAP),
     target: MaybeStr::from_bytes(b"klog.ring"), transfer: false, ops: 0,
 };
-/// `LOGD.ELF`'s authority: the ring, and the `/fat` tree its files are written
-/// in (opened beneath the read-only root directory, [`ROOT_RO`]).
-const LOGD_CAPS: &[CapSpec] = &[LOGD_KLOG_RING, FAT_RW, ROOT_RO];
+/// The sink's page, `READ|WRITE|MAP` (Kconfig `SEC_LOG`): where the sink says
+/// which security records it lost; the kernel's sealer reads it
+/// (`azos_seclog::ack`). This row is the only one granted it.
+const LOGD_KLOG_ACK: CapSpec = CapSpec {
+    kind: CapKind::MemObj,
+    perms: CapPerms::READ.union(CapPerms::WRITE).union(CapPerms::MAP),
+    target: MaybeStr::from_bytes(b"klog.ack"), transfer: false, ops: 0,
+};
+/// `LOGD.ELF`'s authority: the ring, its page with the security log, and the
+/// `/fat` tree its files are written in (opened beneath the read-only root
+/// directory, [`ROOT_RO`]).
+const LOGD_CAPS: &[CapSpec] = if azos_limits::SEC_LOG {
+    &[LOGD_KLOG_RING, LOGD_KLOG_ACK, FAT_RW, ROOT_RO]
+} else {
+    &[LOGD_KLOG_RING, FAT_RW, ROOT_RO]
+};
 
 /// The decision query tool's image (`userspace/services/why`).
 pub const TASK_WHY_IMAGE: &[u8] = b"WHY.ELF";

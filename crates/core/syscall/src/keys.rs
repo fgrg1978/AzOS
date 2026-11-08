@@ -359,10 +359,14 @@ fn bindable(who: &Principal, policy: &ks::Policy) -> bool {
 
 /// `Rule::Login` method 4: the local console.
 const LOGIN_METHOD_CONSOLE: u64 = 4;
+/// `Rule::Login` method 2: a key (the SSH server's report).
+const LOGIN_METHOD_KEY: u64 = 2;
 /// `Rule::Login` reasons (the record's table in `azos_decision`).
 const LOGIN_ADMITTED: u64 = 0;
 const LOGIN_WRONG: u64 = 1;
 const LOGIN_LOCKED: u64 = 2;
+/// The method is not allowed on this transport.
+const LOGIN_NOT_ALLOWED: u64 = 3;
 /// The board holds no root to verify with: nobody can log in.
 const LOGIN_NO_ROOT: u64 = 4;
 /// No signed topology is loaded: there is no table of accounts to say who is
@@ -843,6 +847,22 @@ impl azos_devif::Keys for Server {
         let r = login_in(rows, self.0.tid, &user, &cred);
         secure_zero(&mut cred);
         r
+    }
+
+    /// In order: the right (`WRITE`); the reason, one a key login can have.
+    fn login_report(&mut self, admitted: u32, attempt: u32, reason: u32) -> Out<()> {
+        if !self.0.holds(CapPerms::WRITE) {
+            self.0.deny(CapPerms::WRITE);
+            return Out::err(outcome::DENIED);
+        }
+        let reason = u64::from(reason);
+        let admitted = admitted != 0;
+        if reason > LOGIN_NOT_ALLOWED || admitted != (reason == LOGIN_ADMITTED) {
+            return Out::err(outcome::BAD_ARGUMENT);
+        }
+        let verdict = if admitted { Verdict::Admit } else { Verdict::Refuse };
+        azos_decision::record(Rule::Login, verdict, self.0.tid, [LOGIN_METHOD_KEY, u64::from(attempt), reason]);
+        Out::ok(())
     }
 }
 

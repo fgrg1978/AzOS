@@ -1086,6 +1086,33 @@ fn the_login_op_needs_exec_and_its_mask_bit() {
     tidy();
 }
 
+/// The SSH server's report of a login it decided by key: the kernel's own
+/// `login` record (method 2 key, the caller as subject), so it reaches the
+/// sealed security log. It needs `WRITE` and the mask's bit, and takes only
+/// the reasons a key login has.
+///
+/// **Canary.** Drop the record in `login_report`: no record, red.
+#[test]
+fn the_ssh_servers_logins_are_the_kernels_records() {
+    let _g = serial();
+    reset();
+    let mark = azos_decision::total();
+    let ssh = Holder::new(0, IMAGE_X, 44, CapPerms::READ.union(CapPerms::WRITE), wire::SSH_OPS);
+    assert_eq!(ssh.client().login_report(1, 0, 0).unwrap(), Out::ok(()));
+    assert_eq!(ssh.client().login_report(0, 2, 1).unwrap(), Out::ok(()));
+    assert_eq!(ssh.client().login_report(1, 0, 1).unwrap(), Out::err(outcome::BAD_ARGUMENT), "admitted with a refusal's reason");
+    assert_eq!(ssh.client().login_report(0, 0, 9).unwrap(), Out::err(outcome::BAD_ARGUMENT));
+    let recs = login_records(mark);
+    assert_eq!(recs, vec![(Verdict::Admit as u8, ssh.tid, [2, 0, 0]), (Verdict::Refuse as u8, ssh.tid, [2, 2, 1])]);
+    drop(ssh);
+    let signer = Holder::new(0, IMAGE_X, 44, CapPerms::READ.union(CapPerms::WRITE), SIGNER_OPS);
+    assert!(signer.client().login_report(1, 0, 0).is_err(), "the signer's mask has no report bit");
+    drop(signer);
+    let ro = Holder::new(0, IMAGE_X, 44, CapPerms::READ, wire::SSH_OPS);
+    assert_eq!(ro.client().login_report(1, 0, 0).unwrap(), Out::err(outcome::DENIED), "READ is not WRITE");
+    tidy();
+}
+
 // ── The roots in the monitor's keeping ──────────────────────────────────────
 
 /// A stand-in for the resident monitor's vault: it keeps the roots where the

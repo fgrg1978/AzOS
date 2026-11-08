@@ -287,6 +287,13 @@ pub fn frame_close(ep: u32) -> Result<(), u32> {
     value(FrameClient::new(Ep(ep)).close())
 }
 
+/// Report a login the caller decided by public key to the kernel-hosted
+/// `keys` endpoint `ep` (`WRITE`), which writes its `login` record
+/// ([`azos_devif::Keys::login_report`]).
+pub fn keys_login_report(ep: u32, admitted: bool, attempt: u32, reason: u32) -> Result<(), u32> {
+    value(KeysClient::new(Ep(ep)).login_report(admitted as u32, attempt, reason))
+}
+
 /// Sign `msg` (1..=[`keys::SIGN_MSG_MAX`] bytes) with the key `key` of the
 /// kernel-hosted `keys` endpoint `ep` (`READ`): the message goes to the kernel
 /// in a memory object made for the call, the signature (Ed25519, 64 bytes)

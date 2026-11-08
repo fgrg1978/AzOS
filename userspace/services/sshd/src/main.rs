@@ -92,7 +92,7 @@ use azos_inspect_lib::{str_in, Inspector, Source};
 use azos_libsys as sys;
 use azos_ualloc::UserAlloc;
 use req::{Fd, ReqBuilder};
-use server::{Config, Decision, Env, Event, Server};
+use server::{Config, Decision, Env, Event, Rule, Server, Verdict};
 use session::{Read, Runner, Session};
 
 #[global_allocator]
@@ -339,6 +339,11 @@ impl Env for Host {
     }
 
     fn decision(&mut self, d: Decision) {
+        // A login is the kernel's record too: in the sealed security log.
+        if d.rule == Rule::Login {
+            let admitted = d.verdict == Verdict::Admit;
+            let _ = sys::dev::keys_login_report(self.keys, admitted, 0, if admitted { 0 } else { 1 });
+        }
         self.log(&d.line());
     }
 }
