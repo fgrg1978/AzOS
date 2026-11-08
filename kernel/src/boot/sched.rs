@@ -830,6 +830,21 @@ pub(crate) fn create_sys_wdt_task(hart: i8) {
     // The extensions' and base providers' tasks (the GPIO kill switch), with
     // the watchdog, so every kernel that runs one runs them.
     azos_actuation::providers::start_tasks(super::blk_irq::enable_line, spawn_effect_loop);
+    // The extensions' enforcers, in one task on the watchdog's CPU.
+    let enforcers = azos_actuation::enforce::enforcer_count();
+    if enforcers > azos_actuation::enforce::MAX_ENFORCERS {
+        azos_drv_sys::kerr!("[SAFETY] {} enforcers registered, the task runs {}: the rest never run",
+            enforcers, azos_actuation::enforce::MAX_ENFORCERS);
+    }
+    if enforcers > 0 {
+        let idx = azos_sched::task_create_affinity(
+            "enforce", azos_actuation::enforce::enforce_task, 0,
+            azos_actuation::enforce::ENFORCE_PRIORITY, hart);
+        azos_sched::rt::exempt_from_band_cap(idx);
+        crate::panic::register_safety_task(idx, "enforce");
+        kprintln!("[SCHED] Created enforce task ({} enforcer(s), prio {}) [hart {}]",
+            enforcers, azos_actuation::enforce::ENFORCE_PRIORITY, hart);
+    }
     // Owner rule (wave 15): an RT task never does block I/O. The watchdog
     // above is RT (11): its periodic flush, its durable e-stop records and
     // the OTA boot-good mark go to this task, outside the RT band. Created

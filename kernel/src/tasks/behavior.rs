@@ -153,21 +153,14 @@ pub(crate) fn behavior_task(_: usize) {
         behavior_ml::launch();
     }
 
-    // Wave 15: edge state of the RC receiver's console lines.
+    // Wave 15: the RC receiver's manual override, for its console lines.
     #[cfg(feature = "rc-input")]
-    let mut rc_mem = super::rc_safety::RcTickState::new();
+    let mut rc_manual = false;
 
     loop {
         let step_t0 = azos_drv_sys::timebase::now();
         #[cfg(not(feature = "no-ml"))]
         let mut ml_ticks: u64 = 0;
-        // ── 0. Retire any in-flight payload pulse ────────────────────────
-        // The camera shutter is a deadline rather than a busy-wait — see
-        // `payload::payload_cam_trigger` for why a packet handler must not
-        // spin for 50 ms. This is the pass that lowers the line; it is a
-        // single relaxed load when nothing is in flight.
-        azos_behavior::payload::payload_tick();
-
         // ── 1. Read sensor state from SENSOR_BUS ─────────────────────────
         // Sensor tasks (imu_task, odom_task, sensor_slow_task) write to
         // the bus at their own rates. We just take a snapshot here.
@@ -1088,17 +1081,15 @@ pub(crate) fn behavior_task(_: usize) {
             state.remote_action = last_act;
         }
 
-        // ── 2b. RC receiver and geofence arm (wave 15) ───────────────────
+        // ── 2b. The RC receiver's manual override ─────────────────────────
         //
         // Before arbitration: the sticks go in `state.rc_manual`, which the
         // arbiter ranks below L0 and L1's stop. Link loss and the kill switch
-        // latch the e-stop here.
-        #[cfg(any(feature = "rc-input", feature = "geofence"))]
-        super::rc_safety::note_pass();
+        // are the enforcer's (`azos_safety_core::enforce`).
         #[cfg(feature = "rc-input")]
-        super::rc_safety::rc_tick(&mut state, now, &mut rc_mem);
-        #[cfg(feature = "geofence")]
-        super::rc_safety::fence_tick(&state);
+        if let Some((l, r)) = azos_safety_core::enforce::rc_sticks(now, &mut rc_manual) {
+            state.rc_manual = MotorOutput::some(l, r);
+        }
 
         // ── 3. ML inference (if enabled) ─────────────────────────────────
         //
@@ -1120,22 +1111,6 @@ pub(crate) fn behavior_task(_: usize) {
         {
             ml_ticks += azos_drv_sys::timebase::now().wrapping_sub(t_inf);
             step_stats.ml.add(ml_ticks);
-        }
-
-        // ── 3b. Geofence breach latches the stop ─────────────────────────
-        //
-        // L0 already commands (0, 0) while the reading says Outside, and that
-        // alone released the machine as soon as it stopped saying so — a fix
-        // going stale was enough. Owner decision 2026-09-16: a breach latches
-        // the e-stop and is recorded, so it takes an operator to move again.
-        // One record per breach: the latch itself is the guard.
-        #[cfg(feature = "geofence")]
-        if let Some(overshoot_m) = azos_behavior::safety::geofence_breach_latch(&state) {
-            let _ = azos_behavior::logger::log_safety_violation_durable(
-                azos_behavior::logger::SAFETY_ESTOP,
-                azos_behavior::safety::ESTOP_ACTION_GEOFENCE, overshoot_m);
-            azos_drv_sys::kwarn!("[SAFETY] geofence breach — motors stopped, envelope latched \
-                       ({} m beyond the fence)", overshoot_m);
         }
 
         // ── 4. Arbitrate ─────────────────────────────────────────────────

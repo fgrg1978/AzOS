@@ -154,7 +154,7 @@ pub(crate) fn install_robot_payload_and_sensors() {
     // a frame. Loud and useless beats quiet and fabricated.
     //
     // Wave 15: compiled only with Kconfig `RC_INPUT` (feature `rc-input`); the
-    // receiver's say in the safety path is kernel/src/tasks/rc_safety.rs.
+    // receiver's say in the safety path is crates/domains/robot/safety-core/src/enforce.rs.
     #[cfg(all(feature = "rc-input", not(any(feature = "vf2", feature = "k1", feature = "rpi5"))))]
     azos_robot_drivers::rc::rc_init(azos_robot_drivers::rc::RcMode::Simulated);
     #[cfg(all(feature = "rc-input", any(feature = "vf2", feature = "k1", feature = "rpi5")))]

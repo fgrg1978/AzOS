@@ -219,6 +219,7 @@ const ROBOT_HOOKS: &[azos_ext_api::BootHook] = &[
     azos_ext_api::BootHook::Effects(wire_motor_effects),
     azos_ext_api::BootHook::EffectLoop(&RT_MOTOR),
     azos_ext_api::BootHook::Tasks(crate::sensor_tasks::create),
+    azos_ext_api::BootHook::Enforcer(&crate::enforce::ROBOT_ENFORCER),
     azos_ext_api::BootHook::EffectLoop(&FLIGHT_CTRL),
 ];
 #[cfg(not(feature = "effect-gate"))]
@@ -226,6 +227,7 @@ const ROBOT_HOOKS: &[azos_ext_api::BootHook] = &[
     azos_ext_api::BootHook::Devices(azos_robot_sensors::register),
     azos_ext_api::BootHook::EffectLoop(&RT_MOTOR),
     azos_ext_api::BootHook::Tasks(crate::sensor_tasks::create),
+    azos_ext_api::BootHook::Enforcer(&crate::enforce::ROBOT_ENFORCER),
     azos_ext_api::BootHook::EffectLoop(&FLIGHT_CTRL),
 ];
 

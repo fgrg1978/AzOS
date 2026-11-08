@@ -18,7 +18,7 @@
 use core::sync::atomic::{AtomicU8, Ordering};
 
 use azos_common::hook::{Hook, SetError};
-use azos_ext_api::{BootHook, EnableLine, Manifest, Provider, SpawnLoop, API_LEVEL};
+use azos_ext_api::{BootHook, EnableLine, Enforcer, Manifest, Provider, SpawnLoop, API_LEVEL};
 
 /// Room for every provider the extensions of one image install.
 pub const MAX_PROVIDERS: usize = 4;
@@ -183,6 +183,15 @@ pub fn start_tasks(enable_line: EnableLine, spawn: SpawnLoop) {
         BootHook::Tasks(f) => f(enable_line),
         BootHook::EffectLoop(l) => spawn(l),
         _ => {}
+    });
+}
+
+/// Every [`BootHook::Enforcer`] of every installed manifest, in hook order.
+pub fn each_enforcer(mut f: impl FnMut(&'static Enforcer)) {
+    each_hook(|h| {
+        if let BootHook::Enforcer(e) = h {
+            f(e);
+        }
     });
 }
 

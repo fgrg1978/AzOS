@@ -51,6 +51,7 @@ pub mod effect_gate;
 mod envelope;
 #[cfg(feature = "effect-gate")]
 pub use envelope::delete_gate;
+pub mod enforce;
 pub mod estop;
 pub mod estop_pin;
 pub mod gate;

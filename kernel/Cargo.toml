@@ -53,8 +53,8 @@ board-io = ["dep:azos_drv_sensor", "dep:azos_drv_actuator", "dep:azos_kill_switc
 # trusted fix, whose breach latches the e-stop — azos_behavior::safety's E03
 # section and its kernel hook. `base` tags like `use-robot`; each is emitted
 # only when its symbol is y.
-rc-input = ["use-robot", "azos_behavior?/rc-input"]
-geofence = ["use-robot", "azos_behavior?/geofence"]
+rc-input = ["use-robot", "azos_behavior?/rc-input", "azos_safety_core?/rc-input"]
+geofence = ["use-robot", "azos_behavior?/geofence", "azos_safety_core?/geofence"]
 # virtio-input keyboards and mice by interrupt (config/subsys/Kconfig.drivers
 # DRV_VIRTIO_INPUT; crates/drivers/virtio/src/virtio/input.rs, wired by
 # kernel/src/boot/input_irq.rs). The driver is always compiled (as the
@@ -845,11 +845,11 @@ geofence-smoke = ["qemu", "use-robot", "geofence"]
 # Each canary breaks the one wiring step its row proves; the row must print
 # its FAIL line.
 rc-failsafe-smoke = ["qemu", "rc-input"]
-rc-failsafe-canary = ["rc-failsafe-smoke"]
+rc-failsafe-canary = ["rc-failsafe-smoke", "azos_safety_core?/rc-failsafe-canary"]
 rc-stick-smoke = ["qemu", "rc-input"]
-rc-stick-canary = ["rc-stick-smoke"]
+rc-stick-canary = ["rc-stick-smoke", "azos_safety_core?/rc-stick-canary"]
 fence-refuse-smoke = ["qemu", "geofence"]
-fence-arm-canary = ["fence-refuse-smoke"]
+fence-arm-canary = ["fence-refuse-smoke", "azos_safety_core?/fence-arm-canary"]
 # Wave 11 (SENSORTS) — the IMU's acquisition stamp, from the driver to the
 # sensor bus staleness check L0 reads: prints `[SENSORTS] PASS`. Opt-in.
 sensor-ts-smoke = ["qemu", "use-robot"]

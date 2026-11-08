@@ -57,7 +57,5 @@ mod brain_link;
 pub(crate) use brain_link::*;
 #[cfg(feature = "use-robot")]
 mod behavior;
-#[cfg(any(feature = "rc-input", feature = "geofence"))]
-pub(crate) mod rc_safety;
 #[cfg(feature = "use-robot")]
 pub(crate) use behavior::*;

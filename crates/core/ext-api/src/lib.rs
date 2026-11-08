@@ -19,7 +19,7 @@
 
 /// The contract's level. A change to [`Provider`] or [`Manifest`] that an
 /// extension built against the old shape could not meet raises it.
-pub const API_LEVEL: u16 = 4;
+pub const API_LEVEL: u16 = 5;
 
 /// What an extension owns of the machine's effects, as the actuation core
 /// drives it.
@@ -67,6 +67,20 @@ pub struct EffectLoop {
 /// The kernel's creation of one [`EffectLoop`].
 pub type SpawnLoop = fn(&'static EffectLoop);
 
+/// A periodic check that enforces a safety rule over what the sensors and
+/// links report (a lost radio link, a geofence breach): it may latch the
+/// e-stop and record why, and decides no motion. The base runs every one an
+/// extension registers in one kernel task, the enforcement task, each at its
+/// period.
+pub struct Enforcer {
+    /// Named in the boot banner.
+    pub name: &'static str,
+    /// How often it runs, in milliseconds.
+    pub period_ms: u32,
+    /// One check, at timebase tick `now`.
+    pub tick: fn(now: u64),
+}
+
 /// Work an extension does at one declared boot phase, run once per phase in
 /// install order.
 #[derive(Clone, Copy)]
@@ -89,6 +103,8 @@ pub enum BootHook {
     Tasks(fn(EnableLine)),
     /// At the same phase, in the same order: an effect loop the base creates.
     EffectLoop(&'static EffectLoop),
+    /// A check the base's enforcement task runs.
+    Enforcer(&'static Enforcer),
 }
 
 /// An extension, as the base sees it.

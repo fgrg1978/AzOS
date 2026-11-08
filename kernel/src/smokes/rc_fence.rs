@@ -35,15 +35,15 @@ fn poll_record(find: impl Fn() -> (bool, u32)) -> (bool, u32) {
     }
 }
 
-/// Wait (up to 60 s) until the behavior loop has made a few passes: it runs a
-/// bench sweep before its first one. `false` if it never did.
-fn wait_behavior_loop() -> bool {
+/// Wait (up to 60 s) until the robot enforcer has made a few passes.
+/// `false` if it never did.
+fn wait_enforcer() -> bool {
     sleep_ms(SETTLE_MS);
-    let start = crate::tasks::rc_safety::loop_passes();
+    let start = azos_safety_core::enforce::passes();
     let t0 = now();
-    while crate::tasks::rc_safety::loop_passes() < start.saturating_add(3) {
+    while azos_safety_core::enforce::passes() < start.saturating_add(3) {
         if now() - t0 > 60 * TIMER_FREQ {
-            kprintln!("[RCSMOKE] FAIL setup: the behavior loop made no pass in 60 s");
+            kprintln!("[RCSMOKE] FAIL setup: the robot enforcer made no pass in 60 s");
             return false;
         }
         sleep_ms(50);
@@ -99,7 +99,7 @@ const SWITCHES_OFF: [(usize, u16); 2] = [
 pub(crate) fn rc_failsafe_smoke_task(_arg: usize) {
     use azos_behavior::logger::SAFETY_ESTOP;
     use azos_behavior::safety::{estop_is_active, ESTOP_ACTION_RC_LINK_LOSS};
-    if !wait_behavior_loop() { return; }
+    if !wait_enforcer() { return; }
     let good = feed_for(&frame(&SWITCHES_OFF, false), 1_000);
     if good == 0 || !azos_robot_drivers::rc::rc_frames_seen() {
         kprintln!("[RCSMOKE] FAIL failsafe: the byte source applied no frame");
@@ -143,7 +143,7 @@ pub(crate) fn rc_failsafe_smoke_task(_arg: usize) {
 /// (100,100) applied (80,80)` on a wheeled robot), which the row reads.
 #[cfg(feature = "rc-stick-smoke")]
 pub(crate) fn rc_stick_smoke_task(_arg: usize) {
-    if !wait_behavior_loop() { return; }
+    if !wait_enforcer() { return; }
     let full = azos_limits::RC_STICK_FULL_SCALE_PCT as i32;
     let f = frame(&[
         (azos_limits::RC_MODE_CHANNEL, 2000),
@@ -186,7 +186,7 @@ pub(crate) fn fence_refuse_smoke_task(_arg: usize) {
     use azos_behavior::logger::SAFETY_ESTOP;
     use azos_behavior::safety::{estop_is_active, geofence_armed, ESTOP_ACTION_GEOFENCE};
     use azos_robot::motor::{motor_set_reporting, motor_state, MotorDir, MOTOR_REFUSED_HALTED};
-    if !wait_behavior_loop() { return; }
+    if !wait_enforcer() { return; }
     let t0 = now();
     while !geofence_armed() && now() - t0 < 10 * TIMER_FREQ { sleep_ms(100); }
     if !geofence_armed() {

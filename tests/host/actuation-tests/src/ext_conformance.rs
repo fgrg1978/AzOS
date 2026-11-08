@@ -26,7 +26,7 @@
 //! kernel's ktest holds that the table carries its providers.
 
 use crate::{estop, providers};
-use azos_ext_api::{BootHook, EffectLoop, Manifest, Provider, API_LEVEL};
+use azos_ext_api::{BootHook, EffectLoop, Enforcer, Manifest, Provider, API_LEVEL};
 use std::sync::{Mutex, TryLockError};
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -146,6 +146,13 @@ fn never_runs(_: usize) {
 static DRIVE: EffectLoop = EffectLoop { name: "drive-loop", body: never_runs, priority: 8 };
 static ROTOR: EffectLoop = EffectLoop { name: "rotor-loop", body: never_runs, priority: 9 };
 
+fn enforce_tick(_now: u64) {
+    note(Ev::Hook("enforcer tick"));
+}
+
+static LINK: Enforcer = Enforcer { name: "link-loss", period_ms: 100, tick: enforce_tick };
+static FENCE: Enforcer = Enforcer { name: "fence", period_ms: 50, tick: enforce_tick };
+
 const KIND_MOTOR: u8 = crate::kind::KIND_MOTOR;
 
 fn yes() -> bool {
@@ -179,7 +186,9 @@ static MIXED: Manifest = Manifest {
     hooks: &[
         hook!(Tasks, "mixed tasks", line: 7),
         BootHook::EffectLoop(&ROTOR),
+        BootHook::Enforcer(&LINK),
         hook!(ConfigLoaded, "mixed config"),
+        BootHook::Enforcer(&FENCE),
         hook!(Effects, "mixed effects"),
         hook!(ConfigLoaded, "mixed config again"),
         hook!(Devices, "mixed devices"),
@@ -195,6 +204,7 @@ fn hooks_at(m: &Manifest, phase: fn(&BootHook) -> bool) -> Vec<Ev> {
             BootHook::ConfigLoaded(f) | BootHook::Effects(f) | BootHook::Devices(f) => f(),
             BootHook::Tasks(f) => f(enable_line),
             BootHook::EffectLoop(l) => spawn(l),
+            BootHook::Enforcer(_) => {}
         }
     }
     take()
@@ -372,4 +382,25 @@ fn providers_run_in_installation_order_and_a_provider_not_ready_closes_the_gate(
         take(),
         [Ev::Stop("bare", false), Ev::Stop("latching", false), Ev::Stop("gated", false), Ev::Stop("closed", false)]
     );
+}
+
+/// **The enforcement task sees every enforcer, in hook order, and no phase
+/// runs one.** An enforcer of a refused manifest is not there.
+///
+/// **Canary.** Skip the `Enforcer` arm in `each_enforcer`: none is listed.
+#[test]
+fn each_enforcer_is_listed_once_in_hook_order_and_no_phase_runs_it() {
+    let _g = fresh();
+    let mut seen = Vec::new();
+    providers::each_enforcer(|e| seen.push(e.name));
+    assert!(seen.is_empty());
+    install(&MIXED);
+    install(&MIXED);
+    providers::effects();
+    providers::config_loaded();
+    providers::devices();
+    providers::start_tasks(enable_line, spawn);
+    assert!(!take().contains(&Ev::Hook("enforcer tick")), "a boot phase ran an enforcer");
+    providers::each_enforcer(|e| seen.push(e.name));
+    assert_eq!(seen, vec!["link-loss", "fence"]);
 }

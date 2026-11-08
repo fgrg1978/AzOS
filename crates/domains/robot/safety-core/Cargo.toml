@@ -39,6 +39,17 @@ effect-gate = []
 # `ktest` (forwarded by the kernel's): the control task takes a fault the
 # ktest injects (`txn::txn_inject_once`), for I-13's rollback ktest.
 ktest = []
+# Forwarded by the kernel's features of the same names (Kconfig RC_INPUT,
+# GEOFENCE): the enforcer's RC link-loss and kill-switch latch, and its
+# geofence arm and breach latch (`enforce.rs`).
+rc-input = ["azos_behavior/rc-input"]
+geofence = ["azos_behavior/geofence"]
+# Gate canaries, forwarded by the kernel's: a lost link reads as passive
+# (`rc-failsafe-canary`), the sticks are never handed to the behaviour engine
+# (`rc-stick-canary`), the fence never arms (`fence-arm-canary`).
+rc-failsafe-canary = []
+rc-stick-canary = []
+fence-arm-canary = []
 
 [dependencies]
 azos_arch     = { workspace = true }

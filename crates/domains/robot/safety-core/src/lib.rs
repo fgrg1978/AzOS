@@ -12,6 +12,7 @@
 //! the one scaffolding call this path makes (the OTA boot-good mark).
 
 pub mod actuation;
+pub mod enforce;
 pub mod flight_ctrl;
 pub mod rt_motor;
 pub mod sensor_tasks;
