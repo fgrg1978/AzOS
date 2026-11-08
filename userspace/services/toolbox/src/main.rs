@@ -901,9 +901,8 @@ fn coreutil(name: &[u8]) -> Option<i32> {
         n += 1;
     }
     let need = azos_coreutils::scratch_bytes(name);
-    let mut small = [0u8; azos_coreutils::SMALL_SCRATCH_BYTES];
-    let scratch: &mut [u8] = if need <= small.len() {
-        &mut small[..need]
+    let scratch: &mut [u8] = if need == 0 {
+        &mut []
     } else {
         match shared_scratch(need) {
             Some(s) => s,

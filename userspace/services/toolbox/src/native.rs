@@ -134,6 +134,8 @@ impl Host for Native {
     }
 
     fn err(&mut self, bytes: &[u8]) {
+        // What was printed before the message comes before it.
+        let _ = self.flush();
         let _ = write_all(2, bytes);
     }
 
