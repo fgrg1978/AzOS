@@ -381,40 +381,50 @@ pub(crate) mod tests {
         assert_eq!(tags, want, "recording a stop evicted an effect record, or the stop has no record");
     }
 
-    /// **A loop of stops cannot take the e-stop's slots.** The queue at its
-    /// effect limit, then far more stops than the reserve
-    /// holds: stops fill the reserve down to its last half, the rest are
-    /// counted unrecorded, no effect record is evicted, and the latching
-    /// e-stop still finds a slot for as many records as that half holds.
+    /// **A loop of stops cannot take the e-stop's slots.** Every queue at its
+    /// effect limit, then far more stops than the reserves hold: a stop whose
+    /// queue is at its stop limit spills to the next queue, the stops fill each
+    /// queue's reserve down to its last half, the rest are counted unrecorded,
+    /// no effect record is evicted, and the latching e-stop still finds a slot
+    /// for as many records as those halves hold.
     ///
-    /// **Canary:** `Admit::Stop` limited to the whole ring (no
-    /// `STOP_KEEPS_FREE`): the loop fills the reserve and the e-stop is lost.
+    /// **Canary:** `Admit::Stop` limited to the whole queue (no
+    /// `STOP_KEEPS_FREE`): the loop fills the reserves and the e-stop is lost.
     #[test]
     fn a_loop_of_stops_cannot_take_the_slots_the_estop_needs() {
         let _g = fresh();
-        for i in 0..LIMIT as u32 {
-            issue0(&effect(Class::Reversible, 100 + i), || ()).unwrap();
+        let mut want_tags = Vec::new();
+        for q in 0..LOG_QUEUES {
+            cpu_for_test(Some(q));
+            for i in 0..LIMIT as u32 {
+                let tag = 100 + 1000 * q as u32 + i;
+                issue0(&effect(Class::Reversible, tag), || ()).unwrap();
+                want_tags.push(tag);
+            }
         }
+        cpu_for_test(Some(0));
+        let stops = 4 * (LOG_QUEUES * QUEUE_SAFETY_RESERVE) as u32;
         let ran = AtomicU32::new(0);
-        for k in 0..4 * QUEUE_SAFETY_RESERVE as u32 {
-            issue0(&effect(Class::Safe, 7000 + k), || { ran.fetch_add(1, Ordering::Relaxed); }).expect("a stop");
+        for k in 0..stops {
+            issue0(&effect(Class::Safe, 70_000 + k), || { ran.fetch_add(1, Ordering::Relaxed); }).expect("a stop");
         }
-        assert_eq!(ran.load(Ordering::Relaxed), 4 * QUEUE_SAFETY_RESERVE as u32, "a stop was refused");
+        assert_eq!(ran.load(Ordering::Relaxed), stops, "a stop was refused");
         // Written out, not read from `STOP_KEEPS_FREE`: the canary changes it.
         let half = QUEUE_SAFETY_RESERVE / 2;
-        assert_eq!(logger_ring_len(), LIMIT + half, "stops did not stop at half the reserve");
+        assert_eq!(logger_ring_len(), LOG_QUEUES * (LIMIT + half), "stops did not stop at half of each reserve");
 
         let lost0 = logger_latch_stats().1;
-        for k in 0..half as u32 {
+        for k in 0..(LOG_QUEUES * half) as u32 {
             log_safety_violation(SAFETY_ESTOP, 1, 0xE5_00 + k);
         }
+        cpu_for_test(None);
         assert_eq!(logger_latch_stats().1, lost0, "the e-stop lost its slot to a loop of stops");
-        assert_eq!(logger_ring_len(), LOG_QUEUE_CAPACITY);
+        assert_eq!(logger_ring_len(), LOG_QUEUES * LOG_QUEUE_CAPACITY);
         logger_flusher_pass();
         let files = medium::durable();
-        assert_eq!(estop_details(&files), (0..half as u32).map(|k| 0xE5_00 + k).collect::<Vec<_>>());
-        let tags: Vec<u32> = effect_records(&files).iter().map(|e| e.a0).collect();
-        assert_eq!(&tags[..LIMIT], &(100..100 + LIMIT as u32).collect::<Vec<_>>()[..], "an effect record was evicted");
+        assert_eq!(estop_details(&files), (0..(LOG_QUEUES * half) as u32).map(|k| 0xE5_00 + k).collect::<Vec<_>>());
+        let tags: Vec<u32> = effect_records(&files).iter().map(|e| e.a0).filter(|&t| t < 70_000).collect();
+        assert_eq!(tags, want_tags, "an effect record was evicted");
     }
 
     /// **Never dropped.** Ordinary records that overrun the queue are refused
@@ -591,7 +601,9 @@ pub(crate) mod tests {
         log_mode_change(3, 4);
         logger_flusher_pass();
         assert!(!durable_record_pending(), "an Ok fsync covered the record");
-        assert_eq!(estop_details(&medium::durable()), vec![0xD1]);
+        // The batch stayed in RAM after the failed sync and was written again:
+        // twice in the file, which the replay takes as once.
+        assert_eq!(estop_details(&medium::durable()), vec![0xD1, 0xD1]);
 
         // A non-real-time caller flushes itself: durable when the call returns.
         assert!(log_safety_violation_durable(SAFETY_ESTOP, 6, 0xD2).is_ok());
@@ -668,8 +680,9 @@ pub(crate) mod tests {
     /// envelope refusal, a commander-lost stop, the boot self-check's
     /// synthetic record) is lost, as every ordinary record is, takes no
     /// reserve slot, and every effect record is still there. With the reserve
-    /// full of safety records, one more is lost and counted, and still no
-    /// effect record is evicted.
+    /// full of safety records, one more goes to another queue; with every
+    /// queue full it is lost and counted, and still no effect record is
+    /// evicted.
     ///
     /// **Canary.** Let `reserve_admit` answer `Safety` for any record: the
     /// first assertion fails.
@@ -698,14 +711,36 @@ pub(crate) mod tests {
         }
         assert_eq!(logger_ring_len(), LOG_QUEUE_CAPACITY);
         let lost0 = logger_latch_stats().1;
+        // This queue full: the next safety record goes to another queue.
+        log_safety_violation(SAFETY_ESTOP, 1, 0xB0);
+        assert_eq!(logger_latch_stats().1, lost0, "a latching record found no other queue");
+        assert_eq!(logger_ring_len(), LOG_QUEUE_CAPACITY + 1);
+        // Every queue full: now it is lost, and counted.
+        let mut want: Vec<u32> = (0..QUEUE_SAFETY_RESERVE as u32).map(|k| 0xA0 + k).collect();
+        want.push(0xB0);
+        for q in 1..LOG_QUEUES {
+            cpu_for_test(Some(q));
+            // Queue 1 holds the record that spilled.
+            let effects = LIMIT - if q == 1 { 1 } else { 0 };
+            for i in 0..effects as u32 {
+                issue0(&effect(Class::Reversible, 5000 + i), || ()).expect("under the limit");
+            }
+            let room = LOG_QUEUE_CAPACITY - LIMIT;
+            for k in 0..room as u32 {
+                log_safety_violation(SAFETY_ESTOP, 1, 0xC00 * q as u32 + k);
+                want.push(0xC00 * q as u32 + k);
+            }
+        }
+        cpu_for_test(None);
+        assert_eq!(logger_ring_len(), LOG_QUEUES * LOG_QUEUE_CAPACITY);
         log_safety_violation(SAFETY_ESTOP, 1, 0xBAD);
-        assert_eq!(logger_latch_stats().1, lost0 + 1, "a latching record lost to a full reserve must be counted");
-        assert_eq!(logger_ring_len(), LOG_QUEUE_CAPACITY);
+        assert_eq!(logger_latch_stats().1, lost0 + 1, "a latching record lost to full reserves must be counted");
+        assert_eq!(logger_ring_len(), LOG_QUEUES * LOG_QUEUE_CAPACITY);
 
         logger_flusher_pass();
         let files = medium::durable();
-        assert_eq!(estop_details(&files), (0..QUEUE_SAFETY_RESERVE as u32).map(|k| 0xA0 + k).collect::<Vec<_>>());
-        let tags: Vec<u32> = effect_records(&files).iter().map(|e| e.a0).collect();
+        assert_eq!(estop_details(&files), want);
+        let tags: Vec<u32> = effect_records(&files).iter().map(|e| e.a0).filter(|&t| t < 5000).collect();
         assert_eq!(tags, (100..100 + LIMIT as u32).collect::<Vec<_>>(), "an effect record was evicted");
     }
 
@@ -798,6 +833,61 @@ pub(crate) mod tests {
             let got = estop_details(&medium::durable());
             assert!(got.contains(&(0xC0 + cut_at)), "cut at {cut_at}: the latch record was lost: {got:x?}");
         }
+    }
+
+    /// **A full queue hands a stop and a latch to another queue, in order.**
+    /// CPU 0's queue full (effects to the limit, the reserve full of safety
+    /// records): its next stop and its next latching e-stop go to another
+    /// queue, are kept, and reach the medium after everything pushed before.
+    ///
+    /// **Canary** `durable-spill-canary`: no record leaves its own queue; the
+    /// stop and the latch are lost (red).
+    #[test]
+    fn a_full_queue_hands_a_stop_and_a_latch_to_another_queue_in_order() {
+        let _g = fresh();
+        cpu_for_test(Some(0));
+        for i in 0..LIMIT as u32 {
+            issue0(&effect(Class::Reversible, 100 + i), || ()).unwrap();
+        }
+        for k in 0..QUEUE_SAFETY_RESERVE as u32 {
+            log_safety_violation(SAFETY_ESTOP, 1, 0xA0 + k);
+        }
+        let lost0 = logger_latch_stats().1;
+        let dropped0 = logger_analytics().events_dropped;
+        issue0(&effect(Class::Safe, 9000), || ()).expect("a stop");
+        log_safety_violation(SAFETY_ESTOP, 2, 0xF1);
+        cpu_for_test(None);
+        assert_eq!(logger_latch_stats().1, lost0, "the latch was lost with another queue empty");
+        assert_eq!(logger_analytics().events_dropped, dropped0, "the stop's record was lost with another queue empty");
+        flush_all();
+        let files = medium::durable();
+        let tags: Vec<u32> = effect_records(&files).iter().map(|e| e.a0).collect();
+        let mut want: Vec<u32> = (100..100 + LIMIT as u32).collect();
+        want.push(9000);
+        assert_eq!(tags, want);
+        let mut latches: Vec<u32> = (0..QUEUE_SAFETY_RESERVE as u32).map(|k| 0xA0 + k).collect();
+        latches.push(0xF1);
+        assert_eq!(estop_details(&files), latches);
+    }
+
+    /// **Every class wakes the flusher at the watermark.** Ordinary records
+    /// below the flush watermark ask nothing; the one that reaches it asks for
+    /// a flush, so a burst does not sit at the limit until the watchdog's
+    /// next request.
+    ///
+    /// **Canary** `durable-nowake-canary`: no push asks (red).
+    #[test]
+    fn a_push_that_reaches_the_watermark_asks_for_a_flush() {
+        let _g = fresh();
+        cpu_for_test(Some(0));
+        let r0 = flush_requests_for_test();
+        for _ in 0..LOG_FLUSH_WATERMARK - 1 {
+            log_error(5, 5, 0);
+        }
+        assert_eq!(flush_requests_for_test(), r0, "a push below the watermark asked for a flush");
+        log_error(5, 5, 1);
+        cpu_for_test(None);
+        assert!(flush_requests_for_test() > r0, "the push that reached the watermark did not ask for a flush");
     }
 
     /// One step of the randomized run.

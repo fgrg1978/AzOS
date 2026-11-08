@@ -1535,6 +1535,8 @@ mod log_storage_mock {
         /// The Nth `write` (0-based) writes only this many bytes and reports
         /// that count — the torn-write case.
         pub short_write_at: Option<(usize, usize)>,
+        /// Every `fsync` of this file (its index) fails.
+        pub fail_fsync_of: Option<usize>,
         /// The `serial` argument of every `open()` call, in call order — so
         /// a test can pin WHICH serial `logger_init` opened, not just how
         /// many times it opened something. Added 2026-09-26 (U08-3): before
@@ -1608,6 +1610,9 @@ mod log_storage_mock {
 
         fn fsync(&self, handle: LogHandle) -> Result<(), LogStorageError> {
             with(|r| {
+                if r.fail_fsync_of == Some(handle.0 as usize) {
+                    return Err(LogStorageError::Io);
+                }
                 let f = r.files.get_mut(handle.0 as usize)
                     .ok_or(LogStorageError::Unavailable)?;
                 f.fsyncs += 1;
@@ -2489,7 +2494,7 @@ mod flight_recorder_rt {
         for attempt in 0..10u8 {
             let mark = 0x40 + attempt;
             let _ = logger_flush();
-            cpu_for_test(Some(2));
+            cpu_for_test(Some(3));
             for i in 0..ORDINARY_QUEUE_LIMIT as i32 {
                 log_waypoint(i, !i, 1, mark);
             }

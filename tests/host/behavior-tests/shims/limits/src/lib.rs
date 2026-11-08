@@ -31,10 +31,11 @@ pub const GEOFENCE: bool = true;
 pub const GEOFENCE_RADIUS_M: usize = 100;
 pub const GEOFENCE_MIN_SATELLITES: usize = 4;
 /// Kconfig `NR_CPUS`, `LOG_QUEUES`, `LOG_QUEUE_ENTRIES` and
-/// `LOG_QUEUE_SAFETY_RESERVE`: four queues, so the suites can push from four
-/// "CPUs" (`logger::cpu_for_test`), each of the default depth.
+/// `LOG_QUEUE_SAFETY_RESERVE`: four "CPUs" (`logger::cpu_for_test`) sharing
+/// two queues of the default depth, so two CPUs contend for each writer
+/// handle, as on a machine with more CPUs than queues.
 pub const NR_CPUS: usize = 4;
-pub const LOG_QUEUES: usize = 4;
+pub const LOG_QUEUES: usize = 2;
 pub const LOG_QUEUE_ENTRIES: usize = 128;
 pub const LOG_QUEUE_SAFETY_RESERVE: usize = 16;
 pub const LOG_FLUSHER_JOBS: usize = 4;
