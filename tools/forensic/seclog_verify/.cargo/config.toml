@@ -1,0 +1,7 @@
+# Override the workspace target so the verifier builds for the host.
+[build]
+target = "host-tuple"
+
+[unstable]
+build-std = []
+build-std-features = []

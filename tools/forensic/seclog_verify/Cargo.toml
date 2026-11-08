@@ -1,0 +1,28 @@
+[package]
+name = "seclog_verify"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host forensic check of the sealed security log (Kconfig SEC_LOG): reads logd's exported KLOGn.TXT files and reports missing, rewritten and reordered records, forged seals and a broken link to the previous boot; against the TPM's live anchor or a console capture of the seals when given. No network. Excluded from workspace."
+
+# Run with `make seclog-verify SECLOG_EXPORT=<dir or files> [SECLOG_TPM_ANCHOR=<hex>]
+# [SECLOG_WITNESS=<console capture>]`; its tests are tests/host/seclog-tests'.
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "seclog_verify"
+path = "src/main.rs"
+
+[dependencies]
+azos_seclog = { path = "../../../crates/core/seclog" }
+
+[features]
+# Canary of tests/host/seclog-tests: the off-device checks (the live TPM
+# anchor, the console's seals) are skipped. Never in a real build.
+canary-no-external-check = []
+
+# Own workspace root: not a member of the kernel workspace.
+[workspace]

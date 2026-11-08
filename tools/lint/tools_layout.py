@@ -64,6 +64,7 @@ SELF = "tools/lint/tools_layout.py"
 #   bench  benchmarks against Linux: tools/bench/vsbench_compare.sh
 #   dev    run, flash, serve and debug by hand: the `make qemu*`/board targets
 #   lib    modules the other tools import (out_dir, azos_tools)
+#   forensic  checks of what a device recorded: `make seclog-verify`
 ROLES = {
     "build": [
         "busybox_cc.sh", "defconfig_menu.py", "export_kernel_consts.py", "fetch.py", "gen_config_index.py", "gen_feature_matrix.py",
@@ -116,6 +117,7 @@ ROLES = {
         "tftp_serve.py", "worktree_seed.py",
     ],
     "lib": ["azos_tools.py", "brain_dir.sh", "out_dir.py", "qemu_count.sh", "rust_channel.sh", "volume_stale.sh"],
+    "forensic": ["seclog_verify/"],
 }
 
 # Entries in flight on other branches (2026-10-23): placed here so that --apply

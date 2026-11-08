@@ -13,27 +13,29 @@
 
 #![cfg(test)]
 
+mod tool;
+
 use azos_seclog::chain::{extend, Sealer};
 use azos_seclog::text::{self, Parsed};
 use azos_seclog::verify::{Finding, Summary, Verifier};
 use azos_seclog::{kind, Anchor, Backend, Class, Envelope, Event, Hash, Loss, Seal, PAYLOAD};
 
 #[derive(Clone)]
-struct Rec {
-    env: Envelope,
-    payload: [u8; PAYLOAD],
+pub(crate) struct Rec {
+    pub(crate) env: Envelope,
+    pub(crate) payload: [u8; PAYLOAD],
 }
 
 /// One boot of the simulated kernel: a ring, its producers and the sealer.
-struct Boot {
-    recs: Vec<Rec>,
+pub(crate) struct Boot {
+    pub(crate) recs: Vec<Rec>,
     sealer: Sealer,
     hardware: bool,
-    tpm: Hash,
+    pub(crate) tpm: Hash,
 }
 
 impl Boot {
-    fn new(backend: Backend, tpm: Hash) -> Boot {
+    pub(crate) fn new(backend: Backend, tpm: Hash) -> Boot {
         let hardware = backend == Backend::TpmNv;
         let mut b = Boot { recs: Vec::new(), sealer: Sealer::new(backend, tpm), hardware, tpm };
         // Records written before the sealer starts (the boot's own denials).
@@ -53,13 +55,13 @@ impl Boot {
         seq
     }
 
-    fn event(&mut self, class: Class, subject: u32) {
+    pub(crate) fn event(&mut self, class: Class, subject: u32) {
         let e = Event { id: subject as u64 + 100, subject, rule: 4, verdict: 3, class, n: [1, 2, 3], image_hash_prefix: 0xabcd, topology_row_id: 0 };
         self.publish(kind::EVENT, &e.encode());
     }
 
     /// The kernel's pass: fold what the ring holds, then seal.
-    fn seal(&mut self) {
+    pub(crate) fn seal(&mut self) {
         let from = self.sealer.next() as usize;
         for r in self.recs[from..].to_vec() {
             self.sealer.fold(&r.env, &r.payload);
@@ -88,7 +90,7 @@ impl Boot {
         (first, n as u64)
     }
 
-    fn lines(&self) -> Vec<Vec<u8>> {
+    pub(crate) fn lines(&self) -> Vec<Vec<u8>> {
         self.recs.iter().map(|r| line(r)).collect()
     }
 }
@@ -99,14 +101,14 @@ fn line(r: &Rec) -> Vec<u8> {
     out[..n].to_vec()
 }
 
-fn seam() -> Vec<u8> {
+pub(crate) fn seam() -> Vec<u8> {
     let mut out = [0u8; 16];
     let n = text::render_seam(&mut out);
     out[..n].to_vec()
 }
 
 /// A boot with `rounds` rounds of three events and a seal.
-fn tpm_boot(tpm: Hash, rounds: usize) -> Boot {
+pub(crate) fn tpm_boot(tpm: Hash, rounds: usize) -> Boot {
     let mut b = Boot::new(Backend::TpmNv, tpm);
     for r in 0..rounds {
         b.event(Class::Microphone, 10 + r as u32);
