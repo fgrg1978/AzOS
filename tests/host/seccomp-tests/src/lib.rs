@@ -2275,16 +2275,32 @@ mod image_profiles {
             .unwrap_or_else(|| panic!("IMAGE_PROFILES has no row for {image}"))
     }
 
+    /// One copy line of a disk-image recipe: `(condition, $(VAR), NAME.ELF)`.
+    /// A plain `mcopy -i $@ $(VAR) ::NAME` is unconditional; the form
+    /// `$(call image_if,SYM,mcopy -i $@ $(VAR) ::NAME)` copies only when the
+    /// configuration enables `USERSPACE_<SYM>` (the condition is `SYM`).
+    fn copy_line(l: &str) -> Option<(Option<&str>, &str, &str)> {
+        let t = l.trim();
+        let (cond, copy) = match t.strip_prefix("$(call image_if,") {
+            Some(rest) => {
+                let (sym, copy) = rest.strip_suffix(')')?.split_once(',')?;
+                (Some(sym), copy)
+            }
+            None => (None, t),
+        };
+        let (var, name) = copy.strip_prefix("mcopy -i $@ ")?.split_once(" ::")?;
+        Some((cond, var, name))
+    }
+
     /// `mcopy -i $@ $(X_ELF) ::NAME.ELF` in the Makefile's disk-image recipe.
     fn shipped_images() -> BTreeSet<String> {
         let set: BTreeSet<String> = MAKEFILE
             .lines()
             .filter_map(|l| {
-                let t = l.trim();
-                if !t.starts_with("mcopy -i $@ $(") {
+                let (_, var, name) = copy_line(l)?;
+                if !var.starts_with("$(") {
                     return None;
                 }
-                let (_, name) = t.rsplit_once("::")?;
                 // A file under a directory of the volume is data a service
                 // reads, not an image the kernel starts: `make azos-guest`
                 // copies the guest kernel to VM/KERNEL.ELF, which VMMD.ELF
@@ -3030,7 +3046,7 @@ mod image_profiles {
         MAKEFILE
             .lines()
             .filter_map(|l| {
-                let (var, name) = l.trim().strip_prefix("mcopy -i $@ ")?.split_once(" ::")?;
+                let (_, var, name) = copy_line(l)?;
                 (var.starts_with("$(") && !var.contains("_AARCH64") && !var.contains("_X86_64")
                     && name.ends_with(".ELF") && !name.contains('/'))
                     .then(|| (name.to_string(), var.to_string()))
@@ -3084,7 +3100,7 @@ mod image_profiles {
         MAKEFILE
             .lines()
             .filter_map(|l| {
-                let (var, name) = l.trim().strip_prefix("mcopy -i $@ ")?.split_once(" ::")?;
+                let (_, var, name) = copy_line(l)?;
                 (var.starts_with("$(") && var.contains("_AARCH64") && name.ends_with(".ELF") && !name.contains('/'))
                     .then(|| (name.to_string(), var.to_string()))
             })
@@ -3125,7 +3141,7 @@ mod image_profiles {
         MAKEFILE
             .lines()
             .filter_map(|l| {
-                let (var, name) = l.trim().strip_prefix("mcopy -i $@ ")?.split_once(" ::")?;
+                let (_, var, name) = copy_line(l)?;
                 (var.starts_with("$(") && var.contains("_X86_64") && name.ends_with(".ELF"))
                     .then(|| (name.to_string(), var.to_string()))
             })
@@ -3227,6 +3243,102 @@ mod image_profiles {
             "IMAGE_ELFS_X86_64 vs the x86_64 disk-image recipe's mcopy lines",
         );
         assert!(rule.len() >= 13, "found only {rule:?} in the x86_64 Makefile image recipe");
+    }
+
+    /// The ported programs (`PORTS_BIN_<port> := <binary>` in the Makefile): their
+    /// images are `<BINARY>.ELF`, built from a vendored tree and named by their own
+    /// Kconfig symbol `USERSPACE_<BINARY>`.
+    fn port_images() -> Vec<String> {
+        let v: Vec<String> = MAKEFILE
+            .lines()
+            .filter_map(|l| {
+                let (k, bin) = l.split_once(":=")?;
+                k.trim().starts_with("PORTS_BIN_").then(|| format!("{}.ELF", bin.trim().to_uppercase()))
+            })
+            .collect();
+        assert!(v.len() >= 3, "found only {v:?} of the ported programs");
+        v
+    }
+
+    /// The copy lines of the recipes whose variables carry `suffix` (`""` for
+    /// riscv64, which excludes the other two) that run when the configuration
+    /// enables `on` (`USERSPACE_<SYM>` symbols), as `NAME.ELF`, once each, in order.
+    fn recipe_copies_under(suffix: &str, on: &[&str]) -> Vec<String> {
+        let mut seen = BTreeSet::new();
+        MAKEFILE
+            .lines()
+            .filter_map(|l| {
+                let (cond, var, name) = copy_line(l)?;
+                let isa = if var.contains("_AARCH64") { "_AARCH64" } else if var.contains("_X86_64") { "_X86_64" } else { "" };
+                (var.starts_with("$(") && isa == suffix && name.ends_with(".ELF") && !name.contains('/')
+                    && cond.is_none_or(|c| on.contains(&c)))
+                    .then(|| name.to_string())
+            })
+            .filter(|n| seen.insert(n.clone()))
+            .collect()
+    }
+
+    /// **A volume carries a ported program only when its configuration enables
+    /// it, and the copy lines still list exactly what the hash rule does.** The
+    /// ported programs (rg, fd, kibi) are built from a vendored tree, so a volume
+    /// that listed them whatever `USERSPACE_<NAME>` says would build them for a
+    /// system that did not ask. Each copy of one is `$(call image_if,<SYM>,...)`
+    /// with its own symbol, the recipe's prerequisite is guarded by the same
+    /// symbol (never a bare `$(..._ELF)`), and for every configuration the copies
+    /// are the hash rule's catalogue less the ported images it leaves off.
+    ///
+    /// **Canaries.** Write one copy line bare (`mcopy -i $@ $(RG_ELF) ::RG.ELF`):
+    /// the first assertion names it. Guard `FD.ELF` by `RG`: the symbol assertion
+    /// names it. Put a bare `$(KIBI_ELF)` back in `disk-sh.img`'s prerequisites:
+    /// the prerequisite assertion names it. Drop `image_if` from the line while
+    /// leaving the copy conditional: the catalogue comparison goes red for the
+    /// configuration without the image.
+    #[test]
+    fn a_volume_copies_a_ported_program_only_when_its_symbol_is_on() {
+        let ports = port_images();
+        let mut header = String::new();
+        let mut in_recipe = false;
+        let mut conditional = 0;
+        for l in MAKEFILE.lines() {
+            if !l.starts_with('\t') {
+                if in_recipe {
+                    header.clear();
+                    in_recipe = false;
+                }
+                header.push_str(l);
+                header.push(' ');
+                continue;
+            }
+            in_recipe = true;
+            let Some((cond, var, name)) = copy_line(l) else { continue };
+            if !ports.iter().any(|p| p == name) {
+                assert!(cond.is_none(), "{name} is not a ported program but its copy is conditional");
+                continue;
+            }
+            let sym = name.trim_end_matches(".ELF");
+            assert_eq!(cond, Some(sym), "the copy of {name} must be `image_if,{sym},...`: {}", l.trim());
+            let guarded = format!("$(call image_if,{sym},{var})");
+            assert!(!header.replace(&guarded, "").contains(var), "a prerequisite names {var} outside its image_if: {header}");
+            conditional += 1;
+        }
+        assert!(conditional >= 3 * ports.len(), "found only {conditional} guarded copies of {ports:?}");
+
+        let all: Vec<&str> = ports.iter().map(|p| p.trim_end_matches(".ELF")).collect();
+        let configs: [&[&str]; 4] = [&all, &[], &["KIBI"], &["RG", "FD"]];
+        for on in configs {
+            for (suffix, catalogue) in [
+                ("", image_elfs_rule()),
+                ("_AARCH64", image_elfs_rule_aarch64()),
+                ("_X86_64", image_elfs_rule_x86_64()),
+            ] {
+                let want: Vec<String> = catalogue
+                    .into_iter()
+                    .map(|(n, _)| n)
+                    .filter(|n| !ports.contains(n) || on.contains(&n.trim_end_matches(".ELF")))
+                    .collect();
+                assert_eq!(recipe_copies_under(suffix, on), want, "{suffix:?} volume with USERSPACE {on:?} on");
+            }
+        }
     }
 
     /// Every digest is bound to a row, in Makefile copy order, and no two shipped

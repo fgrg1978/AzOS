@@ -1072,6 +1072,9 @@ USER_ON := $(shell sed -n -E 's/^CONFIG_USERSPACE_([A-Z0-9_]+)=y$$/\1/p' '$(KCON
 # $(call image_on,<NAME=path ...>): the pairs whose image the configuration enables.
 # ALL_USER_IMAGES=1 is for a bench or row that boots a program outside the configured system.
 image_on = $(if $(ALL_USER_IMAGES),$(1),$(foreach e,$(1),$(if $(filter $(basename $(firstword $(subst =, ,$(e)))),$(USER_ON)),$(e))))
+# $(call image_if,<NAME>,<text>): the text when the configuration enables NAME (a volume's
+# copy of an image whose build is itself conditional); ALL_USER_IMAGES=1 as above.
+image_if = $(if $(ALL_USER_IMAGES)$(filter $(1),$(USER_ON)),$(2))
 elf_paths = $(foreach e,$(1),$(lastword $(subst =, ,$(e))))
 IMAGE_ELFS_ON         := $(call image_on,$(IMAGE_ELFS))
 IMAGE_ELFS_AARCH64_ON := $(call image_on,$(IMAGE_ELFS_AARCH64))
