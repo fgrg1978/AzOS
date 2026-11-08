@@ -30,6 +30,41 @@ exception is the Linux runtime (`userspace/services/lxrt`) on aarch64 and x86_64
 rustc's soft-float targets because it shares the Linux program's FP registers. The target and the codegen flags of every
 build come from the expanded Kconfig through `tools/build/kconfig_to_cargo.py`.
 
+## Fetching what the build needs
+
+Source: `mk/fetch.mk`, `tools/build/fetch.py`, `tools/build/third_party_fetch.sh`,
+`third_party/MANIFEST.json`, `third_party/known_cves.tsv`.
+
+`make build` never downloads. `make fetch` is the one target that does, and it fetches
+everything the build takes from outside the checkout: the five pinned source trees
+(`busybox`, `limine`, `linux`, `relibc`, `u-boot`, through `third_party_fetch.sh`), the dated
+Rust toolchain with `rust-src` and `llvm-tools-preview`, the host tools the recipes call
+(Homebrew on macOS: the exact `brew install` line is printed and run; on Linux the apt or dnf
+line is printed and not run), `cbindgen` at its pinned version, the Python packages
+(in a venv under `$AZOS_OUT/venv` when the host interpreter lacks them), the RustSec snapshot
+when it is older than its 45-day limit, and the `make lx-kbuild` container image. Anything
+already present at the right version is skipped; the end is a table of what was fetched,
+installed or already OK. The vendored crates are in the tree and need no network.
+
+| Command | Effect |
+|---|---|
+| `make fetch` | Everything above. A tree is skipped when its `HEAD` is the pinned gitlink. |
+| `make fetch CONFIG=1` | Only the trees the `.config` consumes: `BUSYBOX` gives `busybox`, `RELIBC` gives `relibc`, `X86_BOOT_LIMINE` gives `limine`, `LINUX_DRIVERS` gives `linux`. `u-boot` has no symbol (only the riscv64 netboot gate row builds it) and comes with plain `make fetch`. |
+| `make fetch BRAIN=1` | Also the AzOSRobotBrain venv from its hashed lock files; `BRAIN_OPTIONAL=1` adds matplotlib, Pillow, scipy, opencv-python and astropy. |
+| `make fetch-check` | Read-only. For each tree: the pin, the checkout state, the newest stable upstream tag (`git ls-remote --tags`; `OFFLINE=1` skips it), the CVEs of `known_cves.tsv` and whether an update exists; the RustSec result for the lockfiles; every inventory item with its state, where it is used, its pinned version, source and checksum. |
+| `make fetch-update NAME=<tree> [VERSION=<tag>]` | Moves one pin: the `tag` in `.gitmodules`, the gitlink, `third_party/MANIFEST.json`; fetches the tree (which verifies the tag peels to the gitlink); prints what changed and what to rebuild and test. It does not commit. `relibc` is a commit pin: `VERSION` is a full commit id, default the upstream `HEAD`. |
+
+A vendored crate is not moved by `fetch-update`: `userspace/lib/tls-probe/vendor.py` has no
+per-crate bump (`regen` rebuilds the tree to the lockfiles), so crates move with `Cargo.lock`
+and a `regen`. `fetch-check` reports their advisories offline through `tools/lint/advisories.sh`.
+
+The inventory is data in `tools/build/fetch.py`. `python3 tools/build/fetch.py self-test`
+(part of the N0 lint tier) checks the config-to-trees mapping, the pin rewrite on a temporary copy,
+and that every download verb (`curl`, `git clone`, `pip install`, `cargo install`, `rustup`,
+`brew install`) and every tool command found under `mk/` and `tools/` belongs to an inventory item,
+each with a canary that turns it red. Two things are on the inventory but not fetchable: the
+x86 microcode files (`make ucode`) and the Linux reference kernels of vsbench.
+
 ## Where outputs go
 
 Source: `tools/lib/out_dir.py`, `mk/vars.mk`, `tools/lint/out_dir_lint.py`.

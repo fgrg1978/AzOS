@@ -243,7 +243,7 @@ k1-console:
 KCONFIG_DEFCONFIG_DIR := config/defconfigs
 # The newest interpreter on PATH that can run the tools, whatever installed it.
 ifeq ($(origin PYTHON),undefined)
-PYTHON := $(or $(shell for p in python3.14 python3.13 python3.12 python3.11 python3; do \
+PYTHON := $(or $(shell for p in '$(AZOS_OUT)/venv/build/bin/python' python3.14 python3.13 python3.12 python3.11 python3; do \
     $$p -c 'import kconfiglib, tomllib' >/dev/null 2>&1 && { echo $$p; break; }; done),python3)
 endif
 

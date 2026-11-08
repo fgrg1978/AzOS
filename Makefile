@@ -13,6 +13,7 @@
 #   host.mk       host-side tools (OTA, TFTP, weight files, clean)
 #   qemu.mk       QEMU boot targets and smoke runs
 #   lints.mk      `make check` and the CI tiers
+#   fetch.mk      `make fetch`, the one target that downloads
 # The include order matters: prerequisite lists expand when they are read, so a
 # variable must be defined before the rule that lists it (images.mk defines the
 # TEST key paths that kernel.mk, read after it, uses).
@@ -51,6 +52,7 @@ include mk/kernel.mk
 include mk/host.mk
 include mk/qemu.mk
 include mk/lints.mk
+include mk/fetch.mk
 
 help:
 	@cat "$(CURDIR)/tools/build/make_help.txt"

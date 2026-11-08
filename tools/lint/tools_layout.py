@@ -66,7 +66,7 @@ SELF = "tools/lint/tools_layout.py"
 #   lib    modules the other tools import (out_dir, azos_tools)
 ROLES = {
     "build": [
-        "busybox_cc.sh", "defconfig_menu.py", "export_kernel_consts.py", "gen_config_index.py", "gen_feature_matrix.py",
+        "busybox_cc.sh", "defconfig_menu.py", "export_kernel_consts.py", "fetch.py", "gen_config_index.py", "gen_feature_matrix.py",
         "gen_userspace_kconfig.py", "hyp_mon.sh", "kconfig_dropped.py", "kconfig_to_cargo.py", "lx_device_table.py", "lx_kbuild/",
         "make_help.txt", "micro_topology.py", "module_hashes.py", "prune_build.py", "relibc_build.sh",
         "relibc_cc.sh", "sdk_build.py", "sdk_cargo.py", "sdk_std.py", "syscall_defs.py", "test_gen_userspace_kconfig.py",

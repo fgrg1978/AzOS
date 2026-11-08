@@ -444,6 +444,18 @@ if [ "$lints" = 1 ]; then
     fi
 fi
 
+# The external inventory of `make fetch` (tools/build/fetch.py): the config -> trees mapping, the pin rewrite on a
+# temp copy, and a scan that holds every download and tool the scripts call to an inventory item. Offline.
+if [ "$lints" = 1 ]; then
+    printf "  %-26s" "fetch inventory..."
+    if out="$(python3 tools/build/fetch.py self-test 2>&1)"; then
+        echo ok
+    else
+        echo FAIL; fail=1
+        printf '%s\n' "$out" | sed -n 1,8p | sed 's/^/      /'
+    fi
+fi
+
 # RustSec advisories for every registry crate any lockfile resolves, against the
 # dated snapshot in third_party/advisory-db (tools/lint/advisories.sh; `make advisories-update`
 # refreshes it by hand). A missing or old snapshot, or a lockfile that does not resolve, is a WARN line.

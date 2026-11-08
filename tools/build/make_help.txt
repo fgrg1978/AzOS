@@ -83,6 +83,9 @@ Test & gate
   size-update-microvm REASON=..  Rebuild them and move their lines, recording why.
   advisories             RustSec advisories for every registry crate a lockfile resolves, against third_party/advisory-db (offline).
   advisories-update      Network, by hand: fetch the RustSec database and rewrite third_party/advisory-db with its date.
+  fetch                  Network, the only target that downloads: every pinned third-party tree plus the Rust toolchain, host tools (Homebrew; apt/dnf line printed on Linux), cbindgen, Python packages, the RustSec snapshot and the lx-kbuild image; skips what is present, ends with a table. CONFIG=1: only the trees the .config consumes. BRAIN=1 [BRAIN_OPTIONAL=1]: also the AzOSRobotBrain venv.
+  fetch-check            Read-only report: each pin, its newest upstream tag, known CVEs, whether an update exists, and the state of the whole inventory (OFFLINE=1 skips git ls-remote).
+  fetch-update NAME=<tree> [VERSION=<tag>]  Move one pin (.gitmodules tag, gitlink, MANIFEST.json), fetch it, print what to rebuild and test; does not commit. Trees: busybox limine linux relibc u-boot.
   check1                 Change check: check0, then smoke boots and the QEMU scenarios the diff maps to.
   check-fast             Fronts' check: per ISA one ktest boot, one runtime-canary boot, one abitest boot.
   ci                     The full gate (long; run before pushing).
