@@ -32,12 +32,24 @@ use host::Host;
 /// window, `cp` its copy buffer.
 pub const SCRATCH_BYTES: usize = 16 * 1024;
 
+/// The scratch of the tools that only stream: a copy buffer, a line.
+pub const SMALL_SCRATCH_BYTES: usize = 4096;
+
 /// Every command this crate answers to.
 pub const NAMES: &[&[u8]] = &[
     b"basename", b"chgrp", b"chmod", b"chown", b"cp", b"cut", b"date", b"df", b"dirname", b"du", b"env", b"find",
     b"grep", b"head", b"kill", b"ln", b"mkdir", b"mkfifo", b"mv", b"printf", b"pwd", b"rm", b"rmdir", b"seq",
     b"sort", b"stat", b"tail", b"tee", b"touch", b"tr", b"umask", b"uniq",
 ];
+
+/// What `name` needs lent as scratch (0: none).
+pub fn scratch_bytes(name: &[u8]) -> usize {
+    match name {
+        b"sort" | b"tail" => SCRATCH_BYTES,
+        b"cp" | b"mv" | b"head" | b"grep" | b"uniq" | b"tr" | b"cut" | b"tee" => SMALL_SCRATCH_BYTES,
+        _ => 0,
+    }
+}
 
 pub fn is_tool(name: &[u8]) -> bool {
     NAMES.contains(&name)

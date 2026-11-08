@@ -127,8 +127,11 @@ NAMES_LIB_SRC := userspace/lib/names/src/lib.rs userspace/lib/names/Cargo.toml
 # The Login object (interface and credential): the terminal server, the login
 # service and the component manager's table of contracts.
 LOGIN_LIB_SRC := userspace/lib/login/src/lib.rs userspace/lib/login/Cargo.toml
+# The native basic utilities (cp, grep, sort, ...): the toolbox runs them, the
+# shell and the SSH server route to them by name.
+COREUTILS_LIB_SRC := $(wildcard userspace/lib/coreutils/src/*.rs) userspace/lib/coreutils/Cargo.toml
 SH_SRC        := $(SH_DIR)/src/main.rs $(SH_DIR)/src/parse.rs $(SH_DIR)/src/ident.rs \
-                 $(SH_DIR)/src/path.rs $(SH_DIR)/src/req.rs $(SH_DIR)/Cargo.toml $(TERM_LIB_SRC) $(NAMES_LIB_SRC)
+                 $(SH_DIR)/src/path.rs $(SH_DIR)/src/req.rs $(SH_DIR)/Cargo.toml $(TERM_LIB_SRC) $(NAMES_LIB_SRC) $(COREUTILS_LIB_SRC)
 TERMD_DIR     := userspace/services/termd
 TERMD_BUILT   := $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release/termd
 TERMD_ELF     := $(OUT_BUILD)/termd.elf
@@ -145,7 +148,7 @@ COMPMGR_SRC   := $(COMPMGR_DIR)/src/main.rs $(COMPMGR_DIR)/src/tree.rs $(COMPMGR
 TOOLBOX_DIR   := userspace/services/toolbox
 TOOLBOX_BUILT := $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release/toolbox
 TOOLBOX_ELF   := $(OUT_BUILD)/toolbox.elf
-TOOLBOX_SRC   := $(wildcard $(TOOLBOX_DIR)/src/*.rs) $(TOOLBOX_DIR)/Cargo.toml $(TOOLBOX_DIR)/build.rs crates/drivers/sys/src/klog/wire.rs
+TOOLBOX_SRC   := $(wildcard $(TOOLBOX_DIR)/src/*.rs) $(TOOLBOX_DIR)/Cargo.toml $(TOOLBOX_DIR)/build.rs crates/drivers/sys/src/klog/wire.rs $(COREUTILS_LIB_SRC)
 # The power tool (the kernel-hosted `power` endpoint).
 POWER_DIR     := userspace/services/power
 POWER_BUILT   := $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release/power
@@ -238,7 +241,7 @@ SSHD_DIR      := userspace/services/sshd
 SSHD_BUILT    := $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release/sshd
 SSHD_ELF      := $(OUT_BUILD)/sshd.elf
 SSHD_SRC      := $(wildcard $(SSHD_DIR)/src/*.rs) $(SSHD_DIR)/Cargo.toml userspace/services/termd/src/disc.rs userspace/services/termd/src/edit.rs \
-                 userspace/services/sh/src/path.rs userspace/services/sh/src/req.rs $(UALLOC_SRC)
+                 userspace/services/sh/src/path.rs userspace/services/sh/src/req.rs $(COREUTILS_LIB_SRC) $(UALLOC_SRC)
 # The login service (Kconfig CONSOLE_LOGIN, default n): the Login object's
 # server. The interface (`LOGIN_LIB_SRC`, above) is a library of its own.
 LOGIND_DIR    := userspace/services/logind

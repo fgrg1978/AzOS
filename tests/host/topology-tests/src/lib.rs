@@ -4573,8 +4573,16 @@ mod launch_cap_tests {
                             "TOOLBOX.ELF holds an endpoint other than net, clock, sound.0 and the input server's");
                     assert_eq!((c.perms, c.transfer), (CapPerms::READ, false), "TOOLBOX.ELF observes, it does not act");
                 }
-                // The root directory, read-only: it names, it cannot write.
-                CapKind::Node => assert_eq!((c.perms, c.target), (CapPerms::READ, MaybeStr::from_bytes(b"/"))),
+                // The root directory, read-only: it names, it cannot write. The
+                // trees the file tools change are the shell's own and no others.
+                CapKind::Node if c.target == MaybeStr::from_bytes(b"/") => assert_eq!(c.perms, CapPerms::READ),
+                CapKind::Node => {
+                    let t = c.target.as_bytes();
+                    assert!(t == b"/tmp" || t == b"/fat", "TOOLBOX.ELF holds a tree other than /fat and /tmp (the stick is the shell's alone)");
+                    assert_eq!((c.perms, c.transfer), (CapPerms::RW, false));
+                    assert!(topo.caps_of(sh).iter().any(|s| s.kind == CapKind::Node && s.target == c.target && s.perms == c.perms),
+                            "a tool changes only what the shell that starts it may change");
+                }
                 CapKind::MemObj => assert!(
                     c.target == MaybeStr::from_bytes(b"inspect.public") || c.target == MaybeStr::from_bytes(b"inspect.admin"),
                     "TOOLBOX.ELF holds a memory object other than the introspection regions"),

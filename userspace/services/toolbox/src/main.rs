@@ -47,13 +47,14 @@ mod input;
 #[path = "log_view.rs"]
 mod log_view;
 mod metrics_view;
+mod native;
 mod ntp;
 mod ps_view;
 mod sound;
 mod vm;
 mod window;
 
-const PATH_MAX: usize = 128;
+const PATH_MAX: usize = azos_coreutils::path::PATH_MAX;
 
 fn put(fd: u64, b: &[u8]) -> isize {
     let mut done = 0usize;
@@ -107,39 +108,11 @@ fn fail(what: &[u8], why: &[u8]) {
 
 /// `p` made absolute against the working directory, NUL-terminated.
 fn absolute(p: &[u8], out: &mut [u8; PATH_MAX + 1]) -> Option<usize> {
-    let mut n = 0usize;
-    let mut push = |part: &[u8], n: &mut usize| -> Option<()> {
-        for comp in part.split(|&b| b == b'/') {
-            match comp {
-                b"" | b"." => {}
-                b".." => {
-                    while *n > 0 && out[*n - 1] != b'/' {
-                        *n -= 1;
-                    }
-                    *n = n.saturating_sub(1);
-                }
-                c => {
-                    if *n + 1 + c.len() > PATH_MAX {
-                        return None;
-                    }
-                    out[*n] = b'/';
-                    out[*n + 1..*n + 1 + c.len()].copy_from_slice(c);
-                    *n += 1 + c.len();
-                }
-            }
-        }
-        Some(())
-    };
-    if p.first() != Some(&b'/') {
-        push(sys::cwd(), &mut n)?;
-    }
-    push(p, &mut n)?;
-    if n == 0 {
-        out[0] = b'/';
-        n = 1;
-    }
-    out[n] = 0;
-    Some(n)
+    let path = azos_coreutils::path::PathBuf::resolve(sys::cwd(), p).ok()?;
+    let b = path.as_bytes();
+    out[..b.len()].copy_from_slice(b);
+    out[b.len()] = 0;
+    Some(b.len())
 }
 
 /// Copy `from` to fd 1. Returns an exit code.
@@ -914,6 +887,55 @@ fn read_log_file(root: u32, slot: u8, f: &mut dyn FnMut(&[u8]) -> bool) {
     let _ = sys::close_typed(h as u32);
 }
 
+/// Run `name` if it is one of the basic utilities (`azos_coreutils`), on this
+/// task's files and standard streams.
+fn coreutil(name: &[u8]) -> Option<i32> {
+    if !azos_coreutils::is_tool(name) {
+        return None;
+    }
+    // At most `SPAWN_ARGC_MAX` words, the name first.
+    let mut argv: [&[u8]; 16] = [b""; 16];
+    let mut n = 0;
+    for i in 1..sys::argc().min(argv.len()) {
+        argv[n] = sys::arg(i).unwrap_or(b"");
+        n += 1;
+    }
+    let need = azos_coreutils::scratch_bytes(name);
+    let mut small = [0u8; azos_coreutils::SMALL_SCRATCH_BYTES];
+    let scratch: &mut [u8] = if need <= small.len() {
+        &mut small[..need]
+    } else {
+        match shared_scratch(need) {
+            Some(s) => s,
+            None => {
+                fail(name, b"no memory for its working buffer");
+                return Some(1);
+            }
+        }
+    };
+    let mut host = native::Native::new();
+    let code = azos_coreutils::run(&mut host, name, &argv[..n], scratch)?;
+    // A reader that went away is the tool being done, not a failure.
+    let _ = host.flush();
+    Some(code)
+}
+
+/// `bytes` of fresh memory: a memory object of this task's own, mapped.
+fn shared_scratch(bytes: usize) -> Option<&'static mut [u8]> {
+    let pages = bytes.div_ceil(4096) as u64;
+    let cap = sys::shm_create_typed(pages, sys::SHM_RW);
+    if cap < 0 {
+        return None;
+    }
+    let va = sys::shm_map_typed(cap as u32);
+    if va <= 0 {
+        return None;
+    }
+    // SAFETY: the mapping is `pages` pages of read-write memory that nothing
+    // else in this task refers to, kept for the task's life.
+    Some(unsafe { core::slice::from_raw_parts_mut(va as *mut u8, bytes) })
+}
+
 #[sys::main(panic_exit = 70)]
 fn main() -> i32 {
     let name = sys::arg(0).unwrap_or(b"");
@@ -940,10 +962,13 @@ fn main() -> i32 {
         b"wc" => wc(),
         b"window" => window::run(),
         b"yes" => yes(),
-        _ => {
-            fail(b"toolbox", b"run as one of: args beep cat echo false fsck host input inspect log ls ntp ps sleep spin true vm wc window yes");
-            2
-        }
+        _ => match coreutil(base) {
+            Some(code) => code,
+            None => {
+                fail(b"toolbox", b"run as one of: args beep cat echo false fsck host input inspect log ls ntp ps sleep spin true vm wc window yes, or a basic utility (azos_coreutils::NAMES)");
+                2
+            }
+        },
     };
     code
 }

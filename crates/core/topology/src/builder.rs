@@ -2902,16 +2902,8 @@ const SH_CAPS_BASE: &[CapSpec] = &[
         perms: CapPerms::EXEC,
         target: MaybeStr::from_bytes(TASK_WHY_IMAGE), transfer: false, ops: 0,
     },
-    CapSpec {
-        kind: CapKind::Node,
-        perms: CapPerms::RW,
-        target: MaybeStr::from_bytes(b"/fat"), transfer: false, ops: 0,
-    },
-    CapSpec {
-        kind: CapKind::Node,
-        perms: CapPerms::RW,
-        target: MaybeStr::from_bytes(b"/tmp"), transfer: false, ops: 0,
-    },
+    FAT_RW,
+    TMP_RW,
     TASK_VIEW_CAP,
     // The root directory ([`ROOT_RO`]) the shell opens its paths beneath: a
     // redirection or `mkdir` changes only where `/fat` or `/tmp` (above)
@@ -3815,11 +3807,12 @@ const TOOLBOX_AUDIO_CAP: CapSpec = CapSpec {
 /// warrant); `READ` on the `net` and `clock` endpoints (`host`, `ntp`) and
 /// `WRITE` on `volume.0` (`fsck`); the
 /// audio server's endpoint when the build has it (Kconfig AUDIOD), else the
-/// sound endpoint when the build has the device (`beep`); the read-only root
+/// sound endpoint when the build has the device (`beep`); the shell's
+/// `/fat` and `/tmp` write trees for the file tools; the read-only root
 /// directory ([`ROOT_RO`]); and the call rights on the input server's and the
 /// compositor's endpoints with their rows.
-const TOOLBOX_CAPS_BUILT: ([CapSpec<'static>; 10], usize) = {
-    let mut caps = [ROOT_RO; 10];
+const TOOLBOX_CAPS_BUILT: ([CapSpec<'static>; 12], usize) = {
+    let mut caps = [ROOT_RO; 12];
     let mut n = 0;
     caps[n] = TASK_VIEW_CAP;
     n += 1;
@@ -3842,6 +3835,12 @@ const TOOLBOX_CAPS_BUILT: ([CapSpec<'static>; 10], usize) = {
         caps[n] = TOOLBOX_SOUND_CAP;
         n += 1;
     }
+    // The trees the file tools (`cp`, `mv`, `rm`, `mkdir`, `touch`, `tee`) may
+    // change: the shell's `/fat` and `/tmp`. Not the USB stick, which only
+    // the shell writes (a redirection).
+    caps[n] = FAT_RW;
+    caps[n + 1] = TMP_RW;
+    n += 2;
     caps[n] = ROOT_RO;
     n += 1;
     // With the input server's row, the call right on `endpoint.input` (`input
@@ -3895,8 +3894,9 @@ const INSPECT_LOGINS_CAP: CapSpec = inspect_view(b"inspect.logins");
 const INSPECT_CLOCK_CAP: CapSpec = inspect_view(b"inspect.clock");
 
 /// Under `CONSOLE_LOCKDOWN`: no task view and no introspection region, as
-/// before wave 12; the tools still read files, beneath the read-only root.
-const TOOLBOX_CAPS_LOCKDOWN: &[CapSpec] = &[ROOT_RO];
+/// before wave 12; the tools read files beneath the root and change only
+/// `/tmp`, as the shell does.
+const TOOLBOX_CAPS_LOCKDOWN: &[CapSpec] = &[TMP_RW, ROOT_RO];
 
 /// Under `CONSOLE_LOCKDOWN`: the volume is not the shell's to change, and it
 /// may not start a privileged tool (no launch grant on `POWER.ELF`). It still
@@ -3907,11 +3907,7 @@ const SH_CAPS_LOCKDOWN: &[CapSpec] = &[
         perms: CapPerms::EXEC,
         target: MaybeStr::from_bytes(TASK_TOOLBOX_IMAGE), transfer: false, ops: 0,
     },
-    CapSpec {
-        kind: CapKind::Node,
-        perms: CapPerms::RW,
-        target: MaybeStr::from_bytes(b"/tmp"), transfer: false, ops: 0,
-    },
+    TMP_RW,
     ROOT_RO,
 ];
 
