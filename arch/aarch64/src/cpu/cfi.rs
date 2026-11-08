@@ -138,8 +138,11 @@
 //! `GCSPUSHM` = `sys #3, c7, c7, #0`, `GCSPOPM` = `sysl #3, c7, c7, #1`,
 //! `GCSSS1` = `sys #3, c7, c7, #2`, `GCSSS2` = `sysl #3, c7, c7, #3`,
 //! `GCSSTR x1, [x0]` = 0xd91f0c01, `GCSB DSYNC` = `hint #19`. Not in that
-//! file, so still to check against the Arm ARM before use: the `PIR_EL1`
-//! GCS nibble and the GCS exception class.
+//! file, so still to check against the Arm ARM before the S1PIE work starts:
+//! that stage 1 has no GCS memory under the direct permissions (the premise
+//! above), that `HCRX_EL2.GCSEn` 0 turns GCS off at EL1 and EL0 rather than
+//! only trapping its registers, the `PIR_EL1` GCS nibble and the GCS
+//! exception class.
 //!
 //! BTI and GCS are independent: `ret x9` is not BTI-checked and is
 //! GCS-checked, a `br` is the reverse.
