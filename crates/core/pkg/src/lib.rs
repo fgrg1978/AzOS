@@ -162,6 +162,15 @@ pub enum Refusal {
         /// The import, in the row.
         import: u16,
     },
+    /// Received name `receive` of row `row` names an endpoint outside the
+    /// warrant ceiling of the package's signer (a row that receives `term` is
+    /// handed the terminal a shell lends its job).
+    OutsideReceives {
+        /// The row, among the rows the package added.
+        row: u16,
+        /// The received name, in the row.
+        receive: u16,
+    },
     /// Row `row` asks for real-time scheduling and the signer may not.
     RealTime(u16),
     /// Row `row` asks for more frames than the signer's ceiling.
@@ -186,7 +195,7 @@ impl Refusal {
     /// (1 container, 2 algorithm, 3 signer, 4 signature, 5 metadata, 6 images,
     /// 7 hardware, 8 ABI, 9 interface level, 10 foreign section, 11 rows,
     /// 12 rows and images, 13 warrants, 14 real time, 15 frames, 16
-    /// admission, 17 imports, 18 epoch, 19 boot admission, 20 unconfirmed trial, 21 volume, 22 repository index, 23 upgrade, 24 floor quota), bits 0..24 the step's own value (the algorithm id, the
+    /// admission, 17 imports, 18 epoch, 19 boot admission, 20 unconfirmed trial, 21 volume, 22 repository index, 23 upgrade, 24 floor quota, 25 receives), bits 0..24 the step's own value (the algorithm id, the
     /// image or interface index, the row, the grant).
     pub const fn code(&self) -> u64 {
         let (step, low) = match *self {
@@ -214,6 +223,7 @@ impl Refusal {
             Refusal::Index(w) => (22, w as u64),
             Refusal::Upgrade(w) => (23, w as u64),
             Refusal::FloorQuota(q) => (24, q as u64),
+            Refusal::OutsideReceives { row, receive } => (25, (row as u64) << 12 | (receive as u64 & 0xFFF)),
         };
         step << 24 | low
     }

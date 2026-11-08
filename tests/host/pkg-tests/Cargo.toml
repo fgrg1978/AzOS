@@ -14,6 +14,7 @@ description = "Host-side tests for signed application packages (crates/core/pkg)
 #   cargo test --offline --features pkg-signer-canary
 #   cargo test --offline --features pkg-image-canary
 #   cargo test --offline --features pkg-import-canary
+#   cargo test --offline --features pkg-receive-canary
 #   cargo test --offline --features pkg-epoch-canary
 #   cargo test --offline --features pkg-trial-canary
 #   cargo test --offline --features pkg-floor-canary
@@ -35,6 +36,7 @@ pkg-verify-skip-canary = ["azos_pkg/pkg-verify-skip-canary"]
 pkg-signer-canary = ["azos_pkg/pkg-signer-canary"]
 pkg-image-canary = ["azos_pkg/pkg-image-canary"]
 pkg-import-canary = ["azos_pkg/pkg-import-canary"]
+pkg-receive-canary = ["azos_pkg/pkg-receive-canary"]
 pkg-epoch-canary = ["azos_pkg/pkg-epoch-canary"]
 pkg-trial-canary = ["azos_pkg/pkg-trial-canary"]
 pkg-floor-canary = ["azos_pkg/pkg-floor-canary"]

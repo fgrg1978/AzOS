@@ -152,6 +152,7 @@ fn every_refusal_prints_the_name_of_its_step() {
         (Refusal::Upgrade(azos_pkg::index::UpgradeWhy::Downgrade), "older than the installed version"),
         (Refusal::Upgrade(azos_pkg::index::UpgradeWhy::BelowFloor), "below the security floor"),
         (Refusal::FloorQuota(5), "floor quota"),
+        (Refusal::OutsideReceives { row: 0, receive: 0 }, "receives"),
     ];
     for (r, name) in cases {
         assert_eq!(azos_packages::step_name(r.code()), name, "{r:?}");

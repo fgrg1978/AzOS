@@ -27,6 +27,7 @@ pkg-image-canary = []
 # Skips the check of a row's imports against the signer's warrants: a package
 # whose signer holds no `endpoint:` warrant for a name still imports it.
 pkg-import-canary = []
+pkg-receive-canary = []
 # Skips the epoch floor: a package signed against a security epoch below the
 # device's confirmed floor is still admitted.
 pkg-epoch-canary = []

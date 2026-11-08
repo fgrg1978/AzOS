@@ -144,6 +144,13 @@ fn merge<'a>(v: &Verified<'_, 'a>, rows: &'a [u8], topo: &mut Topology<'a>) -> R
                 return Err(Refusal::OutsideImports { row: r as u16, import: m as u16 });
             }
         }
+        // So is a received name: the shell offers the terminal it lends a job to
+        // every program it starts, and moves it into any row that receives it.
+        for (m, name) in topo.receives_of(task).iter().enumerate() {
+            if !cfg!(feature = "pkg-receive-canary") && !topo.signer_covers_import(signer, name) {
+                return Err(Refusal::OutsideReceives { row: r as u16, receive: m as u16 });
+            }
+        }
         // Real time, in the broad sense: a reservation, a priority in the
         // band, memory pinned for the task's life, a poller that spins for
         // the ring. All of it is the owner's to give, with `rt = true`.

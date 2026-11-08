@@ -214,6 +214,27 @@ fn a_row_that_imports_a_name_outside_the_signers_ceiling_is_refused() {
     assert!(install(&imports("\"term\""), &wide).is_ok());
 }
 
+/// A received name is authority too: the shell moves the terminal it lends a
+/// job into any row that receives `term`, so a row whose signer has no
+/// `endpoint:` warrant for the name is refused, as an import is.
+///
+/// **Canary** `pkg-receive-canary`: the package installs.
+#[test]
+fn a_row_that_receives_a_name_outside_the_signers_ceiling_is_refused() {
+    let receives = |names: &str| {
+        let mut s = Spec::acme();
+        // `receives` is a format-8 key.
+        s.rows = format!("format = 8\n[task.ACME.ELF]\nclass = \"best_effort\"\npriority = 20\nmem_pages = 32\nreceives = [{names}]\ncaps = []\n");
+        build(&s, &author())
+    };
+    let d = dev();
+    assert_eq!(install(&receives("\"term\""), &d), Err(Refusal::OutsideReceives { row: 0, receive: 0 }));
+    let other = Device0::with_signers(&signer_text("acme", &author(), "mem_pages_max = 64\nwarrants = [\"memobj:term\"]\n"));
+    assert_eq!(install(&receives("\"term\""), &other), Err(Refusal::OutsideReceives { row: 0, receive: 0 }));
+    let wide = Device0::with_signers(&signer_text("acme", &author(), "mem_pages_max = 64\nwarrants = [\"endpoint:te\"]\n"));
+    assert!(install(&receives("\"term\""), &wide).is_ok());
+}
+
 /// **Canary** (by hand): `admit.rs` bounding the base alone (`one = base`):
 /// red at "a ceiling past the signer's max".
 #[test]

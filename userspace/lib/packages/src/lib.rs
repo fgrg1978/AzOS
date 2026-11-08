@@ -349,15 +349,15 @@ pub const UPGRADE_REASONS: [&str; 12] = [
     "the previous upgrade is not confirmed yet",
 ];
 
-/// The names of the steps of a status word, by step number: 1..17 are
+/// The names of the steps of a status word, by step number: 1..25 are
 /// `azos_pkg::Refusal::code`'s, 32.. the installer's [`step`]s. Empty where no
 /// step has the number.
 pub fn step_name(status: u64) -> &'static str {
-    const PACKAGE: [&str; 25] = [
+    const PACKAGE: [&str; 26] = [
         "ok", "container", "algorithm", "signer", "signature", "metadata", "images", "hardware", "abi",
         "interface level", "foreign section", "rows", "rows and images", "warrants", "real time", "frames",
         "admission", "imports", "epoch floor", "boot admission", "unconfirmed trial", "volume", "repository index",
-        "upgrade", "floor quota",
+        "upgrade", "floor quota", "receives",
     ];
     let detail = ((status & 0xFF_FFFF) as usize).wrapping_sub(1);
     match step_of(status) {

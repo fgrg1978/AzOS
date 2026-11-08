@@ -14226,6 +14226,7 @@ pkg_canary_row pkg-signer-canary cases::a_package_signed_by_another_author_is_re
     service::unsigned_wrong_signer_and_neverallow_manifests_are_refused_and_recorded
 pkg_canary_row pkg-image-canary cases::an_image_that_is_not_the_signed_one_is_refused
 pkg_canary_row pkg-import-canary cases::a_row_that_imports_a_name_outside_the_signers_ceiling_is_refused
+pkg_canary_row pkg-receive-canary cases::a_row_that_receives_a_name_outside_the_signers_ceiling_is_refused
 pkg_canary_row neverallow-canary cases::a_manifest_that_breaks_a_neverallow_rule_is_refused \
     service::unsigned_wrong_signer_and_neverallow_manifests_are_refused_and_recorded
 
