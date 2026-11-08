@@ -27,6 +27,21 @@ containment is armed, brake and coast are carried out and forward and backward
 are refused. Refusing a stop at the capability layer would leave a task that may
 drive unable to stop.
 
+**The drivetrain's command.** `command(left, right)` (percent per wheel, negative
+backward) does not write a wheel: it publishes the command the drivetrain's
+effect loop (`rt-motor`) applies on every control tick, through the envelope,
+the PID and the motor-command watchdog. It needs `WRITE` on both wheels without
+the containment step (`Caller::also_carries`): `(0, 0)` is always carried out,
+any other command is `REFUSED` while halted. Each wheel's effect goes through
+the gate in turn, the publication inside the right wheel's, so the command
+reaches the loop only with both admitted; neither op can fail once admitted,
+so the gate never compensates (a compensation would put the kernel's hold on a
+wheel for a command that moved nothing). Each wheel then names its caller, and
+the caller's exit puts a stop on the loop's channel as well as on the wheels
+(`motor_commander::exit_stop`). It is the deliberative layer's way to command
+the robot from ring 3 once the behaviour engine runs there; nothing calls it
+yet.
+
 **The gate.** `azos_actuation::effect_gate` is the second check. It is built with
 Kconfig `EFFECT_WRITE_AHEAD` (default `y` when the robot domain is built in) and
 installed at boot by `azos_actuation::gate::install`. With it off the gate is

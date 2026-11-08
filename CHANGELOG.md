@@ -41,6 +41,18 @@ releases yet. The ABI crate keeps its own file,
   `READ` on its partition, its endpoint and the shared region `MemObj
   fs.share`, nothing else; a short read the server does not call the end is
   refused ([Documentation/storage.md](Documentation/storage.md)).
+- Extension contract level 4: an extension registers its hard-deadline loops
+  over an effect as `ext_api::EffectLoop` descriptors (`BootHook::EffectLoop`:
+  name, body, priority), and the base creates each one at the task phase on the
+  effect loops' CPU (Kconfig `TASK_CONTROL_PLACE`), exempt from the real-time
+  band's budget and registered as a safety task. The robot registers `rt-motor`
+  and `flight-ctrl`; the kernel's task list no longer names them
+  ([Documentation/effects.md](Documentation/effects.md)).
+
+- `Motor::command(left, right)`: the drivetrain's command published to its
+  effect loop, both wheels' effects through the gate, `(0, 0)` always carried
+  out, motion refused while halted, and a dead commander's command stopped. No
+  caller yet: it is the ring-3 behaviour engine's output path.
 
 - kibi, the ported terminal editor, is back as `KIBI.ELF` (Kconfig
   `USERSPACE_KIBI`, on for the desktop and server presets): the shell lends the
