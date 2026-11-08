@@ -33,7 +33,9 @@ import datetime
 ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../.."))
 HOME = os.path.expanduser("~")
 sys.path.insert(0, os.path.join(ROOT, "tools/lint"))
+sys.path.insert(0, os.path.join(ROOT, "tools/lib"))
 import third_party_versions as tpv  # noqa: E402  (the pin/CVE parsing is its own)
+import azos_tools  # noqa: E402  (the one brain-repo resolver)
 
 # ── trees: the .config symbol that makes a tree needed, and where the build reads it ──
 # u-boot has no symbol: only the netboot gate row (tools/gate/netboot/uboot_build.sh) builds it.
@@ -114,8 +116,8 @@ INVENTORY = [
     dict(id="advisory-db", cat="gate", kind="advisory", provides=[],
          used="tools/lint/advisories.sh check (offline, against third_party/advisory-db); `make fetch ADVISORIES=1` refreshes the tracked snapshot when it is older than its 45-day limit",
          pinned="@third_party/advisory-db/SNAPSHOT", source="https://github.com/RustSec/advisory-db", sum="@third_party/advisory-db/SNAPSHOT"),
-    dict(id="brain-python", cat="optional", kind="pip", venv="brain", requirements="../AzOSRobotBrain/requirements.lock",
-         optional_requirements="../AzOSRobotBrain/requirements-optional.lock", provides=[],
+    dict(id="brain-python", cat="optional", kind="pip", venv="brain", requirements="requirements.lock",
+         optional_requirements="requirements-optional.lock", provides=[],
          used="the AzOSRobotBrain tests and protocol sync (make ci-full); only `make fetch BRAIN=1`; a venv under $AZOS_OUT, never the system pip; "
               "BRAIN_OPTIONAL=1 adds matplotlib, Pillow, scipy, opencv-python, astropy",
          pinned="the exact versions of AzOSRobotBrain/requirements.lock", source="https://pypi.org (hashes in the lock files)", sum="sha256 per file in the lock files"),
@@ -372,10 +374,11 @@ def build_python_ok():
 
 
 def brain_locks(root, it, with_optional):
+    """The brain's lock files, inside the repo the shared resolver finds (none: no brain)."""
     keys = ["requirements"] + (["optional_requirements"] if with_optional else [])
-    sibling = os.environ.get("BRAIN_DIR")
-    paths = [it[k] if not sibling else os.path.join(sibling, os.path.basename(it[k])) for k in keys]
-    return [os.path.normpath(os.path.join(root, p)) for p in paths]
+    _state, brain = azos_tools.brain_state()
+    base = brain or os.path.join(os.path.dirname(root), azos_tools.BRAIN_REPO_NAME)
+    return [os.path.join(base, it[k]) for k in keys]
 
 
 def brain_stamp(locks):
