@@ -139,6 +139,8 @@ const TASK_MLSRV_IMAGE: &[u8] = b"MLSRV.ELF";
 // IMAGE. `start` is set only under `ring3-driver-start`
 // (QEMU; see `crates/core/topology/Cargo.toml`). Each holds exactly what its
 // device needs: the one PWM channel or I2C slave behind it.
+/// Does the topology declare the brain link's row? Only the robot extension has the link.
+pub const BRAIN_LINK_ROW: bool = azos_limits::USE_ROBOT;
 /// The buzzer ring-3 host's image, the name of its row.
 pub const TASK_BUZZDRV_IMAGE: &[u8] = b"BUZZDRV.ELF";
 /// Does this topology declare the buzzer's ring-3 host? Whenever the volume
@@ -799,13 +801,16 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
 
     // A kernel task's row (read for admission, never applied); its number is
     // still one its class has, so no row of this topology relies on the clamp.
-    topo.push_task(
-        MaybeStr::from_bytes(TASK_BRAIN_LINK),
-        MaybeStr::from_bytes(NAME_BEST_EFFORT),
-        SERVICE_PRIORITY,
-        &[],
-    )
-    .expect("default_minimal_topology: brain_link push failed");
+    // Only the robot extension has the brain link.
+    if BRAIN_LINK_ROW {
+        topo.push_task(
+            MaybeStr::from_bytes(TASK_BRAIN_LINK),
+            MaybeStr::from_bytes(NAME_BEST_EFFORT),
+            SERVICE_PRIORITY,
+            &[],
+        )
+        .expect("default_minimal_topology: brain_link push failed");
+    }
 
     // P1 migration seed for the autorun task: Motor(0)/Motor(1) RW, the free
     // PWM channel and GPIO pin, the IMU READ,
@@ -1341,10 +1346,8 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
 
     // Board service registry rows — see the block comment above
     // `TASK_GPIODRV_IMAGE`. Pushed LAST, after the (feature-gated) IPC
-    // canary rows, so a board build (no features) keeps rows 0-2 exactly as
-    // they were (supervisor, brain_link, autorun) and these land at 3-5;
-    // gate builds with `ipc-endpoint-canary` keep EPSRV.ELF/VSSRV.ELF at
-    // 3-4 and these land at 5-7. No existing index-pinned assertion moves.
+    // canary rows. Nothing looks a row up by its index: tests and the kernel
+    // find rows by name.
     //
     // Each program row below exists when the volume carries its image
     // (Kconfig `USERSPACE_<IMAGE>`): always outside a small board, where
@@ -4006,7 +4009,7 @@ mod tests {
         // BRAINCLI.ELF — see the block comment above `TASK_GPIODRV_IMAGE`),
         // the ML service (MLSRV.ELF) and the two ring-3 driver rows
         // (BUZZDRV.ELF/INADRV.ELF).
-        assert_eq!(topo.tasks_len(), 9);
+        assert_eq!(topo.tasks_len(), 9 - !BRAIN_LINK_ROW as usize);
         assert!(topo.admission_check().is_ok());
 
         // Budgets sum to exactly 100.

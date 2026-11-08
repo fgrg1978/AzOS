@@ -1885,7 +1885,7 @@ mod builder_tests {
     }
 
     #[test]
-    fn default_topology_has_supervisor_and_brain_link() {
+    fn default_topology_has_supervisor_and_the_robots_brain_link() {
         let t = default_minimal();
         // supervisor, brain_link, autorun (P1 cap-seed migration entry —
         // see `default_topology_has_autorun_motor_grants` below).
@@ -1910,6 +1910,7 @@ mod builder_tests {
         // +1 with transparent RPC: the RPC server (RPCSRV.ELF).
         // +1 with the structured kernel log: its sink (LOGD.ELF).
         assert_eq!(t.tasks_len(), if cfg!(feature = "ipc-endpoint-canary") { 28 } else { 26 }
+            - !azos_topology::builder::BRAIN_LINK_ROW as usize
             - 2 * !azos_topology::builder::PKGD_ROW as usize
             - !azos_topology::builder::INADRV_ROW as usize
             - !azos_topology::builder::BUZZDRV_ROW as usize
@@ -1932,10 +1933,11 @@ mod builder_tests {
             .expect("supervisor present");
         let class = t.find_class(&supervisor.class_name).unwrap();
         assert_eq!(class.name, MaybeStr::from_bytes(b"safety_critical"));
-        let brain = t
-            .find_task(&MaybeStr::from_bytes(b"brain_link"))
-            .expect("brain_link present");
-        assert!(t.find_class(&brain.class_name).is_some());
+        let brain = t.find_task(&MaybeStr::from_bytes(b"brain_link"));
+        assert_eq!(brain.is_some(), azos_topology::builder::BRAIN_LINK_ROW, "the brain link's row is the robot extension's");
+        if let Some(brain) = brain {
+            assert!(t.find_class(&brain.class_name).is_some());
+        }
     }
 
     /// The board service registry (owner decision 2026-09-24): the three
@@ -2329,6 +2331,7 @@ mod state_tests {
         // +1 with transparent RPC: the RPC server (RPCSRV.ELF).
         // +1 with the structured kernel log: its sink (LOGD.ELF).
         assert_eq!(t.tasks_len(), if cfg!(feature = "ipc-endpoint-canary") { 28 } else { 26 }
+            - !azos_topology::builder::BRAIN_LINK_ROW as usize
             - 2 * !azos_topology::builder::PKGD_ROW as usize
             - !azos_topology::builder::INADRV_ROW as usize
             - !azos_topology::builder::BUZZDRV_ROW as usize
@@ -2377,6 +2380,7 @@ mod state_tests {
         // +1 with transparent RPC: the RPC server (RPCSRV.ELF).
         // +1 with the structured kernel log: its sink (LOGD.ELF).
         assert_eq!(t.tasks_len(), if cfg!(feature = "ipc-endpoint-canary") { 28 } else { 26 }
+            - !azos_topology::builder::BRAIN_LINK_ROW as usize
             - 2 * !azos_topology::builder::PKGD_ROW as usize
             - !azos_topology::builder::INADRV_ROW as usize
             - !azos_topology::builder::BUZZDRV_ROW as usize
@@ -3825,7 +3829,9 @@ mod row_sched_tests {
         }
         // Rows that name no task the kernel creates; resolved all the same.
         assert_eq!(applied(&t, b"supervisor"), ("safety_critical".into(), 0, 0));
-        assert_eq!(applied(&t, b"brain_link"), ("best_effort".into(), 24, 24));
+        if azos_topology::builder::BRAIN_LINK_ROW {
+            assert_eq!(applied(&t, b"brain_link"), ("best_effort".into(), 24, 24));
+        }
         // Gate-only rows: the servers of `autorun` (16), one above it.
         #[cfg(feature = "ipc-endpoint-canary")]
         {
