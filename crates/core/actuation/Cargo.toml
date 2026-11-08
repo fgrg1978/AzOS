@@ -44,7 +44,10 @@ ring-reserve-canary = []
 # a busy writer handle; a safety record or a stop does not spill into another
 # queue; no push past the watermark wakes the flusher; a rotation calls the
 # staged records durable whatever the old file's fsync said; the flusher steps
-# over an in-flight number without waiting.
+# over an in-flight number without waiting; a latch carried across a rotation
+# is written as state, not history; a rotation trusts its fsync after the
+# batch's own failed; a stepped-over number does not hold the durable mark; a
+# queue seen full is asked again, and any queue's full refuses an effect.
 durable-merge-canary = []
 durable-full-canary = []
 durable-staging-canary = []
@@ -53,6 +56,10 @@ durable-spill-canary = []
 durable-nowake-canary = []
 durable-rotate-sync-canary = []
 durable-gap-skip-canary = []
+durable-resnap-canary = []
+durable-rotate-trust-canary = []
+durable-stall-cap-canary = []
+durable-full-mask-canary = []
 # Gate canary only (host suite `behavior-tests`): the telemetry encoders push
 # into the flight recorder's queues instead of the record region's, so a flood of
 # telemetry takes the queues' room and the telemetry tests must go red.

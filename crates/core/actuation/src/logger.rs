@@ -189,6 +189,11 @@ pub const LOG_EVT_ERROR: u8 = 0x08;
 /// record (`effect_gate`): committed before the device op it describes. Its
 /// payload is the effect's, not `log_actuator_cmd`'s channel values.
 pub const LOG_FLAG_EFFECT: u8 = 0x01;
+/// `flags` of a [`LOG_EVT_SAFETY_VIOLATION`] latch or release written into a
+/// file whose opening state records are newer than it (a record carried
+/// across a rotation): history, which the boot replay does not decide the
+/// latch from.
+pub const LOG_FLAG_HISTORY: u8 = 0x02;
 
 // ── Safety-event codes for `log_safety_violation` ────────────────────────────
 //
@@ -928,7 +933,7 @@ pub const LOG_QUEUES: usize = {
     let (q, cpus) = (azos_limits::LOG_QUEUES as usize, azos_limits::NR_CPUS as usize);
     if q < cpus { q } else { cpus }
 };
-const _: () = assert!(LOG_QUEUES >= 1);
+const _: () = assert!(LOG_QUEUES >= 1 && LOG_QUEUES <= 64);
 
 /// One queued record and its place in the order of every push.
 #[derive(Clone, Copy)]
@@ -1035,10 +1040,12 @@ enum Into {
 }
 
 /// Rounds over every queue a safety, stop or effect record waits for a writer
-/// handle another CPU holds (an ordinary record: two). A holder has interrupts
-/// off for a few stores, so a handle frees in well under a round; the bound
-/// is for a holder that never lets go.
+/// handle another CPU holds (an ordinary record: two), and the time it waits
+/// at most (50 us), whichever ends first. A holder has interrupts off for a
+/// few stores, so a handle frees in well under a round; the bound is for a
+/// holder that never lets go.
 const BUSY_ROUNDS: usize = 1 << 12;
+const BUSY_WAIT_TICKS: u64 = azos_drv_sys::timebase::TIMER_FREQ / 20_000;
 
 /// The CPU whose queue a push tries first.
 fn home_queue() -> usize {
@@ -1087,24 +1094,44 @@ fn queue_push(rec: &LogRecord, admit: Admit) -> Result<Pushed, Refused> {
     let home = home_queue();
     let spill = matches!(admit, Admit::Safety | Admit::Stop) && !cfg!(feature = "durable-spill-canary");
     let rounds = if admit == Admit::Ordinary || cfg!(feature = "durable-busy-canary") { 2 } else { BUSY_ROUNDS };
+    let all = if LOG_QUEUES == 64 { u64::MAX } else { (1u64 << LOG_QUEUES) - 1 };
+    let mut full = 0u64;
+    let mut home_queued = 0;
+    let start = now_ticks();
     for _ in 0..rounds {
         let mut busy = false;
-        let mut home_queued = 0;
         for i in 0..LOG_QUEUES {
             let at = (home + i) % LOG_QUEUES;
+            if full & 1 << at != 0 {
+                continue;
+            }
             match push_into(at, rec, admit) {
                 Into::Pushed(p) => return Ok(p),
                 Into::Busy => busy = true,
-                Into::Full(queued) if !spill => return Err(Refused::Full { queue: at, queued }),
+                // Only the record's own queue decides a refusal, unless it
+                // spills: a queue it reached because its own was busy does not.
+                Into::Full(queued) if !spill && (at == home || cfg!(feature = "durable-full-mask-canary")) => {
+                    return Err(Refused::Full { queue: at, queued });
+                }
                 Into::Full(queued) => {
-                    if i == 0 {
+                    #[cfg(test)]
+                    if let Some(f) = FULL_HOOK.take() {
+                        f(at);
+                    }
+                    if !cfg!(feature = "durable-full-mask-canary") {
+                        full |= 1 << at;
+                    }
+                    if at == home {
                         home_queued = queued;
                     }
                 }
             }
         }
-        if !busy {
+        if full == all || (cfg!(feature = "durable-full-mask-canary") && !busy) {
             return Err(Refused::Full { queue: home, queued: home_queued });
+        }
+        if now_ticks().wrapping_sub(start) > BUSY_WAIT_TICKS {
+            break;
         }
         LOG_BUSY_WAITS.fetch_add(1, Ordering::Relaxed);
         core::hint::spin_loop();
@@ -1236,6 +1263,11 @@ struct Flush {
     staged_n: usize,
     /// The first this many staged records are whole in the open file.
     taken: usize,
+    /// The last fsync of the batch failed and the batch was not written again.
+    sync_failed: bool,
+    /// The lowest number stepped over while its producer was still writing:
+    /// `DURABLE_POS` stays below it until it is written.
+    stalled: Option<u64>,
 }
 
 impl Flush {
@@ -1246,6 +1278,8 @@ impl Flush {
         staged: [Queued::EMPTY; LOG_FLUSH_BATCH_MAX],
         staged_n: 0,
         taken: 0,
+        sync_failed: false,
+        stalled: None,
     };
 }
 
@@ -1595,6 +1629,9 @@ struct OpenLogFile {
     handle:        LogHandle,
     bytes_written: u32,
     serial:        u32,
+    /// Push numbers below this were taken before the file's opening state
+    /// records were read (`write_file_header`).
+    snap:          u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -1857,13 +1894,19 @@ fn logger_flush_locked() -> Result<usize, LogStorageError> {
             // The old file's last word on the records it took: those of the
             // staged batch are durable only if this sync succeeds; otherwise
             // they stay staged and go into the new file again.
+            // A batch whose own fsync failed and was not written again since
+            // is not made durable by a later `Ok` (a failed device flush
+            // followed by one that succeeds proves nothing about the first).
             let synced = storage.fsync(open.handle);
-            if synced.is_ok() || cfg!(feature = "durable-rotate-sync-canary") {
+            let trusted = !st.sync_failed || cfg!(feature = "durable-rotate-trust-canary");
+            if (synced.is_ok() && trusted) || cfg!(feature = "durable-rotate-sync-canary") {
                 total += staged_durable(st, st.taken);
-            } else {
+                LOG_SYNC_FAILS.store(0, Ordering::Relaxed);
+            } else if synced.is_err() {
                 LOG_FLUSH_ERRORS.fetch_add(1, Ordering::Relaxed);
             }
             st.taken = 0;
+            st.sync_failed = false;
             let _ = storage.close(open.handle);
         }
         // Evaluate the bump on its own line: `debug_assert_eq!` does NOT
@@ -1963,6 +2006,10 @@ fn next_record(st: &mut Flush) -> Option<Queued> {
                 "[LOG] record {} was never published ({}): stepped over",
                 st.next, if writing { "its producer did not finish" } else { "not pushed" });
         }
+        if writing {
+            // It may still come: nothing above it is durable until it is.
+            st.stalled = Some(st.stalled.map_or(st.next, |h| h.min(st.next)));
+        }
         st.next += 1;
         rescanned = false;
         spins = 0;
@@ -1975,7 +2022,15 @@ fn staged_durable(st: &mut Flush, n: usize) -> usize {
     if n == 0 {
         return 0;
     }
-    DURABLE_POS.fetch_max(st.staged[n - 1].seq + 1, Ordering::AcqRel);
+    if st.stalled.is_some_and(|h| st.staged[..n].iter().any(|q| q.seq == h)) {
+        st.stalled = None;
+    }
+    let end = st.staged[n - 1].seq + 1;
+    let cap = match st.stalled {
+        Some(h) if !cfg!(feature = "durable-stall-cap-canary") => end.min(h),
+        _ => end,
+    };
+    DURABLE_POS.fetch_max(cap, Ordering::AcqRel);
     st.staged.copy_within(n..st.staged_n, 0);
     st.staged_n -= n;
     st.taken = st.taken.saturating_sub(n);
@@ -2011,10 +2066,19 @@ fn flush_one_batch(storage: &'static dyn LogStorage, st: &mut Flush) -> BatchOut
     if n == 0 {
         return BatchOutcome { consumed: 0, torn: false, failure: None, stop: true };
     }
+    // A latch or release pushed before this file opened is already in its
+    // opening state records, and those are newer: as the file's last word on
+    // the latch it would be older than the truth whenever a power loss cut off
+    // what came after it. It is written as history (`LOG_FLAG_HISTORY`), which
+    // the replay does not take the latch from.
     let mut out = [0u8; LOG_FLUSH_BATCH_MAX * LOG_RECORD_SIZE];
     for (q, raw) in st.staged[..n].iter().zip(out.chunks_exact_mut(LOG_RECORD_SIZE)) {
+        let mut rec = q.rec;
+        if q.seq < open.snap && latch_record(&rec) && !cfg!(feature = "durable-resnap-canary") {
+            rec.flags |= LOG_FLAG_HISTORY;
+        }
         let mut buf = [0u8; LOG_RECORD_SIZE];
-        q.rec.encode(&mut buf);
+        rec.encode(&mut buf);
         raw.copy_from_slice(&buf);
     }
     let end = st.staged[n - 1].seq + 1;
@@ -2030,6 +2094,7 @@ fn flush_one_batch(storage: &'static dyn LogStorage, st: &mut Flush) -> BatchOut
     let len = n * LOG_RECORD_SIZE;
     let mut off = 0usize;
     let mut failure: Option<LogStorageError> = None;
+    st.sync_failed = false;
     while off < len {
         match storage.write(open.handle, &out[off..len]) {
             Ok(0) => break,                  // no progress: stop, don't spin
@@ -2065,6 +2130,7 @@ fn flush_one_batch(storage: &'static dyn LogStorage, st: &mut Flush) -> BatchOut
     if let Err(e) = storage.fsync(open.handle) {
         LOG_FLUSH_ERRORS.fetch_add(1, Ordering::Relaxed);
         LOG_SYNC_FAILS.fetch_add(1, Ordering::Relaxed);
+        st.sync_failed = true;
         return BatchOutcome { consumed: 0, torn: false, failure: Some(e), stop: true };
     }
     LOG_SYNC_FAILS.store(0, Ordering::Relaxed);
@@ -2555,6 +2621,8 @@ pub fn logger_analytics_reset() {
     LOG_DROPPED.store(0, Ordering::Relaxed);
     LOG_FLUSH_ERRORS.store(0, Ordering::Relaxed);
     LOG_BUSY.store(0, Ordering::Relaxed);
+    LOG_BUSY_WAITS.store(0, Ordering::Relaxed);
+    LOG_HOLES.store(0, Ordering::Relaxed);
     LOG_INIT_TS.store(now_ticks(), Ordering::Relaxed);
 }
 
@@ -2639,6 +2707,12 @@ fn reserve_admit(payload: &[u8; LOG_PAYLOAD_BYTES]) -> Admit {
     } else {
         Admit::Ordinary
     }
+}
+
+/// A `SAFETY_ESTOP` that latches or releases: the state a file's opening
+/// records carry.
+fn latch_record(rec: &LogRecord) -> bool {
+    rec.kind == LOG_EVT_SAFETY_VIOLATION && rec.payload[0] == SAFETY_ESTOP && estop_action_latches(rec.payload[1]).is_some()
 }
 
 /// A record that uses the reserve found no slot: count a latching e-stop as
@@ -3047,6 +3121,9 @@ fn scan_open_log_file_body(
             let rec = LogRecord::decode(&buf);
             if rec.kind != LOG_EVT_SAFETY_VIOLATION { continue; }
             if rec.payload[0] == SAFETY_ESTOP && estop_action_latches(rec.payload[1]).is_some() {
+                if rec.flags & LOG_FLAG_HISTORY != 0 {
+                    continue;
+                }
                 scan.estop = Some(rec.payload[1]);
             } else if rec.payload[0] == SAFETY_RELEASE_NONCE {
                 let lo = u32::from_le_bytes(rec.payload[4..8].try_into().unwrap()) as u64;
@@ -3133,7 +3210,7 @@ fn open_file(serial: u32, notice_already_written: bool) -> Result<OpenLogFile, L
     let handle = storage.open(serial)?;
 
     let mut buf = [0u8; LOG_FILE_HEADER_BYTES + SNAPSHOT_MAX * LOG_RECORD_SIZE];
-    let len = write_file_header(serial, &mut buf);
+    let (len, snap) = write_file_header(serial, &mut buf);
     let mut off = 0;
     while off < len {
         match storage.write(handle, &buf[off..len])? {
@@ -3143,7 +3220,7 @@ fn open_file(serial: u32, notice_already_written: bool) -> Result<OpenLogFile, L
     }
     let _ = storage.fsync(handle);
 
-    Ok(OpenLogFile { handle, bytes_written: len as u32, serial })
+    Ok(OpenLogFile { handle, bytes_written: len as u32, serial, snap })
 }
 
 /// The header of session `serial`'s file and, right behind it in the same
@@ -3151,8 +3228,12 @@ fn open_file(serial: u32, notice_already_written: bool) -> Result<OpenLogFile, L
 /// e-stop latch, the release nonce floor and the release-key pin as of this
 /// open, one record each when set. Written whole before anything else, so a
 /// file that has them is complete in them: [`FileScan::snapshot`] holds only
-/// when the header's count of records is on the medium. Returns the bytes.
-fn write_file_header(serial: u32, buf: &mut [u8; LOG_FILE_HEADER_BYTES + SNAPSHOT_MAX * LOG_RECORD_SIZE]) -> usize {
+/// when the header's count of records is on the medium. Returns the bytes and
+/// the push number the state was read at.
+fn write_file_header(serial: u32, buf: &mut [u8; LOG_FILE_HEADER_BYTES + SNAPSHOT_MAX * LOG_RECORD_SIZE]) -> (usize, u64) {
+    // Read before the carries: a push numbered below it noted its latch
+    // before it took the number, so the state below is at least that new.
+    let snap = NEXT_SEQ.0.load(Ordering::SeqCst);
     let ts = now_ticks();
     let mut n = 0usize;
     let mut put = |payload: [u8; LOG_PAYLOAD_BYTES]| {
@@ -3190,7 +3271,7 @@ fn write_file_header(serial: u32, buf: &mut [u8; LOG_FILE_HEADER_BYTES + SNAPSHO
     buf[6] = n as u8;
     buf[8..12].copy_from_slice(&serial.to_le_bytes());
     buf[12..16].copy_from_slice(&(ts as u32).to_le_bytes());
-    LOG_FILE_HEADER_BYTES + n * LOG_RECORD_SIZE
+    (LOG_FILE_HEADER_BYTES + n * LOG_RECORD_SIZE, snap)
 }
 
 // ---------------------------------------------------------------------------
@@ -3245,6 +3326,29 @@ static PUSH_GAP_HOOK: AtomicFn<fn()> = AtomicFn::new();
 #[cfg(test)]
 pub fn set_push_gap_hook_for_test(f: Option<fn()>) {
     PUSH_GAP_HOOK.set(f);
+}
+
+/// Run once by the next push that finds a queue full (and spills), with that
+/// queue: a test takes its writer handle there, as another CPU pushing into it.
+#[cfg(test)]
+static FULL_HOOK: AtomicFn<fn(usize)> = AtomicFn::new();
+
+#[cfg(test)]
+pub fn set_full_hook_for_test(f: Option<fn(usize)>) {
+    FULL_HOOK.set(f);
+}
+
+/// Queue `q`'s writer handle, held until dropped.
+#[cfg(test)]
+pub fn hold_writer_for_test(q: usize) -> HeldWriters {
+    HeldWriters {
+        _writers: std::vec![loop {
+            if let Some(w) = QUEUES[q].producer() {
+                break w;
+            }
+            std::thread::yield_now();
+        }],
+    }
 }
 
 /// Spins the flusher spent waiting for a number a producer was publishing.
