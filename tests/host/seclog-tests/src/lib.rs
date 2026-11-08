@@ -767,3 +767,60 @@ fn review_p2_a_declared_loss_logd_kept_is_not_evidence() {
     let (found, _) = verify(&b.lines());
     assert_eq!(evidence(&found), vec![], "honest export shows evidence");
 }
+
+// Proofs of the verification of the fix round.
+
+/// V1: whoever can write the log volume deletes a sealed record and appends
+/// a `sink-loss` line covering it after the boot's last seal.
+#[test]
+fn verify_v1_a_forged_sink_loss_after_the_last_seal_hides_a_deleted_record() {
+    let mut b = tpm_boot([0; 32], 2);
+    // The microphone record of round 1 is at 3 (2 events and the anchor first).
+    b.sink_loss(3, 1);
+    let mut lines = b.lines();
+    lines.remove(3);
+    let (found, _) = verify(&lines);
+    assert!(!evidence(&found).is_empty(), "a deleted sealed record and a forged declaration: {found:?}");
+    // The control: without the forged line, the deletion is evidence too.
+    let mut lines = tpm_boot([0; 32], 2).lines();
+    lines.remove(3);
+    assert!(!evidence(&verify(&lines).0).is_empty());
+}
+
+/// V2: a non-first boot's anchor and its records up to its first seal
+/// deleted, and a `sink-loss(0, first)` line appended.
+#[test]
+fn verify_v2_a_forged_sink_loss_hides_a_deleted_boot_start() {
+    let b1 = tpm_boot([0; 32], 2);
+    let mut b2 = tpm_boot(b1.tpm, 2);
+    let first_seal = b2.recs.iter().position(|r| r.env.kind == kind::SEAL).unwrap();
+    b2.sink_loss(0, first_seal as u64);
+    let mut lines = b1.lines();
+    lines.push(seam());
+    lines.extend(b2.lines()[first_seal..].to_vec());
+    let (found, _) = verify(&lines);
+    assert!(!evidence(&found).is_empty(), "a deleted boot start and a forged declaration: {found:?}");
+    // The control: the same deletion with no declaration is evidence.
+    let b2 = tpm_boot(b1.tpm, 2);
+    let mut lines = b1.lines();
+    lines.push(seam());
+    lines.extend(b2.lines()[first_seal..].to_vec());
+    assert!(!evidence(&verify(&lines).0).is_empty());
+}
+
+/// V4: a long honest boot whose sealer the ring lapped 70 times, each loss
+/// declared: none of it is evidence.
+#[test]
+fn verify_v4_a_long_boot_with_many_declared_losses_is_not_evidence() {
+    let mut b = tpm_boot([0; 32], 1);
+    let mut lost = Vec::new();
+    for _ in 0..70 {
+        let (first, n) = b.lapped(2);
+        lost.push((first, n));
+        b.event(Class::Update, 7);
+        b.seal();
+    }
+    let lines: Vec<_> = b.recs.iter().filter(|r| !lost.iter().any(|&(f, n)| r.env.seq >= f && r.env.seq < f + n)).map(line).collect();
+    let (found, _) = verify(&lines);
+    assert_eq!(evidence(&found), vec![], "{} evidence findings", evidence(&found).len());
+}

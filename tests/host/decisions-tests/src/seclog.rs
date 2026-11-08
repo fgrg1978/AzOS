@@ -103,3 +103,31 @@ fn seclog_what_the_durable_bucket_holds_back_is_its_report() {
         "the bucket's report of what it held back: {ev:?}"
     );
 }
+
+/// The refill keeps what an integer division would drop: at any spacing of
+/// the calls, a second refills a second's worth. A 1 GHz clock, the
+/// timebase of a fast core; one task's egress admits every 1 ms, 100 us and
+/// 20 us for a second each, then a microphone record.
+#[test]
+fn seclog_the_cap_refills_at_its_rate_whatever_the_spacing() {
+    let _g = ONE.lock().unwrap_or_else(|e| e.into_inner());
+    static NS: AtomicU64 = AtomicU64::new(0);
+    azos_decision::set_clock(|| NS.load(Ordering::Relaxed), 1_000_000_000);
+    let share = azos_limits::SEC_LOG_PER_S as usize / 4;
+    for (spacing, subject) in [(1_000_000u64, 7001u32), (100_000, 7002), (20_000, 7003)] {
+        // A quiet second first: every bucket full again.
+        NS.fetch_add(2_000_000_000, Ordering::Relaxed);
+        let from = head();
+        let calls = 1_000_000_000 / spacing;
+        for i in 0..calls {
+            NS.fetch_add(spacing, Ordering::Relaxed);
+            azos_decision::record(Rule::EnvelopeEgress, Verdict::Admit, subject, [i, 3, 0]);
+        }
+        azos_decision::record(Rule::AudioCapture, Verdict::Admit, subject, [0, 0, 0]);
+        let (ev, _) = events(from);
+        let egress = ev.iter().filter(|e| e.0 == SecClass::Egress as u8 && e.3 == subject).count();
+        // The share it starts with and a second's refill of it.
+        assert!(egress >= 2 * share - 1, "{spacing} ns apart: {egress} egress copied, want about {}", 2 * share);
+        assert!(ev.contains(&(SecClass::Microphone as u8, Rule::AudioCapture as u8, Verdict::Admit as u8, subject)), "{spacing} ns apart: the microphone record was held");
+    }
+}
