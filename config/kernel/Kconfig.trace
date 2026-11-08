@@ -805,7 +805,7 @@ config SEC_LOG_ENTRIES
     range 32 256
     default 128
     help
-      Asked with SEC_LOG only. 192 bytes a slot (the envelope and a 160-byte
+      Asked with SEC_LOG only. 208 bytes a slot (the envelope and a 176-byte
       payload), in the shared region and again in the early region the boot
       writes before the region exists. More records between two passes of
       the sealer or of `logd` than the ring holds are lost: the sealer

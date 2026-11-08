@@ -693,15 +693,15 @@ object (`kernel/src/boot/klog_region.rs`) and the handover copies them under the
 sequence numbers, so a decision's id names the same record before and after.
 
 **Security records** (Kconfig `SEC_LOG`, `crates/core/seclog`) are the substrate's fourth
-ring, `SEC_LOG_ENTRIES` slots of a 160-byte payload, with an early ring at its full depth: the
+ring, `SEC_LOG_ENTRIES` slots of a 176-byte payload, with an early ring at its full depth: the
 decision records of the security rules (a microphone or camera stream, a destination let out
 or refused, a capability denial, an image load, an update step, a login, a USB authorization),
 copied as they are written within the rate cap `SEC_LOG_PER_S`, and the records of the `seclog`
 task that chains and seals them (`anchor`, `seal`, `loss`, `held`, `sink-loss`). `logd` writes
 every one, never filtered, as a line of module `@security` whose message carries every field
-the chain hashes (`v2 <seq> <ts> <clock> <kind> <cpu> <flags> <payload hex>`, then a readable
+the chain hashes (`v3 <seq> <ts> <clock> <kind> <cpu> <flags> <payload hex>`, then a readable
 kind and class), longer than a kernel log record's and never cut; it resumes the ring by its
-last such line, writes a `logd` line `v2 seam` when it starts reading the ring afresh, and says
+last such line, writes a `logd` line `v3 seam` when it starts reading the ring afresh, and says
 on its page (`MemObj klog.ack`) which security records it lost, which the kernel declares in
 the chain. The console gets one `seclog: seal ...` line per seal. What is sealed by what, and
 the forensic check, are in [security.md](security.md#sealed-security-log).
