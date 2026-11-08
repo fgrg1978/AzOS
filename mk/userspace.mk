@@ -434,9 +434,19 @@ $(OTA_ELF): $(FAMTOOLS_SRC) $(LIBSYS_SRC)
 	cp $(FAMTOOLS_OUT)/ota $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(LXSRV_ELF): $(LXSRV_SRC) $(LIBSYS_SRC) .gitmodules
+# Extra lxsrv cargo features: its gate canary (`LXSRV_FEATURES=tasks-clock-canary`,
+# the `aarch64 lx: tasks clock canary` row). The stamp as ina_drv's, so the
+# canary ELF is never reused by a later default build.
+LXSRV_FEATURES ?=
+LXSRV_FEATURES_ARG := $(if $(strip $(LXSRV_FEATURES)),--features $(strip $(LXSRV_FEATURES)))
+$(OUT_BUILD)/lxsrv.features: FORCE
 	@mkdir -p $(OUT_BUILD)
-	cd $(LXSRV_DIR) && export CARGO_TARGET_DIR="$(UTGT_RV64)" && $(USPACE_BUILD) $(RV_UFLAGS)
+	@printf '%s\n' '$(strip $(LXSRV_FEATURES))' | cmp -s - $@ \
+	    || printf '%s\n' '$(strip $(LXSRV_FEATURES))' >$@
+
+$(LXSRV_ELF): $(LXSRV_SRC) $(LIBSYS_SRC) .gitmodules $(OUT_BUILD)/lxsrv.features
+	@mkdir -p $(OUT_BUILD)
+	cd $(LXSRV_DIR) && export CARGO_TARGET_DIR="$(UTGT_RV64)" && $(USPACE_BUILD) $(RV_UFLAGS) $(LXSRV_FEATURES_ARG)
 	cp $(LXSRV_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
@@ -1075,9 +1085,9 @@ $(OTA_ELF_AARCH64): $(FAMTOOLS_SRC) $(LIBSYS_SRC)
 	cp $(UTGT_AARCH64)/$(TARGET_AARCH64)/release/ota $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(LXSRV_ELF_AARCH64): $(LXSRV_SRC) $(LIBSYS_SRC) .gitmodules
+$(LXSRV_ELF_AARCH64): $(LXSRV_SRC) $(LIBSYS_SRC) .gitmodules $(OUT_BUILD)/lxsrv.features
 	@mkdir -p $(AARCH64_DIR)
-	cd $(LXSRV_DIR) && export CARGO_TARGET_DIR="$(UTGT_AARCH64)" && $(USPACE_BUILD) $(AARCH64_UFLAGS)
+	cd $(LXSRV_DIR) && export CARGO_TARGET_DIR="$(UTGT_AARCH64)" && $(USPACE_BUILD) $(AARCH64_UFLAGS) $(LXSRV_FEATURES_ARG)
 	cp $(UTGT_AARCH64)/$(TARGET_AARCH64)/release/lxsrv $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
@@ -1242,9 +1252,9 @@ $(LATBENCH_ELF_X86_64): $(LATBENCH_DIR)/src/main.rs $(LATBENCH_DIR)/Cargo.toml \
 	cd $(LATBENCH_DIR) && export CARGO_TARGET_DIR="$(UTGT_X86_64)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
 	cp $(UTGT_X86_64)/$(X86_64_UBUILT)/latbench $@
 
-$(LXSRV_ELF_X86_64): $(LXSRV_SRC) $(LIBSYS_SRC) .gitmodules $(X86_64_KCONFIG)
+$(LXSRV_ELF_X86_64): $(LXSRV_SRC) $(LIBSYS_SRC) .gitmodules $(X86_64_KCONFIG) $(OUT_BUILD)/lxsrv.features
 	@mkdir -p $(X86_64_DIR)
-	cd $(LXSRV_DIR) && export CARGO_TARGET_DIR="$(UTGT_X86_64)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
+	cd $(LXSRV_DIR) && export CARGO_TARGET_DIR="$(UTGT_X86_64)" && $(USPACE_BUILD) $(X86_64_UFLAGS) $(LXSRV_FEATURES_ARG)
 	cp $(UTGT_X86_64)/$(X86_64_UBUILT)/lxsrv $@
 
 $(GPIO_DRV_ELF_X86_64): $(GPIO_DRV_DIR)/src/main.rs $(GPIO_DRV_DIR)/Cargo.toml \

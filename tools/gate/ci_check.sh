@@ -29048,13 +29048,25 @@ par -h -s "hv: riscv64 guest enters (h=on)" hv_guest_enter_rv
 #   linux-other  canary: XZTEST.XZ replaced by XZOTHER.XZ (a valid stream of
 #                another plaintext) and judged as `linux`: it must go red.
 #
+# The cooperative loop (crates/drivers/lx/emul on the server's guard-paged
+# stacks and the vDSO clock, userspace/services/lxsrv/src/tasks.rs), which the
+# server runs before the module path:
+#   tasks        PASS = the `[LXSRV] tasks:` line has the order abcdefg (a
+#                contended mutex handed over, a delayed work item waking a wait
+#                queue, a completion, kthread_stop returning the thread's 7),
+#                msleep(20) at least 20000 us on the vDSO clock (read off the
+#                line here, not only the server's verdict), no error, PASS;
+#   tasks-canary the same judgement on an LXSRV.ELF built with
+#                `tasks-clock-canary` (a clock that jumps a second per pass,
+#                no sleep): it must go red on the msleep time.
+#
 # Canaries, each its own row with expect FAIL: `lx-verify-canary` (the kernel
 # skips the digest compare: the tamper row must go red), `lx-wx-canary` (the
 # text is mapped writable AND executable: the kernel's readback must refuse,
 # so the load row goes red) and `lx-server` under `off` (the server starts).
 # A canary that "passes" means the property it guards is not what the row
 # measures. Boots copies of the kernel and the disk (one image per QEMU).
-lx_module_row() { # <label> <isa: rv|arm> <features> <mode: load|tamper|off|linux|linux-tamper|linux-other> <expect: PASS|FAIL>
+lx_module_row() { # <label> <isa: rv|arm> <features> <mode: load|tamper|off|linux|linux-tamper|linux-other|tasks|tasks-canary> <expect: PASS|FAIL>
     local label="$1" isa="$2" feats="$3" mode="$4" expect="$5"
     local kdir="$AZOS_OUT/build/lx/kbuild/riscv64"; [ "$isa" = arm ] && kdir="$AZOS_OUT/build/lx/kbuild/aarch64"
     case "$mode" in linux*|hwcap*|zknh)
@@ -29078,7 +29090,8 @@ lx_module_row() { # <label> <isa: rv|arm> <features> <mode: load|tamper|off|linu
         cp "$A64_IMG" "$kimg"; diskname=$AZOS_OUT/build/disk-aarch64-lx.img
     fi
     rm -f "$diskname"
-    if ! make "$diskname" >/dev/null 2>&1; then bad; echo "      make $diskname failed"; return; fi
+    local lxf=""; [ "$mode" = tasks-canary ] && lxf=tasks-clock-canary
+    if ! make LXSRV_FEATURES="$lxf" "$diskname" >/dev/null 2>&1; then bad; echo "      make $diskname failed"; return; fi
     cp "$diskname" "$disk"
     if [ "$mode" = linux-other ]; then
         if ! mcopy -o -i "$disk" "$AZOS_OUT/build/lx/kbuild/XZOTHER.XZ" ::XZTEST.XZ 2>/dev/null; then
@@ -29134,6 +29147,7 @@ PY
         kill -0 "$pid" 2>/dev/null || break
         case "$mode" in
             load|tamper|linux*|hwcap*|zknh) grep -aqE "\[LXSRV\] (idle|.*FAIL)" "$log" 2>/dev/null && break ;;
+            tasks*) grep -aqE "\[LXSRV\] (tasks: |idle|.*FAIL)" "$log" 2>/dev/null && break ;;
             off) if grep -aqF "[compmgr] AzOS component manager" "$log" 2>/dev/null; then
                      # The launcher walks every row in one pass; give a started
                      # server 5 s to print before judging it absent.
@@ -29222,6 +29236,17 @@ PY
             elif ! grep -aqE "\[LX\] xz_dec\.ko decompressed XZTEST\.XZ: .* equal to the pattern; .*: PASS" "$log"; then
                 why="xz_dec.ko did not decompress XZTEST.XZ correctly on this path"
             else v=PASS; fi ;;
+        tasks|tasks-canary)
+            local tl us
+            tl="$(grep -aE '\[LXSRV\] tasks: ' "$log" | sed -n 1p | tr -d '\r')"
+            us="$(printf '%s' "$tl" | sed -n 's/.*msleep(20) \([0-9][0-9]*\) us.*/\1/p')"
+            if [ -z "$tl" ]; then
+                why="no [LXSRV] tasks: line (the loop hung or the server died)"
+            elif [ -z "$us" ] || [ "$us" -lt 20000 ]; then
+                why="msleep(20) took ${us:-?} us on the vDSO clock, under 20 ms"
+            elif ! printf '%s' "$tl" | grep -qE 'order abcdefg, .* kthread_stop 7, .* errors 0, stacks [0-9]+x[0-9]+ KiB guarded: PASS$'; then
+                why="the scene's verdict is not PASS: ${tl#*tasks: }"
+            else v=PASS; fi ;;
         linux-tamper)
             if grep -aqE "\[LX\] module verify REFUSED: tid [0-9]+ XZ_DEC\.KO .*RECORDED" "$log" \
                && grep -aqF "[LX] module XZ_DEC.KO verify REFUSED by the kernel" "$log" \
@@ -29255,6 +29280,8 @@ par_row lx_module_row "aarch64 lx: module loads and runs"     arm "qemu,CONFIG_L
 par_row lx_module_row "aarch64 lx: module tamper refused"     arm "qemu,CONFIG_LINUX_DRIVERS=y,lx-server"        tamper PASS
 par_row lx_module_row "aarch64 lx: tamper canary"             arm "qemu,CONFIG_LINUX_DRIVERS=y,lx-verify-canary" tamper FAIL
 par_row lx_module_row "aarch64 lx: W^X canary"                arm "qemu,CONFIG_LINUX_DRIVERS=y,lx-wx-canary"     load   FAIL
+par_row lx_module_row "aarch64 lx: cooperative tasks"         arm "qemu,CONFIG_LINUX_DRIVERS=y,lx-server"        tasks        PASS
+par_row lx_module_row "aarch64 lx: tasks clock canary"        arm "qemu,CONFIG_LINUX_DRIVERS=y,lx-server"        tasks-canary FAIL
 par_row lx_module_row "lx: Kbuild xz_dec.ko runs (rv)"         rv  "qemu,CONFIG_LINUX_DRIVERS=y,lx-server"        linux        PASS
 par_row lx_module_row "lx: Kbuild module tamper refused (rv)"  rv  "qemu,CONFIG_LINUX_DRIVERS=y,lx-server"        linux-tamper PASS
 par_row lx_module_row "lx: Kbuild fixture canary (rv)"         rv  "qemu,CONFIG_LINUX_DRIVERS=y,lx-server"        linux-other  FAIL
