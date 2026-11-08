@@ -8,7 +8,7 @@
 # change). Nothing fetched is run here: only `git fetch`, `git checkout` and,
 # for relibc, `git submodule update` of the one submodule its build needs.
 #
-#   tools/build/third_party_fetch.sh <name>...   busybox limine linux relibc u-boot
+#   tools/build/third_party_fetch.sh <name>...   busybox limine linux lvgl relibc u-boot
 #   tools/build/third_party_fetch.sh --all
 #   add --force-icloud to fetch into a checkout inside iCloud Drive anyway
 #
@@ -24,6 +24,7 @@
 # serves no commit by id) and the tag must peel to the gitlink; one without
 # (relibc, a commit of `master`) is fetched by commit.
 #
+# LVGL is sparse too (third_party/lvgl: src/, lvgl.h, lv_conf_template.h, the licence files).
 # Linux is sparse: only the directories the crates/drivers/lx/ layer builds from or reads.
 #   * Three uapi netfilter header directories are excluded: Linux ships pairs
 #     of headers differing only in case (xt_CONNMARK.h / xt_connmark.h), which
@@ -185,8 +186,21 @@ Kconfig*
 SPARSE
 }
 
+lvgl_sparse() {
+    cat <<'SPARSE'
+/*
+!/*/
+/src/
+/lvgl.h
+/lv_conf_template.h
+/LICENCE.txt
+/LICENSE*
+/COPYING*
+SPARSE
+}
+
 fetch_one() {
-    local name="$1" key="submodule.third_party/$1" url tag commit dir got
+    local name="$1" sparse=0 key="submodule.third_party/$1" url tag commit dir got
     url="$(git config -f "$gm" "$key.url")" || die "no third_party/$name in .gitmodules"
     tag="$(git config -f "$gm" "$key.tag" || true)"
     commit="$(git -C "$root" ls-files -s "third_party/$name" | awk '$1 == "160000" { print $2 }')"
@@ -199,11 +213,12 @@ fetch_one() {
         git -C "$dir" remote add origin "$url"
     fi
     git -C "$dir" remote set-url origin "$url"
-    if [ "$name" = linux ]; then
+    case "$name" in linux | lvgl)
+        sparse=1
         git -C "$dir" config core.sparseCheckout true
         git -C "$dir" sparse-checkout init --no-cone
-        linux_sparse >"$(git -C "$dir" rev-parse --absolute-git-dir)/info/sparse-checkout"
-    fi
+        "${name}_sparse" >"$(git -C "$dir" rev-parse --absolute-git-dir)/info/sparse-checkout" ;;
+    esac
     if [ -n "$tag" ]; then
         git -C "$dir" rev-parse -q --verify "refs/tags/$tag" >/dev/null \
             || git -C "$dir" fetch -q --depth 1 --no-tags origin "refs/tags/$tag:refs/tags/$tag"
@@ -213,7 +228,7 @@ fetch_one() {
         git -C "$dir" fetch -q --depth 1 --no-tags origin "$commit"
     fi
     git -C "$dir" checkout -q -f --detach "$commit"
-    [ "$name" = linux ] && git -C "$dir" sparse-checkout reapply
+    case "$name" in linux | lvgl) git -C "$dir" sparse-checkout reapply ;; esac
 
     if [ "$name" = relibc ]; then
         # The allocator, at the commit relibc's own tree records, from the URL
@@ -230,7 +245,7 @@ fetch_one() {
     [ "$got" = "$commit" ] || die "$name: HEAD is $got, the gitlink is $commit"
     [ -z "$(git -C "$dir" status --porcelain --untracked-files=no)" ] \
         || die "$name: the checkout differs from $commit"
-    echo "third_party_fetch: third_party/$name at ${tag:+$tag }($commit), shallow$([ "$name" != linux ] || echo ' + sparse')"
+    echo "third_party_fetch: third_party/$name at ${tag:+$tag }($commit), shallow$([ "$sparse" = 0 ] || echo ' + sparse')"
 }
 
 icloud_ok=0 names=()

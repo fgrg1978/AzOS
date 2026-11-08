@@ -80,8 +80,9 @@ the index is the pin, tools/build/third_party_fetch.sh checks it out):
   P3  a checked-out tree has no local change (zero patches);
   P5  a checked-out tree with a `tag` has that tag, and it peels to the gitlink.
 (No P4: the Linux tag is recorded in .gitmodules alone, with no Kconfig copy.)
-relibc (MIT, the one MIT tree): its checkout's LICENSE is the MIT text (R2),
-LICENSES/MIT.txt exists (R3) and NOTICE names relibc (R4).
+relibc (MIT): its checkout's LICENSE is the MIT text (R2),
+LICENSES/MIT.txt exists (R3) and NOTICE names relibc (R4). lvgl (MIT): its
+checkout's LICENCE.txt is the MIT text (R5).
 """
 
 import os
@@ -470,6 +471,8 @@ def check_pin(root, require_checkout=False):
                             f" (run tools/build/third_party_fetch.sh {name[len('third_party/'):]})")
         if name == "third_party/relibc" and not read(sub, "LICENSE").lstrip().startswith(b"MIT License"):
             errs.append("R2 the relibc checkout's LICENSE is not the MIT text")
+        if name == "third_party/lvgl" and not read(sub, "LICENCE.txt").lstrip().startswith(b"MIT licence"):
+            errs.append("R5 the lvgl checkout's LICENCE.txt is not the MIT text")
     for path in sorted(set(links) - set(mods)):
         errs.append(f"P1 gitlink {path} has no .gitmodules entry")
     if "third_party/linux" in mods:
@@ -574,12 +577,13 @@ def pin_self_test():
             return subprocess.run(["git", "-C", path, "-c", "user.name=t", "-c", "user.email=t@t", *a],
                                   capture_output=True, text=True, check=True).stdout.strip()
         heads = {}
-        for name, lic in (("linux", "GPL-2.0\n"), ("relibc", "MIT License\n")):
+        for name, lic in (("linux", "GPL-2.0\n"), ("relibc", "MIT License\n"), ("lvgl", "MIT licence\n")):
             sub = os.path.join(td, "third_party", name)
             os.makedirs(sub)
             git(sub, "init", "-q")
-            w(f"third_party/{name}/LICENSE", lic)
-            git(sub, "add", "LICENSE")
+            lf = "LICENCE.txt" if name == "lvgl" else "LICENSE"
+            w(f"third_party/{name}/{lf}", lic)
+            git(sub, "add", lf)
             git(sub, "commit", "-q", "-m", "x")
             heads[name] = git(sub, "rev-parse", "HEAD")
         git(os.path.join(td, "third_party", "linux"), "tag", "v1.0")
@@ -589,15 +593,18 @@ def pin_self_test():
               '[submodule "third_party/linux"]\n\tpath = third_party/linux\n\turl = https://x/linux\n'
               f'\tshallow = true\n\tupdate = none\n{linux_extra}'
               '[submodule "third_party/relibc"]\n\tpath = third_party/relibc\n\turl = https://x/relibc\n'
-              f'\tshallow = true\n\tupdate = {relibc_update}\n')
+              f'\tshallow = true\n\tupdate = {relibc_update}\n'
+              '[submodule "third_party/lvgl"]\n\tpath = third_party/lvgl\n\turl = https://x/lvgl\n'
+              '\tshallow = true\n\tupdate = none\n')
         def links(linux=None):
-            for name in ("linux", "relibc"):
+            for name in ("linux", "relibc", "lvgl"):
                 git(td, "update-index", "--add", "--cacheinfo",
                     f"160000,{(linux if name == 'linux' and linux else heads[name])},third_party/{name}")
         def reset():
             gitmodules(); links()
             w("LICENSES/MIT.txt", "MIT License\n"); w("NOTICE", "relibc is MIT\n")
             w("third_party/relibc/LICENSE", "MIT License\n"); w("third_party/linux/LICENSE", "GPL-2.0\n")
+            w("third_party/lvgl/LICENCE.txt", "MIT licence\n")
             git(td, "update-index", "--force-remove", "third_party/extra")
         reset()
         errs, notes = check_pin(td)
@@ -615,6 +622,7 @@ def pin_self_test():
             ("R2", lambda: w("third_party/relibc/LICENSE", "GNU GENERAL PUBLIC LICENSE\n")),
             ("R3", lambda: os.remove(os.path.join(td, "LICENSES/MIT.txt"))),
             ("R4", lambda: w("NOTICE", "nothing here\n")),
+            ("R5", lambda: w("third_party/lvgl/LICENCE.txt", "GNU GENERAL PUBLIC LICENSE\n")),
         ):
             reset()
             mutate()
@@ -656,7 +664,7 @@ def main(argv):
         f = self_test()
         for x in f:
             print("lx_license_lint self-test:", x)
-        print("lx_license_lint self-test:", "FAIL" if f else "every rule bites (T1-T6, A1, A2, P0-P3, P5, R2-R4)")
+        print("lx_license_lint self-test:", "FAIL" if f else "every rule bites (T1-T6, A1, A2, P0-P3, P5, R2-R5)")
         return 1 if f else 0
     if "--pin" in argv:
         errs, notes = check_pin(ROOT, "--require-checkout" in argv)

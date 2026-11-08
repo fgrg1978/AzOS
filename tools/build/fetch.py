@@ -43,6 +43,7 @@ TREES = {
     "busybox": ("BUSYBOX", "mk/userspace.mk"),
     "limine": ("X86_BOOT_LIMINE", "mk/qemu.mk"),
     "linux": ("LINUX_DRIVERS", "mk/userspace.mk"),
+    "lvgl": (None, "tools/build/third_party_fetch.sh"),
     "relibc": ("RELIBC", "mk/userspace.mk"),
     "u-boot": (None, "tools/gate/netboot/uboot_build.sh"),
 }
@@ -50,12 +51,14 @@ TAG_RE = {  # which upstream tags count as a stable release of each tree
     "busybox": r"^\d+_\d+_\d+$",
     "limine": r"^v\d+\.\d+\.\d+-binary$",
     "linux": r"^v\d+\.\d+(\.\d+)?$",
+    "lvgl": r"^v\d+\.\d+\.\d+$",
     "u-boot": r"^v\d{4}\.\d{2}$",
 }
 REBUILD = {
     "busybox": "make busybox; the BUSYBOX.ELF digest rows (seccomp table) and the sh/busybox QEMU rows on the three ISAs",
     "limine": "the x86_pc and netboot x86 rows (make x86-pc-esp, tools/gate/netboot/row.sh)",
     "linux": "an Lbump: make lx-kbuild lx-kbuild-repro, LX_LINUX_RELEASE (module vermagic), the sparse set in third_party_fetch.sh, every validated lx module row",
+    "lvgl": "nothing builds it yet: the licence lint and the pin rows (the graphics front owns its build)",
     "relibc": "make relibc on the three ISAs and the relibc patch (userspace/lib/relibc-azos) against the new tree",
     "u-boot": "tools/gate/netboot/row.sh riscv64-tftp (uboot_build.sh rebuilds on a new pin)",
 }
@@ -69,6 +72,8 @@ def pkg(brew, apt=None, dnf=None, tap=None):
 
 
 INVENTORY = [
+    # riscv64 CFI needs no other toolchain: the pinned rustc takes +experimental-zicfilp / +experimental-zicfiss
+    # (-Z cf-protection=branch emits lpad; no compiler shadow-stack code, sspush/sspopchk only by hand), and QEMU needs zimop=true with zicfiss.
     dict(id="rust-pinned", cat="build", kind="rustup", toolchain="@rust-toolchain.toml",
          used="Everything (rust-toolchain.toml), including every explicit `cargo +<channel>` (RUST_CHANNEL, tools/lib/rust_channel.sh); -Zbuild-std from rust-src, so no prebuilt target std",
          pinned="@rust-toolchain.toml", source="https://static.rust-lang.org (rustup)", sum="-",

@@ -265,7 +265,7 @@ extension when the CPU has it (`probe`) or refuses the CPU (`require`).
 |-----|--------------|---------------|
 | aarch64 | `A64_BTI`: `bti` pads are emitted (`-Z branch-protection=bti,pac-ret`). Enforced on the kernel's text with `A64_BTI_ENFORCE` (default `n`; the GP bit of the text leaves after the W^X pass, `SCTLR_EL1.BT1` on every CPU; `tools/lint/bti_pads_lint.py` holds the assembly's indirect-branch targets to a pad, and the context switch resumes through `ret`); otherwise not enforced. Never run on a core yet: the arm-phase rows prove it. | `A64_PAUTH`: `paciasp` / `autiasp` in non-leaf functions, kernel and user images. One key (A) for the kernel, loaded on every CPU; checking is switched on by `_azos_cfi_enable` (sets `SCTLR_EL1.EnIA`, and with `A64_PAUTH_PROC_KEYS` also `EnIB`, `EnDA`, `EnDB`) right before Rust is entered. With `A64_PAUTH_PROC_KEYS` (default) every process has its own `APIA`, `APIB`, `APDA`, `APDB` and `APGA` keys from the DRBG (`spawn` and `exec` draw, `fork` and threads copy), and the kernel's key is back in `APIAKey_EL1` on every entry from EL0 (`trap_entry.S`), so ring 3 cannot sign under the kernel's key or another process's; with it off, ring 3 shares the key and this is corruption detection inside an image, not a privilege boundary. The kernel key comes from `RNDRRS` when available, mixed with counter values; without FEAT_RNG it is the counter values alone, guessable by whoever knows the boot time closely. Both choices default to `n` on `BOARD_RPI5` (the Cortex-A76 has neither). |
 | x86_64 | `X86_CET_IBT`: `endbr64` at every function entry (`-Z cf-protection=branch`) and at every hand-written entry point. Enforced in ring 0 by `IA32_S_CET.ENDBR_EN` with `CR4.CET`, on each CPU after `CR0.WP` is set; an indirect branch to a non-`endbr64` target raises #CP. `NO_TRACK_EN` is set so jump tables (in read-only memory) work. Ring 3 gets nothing from this. | `X86_CET_SHSTK`: the policy and the CPUID row exist; the kernel does not enable the shadow stack. |
-| riscv64 | None: no landing-pad or shadow-stack code is generated or enabled (Zicfilp and Zicfiss are not used). | None |
+| riscv64 | None: no landing-pad or shadow-stack code is generated or enabled (Zicfilp and Zicfiss are not used). The pinned rustc accepts the `experimental-zicfilp` target feature and `-Z cf-protection=branch` then emits `lpad 0` at every function entry. | None: rustc emits no `sspush`/`sspopchk` for `-Z cf-protection=return`, so the shadow stack would be hand-written assembly (it assembles with `+experimental-zicfiss`). |
 
 Also not implemented, per the Kconfig notes: aarch64 GCS, and kCFI (the
 compiler does not support it for riscv64). `A64_GCS` (default `n`),
@@ -282,6 +282,13 @@ trampoline writes `HCRX_EL2` whole with `GCSEn` 0 on every core with FEAT_HCX,
 so no `GCSCR_EL1` left by reset or firmware turns a GCS on at EL1 or EL0.
 Mainline Linux runs GCS for EL0 only and has no kernel shadow stack on any
 ISA.
+
+On riscv64 no toolchain change is needed for Zicfilp and Zicfiss: the target
+features are spelled `experimental-zicfilp` and `experimental-zicfiss` (the
+plain names are unknown), the assembler takes `lpad`, `sspush`, `sspopchk` and
+`ssrdp` once the feature is on, and QEMU's `-cpu rv64,zicfilp=true,zicfiss=true`
+also needs `zimop=true`. What is missing is kernel work (the `menvcfg` and
+`senvcfg` enables, the landing-pad state, a shadow stack per task).
 
 ## Kernel page tables (PT_PROTECTION)
 

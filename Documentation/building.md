@@ -36,8 +36,8 @@ Source: `mk/fetch.mk`, `tools/build/fetch.py`, `tools/build/third_party_fetch.sh
 `third_party/MANIFEST.json`, `third_party/known_cves.tsv`.
 
 `make build` never downloads. `make fetch` is the one target that does, and it fetches
-everything the build takes from outside the checkout: the five pinned source trees
-(`busybox`, `limine`, `linux`, `relibc`, `u-boot`, through `third_party_fetch.sh`), the dated
+everything the build takes from outside the checkout: the six pinned source trees
+(`busybox`, `limine`, `linux`, `lvgl` (sparse; no build consumes it yet), `relibc`, `u-boot`, through `third_party_fetch.sh`), the dated
 Rust toolchain with `rust-src` and `llvm-tools-preview`, the host tools the recipes call
 (Homebrew on macOS: the exact `brew install` line is printed and run; on Linux the apt or dnf
 line is printed and not run), `cbindgen` at its pinned version, the Python packages

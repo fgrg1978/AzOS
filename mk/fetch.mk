@@ -18,5 +18,5 @@ fetch-check:
 	@$(FETCH_PY) check $(if $(OFFLINE),--offline)
 
 fetch-update:
-	@test -n '$(NAME)' || { echo 'make fetch-update NAME=<busybox|limine|linux|relibc|u-boot> [VERSION=<tag>]'; exit 2; }
+	@test -n '$(NAME)' || { echo 'make fetch-update NAME=<busybox|limine|linux|lvgl|relibc|u-boot> [VERSION=<tag>]'; exit 2; }
 	@$(FETCH_PY) update '$(NAME)' $(VERSION)
