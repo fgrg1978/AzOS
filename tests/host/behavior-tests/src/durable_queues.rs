@@ -261,3 +261,259 @@ fn the_flusher_waits_for_a_number_in_flight() {
     assert_eq!(logger_analytics().holes, holes0, "a number in flight was stepped over");
     logger_shutdown();
 }
+
+/// The replay over these files, by name, as a boot reads them.
+struct ReplayFiles {
+    files: Vec<Vec<u8>>,
+    at: Option<(usize, usize)>,
+}
+
+impl LogReplaySource for ReplayFiles {
+    fn size(&mut self, serial: u32) -> Result<Option<u32>, LogStorageError> {
+        Ok(self.files.get(serial as usize).map(|f| f.len() as u32))
+    }
+    fn open(&mut self, serial: u32) -> Result<(), LogStorageError> {
+        if (serial as usize) < self.files.len() {
+            self.at = Some((serial as usize, 0));
+            Ok(())
+        } else {
+            Err(LogStorageError::Unavailable)
+        }
+    }
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, LogStorageError> {
+        let Some((f, pos)) = self.at else { return Err(LogStorageError::Unavailable) };
+        let bytes = &self.files[f];
+        let n = buf.len().min(bytes.len().saturating_sub(pos));
+        buf[..n].copy_from_slice(&bytes[pos..pos + n]);
+        self.at = Some((f, pos + n));
+        Ok(n)
+    }
+    fn close(&mut self) {
+        self.at = None;
+    }
+}
+
+/// The detail word of a `SAFETY_ESTOP` record.
+fn estop_detail(r: &LogRecord) -> Option<u32> {
+    (r.kind == LOG_EVT_SAFETY_VIOLATION && r.payload[0] == SAFETY_ESTOP)
+        .then(|| u32::from_le_bytes(r.payload[4..8].try_into().unwrap()))
+}
+
+/// **A release carried across a rotation does not outlive a later latch.** A
+/// release is written, its fsync fails; a latch follows; a torn write rotates
+/// the file, whose opening records say latched. The next pass writes both
+/// records into the new file. A power cut that keeps the release and loses the
+/// latch after it must still replay latched, and so must the whole file.
+///
+/// **Canary** `durable-resnap-canary`: the carried release is written as
+/// state after the newer opening records, and the cut replays released (red).
+#[test]
+fn a_release_carried_across_a_rotation_does_not_outlive_a_later_latch() {
+    let _g = begin(0x0D0E_0007);
+    logger_init().expect("mount succeeds");
+    fsmock::with(|r| r.fail_fsync_of = Some(0));
+    log_safety_violation(SAFETY_ESTOP, 3, 0xAA);
+    logger_flusher_pass();
+    log_safety_violation(SAFETY_ESTOP, 2, 0x1A7);
+    // Write 0 was the header, 1 the release's batch; 2 tears, 3 stalls.
+    fsmock::with(|r| {
+        r.short_write_at = Some((2, 16));
+        r.fail_write_at = Some(3);
+    });
+    logger_flusher_pass();
+    assert_eq!(fsmock::file_count(), 2, "the torn file was not rotated");
+    fsmock::with(|r| r.fail_fsync_of = None);
+    logger_flusher_pass();
+    logger_shutdown();
+    let new = fsmock::file_bytes(1);
+    let recs = decode_file(1);
+    let latch_at = recs.iter().position(|r| estop_detail(r) == Some(0x1A7)).expect("the latch is in the new file");
+    assert!(recs[..latch_at].iter().any(|r| estop_detail(r) == Some(0xAA)), "the release was not carried before the latch");
+    let cut = LOG_FILE_HEADER_BYTES + latch_at * LOG_RECORD_SIZE;
+    let old = fsmock::file_bytes(0);
+    let cut_replay = replay_boot(&mut ReplayFiles { files: vec![old.clone(), new[..cut].to_vec()], at: None });
+    assert_eq!(cut_replay.latch, BootLatch::Armed(2), "a cut after the carried release replays released");
+    let whole = replay_boot(&mut ReplayFiles { files: vec![old, new], at: None });
+    assert_eq!(whole.latch, BootLatch::Armed(2));
+}
+
+/// **A rotation does not trust its fsync after the batch's own failed.** The
+/// file reaches its size limit with a batch whose fsync fails; the rotation's
+/// fsync of the same file then succeeds. The latch record is not called
+/// durable on that word; the next pass writes it into the new file, whose
+/// fsync covers it, and only then is it announced.
+///
+/// **Canary** `durable-rotate-trust-canary`: the rotation's `Ok` is trusted
+/// and the latch is announced at once (red).
+#[test]
+fn a_rotation_does_not_trust_its_fsync_after_the_batchs_own_failed() {
+    let _g = begin(0x0D0E_0008);
+    logger_init().expect("mount succeeds");
+    let mut i = 0u16;
+    while fsmock::file_len(0) + LOG_FLUSH_BATCH_MAX * LOG_RECORD_SIZE < LOG_FILE_ROTATE_BYTES as usize {
+        for _ in 0..LOG_FLUSH_BATCH_MAX {
+            log_skill_start(i);
+            i = i.wrapping_add(1);
+        }
+        logger_flush().expect("an ordinary flush");
+    }
+    assert_eq!(fsmock::file_count(), 1);
+    let (durable0, _, _) = logger_latch_stats();
+    logger_set_rt_probe(rt_yes);
+    let _ = log_safety_violation_durable(SAFETY_ESTOP, 2, 0x2B);
+    logger_set_rt_probe(rt_no);
+    for _ in 0..LOG_FLUSH_BATCH_MAX {
+        log_skill_start(i);
+        i = i.wrapping_add(1);
+    }
+    fsmock::with(|r| r.fail_next_fsyncs = 1);
+    logger_flusher_pass();
+    assert_eq!(fsmock::file_count(), 2, "the full file was not rotated");
+    assert!(durable_record_pending(), "the rotation's fsync was trusted after the batch's own failed");
+    assert_eq!(logger_latch_stats().0, durable0);
+    logger_flusher_pass();
+    assert!(!durable_record_pending());
+    assert_eq!(logger_latch_stats().0, durable0 + 1);
+    assert!(decode_file(1).iter().any(|r| estop_detail(r) == Some(0x2B)), "the latch is not in the file that synced it");
+    logger_shutdown();
+}
+
+/// Between a push's number and its publish: a later record pushed on another
+/// CPU, then a flusher pass that gives up on the number, steps over it and
+/// writes the later one.
+fn stall_and_flush_past() {
+    cpu_for_test(Some(0));
+    log_skill_start(0x62);
+    cpu_for_test(Some(1));
+    let h = std::thread::spawn(|| {
+        logger_flusher_pass();
+    });
+    h.join().unwrap();
+}
+
+/// **A stepped-over number holds the durable mark.** A real-time latch takes
+/// its number and stalls before publishing it; a later record is pushed and a
+/// flusher pass steps over the stalled number (`GAP_SPINS`) and writes the
+/// later one. The latch is not durable on that pass's fsync: it is only once
+/// it is written, late, by the next pass.
+///
+/// **Canary** `durable-stall-cap-canary`: the mark follows the later record
+/// past the stalled number, and the latch is called durable (red).
+#[test]
+fn a_stepped_over_number_holds_the_durable_mark() {
+    let _g = begin(0x0D0E_0009);
+    logger_init().expect("mount succeeds");
+    let (durable0, _, _) = logger_latch_stats();
+    let holes0 = logger_analytics().holes;
+    cpu_for_test(Some(1));
+    logger_set_rt_probe(rt_yes);
+    set_push_gap_hook_for_test(Some(stall_and_flush_past));
+    let _ = log_safety_violation_durable(SAFETY_ESTOP, 2, 0x3C);
+    set_push_gap_hook_for_test(None);
+    logger_set_rt_probe(rt_no);
+    cpu_for_test(None);
+    assert_eq!(logger_analytics().holes, holes0 + 1, "the pass did not step over the stalled number");
+    assert!(durable_record_pending(), "the latch is called durable before it was written");
+    assert_eq!(logger_latch_stats().0, durable0);
+    logger_flusher_pass();
+    assert!(!durable_record_pending());
+    assert_eq!(logger_latch_stats().0, durable0 + 1);
+    logger_shutdown();
+}
+
+/// Both queues at capacity (ordinary records to the limit, the reserve full).
+fn fill_every_queue() {
+    for q in 0..LOG_QUEUES {
+        cpu_for_test(Some(q));
+        for i in 0..ORDINARY_QUEUE_LIMIT {
+            log_skill_start(i as u16);
+        }
+        for k in 0..QUEUE_SAFETY_RESERVE as u32 {
+            log_safety_violation(SAFETY_ESTOP, 1, 0xD000 + k);
+        }
+    }
+    cpu_for_test(None);
+}
+
+static HELD_BY_HOOK: std::sync::Mutex<Option<HeldWriters>> = std::sync::Mutex::new(None);
+
+fn take_the_full_queue(q: usize) {
+    *HELD_BY_HOOK.lock().unwrap() = Some(hold_writer_for_test(q));
+}
+
+/// Hold queue `q`'s writer handle on another thread until a push waits for
+/// one (or 2 s).
+fn hold_until_waited_for(q: usize) -> std::thread::JoinHandle<()> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    let w0 = logger_analytics().busy_waits;
+    let held = Arc::new(AtomicBool::new(false));
+    let h2 = held.clone();
+    let t = std::thread::spawn(move || {
+        let w = hold_writer_for_test(q);
+        h2.store(true, Ordering::SeqCst);
+        let start = std::time::Instant::now();
+        while logger_analytics().busy_waits == w0 && start.elapsed() < std::time::Duration::from_secs(2) {
+            core::hint::spin_loop();
+        }
+        drop(w);
+    });
+    while !held.load(Ordering::SeqCst) {
+        std::thread::yield_now();
+    }
+    t
+}
+
+/// **A queue seen full stays full for the push.** Every queue at capacity;
+/// a latch from CPU 1 finds its queue full (another CPU then takes that
+/// queue's handle) while CPU 0's handle is held. Once CPU 0's frees and is
+/// full too, the latch is lost as full, not busy: the queue already seen full
+/// is not waited for again.
+///
+/// **Canary** `durable-full-mask-canary`: the queue seen full is asked again,
+/// found busy, and the latch comes back busy (red).
+#[test]
+fn a_queue_seen_full_is_not_waited_for() {
+    let _g = begin(0x0D0E_000A);
+    logger_init().expect("mount succeeds");
+    fill_every_queue();
+    let a0 = logger_analytics();
+    let lost0 = logger_latch_stats().1;
+    let holder = hold_until_waited_for(0);
+    set_full_hook_for_test(Some(take_the_full_queue));
+    cpu_for_test(Some(1));
+    let kept = log_safety_violation_admitted(SAFETY_ESTOP, 2, 0xD1E);
+    cpu_for_test(None);
+    set_full_hook_for_test(None);
+    holder.join().unwrap();
+    drop(HELD_BY_HOOK.lock().unwrap().take());
+    assert!(!kept);
+    assert_eq!(logger_latch_stats().1, lost0 + 1);
+    assert_eq!(logger_analytics().events_busy, a0.events_busy, "a full recorder answered busy");
+    let _ = logger_flush();
+    logger_shutdown();
+}
+
+/// **An effect whose own queue has room is not refused as full.** CPU 1's
+/// queue is at its effect limit and CPU 0's writer handle is held: an effect
+/// from CPU 0 waits for its own queue, which has room, and is committed there.
+///
+/// **Canary** `durable-full-mask-canary`: the full queue it tried while its
+/// own was busy refuses it (red).
+#[test]
+fn an_effect_whose_queue_has_room_waits_for_it() {
+    let _g = begin(0x0D0E_000B);
+    logger_init().expect("mount succeeds");
+    cpu_for_test(Some(1));
+    for i in 0..ORDINARY_QUEUE_LIMIT {
+        log_skill_start(i as u16);
+    }
+    let holder = hold_until_waited_for(0);
+    cpu_for_test(Some(0));
+    let r = commit_effect_record([0xFE, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], true);
+    cpu_for_test(None);
+    holder.join().unwrap();
+    assert!(matches!(r, EffectCommit::Committed(_)), "an effect was refused by a queue that is not its own: {r:?}");
+    let _ = logger_flush();
+    logger_shutdown();
+}

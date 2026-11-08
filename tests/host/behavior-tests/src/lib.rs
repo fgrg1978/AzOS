@@ -1537,6 +1537,8 @@ mod log_storage_mock {
         pub short_write_at: Option<(usize, usize)>,
         /// Every `fsync` of this file (its index) fails.
         pub fail_fsync_of: Option<usize>,
+        /// The next this many `fsync`s fail, of any file.
+        pub fail_next_fsyncs: usize,
         /// The `serial` argument of every `open()` call, in call order — so
         /// a test can pin WHICH serial `logger_init` opened, not just how
         /// many times it opened something. Added 2026-09-26 (U08-3): before
@@ -1561,6 +1563,10 @@ mod log_storage_mock {
     /// All bytes of the file at `index`, in write order.
     pub fn file_bytes(index: usize) -> Vec<u8> {
         with(|r| r.files.get(index).map(|f| f.bytes.clone()).unwrap_or_default())
+    }
+
+    pub fn file_len(index: usize) -> usize {
+        with(|r| r.files.get(index).map_or(0, |f| f.bytes.len()))
     }
 
     pub fn file_count() -> usize {
@@ -1611,6 +1617,10 @@ mod log_storage_mock {
         fn fsync(&self, handle: LogHandle) -> Result<(), LogStorageError> {
             with(|r| {
                 if r.fail_fsync_of == Some(handle.0 as usize) {
+                    return Err(LogStorageError::Io);
+                }
+                if r.fail_next_fsyncs > 0 {
+                    r.fail_next_fsyncs -= 1;
                     return Err(LogStorageError::Io);
                 }
                 let f = r.files.get_mut(handle.0 as usize)
