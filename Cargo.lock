@@ -240,6 +240,7 @@ dependencies = [
  "azos_common",
  "azos_limits",
  "azos_records",
+ "azos_seclog",
 ]
 
 [[package]]
@@ -914,6 +915,7 @@ version = "0.1.0"
 dependencies = [
  "azos_limits",
  "azos_rings",
+ "azos_seclog",
 ]
 
 [[package]]
@@ -1051,6 +1053,14 @@ name = "azos_scsi"
 version = "0.1.0"
 dependencies = [
  "azos_drv_api",
+]
+
+[[package]]
+name = "azos_seclog"
+version = "0.1.0"
+dependencies = [
+ "azos_crypto",
+ "azos_rings",
 ]
 
 [[package]]

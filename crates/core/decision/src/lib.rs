@@ -87,6 +87,8 @@ pub use prov::{
 };
 pub use query::{for_each_held, lookup, query, Filter};
 
+pub use azos_seclog::Class as SecClass;
+
 use crate::a64::AtomicU64;
 use core::sync::atomic::{AtomicBool, Ordering};
 #[cfg(feature = "on")]
@@ -425,7 +427,42 @@ pub enum Rule {
     PinRestore,
 }
 
+/// The rules whose records are security records, and their class.
+const SECURITY_RULES: [(Rule, SecClass); 14] = [
+    (Rule::AudioCapture, SecClass::Microphone),
+    (Rule::CamCapture, SecClass::Camera),
+    (Rule::EnvelopeEgress, SecClass::Egress),
+    (Rule::GuestEgress, SecClass::Egress),
+    (Rule::CapDenial, SecClass::CapDenial),
+    (Rule::Neverallow, SecClass::CapDenial),
+    (Rule::ExecGrant, SecClass::ImageLoad),
+    (Rule::Livepatch, SecClass::ImageLoad),
+    (Rule::BootChain, SecClass::ImageLoad),
+    (Rule::MeasuredBoot, SecClass::ImageLoad),
+    (Rule::EnvelopeOta, SecClass::Update),
+    (Rule::PackageInstall, SecClass::Update),
+    (Rule::Login, SecClass::Login),
+    (Rule::UsbAuthorize, SecClass::Usb),
+];
+
 impl Rule {
+    /// The class of the sealed security log (Kconfig `SEC_LOG`) a record of
+    /// this rule belongs to, every verdict alike; `n0` is the record's first
+    /// number, which names the rule a [`Rule::RefusalLimited`] report held
+    /// back. `None`: not a security record.
+    pub const fn security_class(self, n0: u64) -> Option<SecClass> {
+        let limited = matches!(self, Rule::RefusalLimited);
+        let r = if limited { n0 } else { self as u64 };
+        let mut i = 0;
+        while i < SECURITY_RULES.len() {
+            if SECURITY_RULES[i].0 as u64 == r {
+                return Some(if limited { SecClass::Limited } else { SECURITY_RULES[i].1 });
+            }
+            i += 1;
+        }
+        None
+    }
+
     /// Rules whose records an unprivileged task can raise once per syscall:
     /// their durable path is rate-limited per Domain
     /// (`DECISION_DENY_DURABLE_PER_SEC`), and what the limit holds back is
@@ -1830,6 +1867,14 @@ fn record_full(rule: Rule, verdict: Verdict, subject: u32, bucket: u32, n: [u64;
     if to_sink {
         durable(rule, verdict, subject, n, seq, origin);
     }
+    // A paced rule's record the bucket held back is not copied either: the
+    // bucket's own `RefusalLimited` report is, so a flood of denials cannot
+    // push a microphone's record out of the security ring unseen.
+    if azos_records::SECURITY && (!paced || to_sink) {
+        if let Some(class) = rule.security_class(n[0]) {
+            security(class, rule, verdict, subject, n, seq, origin);
+        }
+    }
     if seq != 0 {
         view(seq, to_sink);
     }
@@ -1857,6 +1902,31 @@ fn durable(rule: Rule, verdict: Verdict, subject: u32, n: [u64; 3], seq: u64, or
     if let Some(f) = SINK.get() {
         f(&p);
     }
+}
+
+/// Copy a record to the security ring (`azos_seclog`'s event).
+#[inline(never)]
+fn security(class: SecClass, rule: Rule, verdict: Verdict, subject: u32, n: [u64; 3], seq: u64, origin: Origin) {
+    let Some(w) = azos_records::writer(azos_records::SOURCE_SECURITY) else { return };
+    let e = azos_seclog::Event {
+        id: seq,
+        subject,
+        rule: rule as u8,
+        verdict: verdict as u8,
+        class,
+        n,
+        image_hash_prefix: origin.image_hash_prefix,
+        topology_row_id: origin.topology_row_id,
+    };
+    let h = azos_records::Head {
+        ts: clock_now(),
+        clock: azos_records::CLOCK_TIMEBASE,
+        kind: azos_seclog::kind::EVENT,
+        len: azos_seclog::Event::LEN as u16,
+        cpu: 0,
+        flags: CLOCK_FLAGS.get().map_or(0, |f| f()),
+    };
+    w.publish(&h, |p| p.bytes(0, &e.encode()));
 }
 
 /// Claim the next id without the ring; 0 under the gate canary `decision-skip`.

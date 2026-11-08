@@ -54,6 +54,12 @@ pub(crate) fn install() {
     );
     // After the line above, which the read-back row looks for.
     azos_drv_sys::klog::arm_stale_canary();
+    if azos_records::SECURITY {
+        azos_drv_sys::kprintln!(
+            "[KLOG] security ring {} records ({} lost before the handover)",
+            ring_entries(azos_records::SOURCE_SECURITY), h.security_lost
+        );
+    }
     if canary!("record-telemetry-event") {
         azos_actuation::logger::log_mode_change(0, 1);
     }

@@ -39,13 +39,14 @@ choice
 
     config SECURITY_HARDENED
         bool "Hardened"
+        imply SEC_LOG
         help
           Third-party code runs in ring 3 (applications, drivers, models; no
           mitigation specific to it exists in the tree yet, see the "not
           implemented" lines in config/axes/Kconfig.security). Unsigned OTA images are refused
-          (OTA_SIG_MANDATORY starts on) and the kernel image must be slid at
+          (OTA_SIG_MANDATORY starts on), the kernel image must be slid at
           boot (KASLR starts at require: an image without a seed does not
-          boot).
+          boot) and the security records are sealed (SEC_LOG starts on).
 
     config SECURITY_SEPARATION_STATIC
         bool "Separation, static"
@@ -53,6 +54,7 @@ choice
         imply SECURE_BOOT_ENFORCED
         imply OTA_SIG_MANDATORY
         imply LINK_PROVISIONING_ENFORCED
+        imply SEC_LOG
         help
           The device can be touched and its partitions are fixed at build
           time: the attacker can reach the console, the removable FAT
@@ -65,6 +67,7 @@ choice
             SECURE_BOOT_ENFORCED  boot halts on an unsigned or badly
                                   signed kernel image ("Security");
             OTA_SIG_MANDATORY     unsigned OTA images are refused;
+            SEC_LOG               the security records are sealed;
             LINK_PROVISIONING_ENFORCED
                                   boot halts without a link key, the
                                   handshake is refused on an unseeded
@@ -81,6 +84,7 @@ choice
         imply SECURE_BOOT_ENFORCED
         imply OTA_SIG_MANDATORY
         imply LINK_PROVISIONING_ENFORCED
+        imply SEC_LOG
         help
           As separation-static (the same implied switches), for workloads kept
           apart from the host. It needs a resident monitor under the kernel

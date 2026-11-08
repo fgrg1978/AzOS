@@ -4,8 +4,8 @@
 //! source, every record behind the same [`Envelope`], and one reader,
 //! [`Merge`], that takes them all in time order.
 //!
-//! The kernel log, the decision records and the actuation telemetry each
-//! have a ring here (`azos_records` places them); the kernel writes, a
+//! The kernel log, the decision records, the actuation telemetry and the
+//! security records each have a ring here (`azos_records` places them); the kernel writes, a
 //! ring-3 sink (`logd`) maps the region read-only and reads. Both sides
 //! compile this file, so the layout is the contract.
 //!
@@ -119,6 +119,8 @@ pub const SOURCE_KLOG: u8 = 1;
 pub const SOURCE_DECISION: u8 = 2;
 /// The actuation telemetry (`azos_actuation::logger`'s ordinary events).
 pub const SOURCE_TELEMETRY: u8 = 3;
+/// The security records, hash-chained and sealed (`azos_seclog`).
+pub const SOURCE_SECURITY: u8 = 4;
 
 /// What every record carries, whatever its source.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

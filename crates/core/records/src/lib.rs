@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The kernel's record substrate: where the kernel log, the decision records
-//! and the actuation telemetry are written, one ring per source behind one
+//! The kernel's record substrate: where the kernel log, the decision records,
+//! the actuation telemetry and the security records are written, one ring per
+//! source behind one
 //! envelope (the layout, the protocol and the reader are
 //! `azos_rings::region::record`).
 //!
@@ -9,7 +10,8 @@
 //!
 //! The first records are written before the page allocator exists, so until
 //! [`attach`] they go to a small region in `.bss` (the kernel log's ring of
-//! Kconfig `KLOG_EARLY_ENTRIES`, the decisions' ring at its full depth).
+//! Kconfig `KLOG_EARLY_ENTRIES`, the decisions' and the security records'
+//! rings at their full depth).
 //! `attach` is called once from `kernel_main` with a kernel-owned memory
 //! object that ring 3 maps read-only (`MemObj klog.ring`, `logd`'s row): it
 //! formats it, copies every record of the early region into it under its own
@@ -26,13 +28,17 @@ use azos_rings::region::record::{self as rec, Ring, RingSpec, Writer, ENV_BYTES}
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicPtr, Ordering};
 
-pub use azos_rings::region::record::{self as record, Head, FLAG_CLOCK_UNCALIBRATED, Payload, CLOCK_TIMEBASE, SOURCE_DECISION, SOURCE_KLOG, SOURCE_TELEMETRY};
+pub use azos_rings::region::record::{
+    self as record, Head, FLAG_CLOCK_UNCALIBRATED, Payload, CLOCK_TIMEBASE, SOURCE_DECISION, SOURCE_KLOG, SOURCE_SECURITY, SOURCE_TELEMETRY,
+};
 
 /// The kernel log keeps records (Kconfig `KLOG`); its sink, `logd`, reads
 /// the shared region, which exists exactly then.
 pub const KLOG: bool = azos_limits::KLOG;
 /// The decision records keep a ring (Kconfig `DECISION_RECORDS_DEV`).
 pub const DECISIONS: bool = azos_limits::DECISION_RECORDS_DEV;
+/// The security records keep a ring (Kconfig `SEC_LOG`, which needs `KLOG`).
+pub const SECURITY: bool = azos_limits::SEC_LOG && KLOG;
 
 /// Payload bytes of a kernel log record (`azos_drv_sys::klog::wire`'s layout).
 pub const KLOG_PAYLOAD: usize = 288;
@@ -43,6 +49,10 @@ pub const DECISION_PAYLOAD: usize = 32;
 pub const TELEMETRY_PAYLOAD: usize = 24;
 /// The telemetry ring's depth (Kconfig `TELEMETRY_RING_ENTRIES`).
 pub const TELEMETRY_ENTRIES: usize = azos_limits::TELEMETRY_RING_ENTRIES as usize;
+/// Payload bytes of a security record (`azos_seclog`'s layout).
+pub const SECURITY_PAYLOAD: usize = azos_seclog::PAYLOAD;
+/// The security ring's depth (Kconfig `SEC_LOG_ENTRIES`).
+pub const SECURITY_ENTRIES: usize = azos_limits::SEC_LOG_ENTRIES as usize;
 
 /// The decision ring's depth: Kconfig `DECISION_RECORDS_ENTRIES` rounded up
 /// to a power of two (the slot is index & (entries - 1)).
@@ -52,7 +62,7 @@ const fn ring(source: u8, payload: usize, entries: usize) -> RingSpec {
     RingSpec { source, slot_bytes: (ENV_BYTES + payload) as u32, entries: entries as u32 }
 }
 
-const MAX: usize = 3;
+const MAX: usize = 4;
 
 const fn layout(early: bool) -> ([RingSpec; MAX], usize) {
     let mut r = [ring(0, 8, 1); MAX];
@@ -70,6 +80,10 @@ const fn layout(early: bool) -> ([RingSpec; MAX], usize) {
         r[n] = ring(SOURCE_TELEMETRY, TELEMETRY_PAYLOAD, TELEMETRY_ENTRIES);
         n += 1;
     }
+    if SECURITY {
+        r[n] = ring(SOURCE_SECURITY, SECURITY_PAYLOAD, SECURITY_ENTRIES);
+        n += 1;
+    }
     (r, n)
 }
 
@@ -83,7 +97,7 @@ pub const RINGS: &[RingSpec] = FULL_L.0.split_at(FULL_L.1).0;
 const _: () = {
     let mut i = 0;
     while i < RINGS.len() {
-        assert!(RINGS[i].entries.is_power_of_two(), "KLOG_ENTRIES, DECISION_RECORDS_ENTRIES and TELEMETRY_RING_ENTRIES must be powers of two");
+        assert!(RINGS[i].entries.is_power_of_two(), "KLOG_ENTRIES, DECISION_RECORDS_ENTRIES, TELEMETRY_RING_ENTRIES and SEC_LOG_ENTRIES must be powers of two");
         i += 1;
     }
     i = 0;
@@ -134,7 +148,7 @@ const fn early_image() -> [u8; EARLY_BYTES] {
 static CURRENT: AtomicPtr<u8> = AtomicPtr::new(core::ptr::null_mut());
 
 /// Source ids a ring can have (`SOURCE_*` are 1..).
-const SOURCES: usize = 4;
+const SOURCES: usize = 5;
 
 const fn spec_of(rings: &[RingSpec], source: u8) -> Option<RingSpec> {
     match index(rings, source) {
@@ -195,6 +209,7 @@ fn place(source: u8) -> Option<(*mut u8, RingSpec)> {
         SOURCE_KLOG => place_of::<SOURCE_KLOG>(),
         SOURCE_DECISION => place_of::<SOURCE_DECISION>(),
         SOURCE_TELEMETRY => place_of::<SOURCE_TELEMETRY>(),
+        SOURCE_SECURITY => place_of::<SOURCE_SECURITY>(),
         _ => None,
     }
 }
@@ -225,6 +240,7 @@ pub fn attached() -> bool {
 pub struct Handover {
     pub klog_lost: u64,
     pub decisions_lost: u64,
+    pub security_lost: u64,
 }
 
 /// Hand the records over to the region at `base` (`bytes` long, zeroed,
@@ -261,6 +277,7 @@ pub unsafe fn attach(base: *mut u8, bytes: usize, ts_hz: u64) -> Option<Handover
         match spec.source {
             SOURCE_KLOG => h.klog_lost = kept,
             SOURCE_DECISION => h.decisions_lost = kept,
+            SOURCE_SECURITY => h.security_lost = kept,
             _ => {}
         }
     }

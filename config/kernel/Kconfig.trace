@@ -773,6 +773,89 @@ config LOGD_TELEMETRY_KEYS
       is counted on the `records held back` line. 24 bytes more of the sink's
       stack for each.
 
+config SEC_LOG
+    bool "Sealed security log: security records hash-chained and sealed"
+    depends on KLOG
+    default n
+    help
+      The security records (a microphone or camera stream opened or refused,
+      a first packet off the node, a capability denial, an image load, an
+      update step, a login, a USB authorization: the decision records of
+      those rules) are also written to a security ring of the record
+      substrate, beside the kernel log's (crates/core/seclog). A kernel pass
+      folds every record of it into a SHA-256 chain, per boot, and every
+      SEC_LOG_SEAL_S commits the chain's head to the backend
+      SEC_LOG_SEAL names; the boot's first record links it to the previous
+      boot's last seal. `logd` writes every security record to its files,
+      unfiltered and never rate-limited, as `@security` lines, and
+      tools/forensic/seclog_verify checks an exported log: a missing,
+      rewritten or reordered record, a forged seal, a broken link to the
+      previous boot. Nothing here adds a syscall or an authority: the ring is
+      a ring of the `klog.ring` region `logd` already maps.
+
+      On by default with the Hardened, Separation-static and Confidential
+      postures (SECURITY, `imply`). Needs KLOG: `logd` is the only sink.
+      Off: no security ring, no pass, no seal.
+
+config SEC_LOG_ENTRIES
+    int "Sealed security log: records the security ring holds (power of two)" if SEC_LOG
+    range 32 256
+    default 128
+    help
+      Asked with SEC_LOG only. 112 bytes a slot (the envelope and an 80-byte
+      payload), in the shared region and again in the early region the boot
+      writes before the region exists. A burst larger than the ring between
+      two passes of the sealer loses records: the sealer says how many in a
+      `loss` record, which is in the chain. The region holds the kernel log's,
+      the decisions', the telemetry's and this ring in one memory object of at
+      most 64 pages: the build refuses a sum that does not fit.
+
+config SEC_LOG_SEAL_S
+    int "Sealed security log: seconds between seals" if SEC_LOG
+    range 1 86400
+    default 60
+    help
+      Asked with SEC_LOG only. A seal is taken when this long has passed since
+      the last one and records came since; an idle system seals nothing. The
+      records since the last seal are the ones a compromised kernel could
+      still rewrite unseen: shorter is a smaller window. On a TPM each seal is
+      one NV write (TPM2_NV_Extend): a TPM rated for 100 000 writes of an
+      index lasts about 70 days at one seal a minute, every minute; raise
+      this on a device whose security records never stop.
+
+choice
+    prompt "Sealed security log: where the seals are committed (SEC_LOG_SEAL)"
+    depends on SEC_LOG
+    default SEC_LOG_SEAL_TPM_NV if TPM
+    default SEC_LOG_SEAL_FORWARD
+    help
+      What holds the chain's head once sealed. Every record says which
+      backend sealed it and whether the hardware held it, and the verifier
+      reports a boot sealed without hardware as advisory.
+
+    config SEC_LOG_SEAL_TPM_NV
+        bool "tpm-nv: a TPM 2.0 NV index of type extend"
+        depends on TPM
+        help
+          An NV index of type extend (owner range, next to the OTA floor's):
+          each seal is TPM2_NV_Extend of the head, which the TPM folds into
+          the index itself, so the OS can add to it and never set it back.
+          The index's value at boot is the boot's anchor, which is the
+          previous boot's last seal, and the value a forensic reader takes
+          from the live TPM tells whether the export it has is whole. A board
+          where no TPM answers seals forward-only, and its records say so.
+
+    config SEC_LOG_SEAL_FORWARD
+        bool "forward-only: print each seal on the console, local seal advisory"
+        help
+          No hardware holds the anchor: the kernel keeps it in memory, every
+          seal is printed on the console (`seclog: seal ...`) for a receiver
+          off the device to keep, and each record says the seal is advisory.
+          The boot's anchor is zero: on the device nothing that survives a
+          reset links one boot to the next; the console a receiver kept does.
+          QEMU, and boards without a TPM.
+endchoice
+
 config WCET
     # cargo-feature: wcet
     bool "Per-function WCET telemetry (#[wcet] sites)"

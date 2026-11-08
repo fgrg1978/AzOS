@@ -9,11 +9,12 @@ description = "Explainable decision records (Kconfig DECISION_RECORDS_DEV, DECIS
 [dependencies]
 azos_common = { workspace = true }
 azos_limits = { workspace = true }
-azos_records = { workspace = true, optional = true }
+azos_records = { workspace = true }
+azos_seclog = { workspace = true }
 
 [features]
 # Kernel feature `decisions` (Kconfig DECISION_RECORDS_DEV): the ring.
-on = ["dep:azos_records"]
+on = []
 # Kernel feature `decisions-durable` (Kconfig DECISION_REFUSALS_DURABLE): a
 # refusal also goes to the durable sink. Independent of `on`. Neither feature:
 # `record` compiles to nothing.
