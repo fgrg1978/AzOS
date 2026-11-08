@@ -10234,8 +10234,10 @@ fi
 # hart only to tasks at priority 14 or above, so every lower task on its hart
 # got nothing for the whole budget (wave 9 INV: `aarch64 preemption (qemu)`
 # failed behind it). It now sleeps NET_WAIT_POLL_MS (1 ms) between polls,
-# and so do its DHCP, encrypted-link handshake and brain-send waits
-# (`net_wait_sleep` in kernel/src/tasks/brain_link.rs).
+# and so do its DHCP, encrypted-link handshake and brain-send waits. The
+# dialer is now the ring-3 behaviour engine (BRAINCLI.ELF, the image's
+# autorun), whose connect waits in the kernel's stack the same way; not re-run
+# since the move.
 #
 # Booted with NO network device, so no ARP reply ever comes and every dial
 # spends the whole budget; `arp-timing` prints how many waits it took:

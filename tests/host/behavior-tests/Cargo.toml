@@ -58,8 +58,8 @@ rc-input = []
 [dependencies]
 azos_common = { path = "../../../crates/core/common" }
 azos_ext_api = { path = "../../../crates/core/ext-api" }
-# The Infer interface the behavior loop calls (kernel/src/behavior_infer.rs) and
-# the ABI types it names: both dependency-free of the kernel.
+# The ABI types and device interfaces the pulled-in files name: both
+# dependency-free of the kernel.
 azos_abi = { path = "../../../crates/core/abi" }
 azos_devif = { path = "../../../crates/core/devif" }
 wcet-macro = { path = "../../../crates/core/wcet-macro" }

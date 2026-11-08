@@ -6,9 +6,7 @@
 //! It serves the `Infer` interface on its endpoint (`endpoint.infer`, `READ`:
 //! serving), with the receipts as a `Decisions` object and the verdict log
 //! lease beside it; a client sees its own receipts and its own log, never
-//! another context's. Models are the signed `.MBL` bundles of `/fat`. The
-//! kernel's behavior task is one client of it, like any other: it calls
-//! `Infer` with its own badge (`kernel/src/behavior_ml.rs`).
+//! another context's. Models are the signed `.MBL` bundles of `/fat`.
 //!
 //! # What it does, in order
 //!

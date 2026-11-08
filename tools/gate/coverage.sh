@@ -46,7 +46,7 @@ fi
 SUITES="regression-tests ota-tests sched-policy-tests scsi-tests
         tftp-tests topology-tests config-tests crypto-tests
         flight-math-tests flight-tests abi-tests arch-api-tests gguf-tests
-        multi-stream-tests drv-api-tests
+        drv-api-tests
         cam-ring-tests dtb-tests aead-link-tests cap-tests
         ipc-fast-tests ipc-tests sched-wake-tests
         fs-tests arch-tests drivers-tests mm-tests libsys-tests behavior-tests

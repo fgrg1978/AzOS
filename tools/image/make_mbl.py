@@ -46,8 +46,7 @@ Usage:
       files use (tools/sign/gen_test_key.py makes the test one).
       --expect-ref-from FILE:CONST fails the build unless the bundle's model
       reference is the `const CONST: u64 = 0x...;` of the Rust source FILE. A
-      client that names its model at compile time (the kernel's behavior loop,
-      `kernel/src/behavior_ml.rs`) pins the reference there; the reference is
+      client that names its model at compile time pins the reference there; the reference is
       the digest of the manifest, so it changes with the weights, the cost
       table or the name, and the failure prints the value the source needs.
 

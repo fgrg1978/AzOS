@@ -20,8 +20,8 @@
 //! the brain link: a 13 B frame (payload 3 + 2 x 2 channels, `FRAME_OVERHEAD`
 //! 6, in `crates/domains/robot/behavior/src/brain_protocol.rs`) in one Noise transport
 //! frame of `secure_channel::FRAME_OVERHEAD` 18 (`crates/core/crypto/src/secure_channel.rs`).
-//! 100 ms is the period of the kernel's behavior loop (`behavior_task` in
-//! `kernel/src/tasks/behavior.rs`), which sends one sensor frame per pass. On the robot
+//! 100 ms is the order of the behaviour engine's period (`SENSOR_PERIOD_MS` in
+//! `userspace/services/brain_client/src/main.rs`), which sends one sensor frame per pass. On the robot
 //! the actuator command travels brain to robot, and the telemetry this stack
 //! sends shares one socket with the camera; here both flows are this stack's
 //! senders on separate connections, because this stack's congestion response

@@ -21,9 +21,6 @@ extern crate beh_test_drivers as azos_drv_base;
 extern crate beh_test_drivers as azos_drv_gpio;
 extern crate beh_test_drivers as azos_drv_irqchip;
 extern crate beh_test_drivers as azos_drv_sys;
-// `kernel/src/behavior_infer.rs` names the policy module by the crate it is in
-// in the kernel (`azos_behavior::ml_link`); here that is this crate's own.
-extern crate self as azos_behavior;
 
 #[allow(dead_code)]
 // The ring-3 behaviour engine's choice, the real file.
@@ -211,13 +208,6 @@ mod motor_stop_latch;
 #[cfg(test)]
 mod operator_key_source;
 
-// ---------------------------------------------------------------------------
-// Subsumption arbiter (`crates/domains/robot/behavior/src/arbiter.rs`) and the layers +
-// offline patrol it depends on (`layers.rs`, `offline.rs`) — pulled in by
-// `#[path]` for the same reason as `types`/`safety` above: the code under
-// test must be the code that ships, and the crate is `#![no_std]` so it
-// cannot be a normal host dependency of this crate.
-// ---------------------------------------------------------------------------
 
 
 // Pulled in 2026-09-11, when `payload_cam_trigger`'s 50 ms busy-wait turned
@@ -361,7 +351,7 @@ mod envelope {
 // Owner decision, 2026-09-06: `PKT_ESTOP` only ever ARMS (grep it), so
 // `PKT_MODE` is the only rearm path in the tree, and until this gate existed
 // `decode_mode_cmd` handed back a byte NOTHING validated — any `mode_id`
-// cleared an armed e-stop. `kernel/src/tasks/behavior.rs` has two dispatch sites (the
+// cleared an armed e-stop. `crates/domains/robot/safety-core/src/frames.rs` has two dispatch sites (the
 // TCP brain link and the `feature = "vf2"` UART bridge, compiled out of every
 // QEMU build) that both now call `mode_estop_record`/`mode_degrade_record`
 // and act on exactly what they return — no `if mode_id == ...` left inline at
@@ -371,7 +361,7 @@ mod envelope {
 // functions the dispatch sites call, not re-deriving the same `if` locally.
 // A test built the second way (decode a mode, then write its own
 // `if mode_clears_containment(...) { estop_release(proof) }`) would keep
-// passing even if a future edit deleted the gate from `kernel/src/tasks/behavior.rs` entirely —
+// passing even if a future edit deleted the gate from `crates/domains/robot/safety-core/src/frames.rs` entirely —
 // it would only be pinning the predicate, not the wiring. These call
 // `mode_estop_record` and act on its `(should_clear, action_code)`, against
 // the REAL `safety.rs` e-stop state, so a regression at either call site —
@@ -379,7 +369,7 @@ mod envelope {
 // — fails here without needing QEMU or the vf2-only UART build.
 //
 // **`should_clear` alone is no longer the whole story.** Owner decision,
-// 2026-09-25: `kernel/src/tasks/behavior.rs` now treats `should_clear == true` as "this MAY be an
+// 2026-09-25: `crates/domains/robot/safety-core/src/frames.rs` now treats `should_clear == true` as "this MAY be an
 // authorised release", not "clear it" — it additionally requires a verified
 // `safety::ReleaseAuthority` (an operator-signed proof today; see
 // `safety::verify_operator_release`'s module note) before it will actually
@@ -387,14 +377,14 @@ mod envelope {
 // predicate correctly (that part of the gate is unchanged), and use
 // `ReleaseAuthority::for_test()` — a proof constructor that exists only under
 // `cfg(test)`, never in a kernel binary — to drive `safety.rs` the rest of
-// the way, standing in for the authority check `kernel/src/tasks/behavior.rs` performs for real.
+// the way, standing in for the authority check `crates/domains/robot/safety-core/src/frames.rs` performs for real.
 // The authority check itself (request-does-not-clear, valid-signature-does,
 // forged/absent-signature-refused, replay-refused) is pinned in
 // `estop_release_authority.rs`, a NEW file rather than a rewrite of this one.
 //
 // Degraded-mode clearing (brain-triggered degraded mode) goes through `mode_degrade_record`, the
 // sibling function gated on the exact same reserved id — see the gate's doc
-// comment in `kernel/src/tasks/behavior.rs` for why. The real `degraded_set`/`degraded_active`
+// comment in `crates/domains/robot/safety-core/src/frames.rs` for why. The real `degraded_set`/`degraded_active`
 // (`crates/core/ipc::cap`) are not reachable from this host-test crate, which only
 // links the level shim in `shims/ipc` (see
 // `envelope::a_worse_degrade_level_never_permits_more_speed` above), so its
@@ -432,9 +422,9 @@ mod mode_reset {
     }
 
     /// **The positive half, against the real e-stop state.** `mode_estop_record`
-    /// — the exact function both `kernel/src/tasks/behavior.rs` dispatch sites call — must say
+    /// — the exact function both `crates/domains/robot/safety-core/src/frames.rs` dispatch sites call — must say
     /// "clear" for the reserved id, and driving `safety.rs` off that answer
-    /// (the same way `kernel/src/tasks/behavior.rs` is written to) must actually clear it.
+    /// (the same way `crates/domains/robot/safety-core/src/frames.rs` is written to) must actually clear it.
     #[test]
     fn the_reserved_id_clears_an_armed_estop() {
         let _g = serial();
@@ -2781,7 +2771,7 @@ mod flight_recorder_format {
 // ---------------------------------------------------------------------------
 //
 // The two handlers that receive `PKT_SEMANTIC_LEVEL` — the network link and
-// the UART bridge — live in `kernel/src/tasks/behavior.rs` and are not reachable from a
+// the UART bridge — live in `crates/domains/robot/safety-core/src/frames.rs` and are not reachable from a
 // host test. The decision they both make is, so it was pulled out into
 // `logger::semantic_level_record` and both call it. These tests are the reason
 // that extraction was worth doing: the policy has four cases and three of them

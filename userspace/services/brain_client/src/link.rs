@@ -3,10 +3,8 @@
 //! The brain link, client side (wave 9, owner decision P3; Noise since owner
 //! decision D9).
 //!
-//! Every connection runs the same handshake and transport as the kernel's own
-//! brain link
-//! (`kernel/src/tasks/brain_link.rs::brain_handshake`,
-//! `crates/core/crypto/src/secure_channel.rs`):
+//! Every connection runs the Noise handshake and transport of
+//! `crates/core/crypto/src/secure_channel.rs`:
 //!
 //!   * this client is the TCP client and the Noise INITIATOR: it speaks
 //!     first. `Noise_IK` toward the brain's static key pinned in the signed

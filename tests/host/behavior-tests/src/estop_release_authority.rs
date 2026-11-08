@@ -7,7 +7,7 @@
 //! Ed25519 signature over a fixed context + a strictly-increasing nonce,
 //! checked against a key the brain link never receives.
 //!
-//! These tests drive the REAL functions `kernel/src/tasks/behavior.rs`'s two
+//! These tests drive the REAL functions `crates/domains/robot/safety-core/src/frames.rs`'s two
 //! `PKT_MODE` dispatch sites call (`safety::verify_operator_release`,
 //! `safety::estop_release`, `safety::operator_authority_init`), against the
 //! REAL `safety.rs` e-stop state — not a re-derivation of the gate. The
@@ -116,7 +116,7 @@ fn reset() -> super::flight_recorder::RecorderGuard {
 
 /// **The core of the owner decision.** A bare `PKT_MODE`/`MODE_ID_ESTOP_RESET`
 /// request — no proof attached — must never itself be able to produce a
-/// `ReleaseAuthority`. `kernel/src/tasks/behavior.rs` treats a payload shorter than
+/// `ReleaseAuthority`. `crates/domains/robot/safety-core/src/frames.rs` treats a payload shorter than
 /// `1 + RELEASE_PROOF_BYTES` as exactly this: no proof to check at all, so it
 /// never even calls `verify_operator_release`. Pinned here as: with the
 /// authority key provisioned and the latch armed, simply NOT calling
@@ -131,7 +131,7 @@ fn a_bare_request_does_not_clear_the_latch() {
     estop_activate();
     assert!(estop_is_active(), "precondition: armed");
 
-    // The brain-request path: `kernel/src/tasks/behavior.rs` sees a 1-byte payload, computes no
+    // The brain-request path: `crates/domains/robot/safety-core/src/frames.rs` sees a 1-byte payload, computes no
     // proof, and calls neither `verify_operator_release` nor `estop_release`.
     // There is nothing to call here — that absence IS the fix.
     assert!(estop_is_active(), "a bare request must leave the latch exactly as armed as it found it");
@@ -188,7 +188,7 @@ fn an_all_zero_key_is_rejected_not_installed() {
 
 /// **A forged proof — wrong key — is refused with the shared denial.** Signed
 /// by a real Ed25519 key, over the exact right message, but not the
-/// provisioned operator's key. `kernel/src/tasks/behavior.rs` records this under the SAME
+/// provisioned operator's key. `crates/domains/robot/safety-core/src/frames.rs` records this under the SAME
 /// flight-recorder code (4) as a wrong `mode_id` — see
 /// `safety::ESTOP_ACTION_REFUSED_MIRROR`'s doc — which is the "shared error
 /// code" the gate row checks for; at the `ReleaseDenial` level both this and
