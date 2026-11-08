@@ -3838,9 +3838,11 @@ const TOOLBOX_CAPS_BUILT: ([CapSpec<'static>; 12], usize) = {
     // The trees the file tools (`cp`, `mv`, `rm`, `mkdir`, `touch`, `tee`) may
     // change: the shell's `/fat` and `/tmp`. Not the USB stick, which only
     // the shell writes (a redirection).
-    caps[n] = FAT_RW;
-    caps[n + 1] = TMP_RW;
-    n += 2;
+    if !cfg!(feature = "toolbox-write-canary") {
+        caps[n] = FAT_RW;
+        caps[n + 1] = TMP_RW;
+        n += 2;
+    }
     caps[n] = ROOT_RO;
     n += 1;
     // With the input server's row, the call right on `endpoint.input` (`input

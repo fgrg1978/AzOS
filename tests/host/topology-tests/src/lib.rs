@@ -4599,6 +4599,19 @@ mod launch_cap_tests {
         assert!(!tb.start);
     }
 
+    /// **The tool image writes the shell's trees, so `cp`, `mv`, `rm`, `mkdir`
+    /// and `touch` work; under the lockdown only `/tmp`.**
+    ///
+    /// **Canary.** `toolbox-write-canary` drops the trees from the row: red.
+    #[test]
+    fn file_tools_have_write_trees_in_the_tool_row() {
+        let topo = default_minimal();
+        let tb = topo.find_task(&MaybeStr::from_bytes(b"TOOLBOX.ELF")).expect("TOOLBOX.ELF row");
+        let rw = |t: &[u8]| topo.caps_of(tb).iter().any(|c| c.kind == CapKind::Node && c.perms == CapPerms::RW && c.target.as_bytes() == t);
+        assert!(rw(b"/tmp"), "the file tools write /tmp");
+        assert_eq!(rw(b"/fat"), !azos_limits::CONSOLE_LOCKDOWN, "/fat unless the lockdown withholds it, as for the shell");
+    }
+
     /// The Terminal object's endpoint has exactly one server and one holder
     /// of the call right: `TERMD.ELF` holds `READ` on `endpoint.term` (it
     /// serves), `NAMESD.ELF` `WRITE` with `transfer` (it lends), and the

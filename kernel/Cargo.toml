@@ -215,6 +215,9 @@ mem-admission-canary = ["azos_topology/mem-admission-canary"]
 # Canary: `POWER.ELF` holds the `power` endpoint READ only; its ops must
 # refuse and record every operation.
 power-cap-canary = ["azos_topology/power-cap-canary"]
+# Canary: `TOOLBOX.ELF` holds no write tree; `mkdir`, `cp` and `rm` must be
+# refused.
+toolbox-write-canary = ["azos_topology/toolbox-write-canary"]
 # Wave 12 canary: the four family tools hold no capability; their typed calls
 # must refuse and record every operation.
 family-cap-canary = ["azos_topology/family-cap-canary"]

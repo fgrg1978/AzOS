@@ -12191,7 +12191,7 @@ HOST_SUITES="flight-sim regression-tests ota-tests sched-policy-tests scsi-tests
          ipc-fast-tests ipc-tests sched-wake-tests
          fs-tests arch-tests drivers-tests mm-tests libsys-tests behavior-tests
          net-tests seccomp-tests syscall-tests trap-tests sync-tests flight-tests
-         shell-tests sh-tests term-tests input-tests inputd-tests audiod-tests names-tests devif-tests panic-policy-tests energy-tests thermal-tests power-tests linux-abi-tests linux-rt-tests ualloc-tests
+         shell-tests sh-tests term-tests input-tests inputd-tests audiod-tests names-tests coreutils-tests devif-tests panic-policy-tests energy-tests thermal-tests power-tests linux-abi-tests linux-rt-tests ualloc-tests
          percpu-tests trace-tests iommu-tests pci-tests dma-tests
          nvme-tests x86-platform-tests fb-tests rings-tests bytepipe-tests idl-tests decisions-tests micro-tests hwbus-tests
          logind-tests stdrt-tests pkg-tests zenoh-tests mcp-tests inspect-tests actuation-tests
@@ -12259,6 +12259,24 @@ host_job host_generic_row "sensor: vdso bind, board-io image without the robot e
 host_job host_generic_row "sensor: vdso bind, image with neither robot nor board I/O" a_vdso_bind_of_a_robot_sensor_follows_the_robot_domain virtio-snd,linux-abi
 host_job host_canary_row "sensor: vdso bind canary" syscall-tests virtio-snd,linux-abi,board-io,vdso-bind-canary \
     a_vdso_bind_of_a_robot_sensor_follows_the_robot_domain --no-default-features
+# The native basic utilities (userspace/lib/coreutils): each canary puts one bug back, and the
+# named test of coreutils-tests must be the one that goes red.
+host_job host_canary_row "coreutils: the tool image holds the write trees canary" topology-tests toolbox-write-canary file_tools_have_write_trees_in_the_tool_row
+host_job host_canary_row "coreutils: argument parser, bundled flags canary" coreutils-tests args-bundle-canary argp_bundles_flags
+host_job host_canary_row "coreutils: path, .. takes a part off canary" coreutils-tests path-dotdot-canary path_dotdot_pops_a_part
+host_job host_canary_row "coreutils: walks skip . and .. canary" coreutils-tests walk-dots-canary walks_skip_the_dot_entries_a_fat_directory_lists
+host_job host_canary_row "coreutils: cp replaces a longer file canary" coreutils-tests cp-no-truncate-canary cp_replaces_a_longer_file
+host_job host_canary_row "coreutils: rm refuses a directory without -r canary" coreutils-tests rm-dir-without-r-canary rm_refuses_a_directory_without_r
+host_job host_canary_row "coreutils: mkdir -p makes the parents canary" coreutils-tests mkdir-p-parent-canary mkdir_p_makes_the_parents
+host_job host_canary_row "coreutils: grep -v canary" coreutils-tests grep-invert-canary grep_v_selects_the_other_lines
+host_job host_canary_row "coreutils: sort -n canary" coreutils-tests sort-numeric-canary sort_n_orders_numbers_not_text
+host_job host_canary_row "coreutils: head -n canary" coreutils-tests head-count-canary head_stops_after_n_lines
+host_job host_canary_row "coreutils: tail -n canary" coreutils-tests tail-count-canary tail_prints_the_last_n_lines
+host_job host_canary_row "coreutils: find -type canary" coreutils-tests find-type-canary find_type_f_lists_only_files
+host_job host_canary_row "coreutils: du rounds to the block canary" coreutils-tests du-block-canary du_rounds_files_to_the_block
+host_job host_canary_row "coreutils: cut ranges canary" coreutils-tests cut-range-canary cut_ranges_include_the_end
+host_job host_canary_row "coreutils: tr ranges canary" coreutils-tests tr-range-canary tr_range_includes_the_last_letter
+host_job host_canary_row "coreutils: uniq -c canary" coreutils-tests uniq-count-canary uniq_c_counts_the_run
 # The kernel half's page-table pool and its funnel (mm-tests, feature hyp-monitor,
 # which the default run of the suite does not build): words of the armed pool go
 # to the monitor and nothing else does, the pool is sized from the RAM, and a pool
@@ -26457,6 +26475,31 @@ args one 'two words'" 120 \
 echo one two | cat | wc
 echo piped-ok | cat" 150 \
             "1 3 6" "1 2 8" "piped-ok"
+        # The native basic utilities through the shell: mkdir -p, cp, grep, sort,
+        # head, tr, wc, find and rm -r on the FAT volume, then a command with no
+        # native meaning (refused with what to use instead). The typed lines carry
+        # none of the markers: they are counts and bytes the tools wrote.
+        USH_FORBID="$RECOVERY_PROMPT_RE|PAGE FAULT|Killing user task" par_row ushell_row "sh: basic utilities ($ush_isa)" "$ush_isa" "$ush_feat" PASS \
+            "mkdir -p /fat/Q1/A/B
+find /fat/Q1 -type d | wc
+echo pear > /fat/Q1/F.TXT
+echo fig >> /fat/Q1/F.TXT
+echo plum >> /fat/Q1/F.TXT
+cp /fat/Q1/F.TXT /fat/Q1/A/G.TXT
+grep -v fig /fat/Q1/A/G.TXT | sort -r | wc
+sort -r /fat/Q1/A/G.TXT | head -n 1 | tr a-z A-Z
+rm -r /fat/Q1/A
+find /fat/Q1 | wc
+chmod 644 /fat/Q1/F.TXT" 300 \
+            "3 3 30" "2 2 10" "PLUM" "2 2 22" "chmod: files have no mode bits"
+        # Without the write trees in the tool image's row the same lines make nothing.
+        USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "sh: basic utilities canary ($ush_isa)" "$ush_isa" "$ush_feat,toolbox-write-canary" FAIL \
+            "mkdir -p /fat/Q1/A/B
+find /fat/Q1 -type d | wc
+echo pear > /fat/Q1/F.TXT
+cp /fat/Q1/F.TXT /fat/Q1/A/G.TXT
+sort -r /fat/Q1/A/G.TXT | head -n 1 | tr a-z A-Z" 200 \
+            "3 3 30" "PLUM"
         # The images that ask for more stack than a task gets by default, run:
         # MLSRV.ELF (64 KiB for its main thread, started by the behavior task,
         # steady when it serves the Infer interface) and TOOLBOX.ELF's `ps`
