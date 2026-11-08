@@ -7131,14 +7131,32 @@ mod logd_row_tests {
         assert_eq!(t.admission_check(), Ok(()));
         let row = t.tasks().iter().find(|r| r.name.as_bytes() == azos_topology::builder::TASK_LOGD_IMAGE).expect("the row");
         let caps = t.caps_of(row);
-        assert_eq!(caps.len(), 3);
+        // With the sealed security log, its page comes after the ring.
+        let page = usize::from(azos_limits::SEC_LOG);
+        assert_eq!(caps.len(), 3 + page);
         assert_eq!((caps[0].kind, caps[0].perms, caps[0].transfer), (CapKind::MemObj, CapPerms::READ.union(CapPerms::MAP), false));
         assert_eq!(caps[0].target.as_bytes(), b"klog.ring");
-        assert_eq!((caps[1].kind, caps[1].perms, caps[1].target.as_bytes()), (CapKind::Node, CapPerms::RW, &b"/fat"[..]));
-        assert_eq!((caps[2].kind, caps[2].perms, caps[2].target.as_bytes()), (CapKind::Node, CapPerms::READ, &b"/"[..]));
+        if page == 1 {
+            let rwm = CapPerms::READ.union(CapPerms::WRITE).union(CapPerms::MAP);
+            assert_eq!((caps[1].kind, caps[1].perms, caps[1].transfer, caps[1].target.as_bytes()), (CapKind::MemObj, rwm, false, &b"klog.ack"[..]));
+        }
+        assert_eq!((caps[1 + page].kind, caps[1 + page].perms, caps[1 + page].target.as_bytes()), (CapKind::Node, CapPerms::RW, &b"/fat"[..]));
+        assert_eq!((caps[2 + page].kind, caps[2 + page].perms, caps[2 + page].target.as_bytes()), (CapKind::Node, CapPerms::READ, &b"/"[..]));
         assert!(caps.iter().all(|c| c.kind != CapKind::Endpoint), "it serves and calls nothing");
         assert_eq!(row.start, azos_limits::KLOG, "it starts exactly with the log");
         assert_eq!(row.restart, azos_topology::RestartPolicy::OnFailure);
+    }
+
+    /// **The sink's page is logd's alone**: no other row of the built-in
+    /// topology asks for `MemObj klog.ack`.
+    #[test]
+    fn only_the_sink_is_granted_its_page() {
+        let t = default_minimal();
+        for row in t.tasks() {
+            let asks = t.caps_of(row).iter().any(|c| c.target.as_bytes() == b"klog.ack");
+            let logd = row.name.as_bytes() == azos_topology::builder::TASK_LOGD_IMAGE;
+            assert_eq!(asks, logd && azos_limits::SEC_LOG, "{:?}", core::str::from_utf8(row.name.as_bytes()));
+        }
     }
 }
 
