@@ -9,6 +9,7 @@ dependencies are in `third_party/vendor` (`userspace/lib/tls-probe/vendor.py`).
 |---|---|---|---|
 | `ripgrep` | https://github.com/BurntSushi/ripgrep (`rg`) | 15.2.0 | Unlicense OR MIT |
 | `fd-find` | https://github.com/sharkdp/fd (`fd`) | 10.5.2 | MIT OR Apache-2.0 |
+| `kibi` | https://github.com/ilai-deutel/kibi | 0.3.3 | MIT OR Apache-2.0 |
 
 The files are the crates.io packages with these changes, none of which touches
 a source file:
@@ -43,6 +44,11 @@ makes the program build there; `make ports` builds all three for the three ISAs.
   `src/filesystem.rs` (`is_block_device` and the other three) answer `false` on every
   target that is neither unix nor redox, where upstream had only a windows arm;
   `one_file_system` is `false` where the flag does not exist (`src/main.rs`).
+- kibi: `src/azos.rs`, the terminal backend selected by `target_os = "azos"`
+  (`src/lib.rs`), shaped like `wasi.rs`. A program reads fd 0, the handle its spawner
+  passed, and writes the console. The terminal server switches cooked and raw mode
+  only for its one client, the shell, so `enable_raw_mode` returns `Unsupported` and
+  the editor stops with that error instead of running on line-buffered input.
 
 ## On the system volume
 
@@ -53,9 +59,7 @@ a seccomp row (`crates/core/sched/src/seccomp.rs`) and boot rows (`sh: rg finds 
 file`, `sh: fd lists a directory`, each with a canary). They read through `std::fs`
 (`sdk/std/sys/fs/azos.rs`), which names every path beneath the task's root `Cap<Dir>`.
 
-kibi (a terminal editor, 0.3.3) was ported and removed: it needs the terminal in raw mode and its size, which
-the terminal server hands to its one client, the shell. A child program could hold a badged `Terminal`
-call capability the shell passes at spawn (honoured only while the job is foreground, cooked mode
-forced back when the shell takes the focus again), but `SYS_SPAWN_EX` moves only a `Cap<File>` (not a tree), a pipe's
-region or the console (`crates/core/syscall/src/ushell.rs`: any other kind is `ECAPKIND`), so an endpoint cannot be
-handed to a job. The port is in the history of `f/a2-ports`; it returns with that kernel change.
+`kibi` is built (`make ports`) but is not an image: it needs the terminal in raw mode and its
+size, and the terminal server hands those to one client only, the shell. A child program that
+holds a Terminal handle the shell passed it at spawn, with the server restoring cooked mode
+when that handle closes, is the design; it is not implemented, so `enable_raw_mode` refuses.

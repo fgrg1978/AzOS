@@ -5,7 +5,7 @@
 # download): rustls 0.23 with the rustls-rustcrypto provider (no aws-lc-rs, no
 # ring in any build for an azos or a unix host target), quinn-proto 0.11 (no
 # crypto feature) and their dependencies, the dependencies of the ported
-# programs ripgrep and fd-find (third_party/ports; extended 2026-11-08,
+# programs ripgrep, fd-find and kibi (third_party/ports; extended 2026-11-08,
 # owner-approved download), plus the dependencies of the pinned
 # toolchain's std workspace (build-std resolves them through the same source
 # replacement). One line per package: name, version, sha256 of the .crate file as
@@ -218,6 +218,7 @@ tracing 0.1.44 63e71662fa4b2a2c3a26f570f037eb95bb1f85397f3cd8076caed2f026a6d100
 tracing-core 0.1.36 db97caf9d906fbde555dd62fa95ddba9eecfd14cb388e4f491a66d74cd5fb79a
 typenum 1.20.1 b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20
 unicode-ident 1.0.27 a2c754d6c33795a1c324727428e5a7dedb5b06195f9890bdbcba760d3e246563
+unicode-width 0.2.3 ca718471876992059f251e33aafc334346ada08042b7661dd1fe313a9bced557
 universal-hash 0.5.1 fc1de2c688dc15305988b563c3854064043356019f97a4b46276fe734c4f07ea
 untrusted 0.9.0 8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1
 unwinding 0.2.8 60612c845ef41699f39dc8c5391f252942c0a88b7d15da672eff0d14101bbd6d

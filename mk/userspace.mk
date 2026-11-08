@@ -1423,13 +1423,16 @@ $(RPCQUIC_ELF_X86_64): $(RPCQUIC_SRC) $(X86_64_KCONFIG) $(SDK_KEY_x86_64)
 	$(SDK_CARGO_x86_64) --target-dir $(TLSPROBE_TGT) $(RPCQUIC_CARGO)
 	cp $(TLSPROBE_TGT)/x86_64-unknown-azos/release/rpcquic $@
 	@echo "[SDK] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
-# The ported programs (third_party/ports: ripgrep `rg` and fd-find `fd`, system-volume images
-# by Kconfig USERSPACE_RG and USERSPACE_FD) on the same vendored tree and target directory as
-# the probe. `make ports` builds both for the three ISAs.
+
+# The ported programs (third_party/ports: ripgrep `rg`, fd-find `fd`, kibi) on the same
+# vendored tree and target directory as the probe. `make ports` builds the three for the
+# three ISAs. None is on a system volume: std has no `fs` for the azos target yet (see
+# third_party/ports/README.md).
 PORTS_DIR := third_party/ports
 PORTS_BIN_ripgrep := rg
 PORTS_BIN_fd-find := fd
-PORTS_NAMES       := ripgrep fd-find
+PORTS_BIN_kibi    := kibi
+PORTS_NAMES       := ripgrep fd-find kibi
 PORTS_SRC          = $(shell find $(PORTS_DIR) -type f) third_party/VENDOR_PIN
 PORTS_ELF_riscv64  = $(foreach p,$(PORTS_NAMES),$(OUT_BUILD)/ports/riscv64/$(PORTS_BIN_$(p)).elf)
 PORTS_ELF_aarch64  = $(foreach p,$(PORTS_NAMES),$(OUT_BUILD)/ports/aarch64$(AARCH64_PG_SUFFIX)/$(PORTS_BIN_$(p)).elf)
