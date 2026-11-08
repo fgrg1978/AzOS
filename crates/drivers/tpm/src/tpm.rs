@@ -23,7 +23,10 @@
 //!   attributes, size, name algorithm and empty policy the driver defines, so
 //!   an ordinary index left by an earlier build fails closed. (What
 //!   `NV_ReadPublic` cannot show is the index's auth value: a holder can still
-//!   raise the floor, which refuses images, but never lower it.)
+//!   raise the floor, which refuses images, and cannot lower the index. An
+//!   index in the owner hierarchy can still be undefined and defined again at
+//!   zero by whoever can send owner commands; only the undeletable variant,
+//!   created in the platform hierarchy, keeps the floor.)
 //!
 //! * `nv_extend`, `chain_*`, `nv_increment` and `counter_*`: the sealed
 //!   security log's anchor (`azos_seclog`) in a `TPM_NT_EXTEND` NV index of
@@ -123,6 +126,19 @@ pub const NV_PLATFORMCREATE: u32 = 1 << 30;
 /// own, and the size of its policy (one SHA-256 digest).
 pub const UNDELETABLE_ATTRS: u32 = NV_POLICY_DELETE | NV_PLATFORMCREATE;
 pub const UNDELETABLE_POLICY_LEN: u16 = DIGEST_BYTES as u16;
+/// The `authPolicy` the driver gives an undeletable index it creates:
+/// `SHA-256("azos/tpm/an index nothing deletes")`, a digest no sequence of
+/// policy commands is known to produce.
+pub const UNDELETABLE_POLICY: [u8; DIGEST_BYTES] = [
+    0x2a, 0xab, 0x5a, 0xf8, 0x60, 0x44, 0x7b, 0xfe, 0x6b, 0xc4, 0x5c, 0xfc, 0x57, 0x42, 0xf1, 0xad, 0x57, 0xad, 0x40, 0x2b,
+    0xbb, 0xc0, 0x39, 0xbc, 0xd9, 0x22, 0x20, 0x12, 0xe8, 0xa8, 0xbd, 0xf7,
+];
+/// A `TPM_RC` of the format-one kind (bit 7) whose error is a password the
+/// TPM refused: `TPM_RC_AUTH_FAIL` (0x0E) or `TPM_RC_BAD_AUTH` (0x22). An
+/// index that exists and refuses the driver's password is someone else's.
+pub const fn rc_is_auth_refused(rc: u32) -> bool {
+    rc & 0x80 != 0 && matches!(rc & 0x3F, 0x0E | 0x22)
+}
 /// Size of the keystore secret's index: 32 bytes.
 pub const SECRET_BYTES: u16 = 32;
 /// Default NV index of the keystore secret: the owner range, next to the floor.
@@ -397,23 +413,48 @@ impl<T: Transport> Tpm<T> {
     pub fn nv_define(
         &mut self, owner_auth: &[u8], index: u32, attrs: u32, size: u16, auth: &[u8],
     ) -> Result<(), Error> {
-        if owner_auth.len() > AUTH_MAX || auth.len() > AUTH_MAX {
+        self.nv_define_in(wire::RH_OWNER, owner_auth, index, attrs, size, auth, &[])
+    }
+
+    /// `TPM2_NV_DefineSpace` under hierarchy `hierarchy`, with `policy` as the
+    /// index's `authPolicy`.
+    #[allow(clippy::too_many_arguments)]
+    fn nv_define_in(
+        &mut self, hierarchy: u32, hier_auth: &[u8], index: u32, attrs: u32, size: u16, auth: &[u8], policy: &[u8],
+    ) -> Result<(), Error> {
+        if hier_auth.len() > AUTH_MAX || auth.len() > AUTH_MAX || policy.len() > DIGEST_BYTES {
             return Err(Error::BadArgument);
         }
         let mut c = Cmd::new(wire::ST_SESSIONS, wire::CC_NV_DEFINE_SPACE);
-        c.u32(wire::RH_OWNER);
-        c.pw_auth(owner_auth);
+        c.u32(hierarchy);
+        c.pw_auth(hier_auth);
         c.tpm2b(auth);
-        // TPM2B_NV_PUBLIC: index, nameAlg, attributes, empty policy, size.
-        c.u16(4 + 2 + 4 + 2 + 2);
+        // TPM2B_NV_PUBLIC: index, nameAlg, attributes, policy, size.
+        c.u16((4 + 2 + 4 + 2 + policy.len() + 2) as u16);
         c.u32(index);
         c.u16(wire::ALG_SHA256);
         c.u32(attrs);
-        c.u16(0);
+        c.tpm2b(policy);
         c.u16(size);
         let mut out = [0u8; RESP_MAX];
         let body = self.run(c.finish()?, Duration::Long, wire::ST_SESSIONS, &mut out)?;
         wire::session_params(body).map(|_| ())
+    }
+
+    /// Define the undeletable variant of an index in the platform hierarchy
+    /// (empty platform password): `attrs` plus [`UNDELETABLE_ATTRS`], and
+    /// [`UNDELETABLE_POLICY`] as its policy, which no policy session gives, so
+    /// `NV_UndefineSpaceSpecial` never succeeds and the owner's
+    /// `NV_UndefineSpace` and `Clear` do not reach a platform index. Where the
+    /// firmware disabled the platform hierarchy before the OS runs, the TPM
+    /// refuses (`TPM_RC_HIERARCHY`); an index already there is adopted as
+    /// `nv_adopt` does.
+    pub fn nv_create_undeletable(&mut self, index: u32, attrs: u32, size: u16, auth: &[u8]) -> Result<Adopted, Error> {
+        match self.nv_define_in(wire::RH_PLATFORM, &[], index, attrs | UNDELETABLE_ATTRS, size, auth, &UNDELETABLE_POLICY) {
+            Ok(()) => Ok(Adopted::Undeletable),
+            Err(Error::Tpm(wire::RC_NV_DEFINED)) => self.nv_adopt(&[], index, attrs, size, auth),
+            Err(e) => Err(e),
+        }
     }
 
     /// `TPM2_NV_ReadPublic`: the public area of `index`. The reply must name
@@ -558,7 +599,7 @@ impl<T: Transport> Tpm<T> {
     /// platform hierarchy defined (the driver never does). Whether nothing
     /// satisfies that policy, `NV_ReadPublic` cannot show: it is the
     /// provisioning step's to make so.
-    fn nv_adopt(
+    pub fn nv_adopt(
         &mut self, owner_auth: &[u8], index: u32, attrs: u32, size: u16, auth: &[u8],
     ) -> Result<Adopted, Error> {
         match self.nv_define(owner_auth, index, attrs, size, auth) {

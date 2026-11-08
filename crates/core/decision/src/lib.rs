@@ -428,7 +428,7 @@ pub enum Rule {
 }
 
 /// The rules whose records are security records, and their class.
-const SECURITY_RULES: [(Rule, SecClass); 14] = [
+const SECURITY_RULES: [(Rule, SecClass); 15] = [
     (Rule::AudioCapture, SecClass::Microphone),
     (Rule::CamCapture, SecClass::Camera),
     (Rule::EnvelopeEgress, SecClass::Egress),
@@ -443,6 +443,7 @@ const SECURITY_RULES: [(Rule, SecClass); 14] = [
     (Rule::PackageInstall, SecClass::Update),
     (Rule::Login, SecClass::Login),
     (Rule::UsbAuthorize, SecClass::Usb),
+    (Rule::HardeningFallback, SecClass::Hardening),
 ];
 
 impl Rule {
@@ -850,7 +851,8 @@ pub const RULES: &[RuleInfo] = &[
     RuleInfo {
         // Written once per absent guard, after the decision sink is installed
         // (the `[SEC]` warning line is printed at the `[ISA]` report, earlier).
-        // Subject: 1 smep, 2 smap, 3 pan. `isa`: 0 riscv64, 1 aarch64, 2 x86_64.
+        // Subject: 1 smep, 2 smap, 3 pan, 4 the OTA floor's TPM index is not the
+        // undeletable one (the floor is advisory). `isa`: 0 riscv64, 1 aarch64, 2 x86_64.
         name: "hardening-fallback",
         subject: "guard",
         fields: ["isa", "-", "-"],

@@ -70,6 +70,7 @@ pub const fn alg_name(alg: u16) -> &'static str {
     }
 }
 pub const RH_OWNER: u32 = 0x4000_0001;
+pub const RH_PLATFORM: u32 = 0x4000_000C;
 pub const RS_PW: u32 = 0x4000_0009;
 
 /// A command under construction. Overflow is remembered and reported by

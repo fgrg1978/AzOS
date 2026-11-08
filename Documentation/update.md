@@ -402,14 +402,26 @@ The policy is in `floor.rs`, all of it pure:
   one, and the TPM driver reads before it writes (`Tpm::floor_raise`).
 - **The volume never sets the hardware value.** `commit` is given the confirmed
   slot's own epoch, not BOOTMETA's `min_sec_epoch`, so a forged floor on the
-  volume cannot be ratcheted into the TPM, where nothing short of clearing it
-  could undo it.
+  volume cannot be ratcheted into the TPM, where only undefining the index
+  (or clearing the TPM) could undo it.
 - With no TPM found, or one that fails to provision or read, the backend is not
   installed and BOOTMETA's floor holds alone; the boot says so.
 
 The NV index is a `TPM_NT_BITS` one, defined once per TPM: floor `n` is bit
-`n - 1`, set with `NV_SetBits`, so the TPM itself refuses to lower it and a raise
-is one command whatever the jump. The floor tops out at 64 (`FLOOR_MAX`; a higher
+`n - 1`, set with `NV_SetBits`, so the TPM refuses to lower the index's value and
+a raise is one command whatever the jump. The index itself is another matter: one
+the kernel defined in the owner hierarchy can be undefined and defined again at
+zero by whoever can send TPM owner commands (the owner password is empty wherever
+the kernel can define one), which, with BOOTMETA rewritten, lowers the floor. So
+the floor is **advisory** unless the index is the undeletable variant: created in
+the platform hierarchy with `TPMA_NV_PLATFORMCREATE | TPMA_NV_POLICY_DELETE` and a
+policy nothing satisfies, by a provisioning step before the OS runs, with the
+platform hierarchy then disabled or its password set (the requirement is in
+"Sealed security log" in [security.md](security.md)). A development build
+(`BUILD_TYPE_DEV`) or a QEMU kernel creates that index itself when the platform
+hierarchy is open, so the test rows exercise the whole defence; a release kernel
+only adopts one. With an owner index the boot warns and writes a security record
+(`hardening-fallback`), so the export says the floor was advisory. The floor tops out at 64 (`FLOOR_MAX`; a higher
 epoch is refused, not wrapped), and `sign_ota.py bundle` refuses to sign an `--epoch` above it when
 the `.config` has `OTA_FLOOR_TPM_NV` (`--kconfig`, default `$KCONFIG_CONFIG`, then `.config`). An index left by an earlier build (ordinary, 4
 bytes) is not adopted: the boot records it and BOOTMETA holds alone. The password

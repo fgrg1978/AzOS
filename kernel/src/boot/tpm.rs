@@ -608,6 +608,30 @@ pub(crate) fn install_keystore_root() -> bool {
 
 // ── The OTA rollback floor ──────────────────────────────────────────────────
 
+/// `hardening-fallback`'s subject for an OTA floor index that is not the
+/// undeletable one.
+const FLOOR_ADVISORY: u32 = 4;
+
+/// May this kernel create an index in the platform hierarchy itself? A
+/// development build or a QEMU kernel, so the test rows have the whole
+/// defence; a release kernel only adopts what provisioning made.
+const CREATE_UNDELETABLE: bool = azos_limits::BUILD_TYPE_DEV || cfg!(feature = "qemu");
+
+/// Define index `index` (or adopt the one there): the undeletable variant in
+/// the platform hierarchy when this kernel may create one and the hierarchy
+/// is open, else the owner-hierarchy one.
+fn provision(t: &mut Tpm<Iface>, index: u32, attrs: u32, size: u16, auth: &[u8]) -> Result<azos_tpm::tpm::Adopted, Error> {
+    if CREATE_UNDELETABLE {
+        match t.nv_create_undeletable(index, attrs, size, auth) {
+            Ok(k) => return Ok(k),
+            Err(Error::NvMismatch) => return Err(Error::NvMismatch),
+            // The platform hierarchy is closed (the firmware's): the owner's.
+            Err(_) => {}
+        }
+    }
+    t.nv_adopt(&[], index, attrs, size, auth)
+}
+
 fn floor_auth() -> [u8; 32] {
     azos_ota::floor::nv_auth(FLOOR_INDEX)
 }
@@ -634,22 +658,23 @@ fn install_floor() {
     }
     let auth = floor_auth();
     let r = with(|t| {
-        let kind = t.floor_provision(&[], FLOOR_INDEX, &auth)?;
+        let kind = provision(t, FLOOR_INDEX, azos_tpm::tpm::FLOOR_ATTRS, azos_tpm::tpm::FLOOR_BYTES, &auth)?;
         Ok::<_, Error>((kind, t.floor_read(FLOOR_INDEX, &auth)?))
     });
     match r {
         Some(Ok((kind, now))) => {
             azos_ota::floor::install(&FLOOR, now);
-            kprintln!(
-                "[TPM] OTA rollback floor: NV index {:#010x}, holds epoch {}{}",
-                FLOOR_INDEX,
-                now,
-                if kind == azos_tpm::tpm::Adopted::Undeletable {
-                    " (undeletable)"
-                } else {
-                    " (owner hierarchy: whoever can send TPM owner commands can undefine it and lower the floor)"
-                }
-            );
+            if kind == azos_tpm::tpm::Adopted::Undeletable {
+                kprintln!("[TPM] OTA rollback floor: NV index {:#010x} (undeletable), holds epoch {}", FLOOR_INDEX, now);
+            } else {
+                azos_drv_sys::kwarn!(
+                    "[TPM] OTA rollback floor: NV index {:#010x} holds epoch {}, ADVISORY: an owner-hierarchy index, \
+                     which whoever can send TPM owner commands can undefine and define again at zero",
+                    FLOOR_INDEX, now
+                );
+                let isa = if cfg!(target_arch = "x86_64") { 2 } else if cfg!(target_arch = "aarch64") { 1 } else { 0 };
+                azos_decision::record(Rule::HardeningFallback, Verdict::Refuse, FLOOR_ADVISORY, [isa, 0, 0]);
+            }
         }
         Some(Err(Error::NvMismatch)) => azos_drv_sys::kerr!(
             "[TPM] OTA rollback floor: NV index {:#010x} exists and is not ours (attributes, size or \
@@ -713,13 +738,14 @@ fn install_seclog() {
     }
     let (a_auth, c_auth) = (chain_auth(CHAIN_INDEX), chain_auth(COUNTER_INDEX));
     let r = with(|t| {
-        let kind = t.chain_provision(&[], CHAIN_INDEX, &a_auth)?;
-        t.counter_provision(&[], COUNTER_INDEX, &c_auth)?;
-        Ok::<_, Error>((kind, t.chain_read(CHAIN_INDEX, &a_auth)?, t.counter_read(COUNTER_INDEX, &c_auth)?))
+        let a = provision(t, CHAIN_INDEX, azos_tpm::tpm::CHAIN_ATTRS, azos_tpm::tpm::CHAIN_BYTES, &a_auth)?;
+        let c = provision(t, COUNTER_INDEX, azos_tpm::tpm::COUNTER_ATTRS, azos_tpm::tpm::COUNTER_BYTES, &c_auth)?;
+        Ok::<_, Error>((a, c, t.chain_read(CHAIN_INDEX, &a_auth)?, t.counter_read(COUNTER_INDEX, &c_auth)?))
     });
     match r {
-        Some(Ok((kind, anchor, counter))) => {
-            let undeletable = kind == azos_tpm::tpm::Adopted::Undeletable;
+        Some(Ok((a, c, anchor, counter))) => {
+            // Undeletable only if neither index can be reset.
+            let undeletable = a == azos_tpm::tpm::Adopted::Undeletable && c == azos_tpm::tpm::Adopted::Undeletable;
             super::seclog::install_hw(&CHAIN, anchor, counter, undeletable);
             kprintln!(
                 "[TPM] security log: anchor in NV index {:#010x}{}, counter in {:#010x} at {}",
@@ -734,7 +760,10 @@ fn install_seclog() {
             );
         }
         Some(Err(e)) => {
-            let reason = if e == Error::NvMismatch { Reason::IndexUnusable } else { Reason::ReadFailed };
+            // An index with other attributes, or one that refuses the
+            // kernel's password: someone else defined it.
+            let squatted = e == Error::NvMismatch || matches!(e, Error::Tpm(rc) if azos_tpm::tpm::rc_is_auth_refused(rc));
+            let reason = if squatted { Reason::IndexUnusable } else { Reason::ReadFailed };
             super::seclog::forward_because(reason);
             azos_drv_sys::kerr!(
                 "[TPM] security log: NV indexes {:#010x}/{:#010x} cannot be provisioned or read ({:?}): the seals are forward-only",

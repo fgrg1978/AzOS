@@ -780,7 +780,11 @@ fn nv_increment_vector() {
 #[derive(Default)]
 struct Nv {
     idx: std::collections::HashMap<u32, NvIndex>,
+    /// The indexes the platform hierarchy defined.
+    platform: std::collections::HashSet<u32>,
     max_counter: u64,
+    /// The firmware disabled the platform hierarchy.
+    ph_disabled: bool,
 }
 
 const NT_COUNTER: u32 = 1;
@@ -790,6 +794,11 @@ impl Nv {
     /// password: what anyone who can send the TPM commands can do (the driver
     /// has no such command; the attacker's tools do).
     fn undefine(&mut self, index: u32) {
+        // A platform index is not the owner's to undefine (TPM 2.0 Part 3,
+        // NV_UndefineSpace: TPM_RC_NV_AUTHORIZATION).
+        if self.platform.contains(&index) {
+            return;
+        }
         let i = self.idx.remove(&index).expect("defined");
         if i.nt == NT_COUNTER {
             self.max_counter = self.max_counter.max(i.value);
@@ -807,10 +816,17 @@ impl Nv {
                 at += 2 + u16::from_be_bytes([cmd[at], cmd[at + 1]]) as usize;
                 let index = be32(at + 2);
                 let attrs = be32(at + 8);
+                let platform = be32(10) == 0x4000_000C;
+                if platform && self.ph_disabled {
+                    return rc(0x085);
+                }
                 if self.idx.contains_key(&index) {
                     return rc(0x14C);
                 }
                 self.idx.insert(index, NvIndex { nt: (attrs >> 4) & 0xF, value: 0, digest: [0; 32], written: false });
+                if platform {
+                    self.platform.insert(index);
+                }
                 ok(&[])
             }
 
@@ -848,7 +864,8 @@ fn nv_rig() -> (azos_tpm::tpm::Tpm<azos_tpm::tis::Tis<Dyn, FakeClock>>, Rig, std
 fn seal(t: &mut azos_tpm::tpm::Tpm<azos_tpm::tis::Tis<Dyn, FakeClock>>, k: u32) -> ([u8; 32], u64, [u8; 32]) {
     let a = &[0xAA, 0xBB];
     let counter = t.counter_increment(COUNTER_INDEX, a).unwrap();
-    let data = azos_seclog::chain::seal_data(&[0; 32], 7, k, counter, 10 * k as u64, &[k as u8; 32]);
+    let n = azos_seclog::chain::SealNumbers { count: k, counter, through: 10 * k as u64, ..Default::default() };
+    let data = azos_seclog::chain::seal_data(&[0; 32], 7, &n, &[k as u8; 32]);
     t.nv_extend(CHAIN_INDEX, a, &data).unwrap();
     (data, counter, t.chain_read(CHAIN_INDEX, a).unwrap())
 }
@@ -886,8 +903,46 @@ fn an_owner_index_can_be_reset_and_replayed_and_the_counter_cannot() {
     // A rewrite with the same counters is consistent with the live anchor.
     nv.borrow_mut().undefine(CHAIN_INDEX);
     t.chain_provision(&[], CHAIN_INDEX, a).unwrap();
-    let forged = azos_seclog::chain::seal_data(&[0; 32], 7, 1, 1, 10, &[0xEE; 32]);
+    let n = azos_seclog::chain::SealNumbers { count: 1, counter: 1, through: 10, ..Default::default() };
+    let forged = azos_seclog::chain::seal_data(&[0; 32], 7, &n, &[0xEE; 32]);
     t.nv_extend(CHAIN_INDEX, a, &forged).unwrap();
     assert_eq!(t.chain_read(CHAIN_INDEX, a), Ok(azos_seclog::chain::extend(&[0; 32], &forged)));
     r.assert_clean();
+}
+
+/// A development or QEMU kernel creates the undeletable index itself when the
+/// platform hierarchy is open: the owner's undefine no longer reaches it, so
+/// the replay of the H2 test cannot start. Where the firmware closed the
+/// hierarchy, the TPM refuses and the owner's index is defined instead.
+#[test]
+fn an_undeletable_index_is_created_when_the_platform_hierarchy_is_open() {
+    let (mut t, r, nv) = nv_rig();
+    let a = &[0xAA, 0xBB];
+    assert_eq!(t.nv_create_undeletable(CHAIN_INDEX, CHAIN_ATTRS, CHAIN_BYTES, a), Ok(Adopted::Undeletable));
+    let data = [3u8; 32];
+    t.nv_extend(CHAIN_INDEX, a, &data).unwrap();
+    nv.borrow_mut().undefine(CHAIN_INDEX);
+    assert_eq!(t.chain_read(CHAIN_INDEX, a), Ok(azos_seclog::chain::extend(&[0; 32], &data)), "still there");
+    nv.borrow_mut().ph_disabled = true;
+    assert_eq!(t.nv_create_undeletable(COUNTER_INDEX, COUNTER_ATTRS, COUNTER_BYTES, a), Err(Error::Tpm(0x085)));
+    assert_eq!(t.counter_provision(&[], COUNTER_INDEX, a), Ok(Adopted::Owner));
+    r.assert_clean();
+}
+
+#[test]
+fn nv_create_undeletable_vector() {
+    let (mut t, r) = rig(Kind::Direct, 0);
+    let policy: String = azos_tpm::tpm::UNDELETABLE_POLICY.iter().map(|b| format!(" {b:02X}")).collect();
+    // DefineSpace under TPM_RH_PLATFORM, empty password; the index's auth AA BB;
+    // attributes AUTHWRITE | TPM_NT_EXTEND | POLICY_DELETE | AUTHREAD | NO_DA |
+    // PLATFORMCREATE; the 32-byte policy; 32 bytes.
+    r.dev.borrow_mut().expect(
+        &format!("80 02 00 00 00 4F 00 00 01 2A 40 00 00 0C {AUTH_AREA_EMPTY} 00 02 AA BB 00 2E 01 50 00 03 00 0B 42 04 04 44 00 20{policy} 00 20"),
+        &format!("80 02 00 00 00 13 00 00 00 00 {SESSION_RSP_TAIL}"),
+    );
+    assert_eq!(t.nv_create_undeletable(CHAIN_INDEX, CHAIN_ATTRS, CHAIN_BYTES, &[0xAA, 0xBB]), Ok(Adopted::Undeletable));
+    r.assert_clean();
+    // A password the TPM refused, format one: AUTH_FAIL, BAD_AUTH.
+    assert!(azos_tpm::tpm::rc_is_auth_refused(0x98E) && azos_tpm::tpm::rc_is_auth_refused(0x9A2));
+    assert!(azos_tpm::tpm::rc_is_auth_refused(0x08E) && !azos_tpm::tpm::rc_is_auth_refused(0x14C) && !azos_tpm::tpm::rc_is_auth_refused(0x18B));
 }

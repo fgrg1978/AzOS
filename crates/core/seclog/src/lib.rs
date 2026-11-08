@@ -73,7 +73,7 @@ pub const VERSION: u8 = 3;
 /// Payload bytes a security ring slot holds: the largest kind's, a seal's.
 pub const PAYLOAD: usize = 176;
 /// Class numbers a by-class count covers (index = the class's number).
-pub const CLASSES: usize = 12;
+pub const CLASSES: usize = 13;
 /// SHA-256 digest bytes.
 pub const HASH: usize = 32;
 pub type Hash = [u8; HASH];
@@ -108,6 +108,9 @@ pub enum Class {
     /// The decision layer held records of a security rule back (its rate
     /// limit), and says how many: the drop is in the chain.
     Limited = 11,
+    /// A defence the build asked for is not there on this board (a CPU
+    /// guard, an undeletable TPM index for the OTA floor).
+    Hardening = 12,
 }
 
 impl Class {
@@ -122,6 +125,7 @@ impl Class {
             9 => Class::Login,
             10 => Class::Usb,
             11 => Class::Limited,
+            12 => Class::Hardening,
             _ => return None,
         })
     }
@@ -137,6 +141,7 @@ impl Class {
             Class::Login => "login",
             Class::Usb => "usb",
             Class::Limited => "limited",
+            Class::Hardening => "hardening",
         }
     }
 

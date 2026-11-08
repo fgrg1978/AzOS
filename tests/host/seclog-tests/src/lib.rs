@@ -684,11 +684,11 @@ fn format_v3_is_frozen() {
     assert_eq!(seal.encode().to_vec(), unhex("0201000003000000090000000000000008000000000000009900000000000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd0b000000000000000400000000000000"));
     let mut by_class = [0u32; CLASSES];
     by_class[Class::Egress as usize] = 2;
-    assert_eq!(Loss { first: 5, count: 2, by_class }.encode().to_vec(), unhex("05000000000000000200000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000"));
+    assert_eq!(Loss { first: 5, count: 2, by_class }.encode().to_vec(), unhex("0500000000000000020000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000000000000"));
     let mut by_class = [0u32; CLASSES];
     by_class[Class::CapDenial as usize] = 3;
     let subjects = [(42, 7), (0, 0), (0, 0), (0, 0)];
-    assert_eq!(azos_seclog::Held { by_class, subjects }.encode().to_vec(), unhex("0000000000000000000000000000000000000000030000000000000000000000000000000000000000000000000000002a00000007000000000000000000000000000000000000000000000000000000"));
+    assert_eq!(azos_seclog::Held { by_class, subjects }.encode().to_vec(), unhex("000000000000000000000000000000000000000003000000000000000000000000000000000000000000000000000000000000002a00000007000000000000000000000000000000000000000000000000000000"));
 
     let env = Envelope { seq: 4, ts: 1000, clock: 0, source: 4, kind: kind::EVENT, len: Event::LEN as u16, cpu: 2, flags: 1 };
     let mut payload = [0u8; PAYLOAD];

@@ -871,6 +871,7 @@ mod login_lines {
             (Rule::PackageInstall, C::Update),
             (Rule::Login, C::Login),
             (Rule::UsbAuthorize, C::Usb),
+            (Rule::HardeningFallback, C::Hardening),
         ];
         for (r, c) in want {
             assert_eq!(r.security_class(0), Some(c), "{r:?}");
