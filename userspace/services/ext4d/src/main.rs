@@ -14,6 +14,10 @@
 //! The protocol is `service.rs`, pure and host-tested
 //! (`tests/host/ext4-tests`); this file is the host it runs in: the block
 //! source and the calls.
+//!
+//! A volume it will not serve (no partition granted, a refused mount) ends
+//! the task with code 0 and the reason on the console: the verdict is final,
+//! so nothing restarts it. A panic is a failure, and its row restarts it.
 
 #![no_std]
 #![no_main]
@@ -40,8 +44,9 @@ const WINDOW: usize = azos_ext4::MAX_BLOCK;
 /// the directory being walked.
 const WINDOWS: usize = 16;
 const SECTOR: u64 = 512;
-/// How long one block entry may take before the read fails.
-const BLOCK_WAIT_MS: u64 = 2_000;
+/// How long one block entry may take before the read fails: Kconfig
+/// `FS_EXT4_RING3_REPLY_MS`, the kernel's wait for one answer.
+const BLOCK_WAIT_MS: u64 = azos_limits::FS_EXT4_RING3_REPLY_MS as u64;
 
 /// The partition through the io_ring.
 struct Dev {
@@ -206,13 +211,13 @@ static SERVICE: sys::Lock<Option<Service<Disk, Kernel>>> = sys::Lock::new(None);
 fn main() -> ! {
     let Some((part, badge)) = partition() else {
         log(b"[EXT4D] no partition granted: nothing to serve\n");
-        sys::exit(1);
+        sys::exit(0);
     };
     let sectors = match sys::dev::value(sys::dev::BlockClient::new(sys::dev::Ep(part)).sectors()) {
         Ok(n) => n,
         Err(_) => {
             log(b"[EXT4D] the partition's length is not known\n");
-            sys::exit(1);
+            sys::exit(0);
         }
     };
     let mut out = [0u8; 8];
@@ -220,7 +225,7 @@ fn main() -> ! {
     let ring = if cap > 0 { sys::ioring::Ring::open(cap as u32, out).ok() } else { None };
     let Some(ring) = ring else {
         log(b"[EXT4D] no io_ring\n");
-        sys::exit(1);
+        sys::exit(0);
     };
     let disk = Disk {
         dev: Dev { ring, ring_cap: cap as u32, badge, bytes: sectors * SECTOR, tag: 0 },
@@ -231,11 +236,11 @@ fn main() -> ! {
     let source = sys::cap_lookup_endpoint(b"ext4", CapPerms::READ.union(CapPerms::WRITE).bits(), 0);
     let Some(region) = map_share() else {
         log(b"[EXT4D] no shared region: nothing to serve\n");
-        sys::exit(1);
+        sys::exit(0);
     };
     if source <= 0 {
         log(b"[EXT4D] no endpoint to serve\n");
-        sys::exit(1);
+        sys::exit(0);
     }
     let vol = match Volume::mount(disk) {
         Ok(v) => v,
@@ -243,7 +248,7 @@ fn main() -> ! {
             let mut line = [0u8; 96];
             let n = refusal(&mut line, e);
             log(&line[..n]);
-            sys::exit(2);
+            sys::exit(0);
         }
     };
     log(b"[EXT4D] serving a read-only ext4 volume on endpoint.ext4\n");

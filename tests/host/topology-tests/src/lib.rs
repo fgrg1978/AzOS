@@ -793,7 +793,7 @@ mod compmgr_contracts {
         for (ep, ops) in crate::contracts::SERVED {
             assert!(!ops.is_empty());
             // Rows exist only under some features (PKGD_ROW, VMMD_ROW, INPUTD_ROW, LOGIND_ROW,
-            // COMPOSITOR_ROW, AUDIOD_ROW): a table
+            // COMPOSITOR_ROW, AUDIOD_ROW, EXT4D_ROW): a table
             // entry without its row is dead only when the row is built.
             let row_built = match *ep {
                 b"endpoint.packages" => azos_topology::builder::PKGD_ROW,
@@ -804,6 +804,7 @@ mod compmgr_contracts {
                 b"endpoint.pm-ina" | b"endpoint.powermon" => azos_topology::builder::INADRV_ROW,
                 b"endpoint.buzzer" => azos_topology::builder::BUZZDRV_ROW,
                 b"endpoint.audio" => azos_topology::builder::AUDIOD_ROW,
+                b"endpoint.ext4" => azos_topology::builder::EXT4D_ROW,
                 _ => true,
             };
             if row_built {
@@ -1350,6 +1351,7 @@ mod start_flag_tests {
             want.extend_from_slice(klog);
             if azos_topology::builder::INPUTD_ROW { want.push("INPUTD.ELF"); }
             if azos_topology::builder::COMPOSITOR_ROW { want.push("COMPSRV.ELF"); }
+            if azos_topology::builder::EXT4D_ROW { want.push("EXT4D.ELF"); }
             // The component manager is pushed last of the rows that start:
             // its launch grants name every one of them.
             want.extend_from_slice(compmgr);
@@ -1929,6 +1931,7 @@ mod builder_tests {
             + azos_topology::builder::LOGIND_ROW as usize
             + azos_topology::builder::VMMD_ROW as usize
             + azos_topology::builder::INPUTD_ROW as usize
+            + azos_topology::builder::EXT4D_ROW as usize
             + azos_limits::USERSPACE_RG as usize
             + azos_limits::USERSPACE_FD as usize
             + azos_limits::USERSPACE_KIBI as usize); // +1 per ported program (Kconfig USERSPACE_RG, USERSPACE_FD, USERSPACE_KIBI); +1 with Kconfig INPUTD: INPUTD.ELF; +1 with Kconfig HV: VMMD.ELF; +1 with Kconfig MCP_BRIDGE: MCPD.ELF; +1 with Kconfig SSHD: SSHD.ELF; +1 with Kconfig CONSOLE_LOGIN: LOGIND.ELF; +1 with Kconfig PTPD: PTPD.ELF; +1 with Kconfig AUDIOD: AUDIOD.ELF; +1 with Kconfig RPC_QUIC: RPCQUIC.ELF; +1 with Kconfig ZENOH_GW: ZENOHD.ELF; +1 with Kconfig USERSPACE_COMPMGR: COMPMGR.ELF; +3 in wave 11: SH.ELF, TOOLBOX.ELF, POWER; +4 in wave 12: FLIGHT/BEHAVIOR/CONFIG/OTA.ELF; -1 per driver placed in the kernel; +1 under lx-server: LXSRV.ELF; +1 for the wave-12 Linux test row (gate only); +1 in wave 15: TRACECTL.ELF
@@ -2363,6 +2366,7 @@ mod state_tests {
             + azos_topology::builder::LOGIND_ROW as usize
             + azos_topology::builder::VMMD_ROW as usize
             + azos_topology::builder::INPUTD_ROW as usize
+            + azos_topology::builder::EXT4D_ROW as usize
             + azos_limits::USERSPACE_RG as usize
             + azos_limits::USERSPACE_FD as usize
             + azos_limits::USERSPACE_KIBI as usize); // +1 per ported program (Kconfig USERSPACE_RG, USERSPACE_FD, USERSPACE_KIBI); +1 with Kconfig INPUTD: INPUTD.ELF; +1 with Kconfig HV: VMMD.ELF; +1 with Kconfig MCP_BRIDGE: MCPD.ELF; +1 with Kconfig SSHD: SSHD.ELF; +1 with Kconfig CONSOLE_LOGIN: LOGIND.ELF; +1 with Kconfig PTPD: PTPD.ELF; +1 with Kconfig AUDIOD: AUDIOD.ELF; +1 with Kconfig RPC_QUIC: RPCQUIC.ELF; +1 with Kconfig ZENOH_GW: ZENOHD.ELF; +1 with Kconfig USERSPACE_COMPMGR: COMPMGR.ELF; +3 in wave 11: SH.ELF, TOOLBOX.ELF, POWER; +4 in wave 12: FLIGHT/BEHAVIOR/CONFIG/OTA.ELF; -1 per driver placed in the kernel; +1 under lx-server: LXSRV.ELF; +1 for the wave-12 Linux test row (gate only); +1 in wave 15: TRACECTL.ELF
@@ -2416,6 +2420,7 @@ mod state_tests {
             + azos_topology::builder::LOGIND_ROW as usize
             + azos_topology::builder::VMMD_ROW as usize
             + azos_topology::builder::INPUTD_ROW as usize
+            + azos_topology::builder::EXT4D_ROW as usize
             + azos_limits::USERSPACE_RG as usize
             + azos_limits::USERSPACE_FD as usize
             + azos_limits::USERSPACE_KIBI as usize); // +1 per ported program (Kconfig USERSPACE_RG, USERSPACE_FD, USERSPACE_KIBI); +1 with Kconfig INPUTD: INPUTD.ELF; +1 with Kconfig HV: VMMD.ELF; +1 with Kconfig MCP_BRIDGE: MCPD.ELF; +1 with Kconfig SSHD: SSHD.ELF; +1 with Kconfig CONSOLE_LOGIN: LOGIND.ELF; +1 with Kconfig PTPD: PTPD.ELF; +1 with Kconfig AUDIOD: AUDIOD.ELF; +1 with Kconfig RPC_QUIC: RPCQUIC.ELF; +1 with Kconfig ZENOH_GW: ZENOHD.ELF; +1 with Kconfig USERSPACE_COMPMGR: COMPMGR.ELF; +3 in wave 11: SH.ELF, TOOLBOX.ELF, POWER; +4 in wave 12: FLIGHT/BEHAVIOR/CONFIG/OTA.ELF; -1 per driver placed in the kernel; +1 under lx-server: LXSRV.ELF; +1 for the wave-12 Linux test row (gate only); +1 in wave 15: TRACECTL.ELF
@@ -4644,6 +4649,57 @@ mod launch_cap_tests {
     /// **Canaries.** `coreutil-grant-canary` adds the `net` endpoint to the row:
     /// red on the first assertion. `coreutil-write-canary` takes the trees out:
     /// red on the second.
+    /// **The ext4 server holds its partition to read, its endpoint and its
+    /// region, and nothing else**: it parses untrusted bytes. Its volume row
+    /// is read-only and names the same partition (1-based) its grant names
+    /// (0-based).
+    ///
+    /// **Canary.** `ext4d-grant-canary` puts the boot volume's partition in
+    /// the row as well: red on the partition grant.
+    #[test]
+    fn ext4d_holds_its_partition_endpoint_and_region_and_nothing_else() {
+        // The grants, whether or not this build has the row.
+        let part = format!("block.part.{}", azos_limits::FS_EXT4_RING3_PARTITION - 1);
+        let mut seen = 0;
+        for c in azos_topology::builder::EXT4D_CAPS {
+            let t = c.target.as_str();
+            match (c.kind, t) {
+                (CapKind::Endpoint, "endpoint.ext4") => assert!(c.perms == CapPerms::RW && c.transfer),
+                (CapKind::MemObj, "fs.share") => {
+                    assert_eq!(c.perms, CapPerms::READ.union(CapPerms::WRITE).union(CapPerms::MAP));
+                    assert!(!c.transfer);
+                }
+                (CapKind::Endpoint, p) if p.starts_with("block.part.") => {
+                    assert_eq!(p, part, "the row names its own partition and no other");
+                    assert!(c.perms == CapPerms::READ && !c.transfer, "READ only on the partition");
+                }
+                other => panic!("EXT4D.ELF holds {other:?}"),
+            }
+            seen += 1;
+        }
+        assert_eq!(seen, 3);
+        let topo = default_minimal();
+        let row = topo.find_task(&MaybeStr::from_bytes(b"EXT4D.ELF"));
+        assert_eq!(row.is_some(), azos_topology::builder::EXT4D_ROW);
+        let vols: Vec<_> = topo.volumes().iter().filter(|v| v.format == azos_topology::VolumeFormat::Ext4).collect();
+        let Some(row) = row else {
+            assert!(vols.is_empty(), "an ext4 row without its server");
+            return;
+        };
+        assert_eq!(vols.len(), 1);
+        let vol = vols[0];
+        assert!(vol.read_only && !vol.aead && vol.verity_root.is_none());
+        assert_eq!(vol.partition as i64, azos_limits::FS_EXT4_RING3_PARTITION as i64);
+        assert_eq!(vol.mount.as_str(), azos_limits::FS_EXT4_RING3_MOUNT);
+        assert!(row.start, "the component manager starts it");
+        assert_eq!(topo.caps_of(row).len(), azos_topology::builder::EXT4D_CAPS.len());
+        assert!(topo.imports_of(row).is_empty());
+        // The region is granted to this row alone.
+        for r in topo.tasks().iter().filter(|r| r.name.as_bytes() != b"EXT4D.ELF") {
+            assert!(!topo.caps_of(r).iter().any(|c| c.target.as_bytes() == b"fs.share"), "{} holds fs.share", r.name.as_str());
+        }
+    }
+
     #[test]
     fn coreutil_holds_files_and_nothing_else() {
         let topo = default_minimal();

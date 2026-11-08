@@ -3029,7 +3029,7 @@ impl<'a> LoginStage<'a> {
 }
 
 /// A `[volume.NAME]` section: `partition` and `mount` (required),
-/// `read_only`, `aead`, `verity_root`, each at most once.
+/// `read_only`, `aead`, `verity_root`, `format`, each at most once.
 struct VolumeStage<'a> {
     spec: VolumeSpec<'a>,
     seen: u8,
@@ -3048,6 +3048,7 @@ impl<'a> VolumeStage<'a> {
             b"read_only" => 4,
             b"aead" => 8,
             b"verity_root" => 16,
+            b"format" => 32,
             _ => return Err(ParseError::UnknownField),
         };
         if self.seen & bit != 0 {
@@ -3059,7 +3060,14 @@ impl<'a> VolumeStage<'a> {
             2 => self.spec.mount = MaybeStr::from_bytes(quoted_only(after, crate::types::MAX_TARGET_LEN)?),
             4 => self.spec.read_only = bool_only(after)?,
             8 => self.spec.aead = bool_only(after)?,
-            _ => self.spec.verity_root = Some(hex_only::<32>(after)?),
+            16 => self.spec.verity_root = Some(hex_only::<32>(after)?),
+            _ => {
+                self.spec.format = match quoted_only(after, 8)? {
+                    b"azvol" => crate::types::VolumeFormat::Azvol,
+                    b"ext4" => crate::types::VolumeFormat::Ext4,
+                    _ => return Err(ParseError::BadValue),
+                }
+            }
         }
         Ok(())
     }

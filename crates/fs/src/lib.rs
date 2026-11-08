@@ -31,6 +31,9 @@ pub mod azvol;
 // The FAT32 volume of a USB stick, beside `/fat` (Kconfig `USB_STORAGE_VOLUME`).
 #[cfg(feature = "usb-volume")]
 pub mod usbvol;
+// A mount a ring-3 file server serves (Kconfig `FS_EXT4_RING3`).
+#[cfg(feature = "endpoint-fs")]
+pub mod endpoint;
 // An azvol volume as a `vfs::FileSystem`. Declared here and not in
 // `azvol/mod.rs`, which stays `core` + `alloc` (see the file's header).
 #[path = "azvol/mount.rs"]

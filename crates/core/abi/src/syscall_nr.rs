@@ -1149,7 +1149,7 @@ pub const PATH_MAX_BYTES: usize = 512;
 ///
 /// | off | type | field |
 /// |---|---|---|
-/// | 0 | u32 | filesystem type (`1` FAT32, `2` tmpfs, `3` devfs, `4` azvol) |
+/// | 0 | u32 | filesystem type (`1` FAT32, `2` tmpfs, `3` devfs, `4` azvol, `6` ext4) |
 /// | 4 | u32 | block size in bytes (FAT32: the cluster) |
 /// | 8 | u64 | blocks |
 /// | 16 | u64 | free blocks |

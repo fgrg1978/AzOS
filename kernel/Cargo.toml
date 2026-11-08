@@ -533,6 +533,13 @@ usb-net = ["usb-hc", "azos_drv_net/usb-net"]
 # Kconfig USB_STORAGE_VOLUME: the stick's FAT32 volume mounted beside /fat
 # (crates/fs/src/usbvol.rs).
 usb-storage-volume = ["usb-storage", "azos_fs/usb-volume"]
+# Kconfig FS_EXT4_RING3: an ext4 volume served read-only by EXT4D.ELF and
+# mounted from its `[volume.NAME]` row (`format = "ext4"`) through
+# `azos_fs::endpoint` (kernel/src/boot/ext4.rs).
+fs-ext4-ring3 = ["azos_fs/endpoint-fs"]
+# Canary: the ext4 mount takes the server's short read as it comes; the QEMU
+# row's size check must fail.
+endpoint-short-read-canary = ["fs-ext4-ring3", "azos_fs/endpoint-short-read-canary"]
 # Kconfig USB_CDC: the CDC class driver: ECM/NCM as a NIC of the network device
 # table (crates/drivers/net/src/usb_net.rs), ACM as a `Uart` port
 # (kernel/src/boot/usb/serial.rs).

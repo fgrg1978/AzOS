@@ -540,11 +540,14 @@ version = "0.1.0"
 name = "azos_fs"
 version = "0.1.0"
 dependencies = [
+ "azos_abi",
  "azos_common",
  "azos_crypto",
+ "azos_devif",
  "azos_drv_api",
  "azos_drv_block",
  "azos_drv_sys",
+ "azos_idl",
  "azos_limits",
  "azos_mm",
  "azos_sync",

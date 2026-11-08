@@ -154,6 +154,9 @@ pub(crate) mod keys;
 use azos_fs::azvol as engine;
 mod azvol;
 pub(crate) use azvol::{fat32_check_report, install_azvol};
+// An ext4 volume row, served from ring 3 (Kconfig FS_EXT4_RING3).
+#[cfg(feature = "fs-ext4-ring3")]
+pub(crate) mod ext4;
 // The key of a sealed volume row, derived from the board's seed.
 mod azvol_key;
 // The boot-time apply of staged packages: the decision (host-tested over the

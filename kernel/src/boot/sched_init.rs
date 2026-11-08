@@ -45,6 +45,13 @@ pub(crate) fn init_scheduler(num_cpus: usize, dtb_ptr: usize) {
     // The native volumes the topology declares (`[volume.NAME]`), mounted at
     // their rows' paths now that the rows and the partition table exist.
     install_azvol();
+    // Kconfig FS_EXT4_RING3: an ext4 row's shared region (before any task is
+    // seeded: the server's row is granted it) and its mount.
+    #[cfg(feature = "fs-ext4-ring3")]
+    {
+        boot::ext4::install_region();
+        boot::ext4::install_mounts();
+    }
     // Kconfig MM_SWAP_BACKEND_FILE: the swap file, on whichever volume
     // holds its path (FAT32 was mounted above, azvol just now), before the
     // first task. A no-op for the other backends.

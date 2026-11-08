@@ -1469,6 +1469,21 @@ pub struct VolumeSpec<'a> {
     /// the mount is refused if the volume does not match it. Only a read-only
     /// volume has one. Never all-zero.
     pub verity_root: Option<[u8; 32]>,
+    /// `format = "azvol" | "ext4"`: what is on the partition. `azvol` unless
+    /// declared.
+    pub format: VolumeFormat,
+}
+
+/// What a `[volume.NAME]` row's partition holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VolumeFormat {
+    /// The native volume, mounted by the kernel (`azos_fs::azvol_mount`).
+    Azvol,
+    /// An ext4 volume, parsed and served in ring 3 (`EXT4D.ELF`) and mounted
+    /// through `azos_fs::endpoint` (Kconfig `FS_EXT4_RING3`). Read-only:
+    /// the row must say `read_only = true`, and carries no `aead` and no
+    /// `verity_root`.
+    Ext4,
 }
 
 impl<'a> VolumeSpec<'a> {
@@ -1481,6 +1496,7 @@ impl<'a> VolumeSpec<'a> {
             read_only: false,
             aead: false,
             verity_root: None,
+            format: VolumeFormat::Azvol,
         }
     }
 }
@@ -3524,14 +3540,17 @@ impl<'a> Topology<'a> {
     /// repeated name or mount point, a partition another swap or volume row
     /// uses, or a full table; `Err(BadRow(Volume))` for a name outside the
     /// endpoint alphabet, a partition outside 1..=[`PARTITION_MAX`], a mount
-    /// point [`mount_path_ok`] refuses, an all-zero `verity_root`, or a
-    /// `verity_root` on a volume that is not read-only.
+    /// point [`mount_path_ok`] refuses, an all-zero `verity_root`, a
+    /// `verity_root` on a volume that is not read-only, or an ext4 row that is
+    /// not read-only or asks for `aead` or `verity_root` (azvol's own).
     pub fn push_volume(&mut self, spec: VolumeSpec<'a>) -> Result<(), AdmissionError> {
+        let ext4_bad = spec.format == VolumeFormat::Ext4 && (!spec.read_only || spec.aead || spec.verity_root.is_some());
         if !import_name_ok(spec.name.as_bytes())
             || !(1..=PARTITION_MAX).contains(&spec.partition)
             || !mount_path_ok(spec.mount.as_bytes())
             || spec.verity_root == Some([0u8; 32])
             || (spec.verity_root.is_some() && !spec.read_only)
+            || ext4_bad
         {
             return Err(AdmissionError::BadRow(RowKind::Volume));
         }

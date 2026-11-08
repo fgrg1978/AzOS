@@ -185,6 +185,9 @@ power-cap-canary = []
 toolbox-write-canary = []
 coreutil-grant-canary = []
 coreutil-write-canary = []
+# Canary: `EXT4D.ELF`'s row also holds the boot volume's partition; the
+# topology-tests authority row must turn red. Never in a real build.
+ext4d-grant-canary = []
 # Wave 15 canary: TRACECTL.ELF's row holds no `Cap<Trace>`; every
 # tracer op must be refused and recorded.
 trace-cap-canary = []

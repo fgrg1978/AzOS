@@ -342,6 +342,7 @@ pub fn emit_caps<W: Write>(topo: &Topology<'_>, binding: &Binding, out: &mut W) 
             write_hex(out, &r)?;
             writeln!(out, "\"")?;
         }
+        if v.format == crate::types::VolumeFormat::Ext4 { writeln!(out, "format = \"ext4\"")?; }
     }
     for g in topo.guests() {
         writeln!(out)?;
@@ -624,6 +625,7 @@ pub fn first_difference(a: &Topology<'_>, b: &Topology<'_>) -> Option<&'static s
             || x.read_only != y.read_only
             || x.aead != y.aead
             || x.verity_root != y.verity_root
+            || x.format != y.format
         {
             return Some("volume");
         }

@@ -203,7 +203,8 @@ pub(crate) fn install_azvol() {
     if rows.is_empty() {
         return;
     }
-    let table = rows.iter().map(|v| Row {
+    // An ext4 row is the ring-3 server's (`super::ext4`), never the engine's.
+    let table = rows.iter().filter(|v| v.format == azos_topology::VolumeFormat::Azvol).map(|v| Row {
         name: v.name.as_bytes(),
         partition: v.partition,
         mount: v.mount.as_bytes(),

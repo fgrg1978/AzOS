@@ -90,11 +90,14 @@ dependencies = [
 name = "azos_fs_tests"
 version = "0.1.0"
 dependencies = [
+ "azos_abi",
  "azos_chaos",
  "azos_common",
  "azos_crypto",
  "azos_decision",
+ "azos_devif",
  "azos_drv_api",
+ "azos_idl",
  "cap_test_sync",
  "fs_test_drivers",
  "fs_test_limits",

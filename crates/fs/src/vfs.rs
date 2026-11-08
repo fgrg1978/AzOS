@@ -78,6 +78,10 @@ pub const FS_TYPE_AZVOL: u32 = 4;
 /// says [`FS_TYPE_FAT32`] (the format); this tag is the backend's identity
 /// (the write-back failure bit, the page cache's key).
 pub const FS_TYPE_FAT32_REMOVABLE: u32 = 5;
+/// An ext4 volume, served read-only from ring 3 (`EXT4D.ELF`) and reached
+/// through `endpoint::EndpointFs` (Kconfig `FS_EXT4_RING3`). Its `statfs`
+/// says the same number.
+pub const FS_TYPE_EXT4: u32 = 6;
 
 /// Null sentinel for inode indices (equivalent to C's NULL pointer).
 pub const NO_IDX: u32 = u32::MAX;

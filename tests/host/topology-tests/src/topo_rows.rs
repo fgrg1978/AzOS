@@ -1091,6 +1091,37 @@ fn a_malformed_volume_row_is_refused() {
     assert_eq!(refused(&many), dup_row, "one past the table");
 }
 
+/// An ext4 row is the ring-3 server's (`format = "ext4"`): read-only, and
+/// none of azvol's own keys (`aead`, `verity_root`). The format survives the
+/// emitter's round trip.
+#[test]
+fn an_ext4_volume_row_is_read_only() {
+    let bad_row = ParseError::Admission(AdmissionError::BadRow(RowKind::Volume));
+    let v = |extra: &str| format!("[volume.e]\npartition = 2\nmount = \"/ext4\"\n{extra}");
+    let t = ok(&v("read_only = true\nformat = \"ext4\"\n"));
+    assert_eq!(t.volumes()[0].format, azos_topology::VolumeFormat::Ext4);
+    assert_eq!(ok(&v("")).volumes()[0].format, azos_topology::VolumeFormat::Azvol, "azvol unless declared");
+    assert_eq!(ok(&v("format = \"azvol\"\n")).volumes()[0].format, azos_topology::VolumeFormat::Azvol);
+    let root = "ab".repeat(32);
+    for (body, want) in [
+        (v("format = \"ext4\"\n"), bad_row),
+        (v("read_only = false\nformat = \"ext4\"\n"), bad_row),
+        (v("read_only = true\naead = true\nformat = \"ext4\"\n"), bad_row),
+        (v(&format!("read_only = true\nverity_root = \"{root}\"\nformat = \"ext4\"\n")), bad_row),
+        (v("read_only = true\nformat = \"xfs\"\n"), ParseError::BadValue),
+        (v("read_only = true\nformat = ext4\n"), ParseError::BadValue),
+        (v("read_only = true\nformat = \"ext4\"\nformat = \"ext4\"\n"), ParseError::BadValue),
+    ] {
+        assert_eq!(refused(&body), want, "{body}");
+    }
+    assert_eq!(round_trip(&t), None, "the format survives the emitter");
+    let mut azvol = ok(&v("read_only = true\n"));
+    assert_eq!(round_trip(&azvol), None);
+    // The comparison sees the format.
+    azvol = ok(&v("read_only = true\n"));
+    assert_eq!(first_difference(&t, &azvol), Some("volume"));
+}
+
 // ── guest ──────────────────────────────────────────────────────────────────
 
 const GUEST: &str = "[guest.linux]\ncpus = 2\nmem_mib = 512\nenvelope = \"contained\"\ndevices = [\"virtio-blk\", \"virtio-net\", \"virtio-console\"]\n";

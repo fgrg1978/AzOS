@@ -54,6 +54,11 @@ pub const SERVED: &[(&[u8], &[OpInfo])] = &[
     // The audio server (`AUDIOD.ELF`, Kconfig AUDIOD): `Sound`, whose `open` declares
     // `degrade`: a client whose stream was lost to a restart carries on without sound.
     (b"endpoint.audio", &azos_devif::SoundIdl::OPS),
+    // The ring-3 ext4 server (`EXT4D.ELF`, Kconfig FS_EXT4_RING3): the file
+    // protocol's `Dir` (an open file's `Node` is a badged right on the same
+    // endpoint). No failure contract: a client whose open file was lost to a
+    // restart opens it again.
+    (b"endpoint.ext4", &azos_devif::DirIdl::OPS),
 ];
 
 /// The strongest failure contract among `ops`, `None` when none declares one.

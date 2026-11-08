@@ -10,6 +10,13 @@ publish = false
 # (a second fat32::Vol over the stick, run by the same FAT32 code). Enabled through the
 # kernel's `usb-storage-volume` feature.
 usb-volume = []
+# Kconfig FS_EXT4_RING3: `endpoint`, a mount served by a ring-3 file server
+# over the file protocol. Enabled through the kernel's `fs-ext4-ring3`.
+endpoint-fs = ["dep:azos_abi", "dep:azos_devif", "dep:azos_idl"]
+# Gate canary (fs-tests `endpoint_fs`, the ext4 QEMU row): the mount takes a
+# server's short read as it comes, without the end of the file. Never in a
+# real build.
+endpoint-short-read-canary = []
 # Gate canary: a retired mount's inodes stay on its backend (`vfs_unmount`):
 # a descriptor opened on one USB stick reads the next stick's file of the
 # same name. The fs-tests `usb_volume` row must turn red. Never in a real build.
@@ -218,3 +225,7 @@ azos_common = { workspace = true }
 azos_limits = { workspace = true }
 # azvol: per-block ChaCha20-Poly1305 (azvol/seal.rs).
 azos_crypto = { workspace = true }
+# endpoint: the file protocol and its records.
+azos_abi = { workspace = true, optional = true }
+azos_devif = { workspace = true, optional = true }
+azos_idl = { workspace = true, optional = true }

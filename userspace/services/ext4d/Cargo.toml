@@ -13,6 +13,7 @@ azos_idl = { path = "../../../crates/core/idl" }
 azos_devif = { path = "../../../crates/core/devif" }
 azos_ext4 = { path = "../../lib/ext4" }
 azos_srv = { path = "../../lib/srv", features = ["libsys"] }
+azos_limits = { path = "../../../crates/core/limits" }
 
 [features]
 # Host canary only (tests/host/ext4-tests pulls service.rs): every read answers
@@ -32,4 +33,9 @@ panic = "abort"
 # The FAT32 image(s) this crate builds and their board-volume defaults
 # (tools/build/gen_userspace_kconfig.py -> make config, "Userspace programs").
 [package.metadata.azos]
-topology = true
+# On wherever the kernel mounts an ext4 volume through it (Kconfig
+# `FS_EXT4_RING3`, the EXT4D.ELF row of crates/core/topology/src/builder.rs),
+# and started there.
+default = "FS_EXT4_RING3"
+depends = "FS_EXT4_RING3"
+start = "FS_EXT4_RING3"

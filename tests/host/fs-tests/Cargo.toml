@@ -173,6 +173,8 @@ azvol-unclean-unchecked-canary = []
 ro-open-canary = []
 # A full tmpfs entry table hands out slot 0 instead of refusing (tmpfs_rows).
 tmpfs-bound-canary = []
+# The ring-3 mount takes a server's short read as it comes (endpoint_fs).
+endpoint-short-read-canary = []
 
 [dependencies]
 # Kconfig CHAOS / DECISION_RECORDS_DEV sites in the #[path]-pulled sources
@@ -199,6 +201,10 @@ azos_mm = { path = "shims/mm", package = "fs_test_mm" }
 azos_common = { path = "../../../crates/core/common" }
 # azvol (pulled by #[path]) seals its blocks with chachapoly.
 azos_crypto = { path = "../../../crates/core/crypto" }
+# endpoint.rs (pulled by #[path]): the file protocol it forwards.
+azos_abi = { path = "../../../crates/core/abi" }
+azos_devif = { path = "../../../crates/core/devif" }
+azos_idl = { path = "../../../crates/core/idl" }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(loom)', 'cfg(fuzzing)'] }

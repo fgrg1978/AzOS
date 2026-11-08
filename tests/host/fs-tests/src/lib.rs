@@ -210,6 +210,13 @@ mod usbvol;
 #[cfg(test)]
 mod usb_volume;
 
+// A mount served from ring 3 (Kconfig FS_EXT4_RING3), behind the real VFS.
+#[allow(dead_code)]
+#[path = "../../../../crates/fs/src/endpoint.rs"]
+mod endpoint;
+#[cfg(test)]
+mod endpoint_fs;
+
 // A small-file lane on /fat, for before/after numbers (`#[ignore]`).
 #[cfg(test)]
 mod bench_small;

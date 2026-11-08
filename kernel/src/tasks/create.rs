@@ -559,6 +559,10 @@ pub(crate) fn create_service_tasks(hart_id: usize) {
         drv_supervisor::start();
     }
 
+    // Kconfig FS_EXT4_RING3: the task that makes the ext4 mount's calls.
+    #[cfg(feature = "fs-ext4-ring3")]
+    crate::boot::ext4::start_call_task();
+
     // The INA219: its topology row says where it runs. Placed in the kernel
     // it is sampled by a kernel task, restarted by the supervisor if a
     // contained panic ends it.

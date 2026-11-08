@@ -323,6 +323,12 @@ $(COREUTIL_ELF): $(COREUTIL_SRC) $(LIBSYS_SRC)
 	$(AARCH64_OBJCOPY) --strip-all $(COREUTIL_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
+$(EXT4D_ELF): $(EXT4D_SRC) $(LIBSYS_SRC)
+	@mkdir -p $(OUT_BUILD)
+	cd $(EXT4D_DIR) && export CARGO_TARGET_DIR="$(UTGT_RV64)" && $(USPACE_BUILD) $(RV_UFLAGS)
+	$(AARCH64_OBJCOPY) --strip-all $(EXT4D_BUILT) $@
+	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
+
 $(POWER_ELF): $(POWER_SRC) $(LIBSYS_SRC)
 	@mkdir -p $(OUT_BUILD)
 	cd $(POWER_DIR) && export CARGO_TARGET_DIR="$(UTGT_RV64)" && $(USPACE_BUILD) $(RV_UFLAGS)
@@ -957,6 +963,12 @@ $(COREUTIL_ELF_AARCH64): $(COREUTIL_SRC) $(LIBSYS_SRC)
 	$(AARCH64_OBJCOPY) --strip-all $(UTGT_AARCH64)/$(TARGET_AARCH64)/release/coreutil $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
+$(EXT4D_ELF_AARCH64): $(EXT4D_SRC) $(LIBSYS_SRC)
+	@mkdir -p $(AARCH64_DIR)
+	cd $(EXT4D_DIR) && export CARGO_TARGET_DIR="$(UTGT_AARCH64)" && $(USPACE_BUILD) $(AARCH64_UFLAGS)
+	$(AARCH64_OBJCOPY) --strip-all $(UTGT_AARCH64)/$(TARGET_AARCH64)/release/ext4d $@
+	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
+
 $(TOOLBOX_ELF_AARCH64): $(TOOLBOX_SRC) $(LIBSYS_SRC)
 	@mkdir -p $(AARCH64_DIR)
 	cd $(TOOLBOX_DIR) && export CARGO_TARGET_DIR="$(UTGT_AARCH64)" && $(USPACE_BUILD) $(AARCH64_UFLAGS)
@@ -1333,6 +1345,11 @@ $(COREUTIL_ELF_X86_64): $(COREUTIL_SRC) $(LIBSYS_SRC) $(X86_64_KCONFIG)
 	@mkdir -p $(X86_64_DIR)
 	cd $(COREUTIL_DIR) && export CARGO_TARGET_DIR="$(UTGT_X86_64)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
 	$(AARCH64_OBJCOPY) --strip-all $(UTGT_X86_64)/$(X86_64_UBUILT)/coreutil $@
+
+$(EXT4D_ELF_X86_64): $(EXT4D_SRC) $(LIBSYS_SRC) $(X86_64_KCONFIG)
+	@mkdir -p $(X86_64_DIR)
+	cd $(EXT4D_DIR) && export CARGO_TARGET_DIR="$(UTGT_X86_64)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
+	$(AARCH64_OBJCOPY) --strip-all $(UTGT_X86_64)/$(X86_64_UBUILT)/ext4d $@
 
 $(TOOLBOX_ELF_X86_64): $(TOOLBOX_SRC) $(LIBSYS_SRC) $(X86_64_KCONFIG)
 	@mkdir -p $(X86_64_DIR)

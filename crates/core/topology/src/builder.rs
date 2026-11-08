@@ -16,7 +16,8 @@ use azos_abi::cap::{CapKind, CapPerms};
 
 use crate::placement::{Host, PlaceSpec};
 use crate::types::{
-    CapSpec, ClassSpec, MaybeStr, PolicyKind, PolicyScope, PolicySpec, Preemption, SchedConfig, Topology,
+    CapSpec, ClassSpec, MaybeStr, PolicyKind, PolicyScope, PolicySpec, Preemption, SchedConfig, Topology, VolumeFormat,
+    VolumeSpec,
 };
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -2228,6 +2229,18 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
         topo.set_last_task_start(true);
         topo.set_last_task_restart(crate::types::RestartPolicy::OnFailure);
     }
+    // An ext4 volume, parsed in ring 3 (Kconfig FS_EXT4_RING3): the
+    // `[volume.ext4]` row the kernel mounts through the server, and the
+    // server's row, whose whole authority is its partition (READ), its
+    // endpoint and the region it shares with the kernel. Started at boot;
+    // pushed before the component manager, which starts it.
+    if EXT4D_ROW {
+        topo.push_volume(EXT4_VOLUME).expect("default_minimal_topology: [volume.ext4] push failed");
+        topo.push_task(MaybeStr::from_bytes(TASK_EXT4D_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), SERVICE_PRIORITY, EXT4D_CAPS)
+            .expect("default_minimal_topology: EXT4D.ELF push failed");
+        topo.set_last_task_mem_pages(EXT4D_MEM_PAGES);
+        topo.set_last_task_start(true);
+    }
     // The component manager (`userspace/services/compmgr`): the one row the
     // kernel starts at boot; it starts the others from this signed topology
     // (its `inspect.components` view) and supervises them. Only a build whose volume
@@ -2866,6 +2879,65 @@ const SH_MEM_PAGES: u32 = 64;
 /// six pages on a 4 KiB granule (the budget grew from 48 by 16: the six and
 /// headroom for a longer period).
 const TOOLBOX_MEM_PAGES: u32 = 64;
+/// Does the topology declare the ring-3 ext4 server's row (and its
+/// `[volume.ext4]`)? Kconfig `FS_EXT4_RING3`, and the volume carries the
+/// image.
+pub const EXT4D_ROW: bool = azos_limits::FS_EXT4_RING3 && azos_limits::USERSPACE_EXT4D;
+/// The ring-3 ext4 server's image (`userspace/services/ext4d`).
+pub const TASK_EXT4D_IMAGE: &[u8] = b"EXT4D.ELF";
+/// Frame budget of `EXT4D.ELF`: Kconfig `FS_EXT4_RING3_MEM_PAGES`.
+const EXT4D_MEM_PAGES: u32 = azos_limits::FS_EXT4_RING3_MEM_PAGES as u32;
+/// The ext4 volume's partition (1-based, as a `[volume.NAME]` row spells
+/// it): Kconfig `FS_EXT4_RING3_PARTITION`.
+const EXT4_PARTITION: u8 = azos_limits::FS_EXT4_RING3_PARTITION as u8;
+/// The built-in `[volume.ext4]` row: read-only, served from ring 3.
+const EXT4_VOLUME: VolumeSpec<'static> = VolumeSpec {
+    name: MaybeStr::from_bytes(b"ext4"),
+    partition: EXT4_PARTITION,
+    mount: MaybeStr::from_bytes(azos_limits::FS_EXT4_RING3_MOUNT.as_bytes()),
+    read_only: true,
+    aead: false,
+    verity_root: None,
+    format: VolumeFormat::Ext4,
+};
+/// `block.part.<n>` of a 1-based partition (`n = partition - 1`).
+const fn block_part_target(partition: u8) -> &'static [u8] {
+    const T: [&[u8]; 16] = [
+        b"block.part.0", b"block.part.1", b"block.part.2", b"block.part.3", b"block.part.4", b"block.part.5",
+        b"block.part.6", b"block.part.7", b"block.part.8", b"block.part.9", b"block.part.10", b"block.part.11",
+        b"block.part.12", b"block.part.13", b"block.part.14", b"block.part.15",
+    ];
+    T[(partition as usize).saturating_sub(1) % 16]
+}
+/// `EXT4D.ELF`'s authority: `READ` on its partition and nothing else of the
+/// medium; its endpoint, `READ` to serve and `WRITE` with `transfer` to
+/// derive and lend each open file's right; the region it shares with the
+/// kernel, where names and data cross (`READ|WRITE|MAP`). No file tree, no
+/// other endpoint: the parser reads untrusted bytes and holds nothing else.
+pub const EXT4D_CAPS: &[CapSpec] = &[
+    CapSpec {
+        kind: CapKind::Endpoint,
+        perms: CapPerms::READ,
+        target: MaybeStr::from_bytes(block_part_target(EXT4_PARTITION)), transfer: false, ops: 0,
+    },
+    // Canary: the boot volume's partition too.
+    #[cfg(feature = "ext4d-grant-canary")]
+    CapSpec {
+        kind: CapKind::Endpoint,
+        perms: CapPerms::READ,
+        target: MaybeStr::from_bytes(b"block.part.0"), transfer: false, ops: 0,
+    },
+    CapSpec {
+        kind: CapKind::Endpoint,
+        perms: CapPerms::READ.union(CapPerms::WRITE),
+        target: MaybeStr::from_bytes(b"endpoint.ext4"), transfer: true, ops: 0,
+    },
+    CapSpec {
+        kind: CapKind::MemObj,
+        perms: CapPerms::READ.union(CapPerms::WRITE).union(CapPerms::MAP),
+        target: MaybeStr::from_bytes(b"fs.share"), transfer: false, ops: 0,
+    },
+];
 /// The basic utilities' image (`userspace/lib/coreutils`): the file and text
 /// tools, with the write trees and nothing else.
 pub const TASK_COREUTIL_IMAGE: &[u8] = b"COREUTIL.ELF";

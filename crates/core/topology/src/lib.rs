@@ -83,7 +83,7 @@ pub use types::{
     PipelineSpec, TaskSpec, Topology, MAX_CAPS_TOTAL, MAX_CLASSES, MAX_DEVICE_ROWS, MAX_PIPELINES, MAX_SIGNERS,
     SIGNER_WARRANTS_TOTAL,
     MAX_TASKS, MAX_TASK_NAME_LEN, MAX_IMPORTS, IMPORTS_TOTAL, NAMES_ENDPOINT, ExportSpec, PeerSpec,
-    EXPORTS_TOTAL, MAX_PEERS, PEER_NODES, PROXY_PREFIX, RPC_IMAGE, MAX_POLICIES, PolicyScope, PolicySpec, BuildId, LivepatchSpec, PatchIsa, MAX_LIVEPATCHES, DegradeSpec, MAX_DEGRADE_ROWS, ClockSpec, LeapEntry, LEAP_ENTRIES, PTP_DOMAIN_MAX, SwapSpec, VolumeSpec, LoginSpec, MAX_LOGINS, LOGIN_KEYS, MAX_SWAPS, MAX_VOLUMES, PARTITION_MAX, GuestSpec, MAX_GUESTS, GUEST_DEVICES, FirewallSpec, FwAction, FwDir, FwProto, IpAddr, IpPrefix, RouteSpec, MAX_FIREWALL_ROWS, MAX_ROUTES,
+    EXPORTS_TOTAL, MAX_PEERS, PEER_NODES, PROXY_PREFIX, RPC_IMAGE, MAX_POLICIES, PolicyScope, PolicySpec, BuildId, LivepatchSpec, PatchIsa, MAX_LIVEPATCHES, DegradeSpec, MAX_DEGRADE_ROWS, ClockSpec, LeapEntry, LEAP_ENTRIES, PTP_DOMAIN_MAX, SwapSpec, VolumeFormat, VolumeSpec, LoginSpec, MAX_LOGINS, LOGIN_KEYS, MAX_SWAPS, MAX_VOLUMES, PARTITION_MAX, GuestSpec, MAX_GUESTS, GUEST_DEVICES, FirewallSpec, FwAction, FwDir, FwProto, IpAddr, IpPrefix, RouteSpec, MAX_FIREWALL_ROWS, MAX_ROUTES,
 };
 pub use types::{
     dev_name_ok, ActivitySpec, ActivityTrigger, AudioDir, AudioSpec, BootChainSpec, DisplaySpec, EffectKind, EnvelopeSpec,

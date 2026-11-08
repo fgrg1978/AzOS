@@ -76,3 +76,68 @@ config FS_DEFERRED_FREE
       n: the truncate frees one epoch after its entry (one more flush per
       in-place rewrite) and the journaled replacements free inside their
       record, as before.
+
+config FS_EXT4_RING3
+    # cargo-feature: fs-ext4-ring3
+    bool "ext4 volumes, read-only, parsed and served in ring 3 (EXT4D.ELF)"
+    depends on CAP_SLOT_EXT
+    default y if USE_DESKTOP || USE_SERVER
+    default n
+    help
+      An ext4 volume on a partition of the boot medium is mounted read-only
+      at FS_EXT4_RING3_MOUNT: the built-in topology declares it as a
+      `[volume.ext4]` row with `format = "ext4"` and starts EXT4D.ELF
+      (userspace/services/ext4d), whose row holds READ on that partition
+      (`block.part.<n>`), its endpoint and the region it shares with the
+      kernel (`MemObj fs.share`), and nothing else. The server parses the
+      image (userspace/lib/ext4: extents and the block map, htree
+      directories read as linear, symlinks, 64bit, metadata_csum checked;
+      inline_data, encrypt, casefold, meta_bg, MMP, bigalloc and a journal
+      that needs recovery refused at mount) and answers the file protocol
+      (azos_devif::fs); the kernel's VFS forwards to it
+      (azos_fs::endpoint::EndpointFs), so a program reading the mount
+      cannot tell. The parser reads untrusted data, so it never runs in the
+      kernel. Writes are refused (the read-only stage of the format).
+
+      Cost: one ring-3 task (32 KiB stack, 64 KiB of metadata cache, the
+      FS_EXT4_RING3_MEM_PAGES frame budget), one kernel call task and two
+      pages of shared region; in the kernel image, the forwarding backend
+      (crates/fs/src/endpoint.rs). n: no row, no image, no backend.
+
+config FS_EXT4_RING3_PARTITION
+    int "Partition of the boot medium the ext4 volume is on (1-based)"
+    range 1 16
+    default 2
+    help
+      The `partition` of the built-in topology's `[volume.ext4]` row; the
+      server's row is granted READ on that partition alone
+      (`block.part.<partition - 1>`). A signed topology file replaces both
+      rows. A board whose medium has no such partition starts the server,
+      which finds nothing to serve and exits; the mount answers nothing.
+
+config FS_EXT4_RING3_MOUNT
+    string "Mount point of the ext4 volume"
+    default "/ext4"
+    help
+      The `mount` of the built-in topology's `[volume.ext4]` row: an
+      absolute path, never `/`, `/fat` or beneath it.
+
+config FS_EXT4_RING3_REPLY_MS
+    int "ext4 in ring 3: longest wait for one answer of the server (ms)"
+    range 10 60000
+    default 2000
+    help
+      How long a program reading the ext4 mount waits, blocked, for one
+      answer of EXT4D.ELF (kernel/src/boot/ext4.rs) before the operation
+      fails as an I/O error; and how long the server waits for one block
+      entry of its partition. One answer is at most one 4 KiB read, one
+      stat or one directory entry, and may read several metadata blocks.
+
+config FS_EXT4_RING3_MEM_PAGES
+    int "Frame budget of EXT4D.ELF (pages)"
+    range 48 4096
+    default 64
+    help
+      The row's frame budget: the image (about 11 pages), its 32 KiB stack
+      (8), page tables, the 64 KiB metadata cache (16) and the io_ring and
+      shared-region mappings.
