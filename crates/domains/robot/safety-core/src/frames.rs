@@ -26,14 +26,24 @@ pub enum Answer {
 }
 
 azos_common::ro_hook! {
-    /// The board's buzzer as a configuration frame drives it: beep, siren,
-    /// off. Set by the kernel at boot.
-    static BUZZER: [fn() -> bool; 3];
+    /// The board's buzzer as a configuration frame drives it, set by the
+    /// kernel at boot: a beep.
+    static BUZZER_BEEP_FN: fn() -> bool;
+}
+azos_common::ro_hook! {
+    /// The siren.
+    static BUZZER_SIREN_FN: fn() -> bool;
+}
+azos_common::ro_hook! {
+    /// Silence.
+    static BUZZER_OFF_FN: fn() -> bool;
 }
 
 /// Install the buzzer's three calls (the kernel, at boot, once).
 pub fn set_buzzer(beep: fn() -> bool, siren: fn() -> bool, off: fn() -> bool) {
-    BUZZER.set([beep, siren, off]);
+    BUZZER_BEEP_FN.set(beep);
+    BUZZER_SIREN_FN.set(siren);
+    BUZZER_OFF_FN.set(off);
 }
 
 /// The `Authority` interface's handler: a frame the ring-3 behaviour engine
@@ -111,12 +121,14 @@ pub fn authority_frame(pkt_type: u8, payload: &[u8], link: &str) -> Answer {
 fn config(cfg: ConfigCmd) {
     match cfg.config_key {
         CFG_KEY_BUZZER => {
-            let Some(b) = BUZZER.get() else { return };
-            match cfg.value {
-                BUZZER_BEEP => { let _ = b[0](); }
-                BUZZER_SIREN => { let _ = b[1](); }
-                BUZZER_OFF => { let _ = b[2](); }
-                _ => {}
+            let call = match cfg.value {
+                BUZZER_BEEP => BUZZER_BEEP_FN.get(),
+                BUZZER_SIREN => BUZZER_SIREN_FN.get(),
+                BUZZER_OFF => BUZZER_OFF_FN.get(),
+                _ => None,
+            };
+            if let Some(f) = call {
+                let _ = f();
             }
         }
         CFG_KEY_CAMERA => {
