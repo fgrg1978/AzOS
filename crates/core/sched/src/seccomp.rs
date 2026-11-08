@@ -1124,6 +1124,40 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         ops: inv_ops![LOG_CONSOLE_WRITE, NODE_OPENAT, NODE_READ, NODE_WRITE, DOMAIN_UPTIME, MEMOBJ_ACQUIRE],
         ifaces: &[azos_devif::key::ENTROPY],
     },
+    // The ported search and find tools (Kconfig USERSPACE_RG, USERSPACE_FD:
+    // ripgrep and fd, `third_party/ports`). Std programs reading a tree: the
+    // names beneath the root directory their row grants are opened, listed,
+    // stat'ed and read (`NODE_OPENAT`, `NODE_READDIR`, `NODE_STATAT`,
+    // `NODE_READ`, `SYS_CAP_CLOSE`), the output goes to the console or a
+    // redirected stdout (`NODE_WRITE`). Both run worker threads (futexes and
+    // `SYS_THREAD_CREATE`). The file layer (`stdrt/src/fs.rs`) can also create,
+    // remove and rename: its mutating class is in the row because std can reach
+    // it whatever the program says, and the tree the row holds is read-only, so
+    // the kernel refuses them. No spawn, no network, no device.
+    // `tests/host/seccomp-tests` derives these from the sources (`STDRT`,
+    // `STDRT_FS`).
+    ImageProfile {
+        image: "RG.ELF",
+        syscalls: sys_nrs![
+            SYS_EXIT, SYS_INVOKE, SYS_CAP_CLOSE, SYS_CAP_INFO, SYS_IPC_CALL,
+            SYS_MO_MAP, SYS_MO_UNMAP, SYS_GETPID, SYS_SLEEP_UNTIL, SYS_YIELD,
+            SYS_FUTEX_WAIT, SYS_FUTEX_WAKE, SYS_THREAD_CREATE, SYS_THREAD_EXIT,
+        ],
+        audit: false,
+        ops: inv_ops![LOG_CONSOLE_WRITE, NODE_OPENAT, NODE_READ, NODE_WRITE, NODE_MKDIRAT, DOMAIN_UPTIME],
+        ifaces: &[azos_devif::key::ENTROPY],
+    },
+    ImageProfile {
+        image: "FD.ELF",
+        syscalls: sys_nrs![
+            SYS_EXIT, SYS_INVOKE, SYS_CAP_CLOSE, SYS_CAP_INFO, SYS_IPC_CALL,
+            SYS_MO_MAP, SYS_MO_UNMAP, SYS_GETPID, SYS_SLEEP_UNTIL, SYS_YIELD,
+            SYS_FUTEX_WAIT, SYS_FUTEX_WAKE, SYS_THREAD_CREATE, SYS_THREAD_EXIT,
+        ],
+        audit: false,
+        ops: inv_ops![LOG_CONSOLE_WRITE, NODE_OPENAT, NODE_READ, NODE_WRITE, NODE_MKDIRAT, DOMAIN_UPTIME],
+        ifaces: &[azos_devif::key::ENTROPY],
+    },
     // The package installer. Serves `endpoint.packages` (the v2 accept/reply),
     // copies the package out of the memory object a client hands it (acquire,
     // map, release), reads the volume (open, stat, readdir, read of typed files: the signed
@@ -1523,7 +1557,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     // The SDK's own test (`userspace/tests/sdktest`), the autorun program of the
     // gate's `<isa>: sdktest boots` rows: a `std` program that tests the port
     // from inside, so its row is the port layer's whole reach (`STDRT`,
-    // `STDRT_NET`: it opens sockets) and the console write of the TAP lines.
+    // `STDRT_NET`: it opens sockets; `STDRT_FS`: it names `std::fs`) and the console write of the TAP lines.
     // `tests/host/seccomp-tests` derives this from the sources.
     ImageProfile {
         image: "SDKTEST.ELF",
@@ -1534,7 +1568,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         ],
         audit: false,
         ops: inv_ops![
-            LOG_CONSOLE_WRITE, NODE_READ, NODE_WRITE, DOMAIN_UPTIME,
+            LOG_CONSOLE_WRITE, NODE_READ, NODE_WRITE, DOMAIN_UPTIME, NODE_OPENAT, NODE_MKDIRAT,
             DOMAIN_SOCKET, DOMAIN_NET_GETIP, NODE_BIND, NODE_CONNECT,
             NODE_SEND, NODE_SENDTO, NODE_RECV, NODE_RECVFROM, NODE_MCAST_JOIN, NODE_MCAST_LEAVE,
         ],

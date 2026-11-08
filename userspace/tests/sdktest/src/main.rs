@@ -12,8 +12,8 @@
 //! kernel pool) and the socket ops for `net_edges_and_udp_timeouts`: a row
 //! naming one op of the `net` invoke class (`DOMAIN_SOCKET`, `NODE_SEND`, ...)
 //! grants the class, and without it the first `socket` is refused by the
-//! seccomp filter. It tests what the port provides: no
-//! file system (`fs_is_not_provided` holds that edge); sockets over the native
+//! seccomp filter. It tests what the port provides: the
+//! file system edges that are refused before any kernel call (`fs_edges_are_refused_before_the_kernel`); sockets over the native
 //! ops, up to what the kernel offers (`net_edges_and_udp_timeouts`).
 
 use azos_libsys as azos;
@@ -301,13 +301,26 @@ fn standard_streams_write() -> Result<(), &'static str> {
     Ok(())
 }
 
-/// The edge of the port, held so that growing past it is a decision: the file
-/// system answers `Unsupported` until the FS interface has a client here.
+/// The edges of `std::fs` that are refused before any kernel call, held so that
+/// growing past them is a decision: `create_new` cannot be honoured (the native
+/// open cannot refuse an existing file), a handle has no stat, and the options
+/// `std` refuses everywhere are refused here. The reads and writes themselves
+/// are the boot rows of the ported programs (`rg`, `fd`), which need a root
+/// directory in their row.
 #[azos::test]
-fn fs_is_not_provided() -> Result<(), &'static str> {
-    match std::fs::File::open("/fat/SDKTEST.ELF") {
-        Err(e) if e.kind() == std::io::ErrorKind::Unsupported => {}
-        _ => return Err("std::fs is provided now: test it, and drop this row"),
+fn fs_edges_are_refused_before_the_kernel() -> Result<(), &'static str> {
+    use std::io::ErrorKind::{InvalidInput, Unsupported};
+    match std::fs::OpenOptions::new().write(true).create_new(true).open("/fat/X") {
+        Err(e) if e.kind() == Unsupported => {}
+        _ => return Err("create_new is not Unsupported"),
+    }
+    match std::fs::OpenOptions::new().open("/fat/X") {
+        Err(e) if e.kind() == InvalidInput => {}
+        _ => return Err("no access mode is not InvalidInput"),
+    }
+    match std::fs::OpenOptions::new().read(true).truncate(true).open("/fat/X") {
+        Err(e) if e.kind() == InvalidInput => {}
+        _ => return Err("truncate without write is not InvalidInput"),
     }
     Ok(())
 }
@@ -319,7 +332,7 @@ fn fs_is_not_provided() -> Result<(), &'static str> {
 /// answers a nonblocking `accept` with nobody waiting `WouldBlock` and holds
 /// its port against a second listener, and what the ops lack answers
 /// `Unsupported` (a name, IPv6 datagrams, an IPv6 listener). Held like
-/// `fs_is_not_provided`: the day the resolver interface exists, these
+/// `fs_edges_are_refused_before_the_kernel`: the day the resolver interface exists, these
 /// assertions fail and are replaced by tests of the real thing. The row that
 /// boots this needs the `net` class (see the file header).
 #[azos::test]

@@ -1015,6 +1015,10 @@ mod image_profiles {
     /// from a std program that names `std::net`, and from no other (a program
     /// that opens no socket is not granted the network).
     const STDRT_NET: &[&str] = &[include_str!("../../../../crates/core/stdrt/src/net.rs")];
+    /// The std port's file layer (`crates/core/stdrt/src/fs.rs`): reachable from a
+    /// std program that names `std::fs`, and from no other (a program that
+    /// touches no file is not granted the mutating file ops).
+    const STDRT_FS: &[&str] = &[include_str!("../../../../crates/core/stdrt/src/fs.rs")];
     /// The device-interface clients (`sys::dev::NAME(..)`): methods on the
     /// generated stubs, which this scanner does not follow, so what each
     /// public function issues is written out here and held to the source by
@@ -1270,6 +1274,15 @@ mod image_profiles {
             src!("userspace/services/why/src/crash.rs"),
             src!("userspace/services/why/src/woke.rs"),
             src!("crates/core/recovery/src/crashdump.rs"),
+        ]),
+        // The ported search and find tools: the upstream sources of the ports name
+        // `std::fs`, which brings the file layer's ops into the row.
+        ("RG.ELF", Lang::RustStd, &[
+            src!("third_party/ports/ripgrep/crates/core/flags/config.rs"),
+        ]),
+        ("FD.ELF", Lang::RustStd, &[
+            src!("third_party/ports/fd-find/src/filesystem.rs"),
+            src!("third_party/ports/fd-find/src/dir_entry.rs"),
         ]),
         // The Packages object's installer (the pure half is the library's)
         // and its client tool. The installer is a std program (its package
@@ -2029,7 +2042,8 @@ mod image_profiles {
             // `SYS_*` and op the port layer names, and the socket layer's when
             // the program names `std::net`.
             let net = files.iter().any(|&(_, src)| lex(src, false).contains("std::net"));
-            for src in STDRT.iter().chain(STDRT_NET.iter().filter(|_| net)) {
+            let fs = files.iter().any(|&(_, src)| lex(src, false).contains("std::fs"));
+            for src in STDRT.iter().chain(STDRT_NET.iter().filter(|_| net)).chain(STDRT_FS.iter().filter(|_| fs)) {
                 for (_, id) in idents(&lex(src, false)) {
                     if let Some(&o) = opn.get(id) {
                         ops_out.insert(o);
