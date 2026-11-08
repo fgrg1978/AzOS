@@ -11,11 +11,11 @@
 # its reason in the commit message.
 # crate	blocks	fns	impls	attrs	forbid	share
 .	7	10	1	0	0	-
-arch/aarch64	202	49	1	2	0	74
+arch/aarch64	207	49	1	2	0	74
 arch/api	32	10	0	0	0	41
 arch/facade	0	0	0	0	1	0
 arch/riscv	160	42	0	3	0	92
-arch/x86_64	160	18	4	11	0	59
+arch/x86_64	161	18	4	11	0	59
 crates/core/abi	0	0	0	0	1	0
 crates/core/actuation	0	0	0	0	1	0
 crates/core/azos-config	0	0	0	0	1	-
@@ -43,7 +43,7 @@ crates/core/libsys-macros	0	0	0	0	1	-
 crates/core/limits	4	0	0	0	0	9
 crates/core/linux-abi	0	0	0	0	1	0
 crates/core/lx-loader	0	0	0	0	1	-
-crates/core/mm	318	50	13	0	0	82
+crates/core/mm	326	50	13	0	0	82
 crates/core/ota	0	0	0	0	0	0
 crates/core/percpu	2	4	1	0	0	74
 crates/core/pkg	0	0	0	0	1	0
@@ -117,7 +117,7 @@ crates/net/ethercat	0	0	0	0	1	-
 crates/net/multi-stream	0	0	0	0	1	0
 crates/net/stack	20	0	2	0	0	58
 crates/net/tftp	0	0	0	0	1	-
-kernel	405	15	13	52	0	61
+kernel	414	15	13	53	0	61
 micro	20	4	0	0	0	67
 tools/bench/linux_seccomp_launch	11	2	0	2	0	-
 tools/bench/linux_seccomp_launch/host-tests	0	0	0	0	1	-
@@ -173,4 +173,4 @@ userspace/services/tracectl	2	0	2	0	0	-
 userspace/services/vmmd	22	5	2	0	0	-
 userspace/services/why	1	0	0	0	0	-
 userspace/services/zenohd	0	0	0	0	1	-
-@unsafe-share	505
+@unsafe-share	506
