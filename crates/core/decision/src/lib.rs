@@ -1848,16 +1848,22 @@ fn record_full(rule: Rule, verdict: Verdict, subject: u32, bucket: u32, n: [u64;
         && (matches!(verdict, Verdict::Refuse)
             || matches!(rule, Rule::Login)
             || (matches!(verdict, Verdict::Place) && matches!(rule, Rule::Placement)));
+    // The bucket held this record back: it is in the count of the next
+    // `RefusalLimited` report instead.
+    let mut held = false;
     if paced {
         if !SINK.is_set() {
             to_sink = matches!(verdict, Verdict::Refuse);
         } else if DENY_DURABLE_PER_SEC == 0 {
             DENY_DROPPED.fetch_add(1, Ordering::Relaxed);
+            held = true;
         } else if let Some(since) = paced_admit(rule, bucket) {
             if rule == Rule::CapDenial {
                 n[2] = since as u64;
             }
             to_sink = true;
+        } else {
+            held = true;
         }
     }
     // The id: claimed by a record that is stored anywhere (with the ring, the
@@ -1870,7 +1876,7 @@ fn record_full(rule: Rule, verdict: Verdict, subject: u32, bucket: u32, n: [u64;
     // A paced rule's record the bucket held back is not copied either: the
     // bucket's own `RefusalLimited` report is, so a flood of denials cannot
     // push a microphone's record out of the security ring unseen.
-    if azos_records::SECURITY && (!paced || to_sink) {
+    if azos_records::SECURITY && !held {
         if let Some(class) = rule.security_class(n[0]) {
             security(class, rule, verdict, subject, n, seq, origin);
         }

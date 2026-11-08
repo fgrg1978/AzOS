@@ -5524,6 +5524,71 @@ records_logd_row() { # records_logd_row <riscv64|aarch64> <pass|stale>
     ok; rm -rf "$work"
 }
 
+# ── The sealed security log, read back and verified ─────────────────────────
+#
+# The captest kernel and volume (its ungranted ADC channel and forged motor
+# handle are capability denials every boot makes: security records), built
+# from a copy of the defconfig with SEC_LOG on and a seal every second. The
+# row stops QEMU once logd has two periods on the volume and the console has
+# shown two seals, reads the KLOGn.TXT files back with mtools and runs the
+# forensic tool over them with the console as the witness (QEMU has no TPM:
+# forward-only). Pass: @security lines, a seal checked, no EVIDENCE line and
+# the verdict incomplete (advisory seals and an unsealed tail are what a
+# forward-only boot honestly shows). `tamper` (the row's canary) rewrites one
+# digit of the first security event in the files: the verdict must be
+# evidence.
+seclog_row() { # seclog_row <aarch64> <pass|tamper>
+    local isa="$1" mode="$2" label="$1: sealed security log verified"
+    [ "$mode" = tamper ] && label="$isa: sealed security log tamper canary"
+    printf "  %-26s" "${label}..."
+    mkdir -p "$CI_LOG_DIR"
+    local work="$CI_LOG_DIR/seclog-$isa-$mode" kernel disk log cfg files out n feats="qemu,captest-row"
+    rm -rf "$work"; mkdir -p "$work"
+    kernel="$work/kernel"; disk="$work/disk.img"; log="$work/boot.log"; cfg="$(cd "$work" && pwd)/seclog.config"
+    cp "${REPO_ROOT}/config/defconfigs/$(gate_defc a64 "$feats").config" "$cfg"
+    printf 'CONFIG_SEC_LOG=y\nCONFIG_SEC_LOG_SEAL_S=1\n' >>"$cfg"
+    if ! (cd "$REPO_ROOT" && KCONFIG_CONFIG="$cfg" python3 -m olddefconfig >/dev/null 2>&1) \
+        || ! grep -q '^CONFIG_SEC_LOG=y$' "$cfg" || ! grep -q '^CONFIG_SEC_LOG_SEAL_S=1$' "$cfg"; then
+        bad; echo "      $cfg: olddefconfig lost SEC_LOG or the 1 s seal"; return
+    fi
+    if ! AARCH64_CONFIG="$cfg" a64_kbuild "$feats"; then bad; echo "      aarch64 kernel ($feats, SEC_LOG) did not build"; return; fi
+    cp "$A64_IMG" "$kernel"
+    if ! make $AZOS_OUT/build/disk-aarch64-captest.img >/dev/null 2>&1; then
+        bad; echo "      disk image build failed: make $AZOS_OUT/build/disk-aarch64-captest.img"; return
+    fi
+    cp $AZOS_OUT/build/disk-aarch64-captest.img "$disk"
+    par_ready
+    if ! otae2e_qemu "$isa" "$kernel" "$disk" "$log"; then bad; echo "      QEMU did not start (log: $log)"; return; fi
+    if ! otae2e_wait "$log" 'seclog: seal 2 through' 180 || ! otae2e_wait "$log" '\[logd\] two periods on the volume' 60; then
+        otae2e_stop; bad; echo "      no second seal on the console, or logd never wrote two periods:"
+        grep -a "SECLOG\|seclog\|logd\|PANIC" "$log" | tr -d '\r' | sed -n '1,8p' | sed 's/^/        /'
+        echo "      log kept: $log"; return
+    fi
+    otae2e_stop
+    if otae2e_trap "$log"; then bad; echo "      the boot trapped"; echo "      log kept: $log"; return; fi
+    files="$work/export"; mkdir -p "$files"
+    for n in 0 1 2 3 4 5 6 7 8 9 A B C D E F; do mtype -i "$disk" "::KLOG$n.TXT" 2>/dev/null | tr -d '\r' >"$files/KLOG$n.TXT"; done
+    if ! grep -aqE '^[0-9]+ [0-9]+ [0-9]+ I @security v1 [0-9]+ [0-9]+ 0 1 [0-9]+ [0-9]+ [0-9a-f]+ event cap-denial ' "$files"/KLOG*.TXT; then
+        bad; echo "      the files hold no @security capability denial (log kept: $log, volume: $disk)"; return
+    fi
+    if [ "$mode" = tamper ]; then
+        local f; f="$(grep -alE ' @security v1 [0-9]+ [0-9]+ 0 1 ' "$files"/KLOG*.TXT | sed -n 1p)"
+        awk '!done && / @security v1 [0-9]+ [0-9]+ 0 1 / { n = split($0, t, " "); h = t[13]; c = substr(h, 1, 1); t[13] = (c == "0" ? "1" : "0") substr(h, 2); $0 = t[1]; for (i = 2; i <= n; i++) $0 = $0 " " t[i]; done = 1 } { print }' "$f" >"$f.t" && mv "$f.t" "$f"
+    fi
+    out="$(cd "$REPO_ROOT" && make -s seclog-verify SECLOG_EXPORT="$files" SECLOG_WITNESS="$log" 2>&1)"
+    if [ "$mode" = pass ]; then
+        if ! echo "$out" | grep -q '^verdict: Incomplete$' || echo "$out" | grep -q '^EVIDENCE' \
+           || ! echo "$out" | grep -qE 'seals [0-9]+ \([1-9][0-9]* checked'; then
+            bad; echo "      the verifier did not find the log whole and advisory:"
+            echo "$out" | sed -n '1,8p' | sed 's/^/        /'; echo "      log kept: $log (export: $files)"; return
+        fi
+    elif ! echo "$out" | grep -q '^verdict: Evidence$'; then
+        bad; echo "      the verifier did not find the rewritten record:"
+        echo "$out" | sed -n '1,8p' | sed 's/^/        /'; echo "      log kept: $log (export: $files)"; return
+    fi
+    ok; rm -rf "$work"
+}
+
 ota_rollback_row() { # ota_rollback_row <riscv64|aarch64>
     local isa="$1" label="$1: OTA bad update rolls back"
     printf "  %-26s" "${label}..."
@@ -10072,6 +10137,8 @@ a64_kbuild "qemu" >/dev/null
 par "aarch64: OTA bad update rolls back" ota_rollback_row aarch64
 par "aarch64: records read back from logd" records_logd_row aarch64 pass
 par "aarch64: records logd drops a stale sequence" records_logd_row aarch64 stale
+par "aarch64: sealed security log verified" seclog_row aarch64 pass
+par "aarch64: sealed security log tamper canary" seclog_row aarch64 tamper
 a64_kbuild "qemu" >/dev/null
 par "aarch64: OTA bundle over the network, B confirmed" ota_bundle_row aarch64 good
 a64_kbuild "qemu" >/dev/null
@@ -12220,7 +12287,7 @@ HOST_SUITES="flight-sim regression-tests ota-tests sched-policy-tests scsi-tests
          net-tests seccomp-tests syscall-tests trap-tests sync-tests flight-tests
          shell-tests sh-tests term-tests input-tests inputd-tests audiod-tests names-tests coreutils-tests devif-tests panic-policy-tests energy-tests thermal-tests power-tests linux-abi-tests linux-rt-tests ualloc-tests
          percpu-tests trace-tests iommu-tests pci-tests dma-tests
-         nvme-tests x86-platform-tests fb-tests rings-tests bytepipe-tests idl-tests decisions-tests micro-tests hwbus-tests
+         nvme-tests x86-platform-tests fb-tests rings-tests seclog-tests bytepipe-tests idl-tests decisions-tests micro-tests hwbus-tests
          logind-tests stdrt-tests pkg-tests zenoh-tests mcp-tests inspect-tests actuation-tests
          usb-tests usb-hid-tests relibc-azos-tests rpc-tests tpm-tests soc-tests compmgr-tests compose-tests compositor-tests cfi-tests zenohd-tests tls-tests ptpd-tests quic-tests mcpd-tests sshd-tests ethercat-tests infsrv-tests usb-cdc-tests usb-uvc-tests srv-tests ext4-tests"
 # The same hole, one suite at a time: percpu-tests (wave 15) and four suites
@@ -12390,6 +12457,12 @@ host_job host_canary_row "records: overrun canary" rings-tests canary-no-overrun
 host_job host_canary_row "records: recheck canary" rings-tests canary-no-recheck a_record_overwritten_during_the_copy_is_not_handed_on
 host_job host_canary_row "records: pending holds canary" rings-tests canary-record-pending-empty a_producer_mid_store_holds_the_merge_back
 host_job host_canary_row "records: replay renumber canary" rings-tests canary-record-renumber replay_keeps_every_sequence_number
+host_job host_canary_row "seclog: dropped record canary" seclog-tests canary-no-gap-check a_dropped_record_is_an_undeclared_gap
+host_job host_canary_row "seclog: rewritten record canary" seclog-tests canary-no-chain-check a_rewritten_record_breaks_the_next_seal
+host_job host_canary_row "seclog: reordered pair canary" seclog-tests canary-no-order-check a_reordered_pair_is_reported
+host_job host_canary_row "seclog: forged head canary" seclog-tests canary-no-anchor-check a_forged_head_breaks_the_link_to_the_next_boot
+host_job host_canary_row "seclog: live anchor canary" seclog-tests canary-no-external-check tool_a_forgery_consistent_with_itself_is_refuted_by_the_live_tpm
+host_job host_canary_row "logd: security resume canary" libsys-tests canary-logd-resume-one-file a_security_line_in_an_older_file_is_found
 host_job host_canary_row "logd: stalled record canary" libsys-tests canary-logd-stall-polls-only a_record_the_ring_left_behind_is_given_up_at_once
 host_job host_canary_row "logd: quiet ring stall canary" libsys-tests canary-logd-stall-polls-only a_quiet_rings_stalled_record_does_not_hold_a_busy_ring_to_be_lapped
 host_job host_canary_row "logd: resume walk-back canary" libsys-tests canary-logd-resume-one-file a_rare_source_resumes_by_the_last_file_that_has_a_line_of_it
