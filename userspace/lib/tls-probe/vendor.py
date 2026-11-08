@@ -11,7 +11,7 @@ userspace std programs build from.
 
 What is vendored: everything in tls-probe's lockfile (rustls, the
 rustls-rustcrypto provider, quinn-proto and their dependencies), everything in
-the lockfiles of the ported programs (third_party/ports: ripgrep, fd, kibi),
+the lockfiles of the ported programs (third_party/ports: ripgrep, fd),
 plus the dependencies of the toolchain's own std workspace (`cargo vendor --sync`),
 because -Zbuild-std resolves them through the same source replacement
 (tools/build/sdk_cargo.py --vendored). That second half moves with rust-toolchain.toml:
@@ -41,7 +41,7 @@ VENDOR = os.path.join(ROOT, "third_party", "vendor")
 PIN = os.path.join(ROOT, "third_party", "VENDOR_PIN")
 PROBE = os.path.join(ROOT, "userspace", "lib", "tls-probe")
 PORTS = os.path.join(ROOT, "third_party", "ports")
-MANIFESTS = [os.path.join(PROBE, "Cargo.toml")] + [os.path.join(PORTS, p, "Cargo.toml") for p in ("ripgrep", "fd-find", "kibi")]
+MANIFESTS = [os.path.join(PROBE, "Cargo.toml")] + [os.path.join(PORTS, p, "Cargo.toml") for p in ("ripgrep", "fd-find")]
 VENDOR_CONFIG = ["--config", 'source.crates-io.replace-with="azos-vendor"', "--config", f'source.azos-vendor.directory="{VENDOR}"']
 PRUNE = re.compile(r"^(windows[-_]|winapi|objc2|block2$|dispatch2$|linux-raw-sys$)")
 KEEP = re.compile(r"^(Cargo\.toml|Cargo\.toml\.orig|LICEN[CS]E.*|license.*|COPYING.*)$")
@@ -53,7 +53,7 @@ HEADER = """# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 # download): rustls 0.23 with the rustls-rustcrypto provider (no aws-lc-rs, no
 # ring in any build for an azos or a unix host target), quinn-proto 0.11 (no
 # crypto feature) and their dependencies, the dependencies of the ported
-# programs ripgrep, fd-find and kibi (third_party/ports; extended 2026-11-08,
+# programs ripgrep and fd-find (third_party/ports; extended 2026-11-08,
 # owner-approved download), plus the dependencies of the pinned
 # toolchain's std workspace (build-std resolves them through the same source
 # replacement). One line per package: name, version, sha256 of the .crate file as

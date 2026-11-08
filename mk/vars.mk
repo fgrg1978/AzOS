@@ -194,7 +194,6 @@ WHY_ELF       := $(OUT_BUILD)/why.elf
 # The ported programs (third_party/ports; `make ports`, mk/userspace.mk): one directory per ISA.
 RG_ELF        := $(OUT_BUILD)/ports/riscv64/rg.elf
 FD_ELF        := $(OUT_BUILD)/ports/riscv64/fd.elf
-KIBI_ELF      := $(OUT_BUILD)/ports/riscv64/kibi.elf
 WHY_SRC       := $(WHY_DIR)/src/main.rs $(WHY_DIR)/src/cli.rs $(WHY_DIR)/Cargo.toml $(DECISIONS_LIB_SRC)
 # Signed application packages: the installer (`Packages` on
 # `endpoint.packages`) and `pkg`, its client tool, over `userspace/lib/packages`
@@ -464,7 +463,6 @@ LOGD_ELF_AARCH64      := $(AARCH64_DIR)/logd.elf
 WHY_ELF_AARCH64       := $(AARCH64_DIR)/why.elf
 RG_ELF_AARCH64        := $(OUT_BUILD)/ports/aarch64$(AARCH64_PG_SUFFIX)/rg.elf
 FD_ELF_AARCH64        := $(OUT_BUILD)/ports/aarch64$(AARCH64_PG_SUFFIX)/fd.elf
-KIBI_ELF_AARCH64      := $(OUT_BUILD)/ports/aarch64$(AARCH64_PG_SUFFIX)/kibi.elf
 PKGD_ELF_AARCH64      := $(AARCH64_DIR)/pkgd.elf
 PKG_ELF_AARCH64       := $(AARCH64_DIR)/pkg.elf
 RPCSRV_ELF_AARCH64    := $(AARCH64_DIR)/rpcsrv.elf
@@ -1016,7 +1014,6 @@ LOGD_ELF_X86_64      := $(X86_64_DIR)/logd.elf
 WHY_ELF_X86_64       := $(X86_64_DIR)/why.elf
 RG_ELF_X86_64        := $(OUT_BUILD)/ports/x86_64/rg.elf
 FD_ELF_X86_64        := $(OUT_BUILD)/ports/x86_64/fd.elf
-KIBI_ELF_X86_64      := $(OUT_BUILD)/ports/x86_64/kibi.elf
 PKGD_ELF_X86_64      := $(X86_64_DIR)/pkgd.elf
 PKG_ELF_X86_64       := $(X86_64_DIR)/pkg.elf
 RPCSRV_ELF_X86_64    := $(X86_64_DIR)/rpcsrv.elf
