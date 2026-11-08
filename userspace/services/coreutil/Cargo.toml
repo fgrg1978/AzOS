@@ -1,0 +1,26 @@
+[package]
+name = "coreutil"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "The AzOS basic utilities image: cp, mv, rm, mkdir, grep, sort and the rest of userspace/lib/coreutils, dispatched on argv[0]. Its row holds the root directory and the /fat and /tmp write trees and nothing else. Excluded from workspace; built standalone."
+
+[dependencies]
+azos_libsys = { path = "../../../crates/core/libsys" }
+azos_abi = { path = "../../../crates/core/abi" }
+azos_coreutils = { path = "../../lib/coreutils" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+
+# Prevents Cargo from merging this crate into the workspace above (see
+# userspace/services/reflex/Cargo.toml).
+[workspace]
+
+# The FAT32 image(s) this crate builds and their board-volume defaults
+# (tools/build/gen_userspace_kconfig.py -> make config, "Userspace programs").
+[package.metadata.azos]
+topology = true

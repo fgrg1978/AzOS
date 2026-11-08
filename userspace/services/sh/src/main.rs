@@ -598,7 +598,7 @@ impl Shell {
                 o.put(b"builtins: help echo cd pwd exit export unset env jobs wait kill history\n\
                         \x20         true false ls cat uptime type\n\
                         tools (TOOLBOX.ELF): args beep cat echo false host input inspect log ls ntp ps sleep spin true vm wc window yes\n\
-                        \x20         cp mv rm mkdir rmdir touch stat du df find head tail grep sort uniq tr cut tee\n\
+                        basic utilities (COREUTIL.ELF): cp mv rm mkdir rmdir touch stat du df find head tail grep sort uniq tr cut tee\n\
                         \x20         date env pwd basename dirname seq printf\n\
                         refused (no native meaning, they say what to use): chmod chown chgrp umask ln kill mkfifo\n\
                         privileged tools: power flight behavior config ota (own row each)\n\
@@ -798,7 +798,11 @@ impl Shell {
                     if is_builtin(a) {
                         o.put(b": builtin\n");
                     } else if path::is_applet(a) {
-                        o.put(b": TOOLBOX.ELF applet\n");
+                        o.put(if path::applet_image(a) == Some(path::COREUTIL) {
+                            &b": COREUTIL.ELF applet\n"[..]
+                        } else {
+                            &b": TOOLBOX.ELF applet\n"[..]
+                        });
                     } else {
                         let mut pb = [0u8; path::PATH_MAX];
                         match self.resolve(a, &mut pb) {
@@ -885,9 +889,9 @@ impl Shell {
             // The image and its argv[0].
             let mut image = [0u8; path::PATH_MAX + 1];
             let il;
-            if path::is_applet(name) {
-                il = path::TOOLBOX.len();
-                image[..il].copy_from_slice(path::TOOLBOX);
+            if let Some(img) = path::applet_image(name) {
+                il = img.len();
+                image[..il].copy_from_slice(img);
             } else if is_builtin(name) {
                 err_line(name, b"builtin cannot run in a pipeline or in the background");
                 failure = 2;

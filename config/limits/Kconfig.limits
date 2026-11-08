@@ -751,6 +751,22 @@ config TOOLBOX_INSTANCES
       Cost: no static RAM (an integer the topology builder reads); 48 pages
       (192 KiB) checked against free RAM at boot per instance.
 
+config COREUTIL_INSTANCES
+    int "Live COREUTIL.ELF processes the shell can run at once"
+    range 2 32
+    default 4 if HWCLASS_EMBEDDED
+    default 8
+    help
+      The user shell runs each stage of a pipeline and each background job
+      that is one of the basic utilities (cp, grep, sort, ...) as one
+      instance of COREUTIL.ELF, and the row's instance count is the ceiling:
+      one more is refused. A pipeline of utilities and tools of TOOLBOX.ELF
+      spreads over the two images' counts. Boot-time memory admission counts
+      every instance at the row's full budget (48 pages).
+
+      Cost: no static RAM (an integer the topology builder reads); 48 pages
+      (192 KiB) checked against free RAM at boot per instance.
+
 config AUTORUN_MEM_PAGES
     int "Frame budget of the default topology's autorun row (pages)"
     range 16 1048576

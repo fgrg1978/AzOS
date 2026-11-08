@@ -106,10 +106,13 @@ impl Host for Native {
     }
 
     fn wall_ns(&self) -> Option<u64> {
-        if sys::vdso_clock_offsets().real == 0 {
+        // The wall clock is the monotonic one plus the offset a time source
+        // published; zero until one has.
+        let real = sys::vdso_clock_offsets().real;
+        if real == 0 {
             return None;
         }
-        sys::clock_now(azos_abi::time::ClockId::REAL).ok()
+        Some(sys::vdso_now_ns().saturating_add(real))
     }
 
     fn stdin(&mut self, buf: &mut [u8]) -> Result<usize, Error> {

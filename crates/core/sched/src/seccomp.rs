@@ -871,10 +871,8 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     },
     // Wave 11: the shell's multicall tool image. Reads and writes
     // the fds it was moved (`NODE_READ` and `NODE_WRITE` on a `Cap<File>`,
-    // `SYS_CAP_CLOSE`), opens and lists files (and, in the trees its row
-    // grants for writing, creates, renames and removes them), sleeps. The
-    // sort and tail buffer is a memory object of its own (`SYS_MO_CREATE`,
-    // `SYS_MO_MAP`). `inspect` (Kconfig INSPECT) reads the kernel's introspection
+    // `SYS_CAP_CLOSE`), opens files read-only, lists directories,
+    // sleeps. `inspect` (Kconfig INSPECT) reads the kernel's introspection
     // regions: `SYS_CAP_INFO` finds the `Cap<Shm>` its row grants,
     // `MEMOBJ_ACQUIRE` reads its geometry (`READ`) and `SYS_MO_MAP` maps it
     // read-only (its row grants `READ|MAP`). `host` and `ntp` call the kernel's
@@ -908,15 +906,28 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             SYS_MO_UNMAP, SYS_FUTEX_WAIT, SYS_FUTEX_WAKE, SYS_GETPID,
         ],
         audit: false,
+        ops: inv_ops![LOG_CONSOLE_WRITE, DOMAIN_UPTIME, NODE_OPENAT, NODE_READ, NODE_WRITE, MEMOBJ_ACQUIRE],
+        ifaces: &[azos_devif::key::NET, azos_devif::key::CLOCK, azos_devif::key::SOUND, azos_devif::key::VOLUME],
+    },
+    // The basic utilities' image (`azos_coreutils`): files and text only. It
+    // opens, reads, lists and stats beneath its root directory and, in the
+    // `/fat` and `/tmp` trees its row grants for writing, creates, renames and
+    // removes; `df` asks the filesystem. The sort and tail buffer is a memory
+    // object of its own (`SYS_MO_CREATE`, `SYS_MO_MAP`); the pipe on its
+    // stdin or stdout is the toolbox's (see above). No endpoint, no interface:
+    // the tools that look at the system are `TOOLBOX.ELF`'s.
+    ImageProfile {
+        image: "COREUTIL.ELF",
+        syscalls: sys_nrs![
+            SYS_EXIT, SYS_INVOKE, SYS_CAP_INFO, SYS_CAP_CLOSE, SYS_MO_CREATE, SYS_MO_MAP,
+            SYS_MO_UNMAP, SYS_FUTEX_WAIT, SYS_FUTEX_WAKE, SYS_GETPID,
+        ],
+        audit: false,
         ops: inv_ops![
             LOG_CONSOLE_WRITE, DOMAIN_UPTIME, NODE_OPENAT, NODE_READ, NODE_WRITE, MEMOBJ_ACQUIRE,
-            // The basic utilities (`azos_coreutils`): `ls`, `find`, `du` and
-            // `grep -r` list and stat, `df` asks the filesystem, and `cp`,
-            // `mv`, `rm`, `mkdir`, `rmdir` and `touch` change the trees the
-            // row holds write grants on (and only those).
             NODE_STATAT, NODE_READDIR, NODE_STATFS, NODE_MKDIRAT, NODE_UNLINKAT, NODE_RENAMEAT,
         ],
-        ifaces: &[azos_devif::key::NET, azos_devif::key::CLOCK, azos_devif::key::SOUND, azos_devif::key::VOLUME],
+        ifaces: NO_IFACES,
     },
     // The shell's power tool, the first privileged family with a
     // ring-3 form. The ONLY profile whose interfaces list `power`;

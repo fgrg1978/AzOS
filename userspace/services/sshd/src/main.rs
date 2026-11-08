@@ -480,10 +480,10 @@ impl Spawner {
 
     /// The image `name` runs as, and whether the volume has it.
     fn image(name: &[u8], out: &mut [u8; path::PATH_MAX + 1]) -> Result<usize, &'static str> {
-        if path::is_applet(name) {
-            out[..path::TOOLBOX.len()].copy_from_slice(path::TOOLBOX);
-            out[path::TOOLBOX.len()] = 0;
-            return Ok(path::TOOLBOX.len());
+        if let Some(img) = path::applet_image(name) {
+            out[..img.len()].copy_from_slice(img);
+            out[img.len()] = 0;
+            return Ok(img.len());
         }
         if name.contains(&b'/') {
             return Err("name an image, not a path");

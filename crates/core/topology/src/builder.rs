@@ -1706,6 +1706,19 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
         // A pipeline runs one instance per stage, and background jobs add more.
         topo.set_last_task_instances(TOOLBOX_INSTANCES);
     }
+    // The basic utilities (`cp`, `grep`, `sort`, ...): their own image, so
+    // the authority to change files is not the authority to look at the system.
+    if azos_limits::USERSPACE_COREUTIL {
+        topo.push_task(
+            MaybeStr::from_bytes(TASK_COREUTIL_IMAGE),
+            MaybeStr::from_bytes(NAME_BEST_EFFORT),
+            TOOL_PRIORITY,
+            if azos_limits::CONSOLE_LOCKDOWN { COREUTIL_CAPS_LOCKDOWN } else { COREUTIL_CAPS },
+        )
+            .expect("default_minimal_topology: COREUTIL.ELF push failed");
+        topo.set_last_task_mem_pages(COREUTIL_MEM_PAGES);
+        topo.set_last_task_instances(COREUTIL_INSTANCES);
+    }
     // The first privileged family: `POWER.ELF` (`power suspend`,
     // `reboot`, `shutdown`, `sched_hz`). Its row is the whole of its
     // authority: the `power` endpoint (WRITE, and READ for the rate read), whose
@@ -2825,6 +2838,28 @@ const SH_MEM_PAGES: u32 = 64;
 /// six pages on a 4 KiB granule (the budget grew from 48 by 16: the six and
 /// headroom for a longer period).
 const TOOLBOX_MEM_PAGES: u32 = 64;
+/// The basic utilities' image (`userspace/lib/coreutils`): the file and text
+/// tools, with the write trees and nothing else.
+pub const TASK_COREUTIL_IMAGE: &[u8] = b"COREUTIL.ELF";
+/// Frame budget of `COREUTIL.ELF`: the image (about 14 pages), its stack (4),
+/// its page tables (about 4) and the 16 KiB memory object `sort` and `tail`
+/// work in (4): about 26, so 48 leaves room for a longer image.
+const COREUTIL_MEM_PAGES: u32 = 48;
+/// Live `COREUTIL.ELF` instances: Kconfig `COREUTIL_INSTANCES`.
+const COREUTIL_INSTANCES: u16 = azos_limits::COREUTIL_INSTANCES as u16;
+/// `COREUTIL.ELF`'s authority outside `CONSOLE_LOCKDOWN`: the shell's write
+/// trees (`/fat`, `/tmp`; not the USB stick, which only the shell writes) and
+/// the read-only root directory they are opened beneath. No endpoint, no
+/// region, no task view. The canaries put one thing too many in the row
+/// (`coreutil-grant-canary`) or take the trees out (`coreutil-write-canary`).
+#[cfg(not(any(feature = "coreutil-write-canary", feature = "coreutil-grant-canary")))]
+const COREUTIL_CAPS: &[CapSpec] = &[FAT_RW, TMP_RW, ROOT_RO];
+#[cfg(feature = "coreutil-write-canary")]
+const COREUTIL_CAPS: &[CapSpec] = &[ROOT_RO];
+#[cfg(feature = "coreutil-grant-canary")]
+const COREUTIL_CAPS: &[CapSpec] = &[FAT_RW, TMP_RW, TOOLBOX_NET_CAP, ROOT_RO];
+/// Under `CONSOLE_LOCKDOWN` only `/tmp`, as the shell.
+const COREUTIL_CAPS_LOCKDOWN: &[CapSpec] = &[TMP_RW, ROOT_RO];
 
 /// What the shell holds outside `CONSOLE_LOCKDOWN`, before the launch grants
 /// of the optional rows ([`SH_CAPS_UNLOCKED`]): [`SH_CAPS_BASE`], and with
@@ -2863,6 +2898,11 @@ const SH_CAPS_BASE: &[CapSpec] = &[
         kind: CapKind::Node,
         perms: CapPerms::EXEC,
         target: MaybeStr::from_bytes(TASK_TOOLBOX_IMAGE), transfer: false, ops: 0,
+    },
+    CapSpec {
+        kind: CapKind::Node,
+        perms: CapPerms::EXEC,
+        target: MaybeStr::from_bytes(TASK_COREUTIL_IMAGE), transfer: false, ops: 0,
     },
     CapSpec {
         kind: CapKind::Node,
@@ -3299,6 +3339,7 @@ const SSHD_CAPS: &[CapSpec] = &[
     KEYS_SIGNER,
     FAT_RW,
     CapSpec { kind: CapKind::Node, perms: CapPerms::EXEC, target: MaybeStr::from_bytes(TASK_TOOLBOX_IMAGE), transfer: false, ops: 0 },
+    CapSpec { kind: CapKind::Node, perms: CapPerms::EXEC, target: MaybeStr::from_bytes(TASK_COREUTIL_IMAGE), transfer: false, ops: 0 },
     ROOT_RO,
     INSPECT_LOGINS_CAP,
 ];
@@ -3807,12 +3848,11 @@ const TOOLBOX_AUDIO_CAP: CapSpec = CapSpec {
 /// warrant); `READ` on the `net` and `clock` endpoints (`host`, `ntp`) and
 /// `WRITE` on `volume.0` (`fsck`); the
 /// audio server's endpoint when the build has it (Kconfig AUDIOD), else the
-/// sound endpoint when the build has the device (`beep`); the shell's
-/// `/fat` and `/tmp` write trees for the file tools; the read-only root
+/// sound endpoint when the build has the device (`beep`); the read-only root
 /// directory ([`ROOT_RO`]); and the call rights on the input server's and the
 /// compositor's endpoints with their rows.
-const TOOLBOX_CAPS_BUILT: ([CapSpec<'static>; 12], usize) = {
-    let mut caps = [ROOT_RO; 12];
+const TOOLBOX_CAPS_BUILT: ([CapSpec<'static>; 11], usize) = {
+    let mut caps = [ROOT_RO; 11];
     let mut n = 0;
     caps[n] = TASK_VIEW_CAP;
     n += 1;
@@ -3835,13 +3875,11 @@ const TOOLBOX_CAPS_BUILT: ([CapSpec<'static>; 12], usize) = {
         caps[n] = TOOLBOX_SOUND_CAP;
         n += 1;
     }
-    // The trees the file tools (`cp`, `mv`, `rm`, `mkdir`, `touch`, `tee`) may
-    // change: the shell's `/fat` and `/tmp`. Not the USB stick, which only
-    // the shell writes (a redirection).
-    if !cfg!(feature = "toolbox-write-canary") {
+    // No write tree: the tools that change files are `COREUTIL.ELF`'s.
+    #[cfg(feature = "toolbox-write-canary")]
+    {
         caps[n] = FAT_RW;
-        caps[n + 1] = TMP_RW;
-        n += 2;
+        n += 1;
     }
     caps[n] = ROOT_RO;
     n += 1;
@@ -3896,9 +3934,8 @@ const INSPECT_LOGINS_CAP: CapSpec = inspect_view(b"inspect.logins");
 const INSPECT_CLOCK_CAP: CapSpec = inspect_view(b"inspect.clock");
 
 /// Under `CONSOLE_LOCKDOWN`: no task view and no introspection region, as
-/// before wave 12; the tools read files beneath the root and change only
-/// `/tmp`, as the shell does.
-const TOOLBOX_CAPS_LOCKDOWN: &[CapSpec] = &[TMP_RW, ROOT_RO];
+/// before wave 12; the tools still read files, beneath the read-only root.
+const TOOLBOX_CAPS_LOCKDOWN: &[CapSpec] = &[ROOT_RO];
 
 /// Under `CONSOLE_LOCKDOWN`: the volume is not the shell's to change, and it
 /// may not start a privileged tool (no launch grant on `POWER.ELF`). It still
@@ -3908,6 +3945,11 @@ const SH_CAPS_LOCKDOWN: &[CapSpec] = &[
         kind: CapKind::Node,
         perms: CapPerms::EXEC,
         target: MaybeStr::from_bytes(TASK_TOOLBOX_IMAGE), transfer: false, ops: 0,
+    },
+    CapSpec {
+        kind: CapKind::Node,
+        perms: CapPerms::EXEC,
+        target: MaybeStr::from_bytes(TASK_COREUTIL_IMAGE), transfer: false, ops: 0,
     },
     TMP_RW,
     ROOT_RO,

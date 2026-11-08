@@ -178,9 +178,13 @@ mem-admission-canary = []
 # Canary: `POWER.ELF`'s row with the `power` endpoint READ only; every power
 # operation must be refused and recorded. Never in a real build.
 power-cap-canary = []
-# Canary: `TOOLBOX.ELF`'s row holds no write tree; `mkdir`, `cp` and `rm`
-# must be refused. Never in a real build.
+# Canaries of the file tools' image: `TOOLBOX.ELF`'s row holds a write tree
+# (`toolbox-write-canary`); `COREUTIL.ELF`'s row holds an endpoint
+# (`coreutil-grant-canary`) or no write tree, so `mkdir`, `cp` and `rm` must be
+# refused (`coreutil-write-canary`). Never in a real build.
 toolbox-write-canary = []
+coreutil-grant-canary = []
+coreutil-write-canary = []
 # Wave 15 canary: TRACECTL.ELF's row holds no `Cap<Trace>`; every
 # tracer op must be refused and recorded.
 trace-cap-canary = []

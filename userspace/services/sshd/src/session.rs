@@ -455,7 +455,7 @@ impl<R: Runner> Session<R> {
                 true
             }
             Some(b"help") => {
-                self.say("a command is an applet of TOOLBOX.ELF (args cat echo false inspect ls ps sleep spin true wc yes) or another image the server's row may start (NAME or NAME.ELF); exit leaves");
+                self.say("a command is an applet of TOOLBOX.ELF (args cat echo false inspect ls ps sleep spin true wc yes), a basic utility of COREUTIL.ELF (cp mv rm mkdir grep sort ...) or another image the server's row may start (NAME or NAME.ELF); exit leaves");
                 self.prompt();
                 false
             }

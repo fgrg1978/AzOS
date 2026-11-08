@@ -16,19 +16,32 @@
 pub const PATH_MAX: usize = 128;
 /// The multicall tool image.
 pub const TOOLBOX: &[u8] = b"/fat/TOOLBOX.ELF";
+/// The basic utilities' image (`azos_coreutils`).
+pub const COREUTIL: &[u8] = b"/fat/COREUTIL.ELF";
 /// The search path when `PATH` is unset.
 pub const DEFAULT_PATH: &[u8] = b"/fat";
 
-/// Names `TOOLBOX.ELF` answers to (its `argv[0]` dispatch), besides the basic
-/// utilities of `azos_coreutils`.
+/// Names `TOOLBOX.ELF` answers to (its `argv[0]` dispatch). The basic
+/// utilities of `azos_coreutils` are `COREUTIL.ELF`'s.
 pub const APPLETS: &[&[u8]] = &[
     b"args", b"beep", b"cat", b"echo", b"false", b"fsck", b"host", b"input", b"inspect", b"log", b"ls", b"ntp", b"ps", b"sleep", b"spin", b"true", b"vm", b"wc", b"window",
     b"yes",
 ];
 
-/// Is `name` an applet of `TOOLBOX.ELF`?
+/// The image an applet runs in, `None` for a name that is no applet.
+pub fn applet_image(name: &[u8]) -> Option<&'static [u8]> {
+    if APPLETS.iter().any(|a| *a == name) {
+        Some(TOOLBOX)
+    } else if azos_coreutils::is_tool(name) {
+        Some(COREUTIL)
+    } else {
+        None
+    }
+}
+
+/// Is `name` an applet of `TOOLBOX.ELF` or `COREUTIL.ELF`?
 pub fn is_applet(name: &[u8]) -> bool {
-    APPLETS.iter().any(|a| *a == name) || azos_coreutils::is_tool(name)
+    applet_image(name).is_some()
 }
 
 /// Why a name or path did not resolve.
