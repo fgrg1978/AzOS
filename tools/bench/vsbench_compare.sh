@@ -171,11 +171,10 @@
 # This script neither downloads nor builds a `riscv64` Linux. The image is
 # the `riscv64=` line of tools/bench/vsbench_linux.conf (a host setting, not a
 # kernel option), overridden by the env var `VSBENCH_LINUX_IMAGE`. The
-# default is Linux 6.12 LTS (EEVDF; defconfig + virtio/vfat/devtmpfs/
-# initramfs/TCP built in, PREEMPT_NONE, HZ=250), built outside the repo at
-# ~/devel/vms/linux-6.12/Image-riscv64. The previous reference, 6.4.0-rc4
-# (CFS, same PREEMPT_NONE/HZ=250), stays selectable:
-# `VSBENCH_LINUX_IMAGE=~/devel/vms/riscv/Image`. Absent, this fails —
+# default is the pinned Linux tree's release (defconfig + virtio/vfat/devtmpfs/
+# initramfs/TCP built in, PREEMPT_NONE, HZ=250), built by `make fetch` under
+# $AZOS_OUT/build/vsbench-linux (tools/bench/vsbench_linux_in.sh). Another
+# kernel stays selectable with `VSBENCH_LINUX_IMAGE=<path>`. Absent, this fails —
 # unless `CI_SKIP_VSBENCH_LINUX=1`, the same shape `CI_SKIP_QEMU=1` already
 # has, so a machine without the reference kernel can still run the rest of
 # the gate without the skip being silent.
@@ -597,7 +596,7 @@ if { [ -z "$VSBENCH_LANES" ] || printf ',%s,' "$VSBENCH_LANES" | grep -q ',vdso,
 fi
 # The riscv64 Linux image: VSBENCH_LINUX_IMAGE, else the `riscv64=` line of
 # tools/bench/vsbench_linux.conf. A leading `~/` is $HOME.
-LINUX_IMAGE="${VSBENCH_LINUX_IMAGE:-$(sed -n 's/^riscv64=//p' "$REPO_ROOT/tools/bench/vsbench_linux.conf")}"
+LINUX_IMAGE="${VSBENCH_LINUX_IMAGE:-$("$REPO_ROOT/tools/bench/vsbench_linux_image.sh" riscv64)}"
 case "$LINUX_IMAGE" in "~/"*) LINUX_IMAGE="$HOME/${LINUX_IMAGE#\~/}" ;; esac
 [ -n "$LINUX_IMAGE" ] || die "no riscv64 Linux image configured: set VSBENCH_LINUX_IMAGE \
 or the riscv64= line of tools/bench/vsbench_linux.conf"

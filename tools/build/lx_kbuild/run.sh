@@ -9,6 +9,7 @@
 #   tools/build/lx_kbuild/run.sh image            # build the image (network: apt)
 #   tools/build/lx_kbuild/run.sh check            # exit 0 if a build can run
 #   tools/build/lx_kbuild/run.sh linux <outdir>   # the Linux comparison kernels
+#   tools/build/lx_kbuild/run.sh vsbench [<outdir>]  # the Linux images of vsbench's Linux column (all three ISAs)
 #
 # `linux` (after `build` into build/lx/kbuild) builds, for riscv64 and aarch64, a Linux
 # kernel from the FULL pinned tree with the modules' exact configuration,
@@ -22,6 +23,9 @@
 # Linux tree at the pin. LX_LINUX_SRC points at a fetched tree elsewhere
 # (default third_party/linux; the iCloud checkout cannot hold one, so a gate
 # run from it sets LX_LINUX_SRC to a worktree's tree).
+# `vsbench` builds, from the same full pinned tree, the kernels tools/bench/vsbench_linux.conf
+# names (defconfig plus tools/bench/vsbench_linux_in.sh's options), into
+# <outdir> (default $AZOS_OUT/build/vsbench-linux); one that is there is not rebuilt.
 # Every Kbuild run is --network=none and mounts the tree read-only.
 set -euo pipefail
 # Outputs live under $AZOS_OUT (tools/lib/out_dir.py), never in the checkout.
@@ -61,7 +65,7 @@ image)
     } > "$here/IMAGE"
     echo "lx-kbuild: image $tag; recorded in tools/build/lx_kbuild/IMAGE"
     ;;
-check|build|linux)
+check|build|linux|vsbench)
     usable
     "$podman" image exists "$tag" || skip "image $tag not built (make lx-kbuild-image; needs the network once)"
     [ -f "$src/Makefile" ] || skip "no Linux tree at $src (tools/build/third_party_fetch.sh linux in a checkout outside iCloud, or set LX_LINUX_SRC)"
@@ -69,6 +73,17 @@ check|build|linux)
     head="$(git -C "$src" rev-parse HEAD 2>/dev/null || true)"
     [ "$head" = "$pin" ] || skip "Linux tree at $src is $head, the pin is $pin"
     [ "$1" = check ] && exit 0
+    if [ "$1" = vsbench ]; then
+        out="${2:-$AZOS_OUT/build/vsbench-linux}"
+        mkdir -p "$out"; out="$(cd "$out" && pwd)"
+        for pair in riscv:Image-riscv64 arm64:Image-aarch64 x86_64:bzImage-x86_64; do
+            [ -f "$out/${pair#*:}" ] && { echo "vsbench: ${pair#*:} is there"; continue; }
+            git -C "$src" archive --format=tar "$pin" | "$podman" run -i --rm --network=none \
+                -v "$root/tools/bench:/vs:ro" -v "$out:/out" "$tag" \
+                sh -c 'mkdir -p /work/linux && tar -x -C /work/linux && sh /vs/vsbench_linux_in.sh "$1"' sh "${pair%%:*}"
+        done
+        exit 0
+    fi
     if [ "$1" = linux ]; then
         out="${2:?usage: run.sh linux <outdir>}"
         mods="$AZOS_OUT/build/lx/kbuild"
@@ -103,5 +118,5 @@ check|build|linux)
     cat "$out/SHA256SUMS"
     ;;
 *)
-    echo "usage: $0 image | check | build <outdir>" >&2; exit 2 ;;
+    echo "usage: $0 image | check | build <outdir> | linux <outdir> | vsbench [<outdir>]" >&2; exit 2 ;;
 esac

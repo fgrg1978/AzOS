@@ -123,7 +123,7 @@ for n in hosted split; do
 done
 
 # Linux nvhe and protected, when the pieces are there.
-LINUX_IMAGE="${VSBENCH_SPLIT_LINUX_IMAGE:-$(sed -n 's/^aarch64=//p' "$REPO_ROOT/tools/bench/vsbench_linux.conf")}"
+LINUX_IMAGE="${VSBENCH_SPLIT_LINUX_IMAGE:-$("$REPO_ROOT/tools/bench/vsbench_linux_image.sh" aarch64)}"
 case "$LINUX_IMAGE" in "~/"*) LINUX_IMAGE="$HOME/${LINUX_IMAGE#\~/}" ;; esac
 INITRAMFS="${VSBENCH_SPLIT_LINUX_INITRAMFS:-$AZOS_OUT/build/vsbench-aarch64-compare/initramfs-aarch64.cpio}"
 LINUX_LOGS=()

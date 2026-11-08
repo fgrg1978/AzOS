@@ -32,7 +32,7 @@ import datetime
 
 ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../.."))
 HOME = os.path.expanduser("~")
-sys.path.insert(0, os.path.join(ROOT, "tools", "lint"))
+sys.path.insert(0, os.path.join(ROOT, "tools/lint"))
 import third_party_versions as tpv  # noqa: E402  (the pin/CVE parsing is its own)
 
 # ── trees: the .config symbol that makes a tree needed, and where the build reads it ──
@@ -123,17 +123,17 @@ INVENTORY = [
               "BRAIN_OPTIONAL=1 adds matplotlib, Pillow, scipy, opencv-python, astropy",
          pinned="the exact versions of AzOSRobotBrain/requirements.lock", source="https://pypi.org (hashes in the lock files)", sum="sha256 per file in the lock files"),
     dict(id="pyserial", cat="dev", kind="pip", venv="build", packages=["pyserial"], provides=[],
-         used="tools/dev/dev_uart.py (a board's serial console)", pinned="latest (unpinned)", source="https://pypi.org", sum="-"),
+         used="the serial console tool of tools/dev (a board's UART)", pinned="latest (unpinned)", source="https://pypi.org", sum="-"),
     dict(id="gdb-lldb", cat="dev", kind="pkg", pkg=pkg("riscv64-elf-gdb", "gdb-multiarch", "gdb"), provides=["gdb", "lldb"],
          used="make qemu debug targets, tools/gate/debug_row.py, tools/dev/stall_attach.py (lldb ships with the Xcode tools)",
          pinned="the formula's current release", source="Homebrew riscv64-elf-gdb", sum="-"),
     dict(id="serial-and-dfu", cat="dev", kind="pkg", pkg=pkg("picocom dfu-util"), provides=["picocom", "minicom", "dfu-util"],
-         used="a board's console (mk/kernel.mk k1-console) and DFU recovery (tools/dev/dev_dfu_recovery.sh)",
+         used="a board's console (mk/kernel.mk k1-console) and the DFU recovery script of tools/dev",
          pinned="the formulas' current releases", source="Homebrew", sum="-"),
-    dict(id="vsbench-linux", cat="manual", kind="manual",
-         paths=["~/devel/vms/linux-6.12/Image-riscv64-nodebug", "~/devel/vms/linux-6.12/Image-aarch64", "~/devel/vms/linux-6.12/bzImage-x86_64"],
-         used="the Linux column of vsbench (tools/bench/vsbench_*.sh, vsbench_linux.conf); built by hand from Linux 6.12 LTS with the config in that file, no script builds or downloads one",
-         pinned="Linux 6.12 LTS (EEVDF)", source="https://www.kernel.org", sum="-", provides=[]),
+    dict(id="vsbench-linux", cat="gate", kind="vsbench", files=["Image-riscv64", "Image-aarch64", "bzImage-x86_64"], provides=[],
+         used="the Linux column of vsbench (tools/bench/vsbench_*.sh, vsbench_linux.conf): built in the lx-kbuild container from the pinned Linux tree "
+              "(tools/build/lx_kbuild/run.sh vsbench, options in tools/bench/vsbench_linux_in.sh) under $AZOS_OUT/build/vsbench-linux; VSBENCH_*_LINUX_IMAGE overrides",
+         pinned="the third_party/linux pin", source="third_party/linux (the tree's source URL and commit)", sum="the pinned commit"),
     dict(id="x86-ucode", cat="manual", kind="manual",
          paths=["~/azos-dl/intel-ucode", "~/azos-dl/amd-fw"],
          used="make ucode (mk/firmware.mk): the vendors' microcode files, fetched with the owner's consent",
@@ -161,6 +161,7 @@ CMD_RE = re.compile(r"\b(qemu-system-[a-z0-9_]+|qemu-img|mkfs\.[a-z0-9]+|m(?:cop
                     r"|riscv64-[a-z-]*gcc|zig|cbindgen|dtc|mkimage|podman|docker(?![.\w/-])|gdb|lldb|picocom|minicom|dfu-util|openocd|esptool\.py)\b")
 
 
+VSBENCH_SUBDIR = ("build", "vsbench-linux")  # where run.sh vsbench writes, under $AZOS_OUT
 BUILD_VENV = "build"  # the venv of the build tools' Python packages, under $AZOS_OUT/venv
 
 
@@ -370,7 +371,9 @@ def build_python_ok():
 
 def brain_locks(root, it, with_optional):
     keys = ["requirements"] + (["optional_requirements"] if with_optional else [])
-    return [os.path.normpath(os.path.join(root, it[k])) for k in keys]
+    sibling = os.environ.get("BRAIN_DIR")
+    paths = [it[k] if not sibling else os.path.join(sibling, os.path.basename(it[k])) for k in keys]
+    return [os.path.normpath(os.path.join(root, p)) for p in paths]
 
 
 def brain_stamp(locks):
@@ -431,6 +434,10 @@ def status(root, it):
         tag = re.search(r"^tag=(.*)$", open(os.path.join(root, "tools/build/lx_kbuild/IMAGE")).read(), re.M).group(1)
         rc, _ = sh("podman", "image", "exists", tag)
         return "ok" if rc == 0 else "missing"
+    if k == "vsbench":
+        d = os.path.join(out_dir(), *VSBENCH_SUBDIR)
+        gone = [f for f in it["files"] if not os.path.exists(os.path.join(d, f))]
+        return "ok" if not gone else "missing " + ",".join(gone)
     if k == "manual":
         gone = [p for p in it["paths"] if not os.path.exists(os.path.expanduser(p))]
         return "ok" if not gone else "absent (not fetchable here)"
@@ -555,6 +562,8 @@ def install(root, it, dry):
         rc = install_pip(root, it, dry)
     elif k == "advisory":
         rc = run(["bash", os.path.join(root, "tools/lint/advisories.sh"), "update"], dry)
+    elif k == "vsbench":
+        rc = run(["bash", os.path.join(root, "tools/build/lx_kbuild/run.sh"), "vsbench"], dry)
     elif k == "container":
         rc = run(["bash", os.path.join(root, "tools/build/lx_kbuild/run.sh"), "image"], dry) if which("podman") else 0
         if not which("podman"):
@@ -773,6 +782,16 @@ def self_test():
         q = os.path.join(d, "mk", "a.mk")
         open(q, "w").write("\tqemu-system-sparc64 -M x\n")
         assert scan_findings(d, [q]), "canary: a tool no item provides is not caught"
+    # 4. the vsbench conf names exactly the images the inventory builds, under the output root
+    vs = next(it for it in INVENTORY if it["kind"] == "vsbench")
+    for isa in ("riscv64", "aarch64", "x86_64"):
+        r = subprocess.run(["sh", os.path.join(root, "tools/bench/vsbench_linux_image.sh"), isa], capture_output=True, text=True,
+                           env=dict(os.environ, AZOS_OUT="/o"))
+        assert r.stdout.strip().startswith("/o/build/vsbench-linux/") and os.path.basename(r.stdout.strip()) in vs["files"], (isa, r.stdout)
+    vs["files"].append("extra")  # canary: an image the conf does not name must not be accepted as the full set
+    assert {os.path.basename(subprocess.run(["sh", os.path.join(root, "tools/bench/vsbench_linux_image.sh"), i], capture_output=True, text=True,
+            env=dict(os.environ, AZOS_OUT="/o")).stdout.strip()) for i in ("riscv64", "aarch64", "x86_64")} != set(vs["files"]), "canary"
+    vs["files"].pop()
     assert len({it["id"] for it in INVENTORY}) == len(INVENTORY)
     print("fetch self-test ok")
     return 0

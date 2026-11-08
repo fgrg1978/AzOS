@@ -149,7 +149,7 @@ done
 stop_qemu "$X_PID"
 
 # ── Linux/x86_64 ────────────────────────────────────────────────────────────
-LINUX_X_IMAGE="${VSBENCH_X86_64_LINUX_IMAGE:-$(sed -n 's/^x86_64=//p' "$REPO_ROOT/tools/bench/vsbench_linux.conf")}"
+LINUX_X_IMAGE="${VSBENCH_X86_64_LINUX_IMAGE:-$("$REPO_ROOT/tools/bench/vsbench_linux_image.sh" x86_64)}"
 case "$LINUX_X_IMAGE" in "~/"*) LINUX_X_IMAGE="$HOME/${LINUX_X_IMAGE#\~/}" ;; esac
 echo "vsbench_x86_64: Linux/x86_64 column: ${LINUX_X_IMAGE:-(none configured)}" >&2
 L_LOG="$WORK/linux-x86_64.log"
