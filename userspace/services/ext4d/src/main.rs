@@ -169,7 +169,10 @@ impl Host for Kernel {
         self.region
     }
     fn derive(&mut self, badge: u32) -> Option<u32> {
-        let h = sys::endpoint_derive(self.source, service::NODE_RIGHTS as u8, badge, 0, &[]);
+        // The server's copy keeps `DELEGATE`, which lending it needs; the
+        // opener gets the call right alone (`NODE_RIGHTS`).
+        let rights = CapPerms::WRITE.union(CapPerms::DELEGATE).bits();
+        let h = sys::endpoint_derive(self.source, rights, badge, 0, &[]);
         (h > 0).then_some(h as u32)
     }
     fn revoke(&mut self, handle: u32) {
@@ -233,7 +236,7 @@ fn main() -> ! {
         data: WINDOWS_MEM.lock().leak(),
         clock: 0,
     };
-    let source = sys::cap_lookup_endpoint(b"ext4", CapPerms::READ.union(CapPerms::WRITE).bits(), 0);
+    let source = sys::cap_lookup_endpoint(b"ext4", CapPerms::READ.union(CapPerms::WRITE).union(CapPerms::DELEGATE).bits(), 0);
     let Some(region) = map_share() else {
         log(b"[EXT4D] no shared region: nothing to serve\n");
         sys::exit(0);

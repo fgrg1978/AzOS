@@ -62,6 +62,7 @@ dma-contig-canary	pending
 drv-contain-smoke	pending	
 el0-state-canary	pending	
 elf-mixed-page-canary	pending	
+endpoint-short-read-canary	host-shared	crates/fs/src/endpoint.rs, also built by tests/host/fs-tests with this feature
 energy-gov-smoke	pending	adds rows to the built-in topology (crates/core/topology/src/builder.rs): a runtime name needs the row gated at run time too (open)
 energy-i1-canary	pending	
 energy-i3-canary	pending	

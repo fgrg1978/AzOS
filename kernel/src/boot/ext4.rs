@@ -24,7 +24,7 @@
 //! with it. One ext4 row is served per boot: there is one region and one
 //! endpoint.
 
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use azos_devif::{IdlError, IdlResult, MsgDesc, Transport};
 use azos_drv_sys::{kprintln, kwarn};
@@ -39,14 +39,17 @@ use azos_topology::VolumeFormat;
 const ENDPOINT: &[u8] = b"ext4";
 /// How long a client waits for the server: Kconfig `FS_EXT4_RING3_REPLY_MS`.
 const REPLY_MS: u64 = azos_limits::FS_EXT4_RING3_REPLY_MS as u64;
-/// The call task parks on this; a client wakes it with the same value.
-const PARK: u64 = u64::MAX;
+/// The longest the call task sleeps with no call posted: a wake that came
+/// between its look at the job and its sleep costs a client at most this.
+const PARK_MS: u64 = 100;
 
 static FS: EndpointFs = EndpointFs::new(azos_fs::vfs::FS_TYPE_EXT4);
 static LINK: KernelLink = KernelLink;
 static REGION: AtomicUsize = AtomicUsize::new(0);
 static CALL_TASK: AtomicBool = AtomicBool::new(false);
 static CALL_TASK_TID: AtomicU32 = AtomicU32::new(0);
+/// The deadline the call task sleeps on now; a client's wake names it.
+static PARKED_UNTIL: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Phase {
@@ -124,7 +127,10 @@ fn call_task(_: usize) {
             if n != 0 {
                 continue;
             }
-            let _ = azos_sched::task_block_outcome(WaitReason::Timer(PARK));
+            let freq = azos_drv_sys::timebase::freq();
+            let until = azos_drv_sys::timebase::now().saturating_add(freq.saturating_mul(PARK_MS) / 1000);
+            PARKED_UNTIL.store(until, Ordering::Release);
+            let _ = azos_sched::task_block_outcome(WaitReason::Timer(until));
             continue;
         };
         let res = match node.or_else(|| kcall::endpoint_handle(ENDPOINT)) {
@@ -193,7 +199,7 @@ impl Link for KernelLink {
             j.waiter = me;
             j.deadline = deadline;
         }
-        wake(CALL_TASK_TID.load(Ordering::Acquire), PARK);
+        wake(CALL_TASK_TID.load(Ordering::Acquire), PARKED_UNTIL.load(Ordering::Acquire));
         loop {
             {
                 let mut j = JOB.lock();
@@ -231,7 +237,7 @@ impl Link for KernelLink {
             n < CLOSES
         };
         if queued {
-            wake(CALL_TASK_TID.load(Ordering::Acquire), PARK);
+            wake(CALL_TASK_TID.load(Ordering::Acquire), PARKED_UNTIL.load(Ordering::Acquire));
         }
     }
 
