@@ -73,6 +73,9 @@ EDITS = [
      "    target_os = \"azos\" => {\n        mod azos;\n        pub use azos::fill_bytes;\n    }\n    target_os = \"motor\" => {\n        mod motor;\n        pub use motor::fill_bytes;\n    }\n"),
     # No errno: the generic error mapping (every code is "uncategorized").
     ("src/sys/io/error/mod.rs", "    any(\n        target_os = \"vexos\",\n", "    any(\n        target_os = \"azos\",\n        target_os = \"vexos\",\n"),
+    # std::fs: files over the node ops (sdk/std/sys/fs/azos.rs).
+    ("src/sys/fs/mod.rs", "    target_os = \"motor\" => {\n        mod motor;\n        use motor as imp;\n    }\n",
+     "    target_os = \"azos\" => {\n        mod azos;\n        use azos as imp;\n    }\n    target_os = \"motor\" => {\n        mod motor;\n        use motor as imp;\n    }\n"),
     # std::net: the sockets over the native Node ops (sdk/std/sys/net/connection/azos.rs).
     ("src/sys/net/connection/mod.rs", "    target_os = \"motor\" => {\n        mod motor;\n        pub use motor::*;\n    }\n",
      AZOS_ARM + "    target_os = \"motor\" => {\n        mod motor;\n        pub use motor::*;\n    }\n"),

@@ -19,6 +19,9 @@
 //! * `futex`: the wait and the wake `std`'s locks are built on.
 //! * `console`: the console and the files behind fds 0..2 (no console read).
 //! * [`entropy`]: the kernel pool, through the `Entropy` interface.
+//! * `fs` and [`fspure`]: files and directories over the `*at` node ops beneath the task's
+//!   root `Cap<Dir>`, with the working directory kept here; the path arithmetic and the open
+//!   flags are the pure half.
 //! * `net` and [`netpure`]: sockets over the `Node` ops of the native ABI
 //!   (the blocking calls are polls with an absolute sleep between looks), and the
 //!   address layout, error mapping and back-off they share with the host tests.
@@ -32,6 +35,7 @@
 pub mod pure;
 
 pub mod entropy;
+pub mod fspure;
 pub mod netpure;
 pub mod tls;
 
@@ -39,6 +43,8 @@ pub mod tls;
 pub mod alloc;
 #[cfg(target_os = "azos")]
 pub mod console;
+#[cfg(target_os = "azos")]
+pub mod fs;
 #[cfg(target_os = "azos")]
 pub mod futex;
 #[cfg(target_os = "azos")]

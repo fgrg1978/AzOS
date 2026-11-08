@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! Process-level queries. The kernel keeps no working directory and no PATH:
-//! the working directory is the one the spawner put in the startup block, and
-//! there is no search path.
+//! the working directory is the one the spawner put in the startup block (kept by
+//! `azos_stdrt::fs`, which a program may change), and there is no search path.
 
 use super::unsupported;
 use crate::ffi::{OsStr, OsString};
@@ -11,14 +11,14 @@ use crate::path::{self, PathBuf};
 use crate::{fmt, io};
 
 pub fn getcwd() -> io::Result<PathBuf> {
-    let cwd = azos_stdrt::start::cwd().to_vec();
+    let cwd = azos_stdrt::fs::getcwd().bytes().to_vec();
     // SAFETY: bytes of the spawner's choosing are a valid OsString on this
     // platform (the encoding is bytes).
     Ok(PathBuf::from(unsafe { OsString::from_encoded_bytes_unchecked(cwd) }))
 }
 
-pub fn chdir(_: &path::Path) -> io::Result<()> {
-    unsupported()
+pub fn chdir(p: &path::Path) -> io::Result<()> {
+    azos_stdrt::fs::chdir(p.as_os_str().as_encoded_bytes()).map_err(super::map_native_error)
 }
 
 pub struct SplitPaths<'a>(!, PhantomData<&'a ()>);

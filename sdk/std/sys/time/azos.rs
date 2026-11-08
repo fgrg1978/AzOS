@@ -44,6 +44,11 @@ impl SystemTime {
         SystemTime(Duration::from_nanos(azos_stdrt::time::real_now_ns()))
     }
 
+    /// A time the filesystem recorded: seconds since the epoch.
+    pub fn from_unix_secs(secs: u64) -> SystemTime {
+        SystemTime(Duration::from_secs(secs))
+    }
+
     pub fn sub_time(&self, other: &SystemTime) -> Result<Duration, Duration> {
         self.0.checked_sub(other.0).ok_or_else(|| other.0 - self.0)
     }

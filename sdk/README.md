@@ -70,6 +70,15 @@ No file descriptor numbers, no `errno`, no signals, no POSIX layer:
   on endpoints (a listener and a resolver, over the stack's
   `crates/net/stack/src/dns.rs` and TCP listener), not as more socket ops; that work is not done. A program that opens
   a socket has a seccomp row naming one op of the `net` class.
+- **Files.** `std::fs` over the `*at` node ops (`stdrt/src/fs.rs`, `sdk/std/sys/fs/azos.rs`):
+  every path is made absolute against the working directory (the spawner's, changed by
+  `set_current_dir`) and opened beneath the task's root `Cap<Dir>`, so a program reaches only
+  what its row grants; `..` is resolved lexically and stops at the root. `File` reads, writes,
+  seeks and fsyncs; `read_dir` lists a directory (a snapshot); `metadata`, `create_dir`,
+  `remove_*` and `rename` act on names. Not served, and `Unsupported` rather than faked:
+  `File::metadata`, `set_len`, times, locks and `try_clone` (a file handle has no stat or
+  truncate, and the name it was opened by may by then be another file), links, permissions,
+  `OpenOptions::create_new` (the native open cannot refuse an existing file).
 - **Output.** stdout and stderr are the console handle's `WRITE` op (a handle
   the spawner passed is written with `NODE_WRITE`). The console has no read:
   console input belongs to the terminal server.
