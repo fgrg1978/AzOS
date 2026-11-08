@@ -282,15 +282,19 @@ transport asks again when a call is refused for a lapsed capability.
 **A job's own terminal.** The first stage of a foreground job with no input
 redirection is offered a terminal of its own as fd 0. The shell asks the server
 to lend one (`lend_job`): the server derives a call right badged with the job's
-id from its own capability on `endpoint.term` and lends the shell a copy with the
-call right and `TRANSFER`. The shell gives the job the focus and passes the copy
+id from a call right of its own on `endpoint.term` (its serving right is not
+transferable) and lends the shell a copy with the call right and `TRANSFER`. The shell gives the job the focus and passes the copy
 in the spawn's move list as an offered endpoint entry (`MOVE_KIND_ENDPOINT |
 MOVE_F_OFFER`); the kernel moves it, with the call right alone and the badge kept,
 only into a row that says `receives = ["term"]`, and starts any other program with
 fd 0 closed, as before. While the job has the focus the server answers that badge
 for `size`, `set_mode`, `set_echo`, `read_event` and `line_chunk`, and nothing
 else: the job reads what is typed (lines in cooked mode, bytes in raw mode; its
-lines stay out of the shell's history) and the interrupt key remains the shell's.
+lines stay out of the shell's history, its line editing recalls none of it, and
+it reads nothing the shell read before the lend) and the interrupt key remains
+the shell's. One `read_event` of a job waits at most 50 ms in the server
+(`JOB_WAIT_MAX_MS`), whatever it asks, so a job never holds the server's one
+accept loop.
 When the shell takes the focus back (`set_foreground(0)` when the job ends, or a
 `^C` that stops it) the server revokes the badge wherever it sits and puts back the
 shell's mode and echo, so a program that dies in raw mode leaves a cooked terminal.
@@ -633,8 +637,8 @@ Source: `userspace/services/sh/src/main.rs` (`terminal_gone`, `quit`),
 - **One client per terminal server.** The Linux personality's pseudo-terminal is
   not mapped onto the `Terminal` object. A job lent the terminal shares the
   server's one accept loop with the shell: while the job waits in `read_event`
-  the shell's poll waits behind it, so the std runtime reads in short waits and
-  a job's exit is noticed within one of them. A job's terminal cannot be handed
+  (at most 50 ms a call) the shell's poll waits behind it, so a job's exit is
+  noticed within one such wait. A job's terminal cannot be handed
   on (the copy carries no `TRANSFER`).
 - **For native programs the kernel has no working directory, `dup` or
   environment**, by design; user space keeps them, so a program that does not
