@@ -517,6 +517,8 @@ const EC_DATA_ABORT_EL1:  u64 = azos_arch::sysregs::ESR_EC_DATA_ABORT_CUR;
 
 /// SPSR_EL1.M[3:0] = 0 ⇒ came from EL0 (user).
 const SPSR_M_MASK: u64 = 0xF;
+/// `SPSR_EL1.BTYPE` (bits 11:10, FEAT_BTI).
+const SPSR_BTYPE_MASK: u64 = 0b11 << 10;
 
 /// AArch64 syscall calling convention: x8 = syscall number,
 /// x0..x5 = arguments, x0 = return value.

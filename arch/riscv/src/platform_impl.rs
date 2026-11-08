@@ -39,11 +39,12 @@ impl ArchPlatform for Riscv64 {
         }
     }
 
+    /// The SBI remote fence waits in firmware; no other hart takes an interrupt.
+    fn tlb_remote_flush_masked_ok(&self) -> bool { true }
+
     /// Local `sfence.vma va`, then SBI `remote_sfence_vma` of that page to
     /// every hart. A refused remote fence is retried for the whole space and
     /// then stops the kernel (`tlb::settle_remote_fence`).
-    fn tlb_remote_flush_masked_ok(&self) -> bool { true }
-
     #[inline]
     fn flush_tlb_page_all(&self, va: usize) {
         Mmu::flush_tlb_page(self, va);

@@ -94,10 +94,11 @@
 //!
 //! # GCS (FEAT_GCS, Armv9.4)
 //!
-//! Reserved (`context_switch` resumes through `ret x9`, which a kernel GCS
-//! would check against the stack: it must change with it): the hardware return stack twin of x86 CET shadow stacks.
+//! Reserved: the hardware return stack twin of x86 CET shadow stacks.
 //! `GCSCR_EL1` / `GCSPR_EL1` would be set here, with a per-task stack
-//! switched in `context_switch`. No Kconfig symbol until a core has it.
+//! switched in `context_switch`. No Kconfig symbol until a core has it. A
+//! kernel GCS checks every `ret` against that stack, and `context_switch`
+//! resumes a task through `ret x9`: the switch must change with it.
 
 use core::sync::atomic::{AtomicU64, Ordering};
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]

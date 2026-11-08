@@ -68,6 +68,7 @@ impl ArchPlatform for Aarch64 {
         crate::cache::icache_invalidate_all();
     }
 
+    /// A broadcast `TLBI ...IS` needs nothing from the other CPUs.
     fn tlb_remote_flush_masked_ok(&self) -> bool { true }
 
     /// `flush_tlb_page` is already `TLBI VAAE1IS`, broadcast on this ISA.

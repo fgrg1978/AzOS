@@ -333,12 +333,6 @@ pub fn tlbi_vmalle1is() {
     }
 }
 
-/// Invalidate TLB entries translating `va`, all ASIDs, at EL1 +
-/// inner-shareable DSB. `TLBI VAAE1IS` takes bits `[43:0]` of the operand
-/// as `VA[55:12]` (the page number, not the byte address) — the same
-/// per-page shootdown RISC-V's `sfence.vma va, zero` performs after a
-/// single-PTE rewrite (COW break, demand materialize, permission widening,
-/// unmap).
 /// The operand of a by-VA `TLBI`: `VA[55:12]` in bits 43:0 and nothing above.
 /// Bits 47:44 are the TTL hint (a level and granule the entry is promised to
 /// be at; a wrong one lets a core skip the invalidation) and 63:48 an ASID:
@@ -347,6 +341,12 @@ pub const fn tlbi_va_operand(va: u64) -> u64 {
     (va >> 12) & ((1 << 44) - 1)
 }
 
+/// Invalidate TLB entries translating `va`, all ASIDs, at EL1 +
+/// inner-shareable DSB. `TLBI VAAE1IS` takes bits `[43:0]` of the operand
+/// as `VA[55:12]` (the page number, not the byte address) — the same
+/// per-page shootdown RISC-V's `sfence.vma va, zero` performs after a
+/// single-PTE rewrite (COW break, demand materialize, permission widening,
+/// unmap).
 #[cfg(target_arch = "aarch64")]
 #[inline]
 pub fn tlbi_vaae1is(va: usize) {

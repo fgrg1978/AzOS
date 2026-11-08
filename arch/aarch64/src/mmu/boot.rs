@@ -263,6 +263,11 @@ const _: () = assert!(crate::mmu::ptwin::HFGXTR_NPOR_EL1 & !(0xFFFF << 48) == 0)
 #[cfg(target_arch = "aarch64")]
 const _: () = assert!(!(cfg!(feature = "hv") && cfg!(feature = "hyp-monitor")));
 
+// The stub's world switch does not save TCR2_EL1 and POR_EL1, so A64_POE is
+// never in an image with it (Kconfig: A64_POE_PROBE / _REQUIRE depend on !HV).
+#[cfg(target_arch = "aarch64")]
+const _: () = assert!(!(cfg!(all(feature = "hv", target_os = "none")) && !azos_limits::A64_POE_NEVER));
+
 /// Drop the calling thread from EL2 to EL1.
 ///
 /// On return, the caller is running at EL1h with DAIF masked and a

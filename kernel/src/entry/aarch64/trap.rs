@@ -220,9 +220,12 @@ impl Frame for TrapFrame {
         self.elr_el1
     }
 
+    /// `SPSR_EL1.BTYPE` is cleared too: a Branch Target Exception saves the
+    /// offending BTYPE there, and `eret` would check `pc` against it again.
     #[inline]
     fn set_pc(&mut self, pc: u64) {
         self.elr_el1 = pc;
+        self.spsr_el1 &= !SPSR_BTYPE_MASK;
     }
 
     /// `x8`.

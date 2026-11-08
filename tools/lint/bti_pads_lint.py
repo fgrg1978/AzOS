@@ -7,7 +7,7 @@ The compiler puts `bti` pads in what it emits (`-Z branch-protection=bti`);
 hand-written assembly (.S files and `global_asm!` blocks) does not get them.
 With BTI enforced on the kernel's text (Kconfig `A64_BTI_ENFORCE`) an indirect
 branch to an instruction that is not a pad raises a Branch Target Exception,
-so the assembly must carry its own. Two rules:
+so the assembly must carry its own. Three rules:
 
   paired   `adr`/`adrp xN, LABEL` followed within a few lines by `br xN` or
            `blr xN`: LABEL's first instruction is a pad (`br` needs `bti j`/`jc`,
@@ -16,6 +16,10 @@ so the assembly must carry its own. Two rules:
            assembly branches to (firmware, a function pointer, `ret`-less
            resumes): each must start with a pad, and the row must still find
            its label
+  addressed  a `.globl` code label of the scanned assembly whose address Rust
+           takes (`NAME as ...`) is listed or starts with a pad: a pointer
+           to it can be branched to. An `eret` target (`elr... = NAME as`)
+           is not checked: its SPSR.BTYPE is 0
 
   bti_pads_lint.py              check the tree
   bti_pads_lint.py --self-test  the lint's own canaries
@@ -40,6 +44,9 @@ LABEL = re.compile(r"^([A-Za-z_.$][\w.$]*|\d+):(.*)$")
 ADR = re.compile(r"^adrp?\s+(x\d+)\s*,\s*([A-Za-z_.$][\w.$]*|\d+[fb])\b")
 BR = re.compile(r"^(br|blr)\s+(x\d+)\b")
 SKIP = re.compile(r"^(\.|//|;|#|$)")
+GLOBL = re.compile(r"^\.glob(?:a)?l\s+([A-Za-z_][\w$.]*)")
+SECTION = re.compile(r"^\.(pushsection|section)\s+([^\s,]+)(.*)$")
+RUST = ("kernel/src/**/*.rs", "arch/**/*.rs", "crates/**/*.rs")
 
 
 def lines_of(path):
@@ -119,6 +126,70 @@ def check_file(path, rel, problems):
                 break
 
 
+def code_globals(path):
+    """{name: line index} of the `.globl` labels defined in an executable section."""
+    lines = lines_of(path)
+    globs, defs = set(), {}
+    code, stack = True, []
+    for i, (_, t) in enumerate(lines):
+        m = GLOBL.match(t)
+        if m:
+            globs.add(m.group(1))
+            continue
+        m = SECTION.match(t)
+        if m:
+            here = m.group(2).startswith(".text") or "x" in m.group(3)
+            if m.group(1) == "pushsection":
+                stack.append(code)
+            code = here
+            continue
+        if t.startswith(".popsection"):
+            code = stack.pop() if stack else True
+            continue
+        if re.match(r"^\.text\b", t):
+            code = True
+            continue
+        if re.match(r"^\.(data|rodata|bss)\b", t):
+            code = False
+            continue
+        m = LABEL.match(t)
+        if m and code:
+            defs.setdefault(m.group(1), i)
+    return {n: defs[n] for n in globs if n in defs}, lines
+
+
+def check_addressed(root, files, problems):
+    listed = set()
+    for raw in open(os.path.join(root, LIST), encoding="utf-8"):
+        if not raw.startswith("#") and raw.strip():
+            listed.add(raw.split("\t")[1].strip() if "\t" in raw else "")
+    labels = {}
+    for f in files:
+        defs, lines = code_globals(f)
+        for name, i in defs.items():
+            labels.setdefault(name, (os.path.relpath(f, root), lines, i))
+    if not labels:
+        return
+    want = re.compile(r"(?<![\w.])(" + "|".join(re.escape(n) for n in sorted(labels)) + r")\s+as\s")
+    eret = re.compile(r"elr\w*\s*=\s*$")
+    seen = set()
+    for f in sorted({g for pat in RUST for g in glob.glob(os.path.join(root, pat), recursive=True)}):
+        if "/target/" in f:
+            continue
+        for n, raw in enumerate(open(f, encoding="utf-8", errors="replace"), 1):
+            code = raw.split("//", 1)[0]
+            for m in want.finditer(code):
+                name = m.group(1)
+                if name in seen or name in listed or eret.search(code[:m.start()]):
+                    continue
+                seen.add(name)
+                rel, lines, i = labels[name]
+                ln, insn = first_insn(lines, i)
+                if not PAD_ANY.match(insn):
+                    problems.append(f"{rel}:{lines[i][0]}: `{name}` has its address taken "
+                                    f"({os.path.relpath(f, root)}:{n}) but starts with `{insn}`: give it a pad, or list it in {LIST}")
+
+
 def check_listed(root, problems):
     path = os.path.join(root, LIST)
     for ln, raw in enumerate(open(path, encoding="utf-8"), 1):
@@ -148,6 +219,7 @@ def run(root):
         check_file(f, rel, problems)
         scanned += 1
     check_listed(root, problems)
+    check_addressed(root, files, problems)
     return problems, scanned
 
 
@@ -157,10 +229,12 @@ def self_test():
         os.makedirs(os.path.join(d, "kernel/src/entry/aarch64/asm"))
         os.makedirs(os.path.join(d, "tools/lint"))
         a = os.path.join(d, "kernel/src/entry/aarch64/asm/x.S")
+        r = os.path.join(d, "kernel/src/user.rs")
 
-        def go(body, listing=""):
+        def go(body, listing="", rust=""):
             open(a, "w").write(body)
             open(os.path.join(d, LIST), "w").write(listing)
+            open(r, "w").write(rust)
             return run(d)[0]
 
         good = "    adr x9, 1f\n    br x9\n1:\n    hint #36\n    nop\nentry:\n    hint #38\n    ret\n"
@@ -184,6 +258,22 @@ def self_test():
             bad += 1
         if not go(good.replace("entry:\n    hint #38", "entry:\n    nop"), "kernel/src/entry/aarch64/asm/x.S\tentry\tfirmware\n"):
             print("self-test: a listed label with no pad was accepted")
+            bad += 1
+        entry = ".globl ent\nent:\n    nop\n    ret\n"
+        if not go(entry, rust="let p = ent as *const () as usize;\n"):
+            print("self-test: an addressed global with no pad was accepted")
+            bad += 1
+        if go(entry.replace("ent:\n    nop", "ent:\n    hint #34"), rust="let p = ent as *const () as usize;\n"):
+            print("self-test: an addressed global with a pad was refused")
+            bad += 1
+        if go(entry, rust="f.elr_el1 = ent as *const () as u64;\n"):
+            print("self-test: an eret target was held to a pad")
+            bad += 1
+        if go(".section .hyp, \"a\"\n" + entry, rust="let p = ent as *const () as usize;\n"):
+            print("self-test: a data label was held to a pad")
+            bad += 1
+        if go(entry, rust="ent();\n"):
+            print("self-test: a direct call was held to a pad")
             bad += 1
     return bad
 

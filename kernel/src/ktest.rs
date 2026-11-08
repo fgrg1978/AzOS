@@ -614,8 +614,9 @@ azos_ktest::ktest_late! {
 
 // PT_PROTECTION: a store to a pool page outside a window is refused, whichever
 // window the build has (the key, the overlay or the read-only mapping): the
-// fault is taken (expected-fault fixup) and the word stays zero. Runtime
-// canaries `canary=pt-lock-skip` (the key path never locks) and
+// fault is taken (expected-fault fixup) and the word stays zero. The page is
+// written through the funnel first, so a window has been opened and closed on
+// it. Runtime canaries `canary=pt-lock-skip` (the key path never locks) and
 // `canary=pt-soft-leak` (a closed soft window leaves its page writable): the
 // store goes through and the test fails.
 azos_ktest::ktest! {
@@ -631,6 +632,12 @@ azos_ktest::ktest! {
         }
         let page = azos_mm::ptpool::take(0).map_err(|_| "the pool has no spare page")?;
         let p = azos_mm::addr::phys_to_virt(page.as_usize()) as *mut u64;
+        // SAFETY: word 1 of the same zeroed pool page, ours until given back.
+        let w1 = unsafe { &*(p.add(1) as *const core::sync::atomic::AtomicU64) };
+        if azos_mm::pt::pt_cas(w1, 0, 0x5A) != Ok(0) || azos_mm::pt::pt_cas(w1, 0x5A, 0) != Ok(0x5A) {
+            azos_mm::ptpool::give_back(page);
+            return Err("a word of a pool page did not take through the funnel");
+        }
         let cause = store_expecting_fault(p, 0xA5A5);
         // SAFETY: a pool page of ours; the read and the cleanup are the test's own.
         let landed = unsafe { core::ptr::read_volatile(p) };

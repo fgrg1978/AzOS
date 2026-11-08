@@ -184,16 +184,17 @@ config PT_PROTECTION_SOFT
       writable for the store, interrupts off, one window at a time (the same
       `ptprot::write` funnel as the key). Where the CPU has the key, the key is
       used and this is not. Cost per kernel-root PTE word: two leaf stores, two
-      single-page TLB invalidations (a broadcast on aarch64) and an interrupt
-      mask, kernel mappings only; a user page-table word and a fault pay the
-      range compare of the pool. This is bug hardening, not a boundary against
-      an attacker: the leaves of the pool's pages sit in ordinary writable
-      tables. On aarch64 and riscv64 a window's close flushes every CPU's
-      translation of the page; on x86_64 SMP the flush is local (a shootdown
-      IPI cannot be awaited with interrupts off), so a CPU that read the page
-      during a window may keep a writable translation until it is evicted and
-      the protection holds on the writing CPU only. n: nothing built unless a hardware key
-      asks for the pool.
+      single-page TLB invalidations (a broadcast on aarch64, plus an SBI remote
+      fence at the close on riscv64 SMP) and an interrupt mask, kernel mappings
+      only; a user page-table word and a fault pay the range compare of the
+      pool. This is bug hardening, not a boundary against an attacker: the
+      leaves of the pool's pages sit in ordinary writable tables. On aarch64
+      and riscv64 a window's close flushes every CPU's translation of the page;
+      on x86_64 SMP the flush is local (a shootdown IPI cannot be awaited with
+      interrupts off), so a CPU that read the page during a window may keep a
+      writable translation until it is evicted and the protection holds on the
+      writing CPU only; the boot line says which. n: nothing built unless a
+      hardware key asks for the pool.
 
 config PT_PROTECTION
     # cargo-feature: pt-protection
