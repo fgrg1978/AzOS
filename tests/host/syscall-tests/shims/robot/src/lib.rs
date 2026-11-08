@@ -74,6 +74,24 @@ pub fn shim_set_encoder_acq(ticks: u64) {
 pub fn shim_encoder_reads() -> u64 {
     ENCODER_READS.load(core::sync::atomic::Ordering::SeqCst)
 }
+/// The drivetrain commands published to the effect loop, in order; a stop
+/// request (`motor_cmd_zero`) is `None`. The real channel is the kernel's
+/// (`crates/domains/robot/robot/src/lib.rs`); a test reads what reached it.
+static MOTOR_CMDS: std::sync::Mutex<Vec<Option<(i32, i32)>>> = std::sync::Mutex::new(Vec::new());
+
+pub fn motor_cmd_publish(speed_l: i32, speed_r: i32) {
+    MOTOR_CMDS.lock().unwrap_or_else(|e| e.into_inner()).push(Some((speed_l, speed_r)));
+}
+
+pub fn motor_cmd_zero() {
+    MOTOR_CMDS.lock().unwrap_or_else(|e| e.into_inner()).push(None);
+}
+
+/// Test-only: take what reached the drivetrain's command channel.
+pub fn shim_take_motor_cmds() -> Vec<Option<(i32, i32)>> {
+    core::mem::take(&mut *MOTOR_CMDS.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
 pub fn odom_get() -> (i64, i64) {
     todo!("robot stand-in: not reached by any test in this crate")
 }

@@ -12,7 +12,10 @@
 //   on BOTH wheels' endpoints and is contained; `pid_enabled` observes and
 //   needs `READ` on any wheel;
 // * the wheel is the badge, there is no id argument that could disagree;
-// * `estop` needs `WRITE` on the wheel used and is never contained.
+// * `estop` needs `WRITE` on the wheel used and is never contained;
+// * `command` publishes the drivetrain's command to its effect loop: both
+//   wheels' `WRITE`, both wheels' effects through the gate, never contained
+//   for a stop and refused for motion while halted.
 //
 // Included inside `mod handlers { .. }`. The real motor layer
 // (`crates/domains/robot/robot/src/motor.rs`, `shims/robot`) runs under a halt query
@@ -1001,4 +1004,121 @@ fn a_halted_machine_commits_no_record_for_a_motion_op() {
         assert_eq!(w.speed(60), Out::ok(()), "{cause:?}: motion after the halt lifts");
         assert_eq!(gate_seen().len(), 2, "{cause:?}: the gate sees motion again");
     }
+}
+
+// ── The drivetrain's command (the effect loop's input) ─────────────────────
+
+/// **A pair holder commands the effect loop through the gate.** Each wheel's
+/// effect is asked of the gate (left, then right, sign as direction), and only
+/// then does the command reach the loop's channel, once and as asked; no wheel
+/// is written directly.
+///
+/// **Canaries.** Publish before the right wheel's gate: the refusing-gate test
+/// below sees a command. Map a negative speed to forward: the gate's entry
+/// for the right wheel differs.
+#[test]
+fn the_drivetrain_command_reaches_the_loop_through_the_gate() {
+    let _g = serial();
+    let s = scene();
+    install_recording_gate(false);
+    let _ = azos_robot::shim_take_motor_cmds();
+    let _right = holding(&s, 1, CapPerms::RW);
+    let mut left = holding(&s, 0, CapPerms::RW);
+    let t = s.tid;
+    assert_eq!(left.command(60, -40), Out::ok(()));
+    assert_eq!(gate_seen(), vec![(0, t, DIR_FORWARD, 60, false), (1, t, DIR_BACKWARD, 40, false)]);
+    assert_eq!(azos_robot::shim_take_motor_cmds(), vec![Some((60, -40))]);
+    assert!(pwm_calls().is_empty(), "the command wrote a wheel instead of the loop's channel");
+    assert_eq!(denials(), vec![]);
+}
+
+/// **A refused effect publishes nothing.** The gate refuses motion (a full
+/// ring): `REFUSED`, and the loop's channel is untouched; a stop still goes
+/// through (the gate never refuses one).
+#[test]
+fn a_refused_drivetrain_effect_publishes_nothing() {
+    let _g = serial();
+    let s = scene();
+    install_recording_gate(true);
+    let _ = azos_robot::shim_take_motor_cmds();
+    let _right = holding(&s, 1, CapPerms::RW);
+    let mut left = holding(&s, 0, CapPerms::RW);
+    assert_eq!(left.command(0, 30).code, outcome::REFUSED);
+    assert_eq!(azos_robot::shim_take_motor_cmds(), vec![]);
+    assert_eq!(left.command(0, 0), Out::ok(()));
+    assert_eq!(azos_robot::shim_take_motor_cmds(), vec![Some((0, 0))]);
+}
+
+/// **One wheel is not the drivetrain**, and a percentage past 100 is refused,
+/// not clamped: `DENIED` (recorded) or `BAD_ARGUMENT`, nothing published.
+///
+/// **Canary.** Skip the other wheel's check in `command`: the lone holder
+/// publishes.
+#[test]
+fn one_wheel_cannot_command_the_drivetrain() {
+    let _g = serial();
+    let s = scene();
+    let _ = azos_robot::shim_take_motor_cmds();
+    for other in [None, Some(CapPerms::READ)] {
+        DENIALS.lock().unwrap().clear();
+        azos_ipc::cap_store::reset(s.tid);
+        let mut left = holding(&s, 0, CapPerms::RW);
+        if let Some(p) = other {
+            let _ = holding(&s, 1, p);
+        }
+        assert_eq!(left.command(20, 20).code, outcome::DENIED, "other: {other:?}");
+        assert_eq!(denials(), vec![(ENDPOINT_CODE, MISSING_PERMS)]);
+    }
+    let _right = holding(&s, 1, CapPerms::RW);
+    let mut left = holding(&s, 0, CapPerms::RW);
+    assert_eq!(left.command(101, 0).code, outcome::BAD_ARGUMENT);
+    assert_eq!(left.command(0, -101).code, outcome::BAD_ARGUMENT);
+    assert_eq!(azos_robot::shim_take_motor_cmds(), vec![]);
+}
+
+/// **While halted a stop reaches the loop and motion does not**, under an
+/// e-stop and under containment: `(0, 0)` is published, anything else is
+/// `REFUSED` with nothing published.
+///
+/// **Canary.** Drop the halt check in `command`: the motion is published.
+#[test]
+fn a_halted_drivetrain_takes_the_stop_and_refuses_motion() {
+    let _g = serial();
+    let s = scene();
+    let _right = holding(&s, 1, CapPerms::RW);
+    let mut left = holding(&s, 0, CapPerms::RW);
+    for h in [Halt::Estop, Halt::Contained] {
+        let _ = azos_robot::shim_take_motor_cmds();
+        arm(h);
+        assert_eq!(left.command(50, 50).code, outcome::REFUSED, "{h:?}");
+        assert_eq!(left.command(0, 0), Out::ok(()), "{h:?}: the stop was refused");
+        assert_eq!(azos_robot::shim_take_motor_cmds(), vec![Some((0, 0))], "{h:?}");
+        disarm();
+    }
+}
+
+/// **A dead commander's drivetrain command no longer stands.** The command
+/// names its caller on both wheels; its exit takes them and puts a stop on
+/// the loop's channel, so the loop does not drive the last command until its
+/// watchdog.
+///
+/// **Canary.** Drop `motor_cmd_zero` from `exit_stop`: no stop reaches the
+/// channel.
+#[test]
+fn a_dead_commanders_drivetrain_command_is_stopped() {
+    let _g = serial();
+    let s = scene();
+    let _ = azos_robot::shim_take_motor_cmds();
+    let _right = holding(&s, 1, CapPerms::RW);
+    let mut left = holding(&s, 0, CapPerms::RW);
+    assert_eq!(left.command(40, 40), Out::ok(()));
+    // Kconfig `MOTOR_COMMANDER_EXIT_STOP` off: the kernel keeps no commanders.
+    let on = azos_limits::MOTOR_COMMANDER_EXIT_STOP;
+    let named = if on { s.tid } else { 0 };
+    assert_eq!(crate::motor_commander::commander(0), named);
+    assert_eq!(crate::motor_commander::commander(1), named);
+    let (taken, _) = crate::motor_commander::exit_stop(s.tid);
+    assert_eq!(taken, if on { 0b11 } else { 0 });
+    let want = if on { vec![Some((40, 40)), None] } else { vec![Some((40, 40))] };
+    assert_eq!(azos_robot::shim_take_motor_cmds(), want);
 }

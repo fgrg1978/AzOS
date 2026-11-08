@@ -70,6 +70,17 @@ impl Caller {
         .unwrap_or(false)
     }
 
+    /// [`also_holds`](Self::also_holds) without the containment step, as
+    /// [`holds`](Self::holds) is to [`allows`](Self::allows): the other wheel
+    /// of a drivetrain command, whose halt rule refuses motion one level down
+    /// and must let a stop through.
+    pub fn also_carries(&self, key: u16, badge: u32, need: CapPerms) -> bool {
+        azos_ipc::cap_store::read_table(self.tid, |t| {
+            azos_ipc::endpoint::table_holds_host_badge_right_uncontained(t, key, badge, need)
+        })
+        .unwrap_or(false)
+    }
+
     /// Does the caller's own table hold `need` on ANY endpoint of interface
     /// `key`, whatever its badge, ignoring containment? The e-stop's gate.
     pub fn holds_any(&self, key: u16, need: CapPerms) -> bool {

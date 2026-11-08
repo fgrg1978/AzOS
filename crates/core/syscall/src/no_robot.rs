@@ -32,6 +32,10 @@ pub mod robot {
     /// No motors without the Robot domain: the commander table is empty.
     pub const MAX_MOTORS: usize = 0;
 
+    /// No drivetrain loop: a command has nobody to apply it.
+    pub fn motor_cmd_publish(_speed_l: i32, _speed_r: i32) {}
+    pub fn motor_cmd_zero() {}
+
     /// No motors, nothing to halt.
     pub fn motor_halted() -> bool { false }
 

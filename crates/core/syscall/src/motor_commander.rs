@@ -128,6 +128,9 @@ pub fn exit_stop(tid: u32) -> (u32, u32) {
     let mut stopped = 0u32;
     // Gate canary: the wheels are taken and never stopped.
     if !cfg!(feature = "commander-exit-nostop-canary") {
+        // A dead commander's drivetrain command no longer stands: the effect
+        // loop would otherwise drive its last one until the watchdog fires.
+        azos_robot::motor_cmd_zero();
         for i in 0..32 {
             if taken & (1 << i) != 0
                 && matches!(azos_robot::motor_stop_reporting(i), (0, Some(0)))

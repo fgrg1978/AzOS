@@ -309,6 +309,35 @@ pub fn wheel_speed(id: u32, tid: u32, pct: u32) -> Result<(i32, Option<u32>), Un
     Ok((rc, applied))
 }
 
+/// The drivetrain's `command` op for task `tid`: both wheels' effects through
+/// the gate (each wheel's write-ahead record, a held wheel's refusal, the
+/// deadline watch, `tid`'s provenance), the left's admitting the right's, and
+/// only with both admitted the command published to the drivetrain's effect
+/// loop; then each wheel noted against `tid`, so its exit stops them. A wheel
+/// the right's gate refused after the left's record is undone by the left's
+/// gate as a failed command. The halt rule is the caller's.
+pub fn drivetrain_command(left: i32, right: i32, tid: u32) -> Result<(), Unissued> {
+    let effect = |wheel: u32, v: i32| {
+        let (dir, pct) = if v < 0 { (DIR_BACKWARD, v.unsigned_abs()) } else { (DIR_FORWARD, v as u32) };
+        let safe = toward_safe(dir, pct);
+        MotorEffect { wheel, tid, dir, pct, toward_safe: safe,
+                      timing: timing_of(safe, wheel, azos_devif::motor::MotorIdl::OP_COMMAND) }
+    };
+    let (l, r) = (effect(0, left), effect(1, right));
+    through_gate(&l, || {
+        let published = through_gate(&r, || {
+            azos_robot::motor_cmd_publish(left, right);
+            ((), true)
+        })
+        .is_ok();
+        (published, published)
+    })
+    .and_then(|published| if published { Ok(()) } else { Err(Unissued::Refused) })?;
+    crate::motor_commander::note(0, tid, Some(l.pct));
+    crate::motor_commander::note(1, tid, Some(r.pct));
+    Ok(())
+}
+
 /// May an io_ring pass serve a `Motor` call? A wheel is a PWM duty and the
 /// board's direction pins, register writes on every backend
 /// (`pwm::write_may_sleep`; the board's GPIO controller does not sleep).
@@ -361,7 +390,7 @@ impl MotorServer {
 
     /// The gate of a per-wheel command: `WRITE` held (containment is NOT asked
     /// here, the halt rule is the motor layer's), and the badge names a wheel.
-    fn command<T: Default>(&self) -> Result<u32, Out<T>> {
+    fn wheel_writer<T: Default>(&self) -> Result<u32, Out<T>> {
         if !self.0.holds(CapPerms::WRITE) {
             self.0.deny(CapPerms::WRITE);
             return Err(Out::err(outcome::DENIED));
@@ -386,8 +415,31 @@ impl MotorServer {
 }
 
 impl azos_devif::Motor for MotorServer {
+    fn command(&mut self, left: i32, right: i32) -> Out<()> {
+        // `WRITE` on both wheels, and no containment step: a stop must reach
+        // the loop whatever the system's state; the halt rule refuses motion.
+        if let Err(o) = self.wheel_writer::<()>() {
+            return o;
+        }
+        let other = 1 - self.0.badge;
+        if !self.0.also_carries(key::MOTOR, other, CapPerms::WRITE) {
+            self.0.deny_missing();
+            return Out::err(outcome::DENIED);
+        }
+        if left.unsigned_abs() > 100 || right.unsigned_abs() > 100 {
+            return Out::err(outcome::BAD_ARGUMENT);
+        }
+        if (left, right) != (0, 0) && motor_halted() {
+            return Out::err(outcome::REFUSED);
+        }
+        match drivetrain_command(left, right, self.0.tid) {
+            Ok(()) => Out::ok(()),
+            Err(u) => Out::err(u.outcome()),
+        }
+    }
+
     fn speed(&mut self, pct: u32) -> Out<()> {
-        let id = match self.command::<()>() {
+        let id = match self.wheel_writer::<()>() {
             Ok(id) => id,
             Err(o) => return o,
         };
@@ -423,7 +475,7 @@ impl azos_devif::Motor for MotorServer {
     }
 
     fn drive(&mut self, dir: u32, pct: u32) -> Out<()> {
-        let id = match self.command::<()>() {
+        let id = match self.wheel_writer::<()>() {
             Ok(id) => id,
             Err(o) => return o,
         };
@@ -454,7 +506,7 @@ impl azos_devif::Motor for MotorServer {
     }
 
     fn direction(&mut self, dir: u32) -> Out<()> {
-        let id = match self.command::<()>() {
+        let id = match self.wheel_writer::<()>() {
             Ok(id) => id,
             Err(o) => return o,
         };

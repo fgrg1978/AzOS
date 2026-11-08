@@ -17,6 +17,14 @@
 //!   so the caller needs `WRITE` on BOTH wheels' endpoints, and a contained
 //!   system refuses them. `pid_enabled` observes and needs `READ` on any wheel.
 //!
+//! * **The drivetrain's command** (`command`): a percent per wheel, published
+//!   to the drivetrain's effect loop in the kernel, which applies it on every
+//!   control tick through its PID and the envelope, and stops the wheels
+//!   when no command has come within its watchdog. It needs `WRITE` on both
+//!   wheels; a stop (0, 0) is always carried out, a motion is `REFUSED` while
+//!   halted. The deliberative layer (ring 3) commands the robot this way; the
+//!   per-wheel ops write a wheel once and leave the loop out.
+//!
 //! `estop` latches the emergency stop: it needs `WRITE` on any wheel and is
 //! never refused for containment (it is issued exactly when something has
 //! gone wrong).
@@ -124,4 +132,12 @@ pub trait Motor {
     #[deadline_ns = 5_000_000]
     #[budget_us = 1_000]
     fn estop(&mut self) -> Out<()>;
+    /// Publish the drivetrain's command to its effect loop: percent of full
+    /// speed per wheel, negative backward (-100 to 100, else `BAD_ARGUMENT`).
+    /// Needs `WRITE` on both wheels. (0, 0) is always carried out; any other
+    /// command is `REFUSED` while halted.
+    #[on_failure(safe_state)]
+    #[deadline_ns = 2_000_000]
+    #[budget_us = 200]
+    fn command(&mut self, left: i32, right: i32) -> Out<()>;
 }
