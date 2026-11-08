@@ -137,10 +137,11 @@ pub(crate) fn rc_failsafe_smoke_task(_arg: usize) {
 
 /// A stick command reaches the motors only through the motor envelope.
 ///
-/// Mode switch on, drive stick fully forward: the behavior loop must publish
-/// MotorCmd (full scale, full scale) — the sticks' ask, through L0 — and
-/// `rt_motor` prints the clamp it applies (`[ENVELOPE] refused: asked
-/// (100,100) applied (80,80)` on a wheeled robot), which the row reads.
+/// Mode switch on, drive stick fully forward: the robot enforcer must hold
+/// the operator's override (full scale, full scale), which the drivetrain
+/// loop applies in place of the command channel, and `rt_motor` prints the
+/// clamp it applies (`[ENVELOPE] refused: asked (100,100) applied (80,80)` on
+/// a wheeled robot), which the row reads.
 #[cfg(feature = "rc-stick-smoke")]
 pub(crate) fn rc_stick_smoke_task(_arg: usize) {
     if !wait_enforcer() { return; }
@@ -151,25 +152,24 @@ pub(crate) fn rc_stick_smoke_task(_arg: usize) {
         (azos_limits::RC_DRIVE_CHANNEL, 2000),
         (azos_limits::RC_STEER_CHANNEL, 1500),
     ], false);
-    // Feed for up to 3 s and watch MotorCmd between frames.
+    // Feed for up to 3 s and watch the override between frames.
     let end = now() + 3 * TIMER_FREQ;
     let mut seen = false;
     let mut last = (0, 0);
     while now() < end && !seen {
         let _ = feed_for(&f, 100);
-        let c = azos_robot::motor_cmd_read();
-        last = (c.speed_l, c.speed_r);
+        last = azos_safety_core::enforce::rc_override(now()).unwrap_or((0, 0));
         seen = last == (full, full);
     }
     // Keep the sticks on a little longer so rt_motor's clamp line lands
-    // while the command still stands.
+    // while the override still stands.
     let _ = feed_for(&f, 500);
     let (env_l, env_r) = azos_behavior::safety::motor_envelope(full, full);
     if seen && !azos_behavior::safety::estop_is_active() {
-        kprintln!("[RCSMOKE] PASS stick: MotorCmd asked ({},{}) from the sticks; envelope bound ({},{})",
+        kprintln!("[RCSMOKE] PASS stick: the override asked ({},{}) from the sticks; envelope bound ({},{})",
                   full, full, env_l, env_r);
     } else {
-        kprintln!("[RCSMOKE] FAIL stick: MotorCmd never carried the sticks (last ({},{}), estop={})",
+        kprintln!("[RCSMOKE] FAIL stick: the override never carried the sticks (last ({},{}), estop={})",
                   last.0, last.1, azos_behavior::safety::estop_is_active());
     }
 }

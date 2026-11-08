@@ -44,6 +44,27 @@ pub fn cap_of(action: SafetyAction) -> i32 {
     }
 }
 
+/// The operator's sticks while the RC receiver is in manual override, packed
+/// `(left << 16) | right` as two `i16`, and the tick they were read at (0:
+/// no override).
+static RC_OVERRIDE: AtomicU32 = AtomicU32::new(0);
+static RC_OVERRIDE_AT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// The operator's override, while the RC receiver says so and the reading is
+/// fresh (two enforcer periods): the drive the sticks ask, which the
+/// drivetrain loop applies in place of the behaviour engine's command and
+/// without its command watchdog, so the operator keeps control when the
+/// engine dies. A human override is enforcement, like the e-stop.
+pub fn rc_override(now: u64) -> Option<(i32, i32)> {
+    let at = RC_OVERRIDE_AT.load(Ordering::Acquire);
+    let fresh = 2 * PERIOD_MS as u64 * azos_drv_sys::timebase::freq() / 1000;
+    if at == 0 || now.saturating_sub(at) > fresh {
+        return None;
+    }
+    let v = RC_OVERRIDE.load(Ordering::Acquire);
+    Some(((v >> 16) as u16 as i16 as i32, v as u16 as i16 as i32))
+}
+
 /// Completed checks, for the smokes that wait for some to pass.
 static PASSES: AtomicU32 = AtomicU32::new(0);
 
@@ -59,7 +80,19 @@ fn tick(now: u64) {
     state.timestamp = now;
     L0_CAP.store(cap_of(azos_behavior::safety::safety_check(&state).action), Ordering::Release);
     #[cfg(feature = "rc-input")]
-    rc_enforce(now);
+    {
+        rc_enforce(now);
+        static MANUAL: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+        let mut manual = MANUAL.load(Ordering::Relaxed);
+        match rc_sticks(now, &mut manual) {
+            Some((l, r)) => {
+                RC_OVERRIDE.store(((l as i16 as u16 as u32) << 16) | r as i16 as u16 as u32, Ordering::Release);
+                RC_OVERRIDE_AT.store(now.max(1), Ordering::Release);
+            }
+            None => RC_OVERRIDE_AT.store(0, Ordering::Release),
+        }
+        MANUAL.store(manual, Ordering::Relaxed);
+    }
     #[cfg(feature = "geofence")]
     fence_tick(&state);
     let _ = PASSES.fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| Some(n.saturating_add(1)));
@@ -115,7 +148,7 @@ fn rc_enforce(now: u64) {
 /// drive they ask, `None` otherwise. `manual` carries the override's state
 /// between calls, for its console lines.
 #[cfg(feature = "rc-input")]
-pub fn rc_sticks(now: u64, manual: &mut bool) -> Option<(i32, i32)> {
+fn rc_sticks(now: u64, manual: &mut bool) -> Option<(i32, i32)> {
     use azos_behavior::rc_link::RcVerdict;
     let sticks = match rc_verdict(now) {
         RcVerdict::Manual { left, right } => Some((left, right)),

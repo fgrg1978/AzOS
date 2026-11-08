@@ -152,7 +152,10 @@ pub fn rt_motor_task(_: usize) {
     const MOTOR_ID_RIGHT: u32 = 1;
 
     loop {
-        let fired = azos_robot::motor_watchdog_fired();
+        // The operator's RC override drives in place of the command channel,
+        // and outside its watchdog (`enforce::rc_override`).
+        let rc = crate::enforce::rc_override(azos_drv_sys::timebase::now());
+        let fired = rc.is_none() && azos_robot::motor_watchdog_fired();
 
         if fired && !safe_mode {
             azos_robot::motor_stop(MOTOR_ID_LEFT);
@@ -171,8 +174,11 @@ pub fn rt_motor_task(_: usize) {
                 }
                 safe_mode = false;
             }
-            let mut cmd = azos_robot::motor_cmd_read();
-            if azos_robot::motor_cmd_is_valid() {
+            let mut cmd = match rc {
+                Some((l, r)) => azos_robot::MotorCmd { speed_l: l, speed_r: r },
+                None => azos_robot::motor_cmd_read(),
+            };
+            if rc.is_some() || azos_robot::motor_cmd_is_valid() {
                 // The safety layer's verdict (the enforcer's L0) bounds every
                 // command, whoever chose it.
                 let cap = crate::enforce::l0_cap();

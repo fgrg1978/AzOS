@@ -111,9 +111,6 @@ pub(crate) fn behavior_task(_: usize) {
         behavior_ml::launch();
     }
 
-    // Wave 15: the RC receiver's manual override, for its console lines.
-    #[cfg(feature = "rc-input")]
-    let mut rc_manual = false;
 
     loop {
         let step_t0 = azos_drv_sys::timebase::now();
@@ -581,16 +578,6 @@ pub(crate) fn behavior_task(_: usize) {
         let last_act = azos_behavior::last_action();
         if last_act.valid {
             state.remote_action = last_act;
-        }
-
-        // ── 2b. The RC receiver's manual override ─────────────────────────
-        //
-        // Before arbitration: the sticks go in `state.rc_manual`, which the
-        // arbiter ranks below L0 and L1's stop. Link loss and the kill switch
-        // are the enforcer's (`azos_safety_core::enforce`).
-        #[cfg(feature = "rc-input")]
-        if let Some((l, r)) = azos_safety_core::enforce::rc_sticks(now, &mut rc_manual) {
-            state.rc_manual = MotorOutput::some(l, r);
         }
 
         // ── 3. ML inference (if enabled) ─────────────────────────────────
