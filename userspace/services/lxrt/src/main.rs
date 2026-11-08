@@ -224,7 +224,7 @@ impl Native for Sys {
     // kernel counts the end the image's fd position names: a read end only on
     // fd 0, a write end on 1..), the files are moved.
     fn spawn_image(&self, img: &azos_linux_rt::SpawnImage) -> i64 {
-        use azos_abi::ushell::{Move, SpawnReq, MOVE_CONSOLE, SPAWN_F_DIE_WITH_PARENT, SPAWN_REQ_VERSION};
+        use azos_abi::ushell::{Move, SpawnReq, MOVE_CONSOLE, MOVE_KIND_FD, SPAWN_F_DIE_WITH_PARENT, SPAWN_REQ_VERSION};
         let mut req = SpawnReq {
             version: SPAWN_REQ_VERSION,
             // A signal that ends this process (it is the pid the caller's parent
@@ -256,7 +256,7 @@ impl Native for Sys {
                 }
             };
             let n = req.nmoves as usize;
-            req.moves[n] = Move { child_fd: fd as u32, handle, perms: 0, _pad: 0 };
+            req.moves[n] = Move { child_fd: fd as u32, handle, perms: 0, kind: MOVE_KIND_FD };
             req.nmoves += 1;
         }
         sys::spawn_ex(img.path, Some(&req)) as i64

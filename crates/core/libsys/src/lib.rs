@@ -3417,7 +3417,8 @@ pub fn ioring_destroy_typed(cap: u32) -> isize {
 // ===========================================================================
 
 pub use azos_abi::ushell::{
-    SpawnReq, Move, StartupBlock, StartupFd, MOVE_CONSOLE, SPAWN_F_DIE_WITH_PARENT, SPAWN_F_CONSOLE_IN,
+    SpawnReq, Move, StartupBlock, StartupFd, MOVE_CONSOLE, MOVE_F_OFFER, MOVE_KIND_ENDPOINT, MOVE_KIND_FD,
+    SPAWN_F_DIE_WITH_PARENT, SPAWN_F_CONSOLE_IN,
     KILL_REQUEST, KILL_FORCE, KILL_SUBTREE, CONSOLE_WAIT_FOREVER, SPAWN_REQ_VERSION,
 };
 

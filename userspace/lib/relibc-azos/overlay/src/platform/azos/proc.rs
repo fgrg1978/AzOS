@@ -13,7 +13,7 @@ use core::sync::atomic::AtomicU32;
 
 use azos_abi::{
     ushell::{
-        Move, SpawnReq, MOVE_CONSOLE, SPAWN_ARGC_MAX, SPAWN_ARGV_MAX, SPAWN_CWD_MAX, SPAWN_ENVC_MAX,
+        Move, SpawnReq, MOVE_CONSOLE, MOVE_KIND_FD, SPAWN_ARGC_MAX, SPAWN_ARGV_MAX, SPAWN_CWD_MAX, SPAWN_ENVC_MAX,
         SPAWN_ENV_MAX, SPAWN_MAX_MOVES, SPAWN_REQ_VERSION, STARTUP_FDS,
     },
 };
@@ -251,7 +251,7 @@ pub(crate) unsafe fn spawn(
         if req.nmoves as usize == SPAWN_MAX_MOVES {
             return Err(Errno(EMFILE));
         }
-        req.moves[req.nmoves as usize] = Move { child_fd: fd as u32, handle, perms: 0, _pad: 0 };
+        req.moves[req.nmoves as usize] = Move { child_fd: fd as u32, handle, perms: 0, kind: MOVE_KIND_FD };
         req.nmoves += 1;
         if handle != MOVE_CONSOLE && f.kind == Kind::File && !moved.iter().any(|m| Arc::ptr_eq(m, f)) {
             moved.push(f.clone());

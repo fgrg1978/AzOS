@@ -11,8 +11,9 @@
 
 // ── SYS_SPAWN_EX ──────────────────────────────────────────────────────
 
-/// The one `SpawnReq` version this kernel accepts.
-pub const SPAWN_REQ_VERSION: u32 = 1;
+/// The one `SpawnReq` version this kernel accepts. Version 2: a move-list
+/// entry says what it hands over ([`Move::kind`]).
+pub const SPAWN_REQ_VERSION: u32 = 2;
 
 /// `SpawnReq::flags`: when the caller exits, the kernel force-stops this child
 /// (signal 1) by the same path `SYS_ALERT` takes.
@@ -59,6 +60,21 @@ pub const SPAWN_ENVC_MAX: usize = 16;
 /// Most bytes of the working directory, its NUL excluded.
 pub const SPAWN_CWD_MAX: usize = 64;
 
+/// `Move::kind`: a descriptor (a `Cap<File>`, a pipe's `Cap<Shm>` or
+/// [`MOVE_CONSOLE`]).
+pub const MOVE_KIND_FD: u32 = 0;
+/// `Move::kind`: a call capability on an endpoint (`Cap<Endpoint>`, `WRITE`,
+/// badged, held with `TRANSFER` and without `READ`). It is moved, with the
+/// call right alone, and the child's topology row must name the endpoint in
+/// its `receives` list: otherwise the spawn is refused (`-EACCES`).
+pub const MOVE_KIND_ENDPOINT: u32 = 1;
+/// `Move::kind` flag, with [`MOVE_KIND_ENDPOINT`] only: offered, not
+/// required. A child whose row does not receive the endpoint is started
+/// without it (the fd is closed, the caller keeps the handle).
+pub const MOVE_F_OFFER: u32 = 1 << 8;
+/// The low byte of `Move::kind`: the kind of the entry.
+pub const MOVE_KIND_MASK: u32 = 0xFF;
+
 /// One move-list entry: give the caller's `handle` to the child as `child_fd`
 /// with rights `perms` (a subset of what the caller holds; 0 keeps them).
 #[repr(C)]
@@ -69,15 +85,36 @@ pub struct Move {
     /// A `Cap<File>` descriptor the caller holds, a
     /// `Cap<Shm>` (a POSIX pipe's region: **shared** with the child, which
     /// gets a derived copy and a reference of its own, while the caller keeps
-    /// its handle and its mapping), or [`MOVE_CONSOLE`].
+    /// its handle and its mapping), or [`MOVE_CONSOLE`]; with
+    /// [`MOVE_KIND_ENDPOINT`], a call capability on an endpoint.
     pub handle: u32,
-    /// `CapPerms` bits the child gets; 0 = the caller's.
+    /// `CapPerms` bits the child gets; 0 = the caller's. An endpoint entry
+    /// takes 0 or `WRITE`: the child gets the call right and nothing else.
     pub perms: u32,
-    /// Zero.
-    pub _pad: u32,
+    /// [`MOVE_KIND_FD`] or [`MOVE_KIND_ENDPOINT`], with [`MOVE_F_OFFER`] on
+    /// an endpoint entry.
+    pub kind: u32,
 }
 
-/// The `SYS_SPAWN_EX` request block (version 1).
+impl Move {
+    /// Does this entry hand over an endpoint call capability?
+    pub const fn is_endpoint(&self) -> bool {
+        self.kind & MOVE_KIND_MASK == MOVE_KIND_ENDPOINT
+    }
+
+    /// Is this endpoint entry offered rather than required?
+    pub const fn offered(&self) -> bool {
+        self.kind & MOVE_F_OFFER != 0
+    }
+
+    /// Is `kind` one this kernel reads: a descriptor with no flag, or an
+    /// endpoint, offered or not.
+    const fn kind_known(&self) -> bool {
+        self.kind == MOVE_KIND_FD || self.kind == MOVE_KIND_ENDPOINT || self.kind == MOVE_KIND_ENDPOINT | MOVE_F_OFFER
+    }
+}
+
+/// The `SYS_SPAWN_EX` request block (version 2).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SpawnReq {
@@ -121,7 +158,9 @@ const _: () = assert!(core::mem::offset_of!(SpawnReq, moves) == 56);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SpawnReqError {
     /// Version, flags, a count over its limit, a fd out of range, a fd named
-    /// twice, or padding not zero: `-EINVAL`.
+    /// twice, an entry kind this version does not have (or an endpoint entry
+    /// naming the console or asking for more than the call right), or padding
+    /// not zero: `-EINVAL`.
     Invalid,
 }
 
@@ -149,7 +188,12 @@ impl SpawnReq {
         }
         let mut seen = 0u32;
         for m in &self.moves[..n] {
-            if m.child_fd as usize >= STARTUP_FDS || m._pad != 0 || m.perms > crate::cap::CapPerms::ALL.bits() as u32 {
+            if m.child_fd as usize >= STARTUP_FDS || !m.kind_known() || m.perms > crate::cap::CapPerms::ALL.bits() as u32 {
+                return e;
+            }
+            if m.is_endpoint()
+                && (m.handle == MOVE_CONSOLE || (m.perms != 0 && m.perms != crate::cap::CapPerms::WRITE.bits() as u32))
+            {
                 return e;
             }
             let bit = 1u32 << m.child_fd;

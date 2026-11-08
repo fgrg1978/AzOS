@@ -9,7 +9,7 @@
 //! result against `SpawnReq::check_shape`, the kernel's own check.
 
 use azos_abi::ushell::{
-    Move, SpawnReq, MOVE_CONSOLE, SPAWN_ARGC_MAX, SPAWN_ARGV_MAX, SPAWN_CWD_MAX, SPAWN_ENVC_MAX,
+    Move, SpawnReq, MOVE_CONSOLE, MOVE_KIND_FD, SPAWN_ARGC_MAX, SPAWN_ARGV_MAX, SPAWN_CWD_MAX, SPAWN_ENVC_MAX,
     SPAWN_ENV_MAX, SPAWN_MAX_MOVES, SPAWN_REQ_VERSION,
 };
 
@@ -110,7 +110,7 @@ impl ReqBuilder {
                 Fd::Console => MOVE_CONSOLE,
                 Fd::Handle(h) => h,
             };
-            moves[n] = Move { child_fd: fd as u32, handle, perms: 0, _pad: 0 };
+            moves[n] = Move { child_fd: fd as u32, handle, perms: 0, kind: MOVE_KIND_FD };
             n += 1;
         }
         SpawnReq {

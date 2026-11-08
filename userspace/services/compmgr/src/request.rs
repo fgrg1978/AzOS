@@ -15,7 +15,7 @@
 //! it): the kernel restarts the manager, which starts the rows again;
 //! children orphaned and left running would collide with those starts.
 
-use azos_abi::ushell::{Move, SpawnReq, MOVE_CONSOLE, SPAWN_F_DIE_WITH_PARENT, SPAWN_REQ_VERSION};
+use azos_abi::ushell::{Move, SpawnReq, MOVE_CONSOLE, MOVE_KIND_FD, SPAWN_F_DIE_WITH_PARENT, SPAWN_REQ_VERSION};
 
 /// The request that starts one child.
 pub fn child_request() -> SpawnReq {
@@ -28,7 +28,7 @@ pub fn child_request() -> SpawnReq {
     // stdout and stderr; stdin stays closed (console input is the terminal
     // server's alone).
     for (slot, fd) in [1u32, 2].into_iter().enumerate() {
-        req.moves[slot] = Move { child_fd: fd, handle: MOVE_CONSOLE, perms: 0, _pad: 0 };
+        req.moves[slot] = Move { child_fd: fd, handle: MOVE_CONSOLE, perms: 0, kind: MOVE_KIND_FD };
     }
     req
 }

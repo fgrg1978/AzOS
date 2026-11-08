@@ -832,6 +832,7 @@ mod sensor_sample_tests {
 /// request's shape check against its limits.
 #[cfg(test)]
 mod ushell_blocks {
+    use azos_abi::cap::CapPerms;
     use azos_abi::ushell::*;
 
     fn fds() -> [StartupFd; STARTUP_FDS] {
@@ -907,7 +908,8 @@ mod ushell_blocks {
             f(&mut r);
             r.check_shape().is_err()
         };
-        assert!(bad(&|r| r.version = 2));
+        assert!(bad(&|r| r.version = 1), "version 1 had no entry kind");
+        assert!(bad(&|r| r.version = 3));
         assert!(bad(&|r| r.flags = SPAWN_F_MAP_TASK_PAGE), "the vDSO flag is reserved, refused");
         assert!(!bad(&|r| r.flags = SPAWN_F_CONSOLE_IN), "wave 13: the console lend is a known flag");
         assert!(!bad(&|r| r.flags = SPAWN_F_USER), "console login: the user session is a known flag");
@@ -922,6 +924,36 @@ mod ushell_blocks {
         assert!(!bad(&|r| { r.nmoves = 1; r.moves[0].perms = 0x3f; }), "the six rights are");
         assert!(!bad(&|r| r.flags = SPAWN_F_DIE_WITH_PARENT));
         assert!(!bad(&|r| { r.nmoves = 2; r.moves[1].child_fd = 1; r.moves[1].handle = MOVE_CONSOLE; }));
+    }
+
+    /// Version 2's entry kind: a descriptor (0), an endpoint call capability,
+    /// required or offered; nothing else, no flag on a descriptor, and an
+    /// endpoint entry that names the console or asks for more than the call
+    /// right is malformed.
+    ///
+    /// **Canary.** Let `check_shape` accept any `kind` (drop `kind_known`):
+    /// the unknown kind and the flagged descriptor pass.
+    #[test]
+    fn the_entry_kind_of_version_2() {
+        let one = |kind: u32, handle: u32, perms: u32| {
+            let mut r = req();
+            r.nmoves = 1;
+            r.moves[0] = Move { child_fd: 0, handle, perms, kind };
+            r.check_shape().is_ok()
+        };
+        assert!(one(MOVE_KIND_FD, 5, 0));
+        assert!(one(MOVE_KIND_ENDPOINT, 5, 0));
+        assert!(one(MOVE_KIND_ENDPOINT | MOVE_F_OFFER, 5, 0));
+        assert!(one(MOVE_KIND_ENDPOINT, 5, CapPerms::WRITE.bits() as u32), "the call right alone");
+        assert!(!one(MOVE_KIND_ENDPOINT, 5, CapPerms::RW.bits() as u32), "an endpoint entry gives no READ");
+        assert!(!one(MOVE_KIND_ENDPOINT, MOVE_CONSOLE, 0), "the console is no endpoint");
+        assert!(!one(MOVE_KIND_FD | MOVE_F_OFFER, 5, 0), "a descriptor is never offered");
+        assert!(!one(2, 5, 0), "no third kind");
+        assert!(!one(MOVE_KIND_ENDPOINT | 1 << 9, 5, 0), "no other flag");
+        let m = Move { child_fd: 0, handle: 5, perms: 0, kind: MOVE_KIND_ENDPOINT | MOVE_F_OFFER };
+        assert!(m.is_endpoint() && m.offered());
+        assert!(!Move::default().is_endpoint());
+        assert_eq!(core::mem::offset_of!(Move, kind), 12);
     }
 
     #[test]
@@ -959,6 +991,7 @@ mod ushell_blocks {
     #[test]
     fn flag_and_limit_values() {
         assert_eq!(MOVE_CONSOLE, u32::MAX);
+        assert_eq!((MOVE_KIND_FD, MOVE_KIND_ENDPOINT, MOVE_F_OFFER, SPAWN_REQ_VERSION), (0, 1, 0x100, 2));
         assert_eq!((KILL_REQUEST, KILL_FORCE, KILL_SUBTREE), (1, 2, 1));
         assert_eq!(KILL_MAX_ANCESTRY, 8);
         assert_eq!((SPAWN_F_DIE_WITH_PARENT, SPAWN_F_MAP_TASK_PAGE, SPAWN_F_USER), (1, 2, 8));

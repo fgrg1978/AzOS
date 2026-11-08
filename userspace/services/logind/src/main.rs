@@ -26,7 +26,7 @@
 
 mod daemon;
 
-use azos_abi::ushell::{Move, SpawnReq, KILL_FORCE, KILL_SUBTREE, MOVE_CONSOLE, SPAWN_F_DIE_WITH_PARENT, SPAWN_F_USER, SPAWN_REQ_VERSION};
+use azos_abi::ushell::{Move, SpawnReq, KILL_FORCE, KILL_SUBTREE, MOVE_CONSOLE, MOVE_KIND_FD, SPAWN_F_DIE_WITH_PARENT, SPAWN_F_USER, SPAWN_REQ_VERSION};
 use azos_inspect_lib::{Inspector, Source};
 use azos_libsys as sys;
 use azos_login::{LoginIdl, MsgDesc, CREDENTIAL_WORDS, NAME_WORDS};
@@ -108,7 +108,7 @@ impl Kernel for Sys {
             ..SpawnReq::default()
         };
         for (slot, fd) in [1u32, 2].into_iter().enumerate() {
-            req.moves[slot] = Move { child_fd: fd, handle: MOVE_CONSOLE, perms: 0, _pad: 0 };
+            req.moves[slot] = Move { child_fd: fd, handle: MOVE_CONSOLE, perms: 0, kind: MOVE_KIND_FD };
         }
         match sys::spawn_ex(SHELL, Some(&req)) {
             tid if tid > 0 => Ok(tid as u32),
