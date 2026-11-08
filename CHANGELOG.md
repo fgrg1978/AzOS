@@ -9,6 +9,13 @@ releases yet. The ABI crate keeps its own file,
 
 ### Added
 
+- The native basic utilities (`userspace/lib/coreutils`, run by `TOOLBOX.ELF`):
+  `cp mv rm mkdir rmdir touch stat du df find head tail grep sort uniq tr cut tee
+  date env pwd basename dirname seq printf` with the common flags, over a `Host`
+  trait so they are tested on the host; `chmod chown chgrp umask ln kill mkfifo`
+  answer with what the system has instead. `mkdir` and `rm` are applets, no
+  longer shell builtins.
+
 - The sensor class (`azos_drv_base::sensors`): every sensor is an instance with
   channels (quantity, unit, width, range, rate), served by the `Sensor`
   interface and published as a stream (`azos_rings::Log`: one writer, readers

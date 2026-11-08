@@ -19,7 +19,7 @@ kernel, and each one's row is its whole authority.
 | `TERMD.ELF` | The terminal server. Owns console input, runs the line discipline (editing, echo, history, type-ahead) and serves the `Terminal` object. It is the *console program*. | Serves `endpoint.term`; claims console input; maps the kernel's input event ring (`input.events`, with a keyboard or mouse driver) and console screen (`console.screen`, with `FB_CONSOLE`); with the login service, the call right on `endpoint.login`. |
 | `NAMESD.ELF` | The name server. Lends the shell an attenuated capability on `endpoint.term`. | Serves `endpoint.names`; may lend `endpoint.term`. |
 | `SH.ELF` | The shell: parses a line, starts programs, owns the job table, builtins and environment. | The right to start a fixed list of images, the `/fat` and `/tmp` trees, a read-only root directory. No hardware. |
-| `TOOLBOX.ELF` | One multicall image for the file, text and device tools. | Read-only root directory, the task view, the introspection regions (Kconfig `INSPECT`), `READ` on `net` and `clock`, the audio server's endpoint or `sound.0`, the call rights on the input server and the compositor where their rows exist, and `imports = ["vmctl"]` where the monitor's row exists. |
+| `TOOLBOX.ELF` | One multicall image for the file, text and device tools. | Read-only root directory, the shell's `/fat` and `/tmp` write trees (`cp`, `mv`, `rm`, `mkdir`, `touch`, `tee`; `/tmp` alone under the lockdown; never the USB stick), the task view, the introspection regions (Kconfig `INSPECT`), `READ` on `net` and `clock`, the audio server's endpoint or `sound.0`, the call rights on the input server and the compositor where their rows exist, and `imports = ["vmctl"]` where the monitor's row exists. |
 | `POWER.ELF`, `FLIGHT.ELF`, `BEHAVIOR.ELF`, `CONFIG.ELF`, `OTA.ELF` | One image per privileged family. | Their own family endpoint with read and write rights (`POWER.ELF` also reads one sensor endpoint and calls the `DevicePower` endpoints of the devices it manages). |
 | `LOGIND.ELF` (Kconfig `CONSOLE_LOGIN`) | The login service (section 13). | Serves `endpoint.login`; the `login` op of `keys`; the right to start `SH.ELF`; the `inspect.logins` view. |
 | `TRACECTL.ELF`, `WHY.ELF`, optional `PKG.ELF` and `BUSYBOX.ELF` | Tracer reader, decision query, package tool, BusyBox. | Their own rows. |
@@ -378,10 +378,63 @@ the multicall image an applet is chosen by `argv[0]`; the authority is the
 image's row whatever `argv[0]` says.
 
 **Builtins:** `help echo cd pwd exit export unset env jobs wait kill history
-true false ls cat mkdir rm uptime type`.
+true false ls cat uptime type`.
 
-**Applets of `TOOLBOX.ELF`:** `args beep cat echo false host input inspect log ls
-ntp ps sleep spin true vm wc window yes`.
+**Applets of `TOOLBOX.ELF`:** `args beep cat echo false fsck host input inspect log ls
+ntp ps sleep spin true vm wc window yes`, and the basic utilities below. `mkdir`
+and `rm` are applets, not builtins, so `-p` and `-r` work in a single command as
+in a pipeline.
+
+### Basic utilities
+
+The file and text tools of a Unix userland, written once in Rust over a
+`Host` trait (`userspace/lib/coreutils`; the toolbox implements it on handles
+beneath its root `Cap<Dir>`, the host tests on an in-memory tree). Names are the
+familiar ones and only the common flags exist; any other flag is a usage error
+(status 2). One argument parser serves them all: bundled short flags (`-rf`),
+`-n5` or `-n 5`, `-NUM` for `head` and `tail`, operands in any position, `--`.
+The shell does no globbing and takes 16 words per command: name files with
+`find -name`, or list them.
+
+| Tool | Flags and behaviour |
+|---|---|
+| `cp [-rn] SRC... DEST` | copies files; `-r` copies trees; `-n` keeps an existing target. A directory `DEST` receives the sources. Refuses a tree into itself. |
+| `mv SRC... DEST` | renames; replaces an existing file; across two volumes it copies, then removes. |
+| `rm [-rf] FILE...` | removes files; a directory needs `-r` and is removed bottom-up; `-f` ignores what is missing; the root is refused. |
+| `mkdir [-p] DIR...`, `rmdir DIR...` | `-p` makes the parents and accepts a directory that exists. `rmdir` takes empty directories only. |
+| `touch FILE...` | creates what is missing. A file that exists is left as it is: the filesystem stamps a file when it is written, and there is no call to set a time. |
+| `stat FILE...` | type, size and, where the filesystem keeps one, the modification time (UTC). No mode, owner or links: files have none. |
+| `du [-shb] [PATH...]` | space used, in KiB rounded up to the filesystem's block (from `statfs`); `-s` the total only, `-h` units, `-b` the sizes in bytes. |
+| `df [-h] [PATH...]` | type, size, used, available and use of the filesystem the path is on (KiB). There is no mount table to list: name the paths. |
+| `find [PATH...] [-name GLOB] [-iname GLOB] [-type f\|d] [-mindepth N] [-maxdepth N]` | prints paths as given. `-name` folds case where the filesystem does (FAT32 stores names upper-cased). No `-exec`: there is no spawn from a tool. |
+| `head`, `tail [-n N \| -N] [FILE...]` | 10 lines by default; a header per file when there are several. `tail` holds a window of 16 KiB: when the last N lines are longer than that, the oldest are lost. `tail -f` is refused: files have no change notification. |
+| `grep [-ivcnlqFrhH] [-e PATTERN] PATTERN [FILE...]` | a line is selected when it matches; status 0 if any did, 1 if none, 2 on an error. `-F` is a literal string. Otherwise the pattern is a regular expression of: a literal byte, `.`, a class `[abc]` `[a-z]` `[^a-z]`, `\d \w \s`, `\` before a byte to take it literally, `*` `+` `?` after one of those, and `^` `$` at the ends. Groups, alternation, counted repeats and back-references are refused when the pattern compiles (ripgrep takes the full syntax). It runs as an NFA over the line, one pass, no backtracking. Lines longer than 1 KiB are examined in pieces. `-r` walks directories (8 levels deep). |
+| `sort [-rnu] [FILE...]` | bytewise; `-n` by the leading number (then bytewise); `-u` drops equal lines. The input is held in 16 KiB (a line and its 8-byte index entry each): more is refused, nothing half-sorted is printed. |
+| `uniq [-cdu] [FILE]` | adjacent lines only; `-c` counts, `-d` repeated only, `-u` unique only. |
+| `tr [-ds] SET1 [SET2]` | ranges (`a-z`), escapes (`\n \t \r \\`), classes (`[:upper:] [:lower:] [:digit:] [:alpha:] [:alnum:] [:space:]`). A short `SET2` repeats its last byte. |
+| `cut -f LIST [-d DELIM] [-s]`, `cut -c LIST` | positions `N`, `N-M`, `N-`, `-M`, comma-separated; `-c` and `-b` count bytes. |
+| `tee [-a] [FILE...]` | standard input to standard output and up to four files. |
+| `date [-u] [+FORMAT]` | the wall clock in UTC (the only zone): `%Y %m %d %H %M %S %s %F %T %a %b %j %Z %%`. Before a time source has set the clock it says so and fails. It does not set the clock. |
+| `env`, `pwd`, `basename NAME [SUFFIX]`, `dirname NAME...`, `seq [-s SEP] [FIRST [STEP]] LAST`, `printf FORMAT [ARG...]` | `env` prints the environment the shell gave the tool; `printf` takes `%s %d %i %u %x %X %o %c %%` with `-` `0` and a width, and the escapes `\n \t \r \\ \a \0`, and reuses the format while arguments remain. |
+
+Missing on purpose: `xargs` (a tool holds no launch grant and no spawn call; adding
+them would make every applet a spawner), `tail -f`, `find -exec`.
+
+**Commands with no native meaning** are applets that answer with what the system
+has instead and the status 126, not a pretence:
+
+| Command | Answer |
+|---|---|
+| `chmod`, `chown`, `chgrp`, `umask` | Files have no mode bits, owner or group. What may be written is the write trees of the task's row in the signed topology. |
+| `ln` | The filesystem has no links; copy with `cp`, or hand the other task a file handle. |
+| `kill` | There are no signals. The shell's own `kill JOB` (a builtin) asks a job to stop. |
+| `mkfifo` | Pipes are made by `\|` in the shell; a device or service is an endpoint of the signed topology. |
+
+A tool changes the tree only where its row holds a write tree covering the path
+(the shell's `/fat` and `/tmp`; `/tmp` alone under `CONSOLE_LOCKDOWN`), and answers
+`denied` otherwise. Status: 0 done, 1 failed, 2 wrong command line, 126 refused,
+130 stopped. Source: `userspace/lib/coreutils`, `userspace/services/toolbox/src/native.rs`,
+host tests in `tests/host/coreutils-tests`.
 
 **Privileged tools**, each its own image and row: `power`, `flight`,
 `behavior`, `config`, `ota`, plus `tracectl` and `why`. They run only if the
@@ -425,7 +478,7 @@ prompt joins services other rows start; it does not become one.
 `SYS_EXIT`, `SYS_INVOKE`, `SYS_SLEEP_UNTIL`, `SYS_CAP_CLOSE`, `SYS_CAP_INFO`,
 `SYS_SPAWN_EX`, `SYS_ALERT`, `SYS_IPC_CALL`, `SYS_MO_CREATE`, `SYS_MO_MAP`,
 `SYS_MO_UNMAP`, and the `SYS_INVOKE` ops for console write, the subreaper mark,
-stat, open beneath a directory, `mkdir`, file read and write, wait, and
+stat, open beneath a directory, file read and write, wait, and
 `MEMOBJ_END_DROP`. It has no fork, no hardware or network call, and no console
 wait. `tests/host/seccomp-tests` derives each image's set from its sources and
 requires the row to equal it. A call outside an image's row ends the task with
@@ -444,7 +497,7 @@ on it.
 
 **Lockdown.** With `CONSOLE_LOCKDOWN` the built-in rows shrink. The shell may
 start only `TOOLBOX.ELF`, may write `/tmp` and holds the read-only root
-directory; it cannot change `/fat`, has no task view, and holds no launch grant
+directory (and so does `TOOLBOX.ELF`); neither can change `/fat`, has no task view, and holds no launch grant
 on the privileged tools, so they are refused at `SYS_SPAWN_EX` and recorded.
 The kernel console task is not created at all (section 10). A privileged
 service shell exists only if the *signed topology* gives an image's row those

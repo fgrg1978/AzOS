@@ -55,7 +55,7 @@ Source: `crates/core/topology/src/builder.rs` (the `*_CAPS` constants and the `p
 | `NAMESD.ELF` | `userspace/services/namesd` | with the native shell session | `endpoint.names` (`Names`) | | R `endpoint.names`, W+transfer `endpoint.term`, W+transfer `endpoint.vmctl` (with Kconfig `HV`), R+M `MemObj inspect.names` |
 | `TERMD.ELF` | `userspace/services/termd` | console program | `endpoint.term` (`Terminal`) | `Login` (behind a console login) | R `endpoint.term`, W `endpoint.login` (with `LOGIND.ELF`'s row), RWM `MemObj input.events` (with a keyboard/mouse driver), RWM `MemObj console.screen` (with `FB_CONSOLE`) |
 | `SH.ELF` | `userspace/services/sh` | with `TERMD.ELF`; behind a console login with users enrolled, by `LOGIND.ELF` | nothing | `Terminal`, `Names` | X on the tool images, RW `/fat`, RW `/tmp`, `tasks` view, `ROOT_RO`; imports `term` |
-| `TOOLBOX.ELF` | `userspace/services/toolbox` | by the shell | nothing | `sound.0` or `endpoint.audio` (`beep`), `endpoint.input` (`input`), `endpoint.compositor` (`window`), `endpoint.vmctl` (`vm`) | `tasks` view, R `net`, R `clock`, RW `sound.0` (with Kconfig `DRV_VIRTIO_SND`; or W `endpoint.audio`, lent, with Kconfig `AUDIOD`), W `endpoint.input` (with Kconfig `INPUTD`), W `endpoint.compositor` (with Kconfig `COMPOSITOR`), inspect regions (Kconfig `INSPECT`), `ROOT_RO`; imports `vmctl` (with Kconfig `HV`) |
+| `TOOLBOX.ELF` | `userspace/services/toolbox` | by the shell | nothing | `sound.0` or `endpoint.audio` (`beep`), `endpoint.input` (`input`), `endpoint.compositor` (`window`), `endpoint.vmctl` (`vm`) | `tasks` view, R `net`, R `clock`, RW `sound.0` (with Kconfig `DRV_VIRTIO_SND`; or W `endpoint.audio`, lent, with Kconfig `AUDIOD`), W `endpoint.input` (with Kconfig `INPUTD`), W `endpoint.compositor` (with Kconfig `COMPOSITOR`), inspect regions (Kconfig `INSPECT`), RW `/fat` and `/tmp` (`/tmp` alone under `CONSOLE_LOCKDOWN`), `ROOT_RO`; imports `vmctl` (with Kconfig `HV`) |
 | `POWER.ELF` | `userspace/services/power` | by the shell | nothing | `power` | RW `power`, R `sensor.9`, X `endpoint.pm-gpio` and `endpoint.pm-ina` (where the INA219 driver has a ring-3 row; the drivers' `DevicePower`) |
 | `TRACECTL.ELF` | `userspace/services/tracectl` | by the shell | nothing | `trace` | RW `trace` log, RW `/fat`, `ROOT_RO` |
 | `FLIGHT.ELF`, `BEHAVIOR.ELF`, `CONFIG.ELF`, `OTA.ELF` | `userspace/services/famtools` | by the shell | nothing | `flight`, `behavior`, `config`, `ota` | see [famtools](#famtools) |
@@ -202,6 +202,8 @@ rights on `TOOLBOX.ELF`, `/tmp` read-write and `ROOT_RO`.
 | `args` | prints argv, the environment and the working directory |
 | `cat`, `echo`, `ls`, `wc`, `yes`, `sleep`, `true`, `false` | the usual |
 | `spin` | computes forever without a system call |
+| `cp`, `mv`, `rm`, `mkdir`, `rmdir`, `touch`, `stat`, `du`, `df`, `find`, `head`, `tail`, `grep`, `sort`, `uniq`, `tr`, `cut`, `tee`, `date`, `env`, `pwd`, `basename`, `dirname`, `seq`, `printf` | the basic utilities, with the common flags only (`userspace/lib/coreutils`; see [the shell design](design/user-shell.md#basic-utilities)). They change the tree only under the row's write trees (`/fat`, `/tmp`) |
+| `chmod`, `chown`, `chgrp`, `umask`, `ln`, `kill`, `mkfifo` | refused with what the system has instead (status 126): no mode bits, owners, links or signals |
 | `ps` | the task list from the introspection tree |
 | `inspect` | the kernel's introspection tree, a subtree such as `metrics`, or `-j` for a Perfetto counter trace |
 | `log [-n N] [-l LEVEL] [-m MODULE]` | the kernel log `logd` keeps in `KLOGn.TXT`: the last N lines (20; 0 for all) at or below LEVEL (`e`, `w`, `i`, `d`) from modules starting with MODULE, oldest first |
@@ -212,7 +214,7 @@ rights on `TOOLBOX.ELF`, `/tmp` read-write and `ROOT_RO`.
 | `vm list`, `vm start ROW [--image NAME] [--cpus N] [--mem MIB]` (ROW a row number or a kernel image name), `vm stop ID`, `pause`, `resume`, `console` | a guest, through the monitor's `VmCtl` (Kconfig `HV`; the name server lends `endpoint.vmctl`) |
 
 It reads and writes the descriptors the shell moved to it and opens files beneath
-`ROOT_RO`. Its row grants the full task view (for `ps`), `READ` on the `net` and `clock`
+`ROOT_RO`; the file tools change `/fat` and `/tmp` through the write trees its row holds. Its row grants the full task view (for `ps`), `READ` on the `net` and `clock`
 endpoints (`host`, `ntp`) and, with Kconfig `INSPECT`, the `inspect.public` and
 `inspect.admin` regions, and imports `vmctl` where the monitor's row exists; under
 `CONSOLE_LOCKDOWN` it holds `ROOT_RO` alone. A stop request ends its waits and it exits 130.
