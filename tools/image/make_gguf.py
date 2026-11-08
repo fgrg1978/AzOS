@@ -33,7 +33,7 @@ from out_dir import out_root  # noqa: E402
 IN, HID, OUT = 4, 8, 3
 
 # ── Analytically-derived obstacle-avoidance weights ───────────────────────────
-# The behavior loop's network (kernel/src/behavior_ml.rs, BEHAVIOR.MBL).
+# The behaviour model network (BEHAVIOR.MBL, loaded by MLSRV.ELF).
 #
 # Input:  [dist_front, dist_right, velocity, battery]  (normalised 0..1)
 # Hidden: ReLU activation

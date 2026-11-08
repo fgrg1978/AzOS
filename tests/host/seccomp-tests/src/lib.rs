@@ -604,8 +604,14 @@ mod profiles {
         // to read the boot slots (`Ota::status`) when it stages a whole-system
         // update into the inactive slot. Its grant is READ (topology
         // `PKG_OTA_STATUS`), so `rollback` and `switch`, which need WRITE, stay
-        // `OTA.ELF`'s.
-        let reader = |img: &str, k: u16| if img == "OTA.ELF" && k == key::OTA { Some("PKGD.ELF") } else { None };
+        // `OTA.ELF`'s. The behaviour engine reads the layer switches it obeys
+        // (`Behavior::status`, READ in the autorun row), so `enable` and
+        // `disable` stay `BEHAVIOR.ELF`'s.
+        let reader = |img: &str, k: u16| match (img, k) {
+            ("OTA.ELF", k) if k == key::OTA => Some("PKGD.ELF"),
+            ("BEHAVIOR.ELF", k) if k == key::BEHAVIOR => Some("BRAINCLI.ELF"),
+            _ => None,
+        };
         for (img, k) in fams {
             for ip in IMAGE_PROFILES {
                 assert_eq!(image_filter(ip).iface_listed(k), ip.image == img || Some(ip.image) == reader(img, k),
@@ -1158,6 +1164,7 @@ mod image_profiles {
         ("POWER_ASSERT", azos_devif::key::POWER_ASSERT),
         ("VOLUME", azos_devif::key::VOLUME),
         ("FRAME", azos_devif::key::FRAME),
+        ("AUTHORITY", azos_devif::key::AUTHORITY),
     ];
 
     /// The kernel-hosted interfaces the image's sources name (`dev::key::NAME`).
@@ -1344,6 +1351,7 @@ mod image_profiles {
             src!("userspace/services/brain_client/src/main.rs"),
             // The forward-secret link client session.
             src!("userspace/services/brain_client/src/link.rs"),
+            src!("userspace/services/brain_client/src/behave.rs"),
         ]),
         ("CAPTEST.ELF", Lang::Rust, &[
             src!("userspace/tests/captest/src/main.rs"),

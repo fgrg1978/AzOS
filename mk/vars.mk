@@ -1094,7 +1094,7 @@ IMAGE_ELF_PATHS_X86_64_ON  := $(call elf_paths,$(IMAGE_ELFS_X86_64_ON))
 # depend on it, so a changed selection remakes them though no ELF moved.
 USER_ON_STAMP := $(OUT_BUILD)/user-images.on
 # CONFIG.INI of the volumes, up to its autorun line (which each recipe adds).
-DISK_INI_riscv64 := \# AzOS Configuration\nml_enabled=1\nlog_level=1\nmotor_max_speed=100\nwatchdog_ms=500\nnet_ip=10.0.2.15\nnet_gateway=10.0.2.2\nnet_mask=255.255.255.0\nbehavior_server_ip=10.0.2.2\nbehavior_server_port=9000\nbehavior_l1_enabled=1\nbehavior_l2_enabled=1\nbehavior_l3_enabled=1\n
+DISK_INI_riscv64 := \# AzOS Configuration\nlog_level=1\nmotor_max_speed=100\nwatchdog_ms=500\nnet_ip=10.0.2.15\nnet_gateway=10.0.2.2\nnet_mask=255.255.255.0\nbehavior_server_ip=10.0.2.2\nbehavior_server_port=9000\nbehavior_l1_enabled=1\nbehavior_l2_enabled=1\nbehavior_l3_enabled=1\n
 DISK_INI_aarch64 := net_ip=10.0.2.15\nnet_gateway=10.0.2.2\nnet_mask=255.255.255.0\nbehavior_server_ip=10.0.2.2\nbehavior_server_port=9000\n
 DISK_INI_x86_64  := net_ip=10.0.2.15\nnet_gateway=10.0.2.2\nnet_mask=255.255.255.0\n
 

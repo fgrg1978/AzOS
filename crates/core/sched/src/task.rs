@@ -62,10 +62,6 @@ pub const HARD_RT_PRIORITY: u32 = 8;
 /// Slightly above default so incoming packets are processed promptly.
 pub const NET_POLL_PRIORITY: u32 = azos_limits::TASK_NET_POLL_PRIORITY as u32;
 
-/// Priority for the behavior engine (sensor→decision→motor).
-/// Above default since it drives the robot's actions.
-pub const BEHAVIOR_PRIORITY: u32 = 14;
-
 /// Priority for the system watchdog task.
 ///
 /// **Was 20, and at 20 with default placement the task never ran under load.**

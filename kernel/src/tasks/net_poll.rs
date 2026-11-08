@@ -230,13 +230,15 @@ pub(crate) fn install_net_hooks() {
     azos_net::nic_queue::set_hooks(azos_syscall::nicq::rx_sink, azos_syscall::nicq::rx_end, link_peer);
 }
 
-/// The node's link peer, for `azos_net::nic_queue`: the brain the behavior
-/// task dials while the remote link is enabled. The e-stop arrives on that
-/// connection, so the interface its route leaves by is not given to ring 3.
+/// The node's link peer, for `azos_net::nic_queue`: the brain the behaviour
+/// engine dials (CONFIG.INI `behavior_server_ip`/`_port`). The e-stop arrives
+/// on that connection, so the interface its route leaves by is not given to
+/// a ring-3 driver.
 fn link_peer() -> Option<[u8; 4]> {
     #[cfg(feature = "use-robot")]
     {
-        azos_behavior::remote_is_enabled().then(azos_behavior::remote_server_ip)
+        (azos_config::BEHAVIOR_SERVER_PORT.load(core::sync::atomic::Ordering::Relaxed) != 0)
+            .then(azos_config::behavior_server_ip_bytes)
     }
     #[cfg(not(feature = "use-robot"))]
     {

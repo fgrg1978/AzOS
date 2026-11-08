@@ -1,17 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! The camera pipeline: one capture task captures and JPEG-encodes each frame
-//! once into the frame class's pool (`azos_syscall::frame_host`); the brain
-//! link's sender, the `camera-tx` task (`behavior_camera_port` set) or else
-//! the behavior task's inline path, is one reader of it, and a ring-3 task
-//! that opened the `Frame` interface is another. The sender takes the newest
-//! frame it has not taken; it never waits for a capture.
+//! once into the frame class's pool (`azos_syscall::frame_host`); a ring-3
+//! task that opened the `Frame` interface reads it, taking the newest frame it
+//! has not taken; it never waits for a capture.
 //!
 //! With a USB camera (Kconfig `USB_UVC`) the producer is the video class
 //! driver, which writes the camera's own frames into the same pool from the
 //! `usb` task (`azos_cam_ring::FrameSink`); the capture task then stays idle.
-//! A camera that sends raw YUY2 is converted to the JPEG the link carries when
-//! the sender reads the frame (luma only, [`yuyv_to_jpeg`]).
 //!
 //! The capture task never waits on a reader: under the default
 //! `FRAME_POOL_OVERWRITE_OLDEST` a slow TCP sender only loses frames it
@@ -23,7 +19,9 @@
 
 use crate::kprintln;
 use azos_cam_ring::{NoRoom, Policy};
-use azos_syscall::frame_host::{self as frames, LINK, POOL};
+use azos_syscall::frame_host::{self as frames, POOL};
+#[cfg(feature = "ktest")]
+use azos_syscall::frame_host::LINK;
 use azos_drv_sensor::csi::{self, JPEG_MAX_SIZE};
 use azos_drv_sys::timebase::vdso_ns;
 use azos_ipc::memobj::{memobj_create_kernel, MemPerms, MemSpec, MAX_MEMOBJ_PAGES};
@@ -100,11 +98,14 @@ fn wake_producers(first: bool) {
     }
 }
 
-pub(crate) fn camera_consumer_attach() {
+/// The kernel's own reader of the pool, the ktest's (`camera_one_encode_per_frame`).
+#[cfg(feature = "ktest")]
+fn camera_consumer_attach() {
     frames::attach(LINK);
 }
 
-pub(crate) fn camera_consumer_detach() {
+#[cfg(feature = "ktest")]
+fn camera_consumer_detach() {
     POOL.detach(LINK);
 }
 
@@ -138,37 +139,18 @@ pub(crate) fn camera_capture_once() -> bool {
 /// acquisition stamp (vDSO nanoseconds) while the sender holds a reference. The sender
 /// takes the newest frame it has not taken (a lagging sender skips to it).
 /// `None`: nothing new; never waits.
-pub(crate) fn camera_with_frame<R>(f: impl FnOnce(&[u8], u64) -> R) -> Option<R> {
+#[cfg(feature = "ktest")]
+fn camera_with_frame<R>(f: impl FnOnce(&[u8], u64) -> R) -> Option<R> {
     if canary!("camera-encode-per-consumer") {
         return own_encode(f);
     }
     let frame = POOL.acquire(LINK)?;
-    #[cfg(feature = "usb-uvc")]
-    if frame.info().format == azos_cam_ring::FrameFormat::Yuyv {
-        return yuyv_to_jpeg(frame.bytes(), frame.info(), frame.stamp(), f);
-    }
     Some(f(frame.bytes(), frame.stamp()))
-}
-
-/// A raw YUY2 frame of a USB camera as the JPEG the link carries: its luma,
-/// decimated to the JPEG path's capture size, through the same grayscale
-/// encoder. `None` when the scratch is busy (the other reader) or the frame
-/// does not add up.
-#[cfg(feature = "usb-uvc")]
-fn yuyv_to_jpeg<R>(yuyv: &[u8], info: azos_cam_ring::FrameInfo, stamp: u64, f: impl FnOnce(&[u8], u64) -> R) -> Option<R> {
-    /// The luma plane and the JPEG built from it, behind a sleeping lock
-    /// (the encode is long): a task stack is far too small for either.
-    static SCRATCH: azos_sync::kmutex::Mutex<([u8; csi::JPEG_CAP_W * csi::JPEG_CAP_H], [u8; JPEG_MAX_SIZE])> =
-        azos_sync::kmutex::Mutex::new(([0; csi::JPEG_CAP_W * csi::JPEG_CAP_H], [0; JPEG_MAX_SIZE]));
-    let mut g = SCRATCH.try_lock()?;
-    let (luma, jpeg) = &mut *g;
-    let (w, h) = azos_cam_ring::yuyv_luma(yuyv, info.width as usize, info.height as usize, luma, csi::JPEG_CAP_W, csi::JPEG_CAP_H)?;
-    let n = csi::encode_gray_jpeg(&luma[..w * h], w, h, jpeg);
-    (n != 0).then(|| f(&jpeg[..n], stamp))
 }
 
 /// Runtime canary `camera-encode-per-consumer`: the consumer captures and
 /// encodes a frame of its own, as both did before B2.
+#[cfg(feature = "ktest")]
 #[cold]
 fn own_encode<R>(f: impl FnOnce(&[u8], u64) -> R) -> Option<R> {
     static BUSY: AtomicBool = AtomicBool::new(false);
@@ -184,14 +166,14 @@ fn own_encode<R>(f: impl FnOnce(&[u8], u64) -> R) -> Option<R> {
     r
 }
 
-/// Boot: start the capture task. It idles until the sender attaches.
+/// Boot: start the capture task. It idles until a reader attaches.
 pub(crate) fn camera_capture_init() {
     frames::set_lend(lend_buffers);
     frames::set_producer_wake(wake_producers);
     azos_sched::task_create("cam-capture", camera_capture_task, 0, azos_sched::DEFAULT_PRIORITY);
 }
 
-/// The producer: while the sender is attached, one capture every
+/// The producer: while a reader is attached, one capture every
 /// `CAMERA_TX_CAPTURE_PERIOD_MS`; otherwise blocked until an attach wakes it.
 fn camera_capture_task(_: usize) {
     use azos_drv_sys::timebase::{now, TIMER_FREQ};
@@ -205,18 +187,13 @@ fn camera_capture_task(_: usize) {
                 azos_sched::task_block(azos_sched::WaitReason::Timer(end));
             }
         } else {
-            // No consumer: no wake-up until the sender attaches
-            // (`camera_consumer_attach` wakes this).
+            // No reader: no wake-up until one attaches (the frame class's
+            // attach wakes this).
             while !POOL.any_attached() {
                 azos_sched::task_block(azos_sched::WaitReason::Timer(u64::MAX));
             }
         }
     }
-}
-
-/// `(produced, refused, overwritten, JPEG encodes)`, for a status line.
-pub(crate) fn camera_ring_stats() -> (u64, u64, u64, u32) {
-    (POOL.produced(), POOL.refused(), POOL.overwritten(), csi::csi_jpeg_encodes())
 }
 
 // B2's property: the JPEG is encoded once per frame. The test drives the

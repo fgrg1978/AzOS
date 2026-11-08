@@ -122,22 +122,6 @@ config PID_DT_MS
       board in the tree this value changes the init line and nothing else.
       Wave 11: the file used its own literal 10 before.
 
-config ML_REPLY_TIMEOUT_US
-    int "Behavior loop: inference service reply timeout (us)"
-    range 2000 100000
-    default 10000
-    help
-      kernel/src/behavior_ml.rs, ML_REPLY_TIMEOUT_US: how long one
-      behavior-loop cycle waits for the ring-3 inference service's verdict
-      before it treats the service as absent for that cycle (10 % of the
-      100 ms loop period at the default). It is also the deadline the
-      cycle's Infer call carries, so the service refuses at once a call
-      whose signed worst case (the cost row of BEHAVIOR.MBL, 1000 us)
-      does not fit it, which is why the range starts above that cost row.
-      The service's own work and the round trip are a few thousand
-      instructions each ([BSTEP] measures both).
-      Wave 11: was a literal.
-
 config MOTOR_COMMANDER_EXIT_STOP
     bool "A dead motor commander's wheels go to a safe stop"
     default y if USE_ROBOT

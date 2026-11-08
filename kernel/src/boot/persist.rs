@@ -28,9 +28,7 @@ pub(crate) fn recover_persistent_state() {
         // e-stop. The whole policy and its reasons: `boot/config_auth.rs`.
         load_signed_config();
         azos_config::cfg_apply();
-        kprintln!("[CFG] {} entries, ml_enabled={}",
-            azos_config::cfg_count(),
-            ML_ENABLED.load(Ordering::Relaxed) as u8);
+        kprintln!("[CFG] {} entries", azos_config::cfg_count());
 
         // ── OTA boot validation + secure boot (SHARED with aarch64) ───
         // The whole block — A/B slot, CRC, Ed25519, decision 99's fall to
@@ -314,13 +312,12 @@ pub(crate) fn recover_persistent_state() {
         azos_behavior::layer_set_enabled(3,
             azos_config::BEHAVIOR_L3_ENABLED.load(Ordering::Relaxed));
 
-        // Behavior VLA server.
+        // The brain the behaviour engine dials.
         #[cfg(feature = "use-robot")]
         let bport = azos_config::BEHAVIOR_SERVER_PORT.load(Ordering::Relaxed);
         #[cfg(feature = "use-robot")]
         if bport > 0 {
             let bip = azos_config::behavior_server_ip_bytes();
-            azos_behavior::remote_configure(bip, bport as u16);
             kprintln!("[CFG] VLA server: {}.{}.{}.{}:{}",
                 bip[0], bip[1], bip[2], bip[3], bport);
         }

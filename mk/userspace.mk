@@ -521,7 +521,7 @@ $(REFLEX_ELF): $(REFLEX_DIR)/src/main.rs $(REFLEX_DIR)/Cargo.toml \
 	cp $(REFLEX_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(BRAINCLI_ELF): $(BRAINCLI_DIR)/src/main.rs $(BRAINCLI_DIR)/src/link.rs $(BRAINCLI_DIR)/Cargo.toml \
+$(BRAINCLI_ELF): $(BRAINCLI_DIR)/src/main.rs $(BRAINCLI_DIR)/src/link.rs $(BRAINCLI_DIR)/src/behave.rs $(BRAINCLI_DIR)/Cargo.toml \
                crates/core/crypto/src/secure_channel.rs \
                $(LIBSYS_SRC)
 	@mkdir -p $(OUT_BUILD)
@@ -1170,7 +1170,7 @@ $(REFLEX_ELF_AARCH64): $(REFLEX_DIR)/src/main.rs $(REFLEX_DIR)/Cargo.toml \
 	cp $(UTGT_AARCH64)/$(TARGET_AARCH64)/release/reflex $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(BRAINCLI_ELF_AARCH64): $(BRAINCLI_DIR)/src/main.rs $(BRAINCLI_DIR)/src/link.rs $(BRAINCLI_DIR)/Cargo.toml \
+$(BRAINCLI_ELF_AARCH64): $(BRAINCLI_DIR)/src/main.rs $(BRAINCLI_DIR)/src/link.rs $(BRAINCLI_DIR)/src/behave.rs $(BRAINCLI_DIR)/Cargo.toml \
                crates/core/crypto/src/secure_channel.rs \
                $(LIBSYS_SRC)
 	@mkdir -p $(AARCH64_DIR)
@@ -1254,7 +1254,7 @@ $(REFLEX_ELF_X86_64): $(REFLEX_DIR)/src/main.rs $(REFLEX_DIR)/Cargo.toml \
 	cd $(REFLEX_DIR) && export CARGO_TARGET_DIR="$(UTGT_X86_64)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
 	cp $(UTGT_X86_64)/$(X86_64_UBUILT)/reflex $@
 
-$(BRAINCLI_ELF_X86_64): $(BRAINCLI_DIR)/src/main.rs $(BRAINCLI_DIR)/src/link.rs $(BRAINCLI_DIR)/Cargo.toml \
+$(BRAINCLI_ELF_X86_64): $(BRAINCLI_DIR)/src/main.rs $(BRAINCLI_DIR)/src/link.rs $(BRAINCLI_DIR)/src/behave.rs $(BRAINCLI_DIR)/Cargo.toml \
                crates/core/crypto/src/secure_channel.rs \
                $(LIBSYS_SRC) $(X86_64_KCONFIG)
 	@mkdir -p $(X86_64_DIR)

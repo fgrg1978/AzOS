@@ -46,7 +46,7 @@ def parse_kernel_features(cargo_toml_path: Path) -> frozenset[str]:
     """Extract feature names from the [features] block of kernel/Cargo.toml.
 
     Uses a regex; no toml dependency needed.  Returns a frozenset of bare
-    feature names (e.g. {'vf2', 'k1', 'qemu', 'no-ml', ...}).
+    feature names (e.g. {'vf2', 'k1', 'qemu', ...}).
     """
     text = cargo_toml_path.read_text(encoding="utf-8")
     # Find the [features] block: everything between [features] and the next [...]
@@ -108,28 +108,28 @@ DEFCONFIG_EXPECTATIONS: list[tuple[str, str, set[str], set[str]]] = [
         "generic-sbc-riscv64-dev",
         "riscv64imac-unknown-none-elf",
         set(),                              # no features required
-        {"vf2", "k1", "no-ml"},  # must not appear
+        {"vf2", "k1"},  # must not appear
     ),
     # the riscv64 gate kernel (robot)
     (
         "robot-sbc-riscv64-dev+qemu+linux+gui",
         "riscv64imac-unknown-none-elf",
         set(),
-        {"vf2", "k1", "no-ml"},
+        {"vf2", "k1"},
     ),
     # vf2 — must emit vf2 feature
     (
         "robot-sbc-riscv64+vf2",
         "riscv64imac-unknown-none-elf",
         {"vf2", "soc", "soc-jh7110"},       # SOC_FRAMEWORKS / SOC_JH7110, the board's frameworks
-        {"k1", "no-ml", "soc-k1"},
+        {"k1", "soc-k1"},
     ),
     # k1 — must emit k1 feature, and the K1 providers of the SoC frameworks
     (
         "robot-sbc-riscv64+k1",
         "riscv64imac-unknown-none-elf",
         {"k1", "soc", "soc-k1"},            # SOC_FRAMEWORKS / SOC_K1, the board's frameworks
-        {"vf2", "no-ml", "soc-jh7110"},
+        {"vf2", "soc-jh7110"},
     ),
     # embedded — no cargo feature at all: its sizing is constants only, and
     # small-mem (PMM capped at 128 pages) must not come back
@@ -137,21 +137,21 @@ DEFCONFIG_EXPECTATIONS: list[tuple[str, str, set[str], set[str]]] = [
         "generic-embedded-riscv64+board-generic",
         "riscv64imac-unknown-none-elf",
         set(),
-        {"azos_mm/small-mem", "vf2", "k1", "qemu", "no-ml"},
+        {"azos_mm/small-mem", "vf2", "k1", "qemu"},
     ),
     # fleet — all defaults, large caps via constants (no cargo features)
     (
         "generic-server-riscv64+board-generic",
         "riscv64imac-unknown-none-elf",
         set(),
-        {"vf2", "k1", "no-ml"},
+        {"vf2", "k1"},
     ),
     # qemu-aarch64 — must emit aarch64 target
     (
         "robot-sbc-aarch64-dev+qemu+linux+gui",
         "aarch64-unknown-none-softfloat",
         set(),
-        {"vf2", "k1", "no-ml", "soc", "soc-jh7110", "soc-k1"},  # no aarch64 board enables the SoC frameworks
+        {"vf2", "k1", "soc", "soc-jh7110", "soc-k1"},  # no aarch64 board enables the SoC frameworks
     ),
 ]
 
@@ -211,7 +211,7 @@ def test_kernel_features_parseable() -> None:
     """Smoke test: we can parse kernel/Cargo.toml features block."""
     feats = parse_kernel_features(KERNEL_CARGO_TOML)
     # Known features that must be present
-    for expected in ("vf2", "k1", "qemu", "no-ml",
+    for expected in ("vf2", "k1", "qemu",
                      "rvv", "dhcp-smoke",
                      "secure-boot-enforced"):
         assert expected in feats, f"Expected feature '{expected}' missing from kernel/Cargo.toml"

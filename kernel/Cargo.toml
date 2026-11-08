@@ -36,7 +36,7 @@ use-robot = [
     "dep:azos_behavior", "dep:azos_robot", "dep:azos_safety_core", "dep:azos_robot_sensors",
     "dep:azos_flight", "dep:azos_nav", "dep:azos_gps",
     "dep:azos_imu", "dep:azos_baro", "dep:azos_ahrs",
-    "dep:azos_telemetry", "dep:azos_robot_bench", "dep:azos_multi_stream",
+    "dep:azos_telemetry", "dep:azos_robot_bench",
     "dep:azos_camera", "dep:azos_robot_drivers", "dep:azos_cam_ring",
     "azos_recovery/use-robot", "azos_syscall/use-robot", "board-io",
 ]
@@ -197,12 +197,6 @@ huge-leaves-canary = ["huge-leaves-smoke", "azos_sched/huge-leaves-canary"]
 # Its canary: the loader maps every user stack lazily (demand markers), so the
 # locked task takes stack faults and the row above must go red.
 mem-locked-canary = ["mem-locked-smoke", "azos_sched/mem-locked-canary"]
-# Canaries for the host suite (tests/host/behavior-tests) of
-# kernel/src/behavior_infer.rs: a refused `Infer` call passes as a class
-# (`infer-refusal-canary`), the model that answered is not compared with the one
-# asked for (`infer-model-canary`). Never enabled in a kernel build.
-infer-refusal-canary = []
-infer-model-canary = []
 # Canary of the gate rows that run `ps` and `MLSRV.ELF`: the loader maps the
 # default stack whatever an image asks for.
 user-stack-request-canary = ["azos_sched/user-stack-request-canary"]
@@ -630,7 +624,6 @@ cpuid-probe-canary = ["cpuid-probe", "azos_sched/cpuid-probe-canary"]
 vdso-force-syscall = []
 # Program the timer with SBI `set_timer` even on a hart with Sstc.
 timer-sbi-only = []
-no-ml       = ["azos_recovery/no-ml", "azos_behavior?/no-ml"]
 # B2-02/B2-03: `no-opensbi` and `uefi` were deleted 2026-09-21 (owner
 # decision: delete now, redo when needed). Neither was wired to a real boot
 # path — no-opensbi's ELF entry was never `_start_mmode`, all harts would
@@ -865,11 +858,6 @@ sensor-drop-canary = ["azos_drv_base/sensor-drop-canary"]
 # property (that `net-poll` gets to run on its hart), and adding a task to it
 # would measure a build nobody ships.
 brain-lies-smoke = ["qemu", "use-robot"]
-# The brain link's wall-clock rekey interval drops from 3600 s to 5 s
-# (`BRAIN_LINK_REKEY_SECS` in kernel/src/tasks/brain_link.rs), so one QEMU boot sees the
-# kernel send REKEY records to `tools/gate/link_peer.py`. The crate constant is
-# unchanged; every other build rekeys hourly.
-link-rekey-smoke = ["qemu", "use-robot"]
 # Reads captest's forged-handle refusal (`SAFETY_CAP_DENIED_TYPED`, GPIO) back
 # off the flight recorder. Its own feature for the same reason as the probe
 # above: a task added to the plain capabilities boot would verify a build
@@ -1434,7 +1422,6 @@ azos_energy = { workspace = true }
 azos_syscall = { workspace = true }
 azos_fs = { workspace = true }
 azos_net = { workspace = true }
-azos_multi_stream = { workspace = true, optional = true }
 azos_ipc = { workspace = true }
 azos_robot = { workspace = true, optional = true }
 azos_recovery  = { workspace = true }

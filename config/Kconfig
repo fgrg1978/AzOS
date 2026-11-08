@@ -30,7 +30,6 @@ menu "Robot"
     visible if USE_ROBOT
 source "config/subsys/Kconfig.robot"
 menu "Brain Server Link"
-source "config/subsys/Kconfig.brain"
 endmenu # Brain Server Link
 
 endmenu # Robot

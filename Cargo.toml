@@ -234,9 +234,6 @@ exclude = [
     # frames, the exit decode, admission of the guest rows, the VM and vCPU objects.
     # Run with:  cd tests/host/hv-tests && cargo test --release
     "tests/host/hv-tests",
-    # multi-stream-tests — host-side multi-stream wire format tests.
-    # Run with:  cd tests/host/multi-stream-tests && cargo +stable test
-    "tests/host/multi-stream-tests",
     # azos-config — build-time Kconfig reader + Rust const emitter.
     # Host-only (std); excluded from riscv64-none-elf workspace compilation.
     # Run with:  cd crates/core/azos-config && cargo test
@@ -502,9 +499,6 @@ members = [
     # The frame class's pool: refcounted camera frame buffers, many readers.
     # Pure no_std; host-tested via tests/host/cam-ring-tests.
     "crates/drivers/cam-ring",
-    # Stream-ID-prefixed wire multiplexer for the brain↔kernel link.
-    # Pure no_std; host-tested via tests/host/multi-stream-tests.
-    "crates/net/multi-stream",
     # Generated compile-time constants from .config.
     # no_std; build.rs reads .config via azos-config and emits generated.rs.
     "crates/core/limits",
@@ -632,7 +626,6 @@ azos_arch_api    = { path = "arch/api" }
 azos_arch_riscv64 = { path = "arch/riscv" }
 azos_arch_aarch64 = { path = "arch/aarch64" }
 azos_cam_ring      = { path = "crates/drivers/cam-ring" }
-azos_multi_stream  = { path = "crates/net/multi-stream" }
 azos_limits        = { path = "crates/core/limits" }
 azos_degrade_policy = { path = "crates/domains/robot/degrade-policy" }
 azos_actuation = { path = "crates/core/actuation" }

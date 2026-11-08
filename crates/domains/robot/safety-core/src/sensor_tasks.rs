@@ -18,17 +18,6 @@ pub const SENSING_PRIORITY: u32 = 14;
 /// The IMU reader and the AHRS fusion's CPU (Kconfig `TASK_SENSING_PLACE`).
 const SENSING: Place = Place::of_kconfig(azos_limits::TASK_SENSING_PLACE);
 
-azos_common::ro_hook! {
-    /// The board's beep, set by the kernel at boot: offline mode sounds it
-    /// when a digital line trips.
-    static BEEP: fn() -> bool;
-}
-
-/// Install the beep (the kernel, at boot, once).
-pub fn set_beep(beep: fn() -> bool) {
-    BEEP.set(beep);
-}
-
 /// The task phase: create the producers.
 pub fn create(_: azos_ext_api::EnableLine) {
     let hart = azos_percpu::place::pin_avoiding(SENSING, azos_sync::qsbr::rt_cpus());
@@ -174,11 +163,6 @@ fn sensor_slow_task(_: usize) {
             line(azos_limits::SENSOR_IR_GPIO as u8),
         );
         flags_tx.publish(board::flags_sample(pir, sound, ir, vdso_ns(now())));
-        if azos_behavior::offline::offline_is_active() && (pir || sound || ir) {
-            if let Some(beep) = BEEP.get() {
-                let _ = beep();
-            }
-        }
         let dl = azos_drv_sys::timebase::now() + slow_interval;
         azos_sched::task_block(azos_sched::WaitReason::Timer(dl));
     }

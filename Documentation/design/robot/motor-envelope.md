@@ -90,7 +90,7 @@ durable `SAFETY_ESTOP` record written that does not latch
 
 ## Confidence-aware limit
 
-Source: `crates/domains/robot/behavior/src/brain_protocol.rs`, `crates/domains/robot/behavior/src/safety.rs`, `kernel/src/tasks/behavior.rs`
+Source: `crates/domains/robot/behavior/src/brain_protocol.rs`, `crates/domains/robot/behavior/src/safety.rs`, `crates/domains/robot/safety-core/src/frames.rs`
 
 Commands are not equally trustworthy. A scripted or planned step is more
 reliable than a single reactive action taken from one camera frame. The brain

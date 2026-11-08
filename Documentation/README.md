@@ -81,7 +81,6 @@ and its limits. Authors start from the two templates.
 | [design/lx-driver-slices.md](design/lx-driver-slices.md) | The next Linux driver slices: their sources and what running ext4 in a ring-3 server needs. |
 | [design/arch/aarch64-trap-return-windows.md](design/arch/aarch64-trap-return-windows.md) | Masking interrupts across the aarch64 trap return. |
 | [design/forward-secret-link.md](design/forward-secret-link.md) | The forward-secret encrypted brain link. |
-| [design/multi-stream-link.md](design/multi-stream-link.md) | Stream framing that lets several streams share the brain link. |
 | [design/robot/degrade-levels.md](design/robot/degrade-levels.md) | The four graded degrade levels the brain can select. |
 | [design/robot/motor-envelope.md](design/robot/motor-envelope.md) | The gate between a motor command and the PWM hardware. |
 | [design/robot/transactional-control-ticks.md](design/robot/transactional-control-ticks.md) | Surviving a recoverable fault inside the control loop. |

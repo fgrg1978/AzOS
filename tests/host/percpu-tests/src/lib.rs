@@ -280,7 +280,6 @@ mod tests {
             azos_limits::TASK_NET_POLL_PLACE, azos_limits::TASK_AUTORUN_PLACE,
             azos_limits::TASK_SYS_WDT_PLACE, azos_limits::TASK_OTA_RECV_PLACE,
             azos_limits::TASK_CONTROL_PLACE, azos_limits::TASK_SENSING_PLACE,
-            azos_limits::TASK_BEHAVIOR_PLACE,
         ] {
             assert!(Place::parse(v).is_some(), "{v:?}");
         }

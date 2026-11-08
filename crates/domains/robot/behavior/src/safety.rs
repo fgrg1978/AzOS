@@ -171,19 +171,6 @@ pub const SAFETY_WARN_TEMP_CDEG: i32 = 7000;
 // suite pulls this file in with `#[path]` beside its own copy of the module.
 pub use crate::estop::*;
 
-/// Work the latch must do for the robot domain whenever it arms: the cached
-/// remote action becomes the stop. `estop_activate` used to do this inline;
-/// the latch now lives in `azos_actuation`, which cannot name
-/// `crate::remote`, so it runs this as the robot provider's latch work
-/// (`azos_ext_api::Provider::on_latch`).
-/// Registered once at boot by `azos_safety_core::actuation::install`,
-/// before anything can latch on a running system.
-pub fn on_estop_latched() {
-    crate::remote::set_last_action(
-        crate::remote::stop_action(azos_drv_sys::timebase::now()),
-    );
-}
-
 // ---------------------------------------------------------------------------
 // Current robot type
 // ---------------------------------------------------------------------------
@@ -539,17 +526,6 @@ fn check_drone(state: &SensorState) -> SafetyResult {
             return SafetyResult {
                 action: SafetyAction::EmergencyStop,
                 violation: SafetyViolation::ExcessiveTilt,
-            };
-        }
-    }
-
-    // Comms timeout — if no brain command in N seconds, hover/RTL
-    if state.remote_action.valid {
-        let age = state.timestamp.saturating_sub(state.remote_action.received_at);
-        if age > SAFETY_DRONE_COMMS_TIMEOUT_TICKS {
-            return SafetyResult {
-                action: SafetyAction::ReturnToLaunch,
-                violation: SafetyViolation::CommsTimeout,
             };
         }
     }

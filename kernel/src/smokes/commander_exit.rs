@@ -89,3 +89,46 @@ azos_ktest::ktest_late! {
         }
     }
 }
+
+/// The second probe's TID, and whether its drivetrain command was taken.
+static CMD_TID: AtomicU32 = AtomicU32::new(0);
+static CMD_TAKEN: AtomicBool = AtomicBool::new(false);
+
+fn drivetrain_commander(_: usize) {
+    let me = azos_sched::current_task_tid();
+    let taken = azos_syscall::motor_host::drivetrain_command(40, 40, me).is_ok()
+        && azos_syscall::motor_commander::commander(WHEEL) == me;
+    CMD_TAKEN.store(taken, Ordering::Release);
+    CMD_TID.store(me, Ordering::Release);
+}
+
+// The ring-3 behaviour engine commands the drivetrain through `Motor::command`
+// (`motor_host::drivetrain_command`). When it dies, its last command must not
+// stand (the exit hook puts a stop on the loop's channel), and the drivetrain's
+// effect loop keeps running: its heartbeat still advances after the death.
+// Canary `commander-exit-nostop-canary`: nothing is stopped, the 40 % command
+// stands, `not ok`.
+azos_ktest::ktest_late! {
+    fn a_dead_engines_drivetrain_command_is_stopped_and_the_loop_runs() {
+        if !azos_limits::MOTOR_COMMANDER_EXIT_STOP {
+            return Err("Kconfig MOTOR_COMMANDER_EXIT_STOP is off in this build");
+        }
+        azos_sched::task_create("cmd-probe", drivetrain_commander, 0, PROBE_PRIO);
+        crate::ktest::wait("the drivetrain probe never ran", || CMD_TID.load(Ordering::Acquire) != 0)?;
+        let tid = CMD_TID.load(Ordering::Acquire);
+        if !CMD_TAKEN.load(Ordering::Acquire) {
+            return Err("the probe's drivetrain command was refused or named no commander");
+        }
+        crate::ktest::wait("the probe's exit never took its wheels", || {
+            azos_syscall::motor_commander::last_exit_stop().0 == tid
+        })?;
+        let cmd = azos_robot::motor_cmd_read();
+        if (cmd.speed_l, cmd.speed_r) != (0, 0) {
+            return Err("the dead engine's drivetrain command still stands");
+        }
+        let beat = azos_actuation::watchdog::CONTROL_HEARTBEAT.load(Ordering::Relaxed);
+        crate::ktest::wait("the drivetrain's effect loop stopped after the engine died", || {
+            azos_actuation::watchdog::CONTROL_HEARTBEAT.load(Ordering::Relaxed) != beat
+        })
+    }
+}

@@ -89,25 +89,20 @@ $(IMAGE_HASHES_AARCH64): userspace/image_hashes.py $(IMAGE_ELF_PATHS_AARCH64_ON)
 		BUSYBOX.ELF=$(BUSYBOX_ELF_AARCH64) LXTHR.ELF=$(LXTHR_ELF_AARCH64)
 
 # Two disk images from one recipe, differing only in which ELF `autorun` starts.
-# disk.img runs REFLEX, a long-lived ring-3 program that serves no endpoint
-# (the autorun loader refuses an image whose row serves one: a server is a
-# component manager row; on a build without the drivetrain it exits at once,
-# refusing to run without its motor capabilities); disk-systest.img runs the
+# disk.img runs BRAINCLI, the robot's behaviour engine and brain link, a
+# long-lived ring-3 program that serves no endpoint (the autorun loader refuses
+# an image whose row serves one: a server is a component manager row; on a
+# build without the drivetrain it exits at once, refusing to run without its
+# motor capabilities); disk-systest.img runs the
 # syscall test, which was built and copied onto the disk for months without
 # anything ever invoking it.
-$(OUT_BUILD)/disk.img:         AUTORUN_ELF := /fat/REFLEX.ELF
+$(OUT_BUILD)/disk.img:         AUTORUN_ELF := /fat/BRAINCLI.ELF
 $(OUT_BUILD)/disk-systest.img: AUTORUN_ELF := /fat/SYSTEST.ELF
 $(OUT_BUILD)/disk-uhello.img:  AUTORUN_ELF := /fat/UHELLO.ELF
 $(OUT_BUILD)/disk-reflex.img:  AUTORUN_ELF := /fat/REFLEX.ELF
 $(OUT_BUILD)/disk-braincli.img: AUTORUN_ELF := /fat/BRAINCLI.ELF
-# Wave 9 (P3): brain_client runs the encrypted link, and so does the
-# kernel's own brain link (the link is always a Noise session) once the image
-# carries a key (`disk-braincli-linkkey.img`) — both dial 10.0.2.2:9000, and
-# SLIRP hides which is which. With both answered, the host peer would hand its
-# script, e-stop included, to the kernel's link as well, and the ring-3 rows'
-# ordering assertions would race it. `tools/gate/fake_brain.py --serve` recognises
-# the kernel's session by its first message (PKT_STATUS; brain_client opens
-# with PKT_SENSOR) and only drains it.
+# brain_client is the robot's one brain link, an encrypted (Noise) session
+# once the image carries a key (`disk-braincli-linkkey.img`).
 # `brain_client_rekey_secs=10` shortens brain_client's wall-clock rekey so one
 # 40 s boot sees a client REKEY; the key can only shorten the interval.
 $(OUT_BUILD)/disk-braincli.img: CFG_EXTRA := brain_client_rekey_secs=10\n
@@ -126,44 +121,33 @@ $(OUT_BUILD)/disk-vsbench.img: AUTORUN_ELF := /fat/VSBENCH.ELF
 $(OUT_BUILD)/disk-vsbench.img: DISK_EXTRA := $(TOOLBOX_ELF)=TOOLBOX.ELF
 $(OUT_BUILD)/disk-vsbench.img: $(TOOLBOX_ELF)
 
-# The "brain lies" scenario. Same autorun as disk.img ON PURPOSE: a long-lived
-# ring-3 autorun program on the autorun hart is what exposed the net-poll
-# starvation (one created inside the real-time band never yielded hart 3 to
-# the poller, so the RX ring was never drained and the robot could not
-# complete a single TCP handshake). REFLEX reads its sensors every period
-# and, with the simulated road clear, never moves a wheel. Keeping it here makes this scenario the regression test for that, on
-# top of what it was written for.
-#
-# What it does change is the link key: the kernel's brain link is always a
-# Noise session, and with no key on the image it connects and immediately
-# closes. That is the correct behaviour and the gate proves it in
-# `link auth rejects missing key`; here it would just stop the frames from
-# ever reaching the dispatch this scenario exists to test. So the image is in
-# `KEYED_DISKS`, and the peer runs the brain side of the session with the key
-# it reads out of the image.
-$(OUT_BUILD)/disk-brainlies.img: AUTORUN_ELF := /fat/REFLEX.ELF
+# The "brain lies" scenario: the behaviour engine (BRAINCLI, as on disk.img)
+# runs the brain link, so the lying frames reach its dispatch and, for the
+# ones that ask for authority, the kernel's handler. The link is a Noise
+# session, so the image is in `KEYED_DISKS`, and the peer runs the brain side
+# with the key it reads out of the image.
+$(OUT_BUILD)/disk-brainlies.img: AUTORUN_ELF := /fat/BRAINCLI.ELF
 
 # Same recipe again for the RECORD half of that scenario, which boots a kernel
 # built with `brain-lies-smoke` and reads SAFETY_UNKNOWN_PKT back off the log.
 # Its own image rather than a reuse: the probe scans LOG00000.BIN, so a
 # previous run's records on a shared image would let it pass without this boot
 # writing anything.
-$(OUT_BUILD)/disk-brainrec.img: AUTORUN_ELF := /fat/REFLEX.ELF
+$(OUT_BUILD)/disk-brainrec.img: AUTORUN_ELF := /fat/BRAINCLI.ELF
 
-# And again for the TCP e-stop, which needs the kernel's OWN brain link up:
-# `PKT_ESTOP` over TCP is handled in `behavior_task`, not by any ring-3
-# program, so the key is not a convenience here — without it the link closes
-# and the frame never reaches the branch under test.
+# And again for the TCP e-stop: `PKT_ESTOP` reaches the behaviour engine, which
+# hands it to the kernel (`endpoint.authority`); without the key the link
+# closes and the frame never reaches it.
 # Its own image name because the Makefile needs an explicit rule per name; a
 # missing one yields no image and a silent boot that reads as a kernel fault.
-$(OUT_BUILD)/disk-brainestop.img: AUTORUN_ELF := /fat/REFLEX.ELF
+$(OUT_BUILD)/disk-brainestop.img: AUTORUN_ELF := /fat/BRAINCLI.ELF
 
 # The PHYSICAL kill switch. Same shape as the image above — the wheels have to
 # be turning before the switch is pressed, and the brain link is what turns
 # them. `estop_gpio_pin` is deliberately NOT set here: the pin has to be driven
 # high before the poll can see it, which a config line cannot promise. See
 # `estop_gpio_smoke_task`.
-$(OUT_BUILD)/disk-estopgpio.img: AUTORUN_ELF := /fat/REFLEX.ELF
+$(OUT_BUILD)/disk-estopgpio.img: AUTORUN_ELF := /fat/BRAINCLI.ELF
 
 # Wave 9 (DRV1): the base of the ring-3 drivers disk (`build/disk-drv.img`,
 # after this recipe). No autorun: the drivers are the only ring-3 tasks.
@@ -183,11 +167,9 @@ $(OUT_BUILD)/disk-lxbench-base.img: AUTORUN_ELF := /fat/LXSRV.ELF
 CONFIG_SIG_TOOLS := tools/sign/gen_config_sig.py tools/sign/device_provision.py
 LINK_KEY_TOOL := tools/sign/link_key_provision.py
 
-# The behavior loop's model bundle (see its rule, below).
-BEHAVIOR_MBL_SRC  := kernel/src/behavior_ml.rs
+# The behaviour model bundle (see its rule, below).
 BEHAVIOR_MBL_ARGS := --name behavior-mlp --in-bytes 16 --out-bytes 12 \
-	--variant gguf:1:$(OUT_BUILD)/policy.gguf:1000:20:4096 \
-	--expect-ref-from $(BEHAVIOR_MBL_SRC):BEHAVIOR_MODEL_REF
+	--variant gguf:1:$(OUT_BUILD)/policy.gguf:1000:20:4096
 
 # Images whose kernel brain link must come up (the link is always a Noise
 # session, so it needs the link key): a random 32-byte key, as a link-key
@@ -404,7 +386,7 @@ $(OUT_BUILD)/board_manifest.txt: $(OUT_BUILD)/board_elfs.list tools/image/gen_bo
 # The inference service's model files for the board volume: the same bytes as
 # the QEMU disks' BEHAVIOR.MBL and POLICY.GGF, signed with the board key (never
 # the test key).
-$(BOARD_DIR)/behavior.mbl: $(OUT_BUILD)/policy.gguf tools/image/make_mbl.py tools/sign/sigalg.py $(BEHAVIOR_MBL_SRC) $(BOARD_PRIV_STAMP)
+$(BOARD_DIR)/behavior.mbl: $(OUT_BUILD)/policy.gguf tools/image/make_mbl.py tools/sign/sigalg.py $(BOARD_PRIV_STAMP)
 	$(call require_board_priv,BOARD-SIG)
 	@mkdir -p $(BOARD_DIR)
 	python3 tools/image/make_mbl.py $(BEHAVIOR_MBL_ARGS) --priv "$(BOARD_SIGN_PRIV)" --out $@
@@ -841,15 +823,13 @@ $(TEST_PRIV_KEY) $(TEST_PUB_KEY): tools/sign/gen_test_key.py
 $(OUT_BUILD)/policy.sig: $(OUT_BUILD)/policy.gguf tools/sign/gen_config_sig.py $(TEST_PRIV_KEY)
 	python3 tools/sign/gen_config_sig.py $(OUT_BUILD)/policy.gguf --priv $(TEST_PRIV_KEY) --out $@
 
-# The behavior loop's model: the MLP of policy.gguf as a signed `.MBL` bundle,
-# one `gguf` variant (`tools/image/make_mbl.py`). The kernel's behavior task calls it
-# through the Infer interface of the inference service (`kernel/src/behavior_ml.rs`),
-# naming it by its model reference, which the build checks against the
-# kernel's constant (`--expect-ref-from`). 16 bytes in (4 x f32), 12 out
+# The behaviour model: the MLP of policy.gguf as a signed `.MBL` bundle, one
+# `gguf` variant (`tools/image/make_mbl.py`), which the inference service
+# (MLSRV.ELF) loads and serves through the Infer interface. 16 bytes in (4 x f32), 12 out
 # (3 x f32); the cost table is the figures the broker admits a call on: a run
 # measured in tens of microseconds is signed at 1 ms, inside the 10 ms the loop
 # gives a call. The file is found by its extension, so the name is free.
-$(OUT_BUILD)/behavior.mbl: $(OUT_BUILD)/policy.gguf tools/image/make_mbl.py tools/sign/sigalg.py $(BEHAVIOR_MBL_SRC) $(TEST_PRIV_KEY)
+$(OUT_BUILD)/behavior.mbl: $(OUT_BUILD)/policy.gguf tools/image/make_mbl.py tools/sign/sigalg.py $(TEST_PRIV_KEY)
 	python3 tools/image/make_mbl.py $(BEHAVIOR_MBL_ARGS) --priv $(TEST_PRIV_KEY) --out $@
 
 # The signed slot payload. Content is arbitrary as far as Ed25519 cares, so it

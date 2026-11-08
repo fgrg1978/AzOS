@@ -47,15 +47,3 @@ pub(crate) use buzzer_host::*;
 mod cam_capture;
 #[cfg(feature = "use-robot")]
 pub(crate) use cam_capture::*;
-#[cfg(feature = "use-robot")]
-mod camera;
-#[cfg(feature = "use-robot")]
-pub(crate) use camera::*;
-#[cfg(feature = "use-robot")]
-mod brain_link;
-#[cfg(feature = "use-robot")]
-pub(crate) use brain_link::*;
-#[cfg(feature = "use-robot")]
-mod behavior;
-#[cfg(feature = "use-robot")]
-pub(crate) use behavior::*;

@@ -542,7 +542,8 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         ],
         audit: false,
         ops: inv_ops![LOG_CONSOLE_WRITE, NODE_OPENAT, DOMAIN_SOCKET, NODE_READ, NODE_SEND, DOMAIN_UPTIME, MEMOBJ_ACQUIRE],
-        ifaces: &[azos_devif::key::ENTROPY, azos_devif::key::LINK_KEY, azos_devif::key::MOTOR, azos_devif::key::SENSOR],
+        ifaces: &[azos_devif::key::ENTROPY, azos_devif::key::LINK_KEY, azos_devif::key::MOTOR, azos_devif::key::SENSOR,
+                  azos_devif::key::AUTHORITY, azos_devif::key::BEHAVIOR],
     },
     // AUDIT MODE. captest issues capability calls it expects the kernel to
     // refuse, so every one of them is in the row and reaches the gate under

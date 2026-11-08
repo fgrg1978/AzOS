@@ -328,7 +328,7 @@ ring 3).
 
 Source: `crates/core/ipc/src/cap.rs` (`degrade_level`, `degraded_active`,
 `CapTable::get`, `get_uncontained`), `crates/domains/robot/robot/src/motor.rs`
-(`set_motor_halt`), `kernel/src/tasks/behavior.rs`.
+(`set_motor_halt`), `crates/domains/robot/safety-core/src/frames.rs`.
 
 ## 8. The second layer: image confinement
 

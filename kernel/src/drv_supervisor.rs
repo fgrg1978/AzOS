@@ -73,7 +73,7 @@ use azos_actuation::logger::{
 use azos_drv_sys::kprintln;
 use azos_drv_sys::timebase::{freq, now};
 use azos_sched::supervisor::{
-    sup_entry, sup_find_image, sup_held, sup_mark_recorded, sup_next_due, sup_next_swap,
+    sup_entry, sup_held, sup_mark_recorded, sup_next_due, sup_next_swap,
     sup_next_unrecorded, sup_note_started, sup_on_exit, sup_respawn_failed,
     sup_respawn_refused, sup_respawned, sup_set_restart, sup_swap_abort, sup_swap_begin,
     sup_swap_commit, sup_swap_refused, ExitVerdict, SupEntry, SupFall, SupOrigin, SupPolicy, SupRestart,
@@ -223,9 +223,9 @@ fn restart_word(r: SupRestart) -> &'static str {
 /// The task standing for the image at `path`, if the supervisor has an entry
 /// for it: the live one, or, while a successor is due or after a give-up,
 /// the one that died last.
-#[cfg_attr(any(feature = "no-ml", not(feature = "use-robot")), allow(dead_code))]
+#[cfg(feature = "sup-smoke")]
 pub(crate) fn current_tid(path: &[u8]) -> Option<u32> {
-    sup_find_image(path).map(|(_, e)| if e.tid != 0 { e.tid } else { e.dead_tid })
+    azos_sched::supervisor::sup_find_image(path).map(|(_, e)| if e.tid != 0 { e.tid } else { e.dead_tid })
 }
 
 /// What the exit hook decided for one dying task.
@@ -255,7 +255,7 @@ pub(crate) fn exit_verdict(tid: u32) -> Exit {
     // decides on, and the supervisor task starts the other host
     // (`crate::buzzer`).
     #[cfg(feature = "board-io")]
-    if let Some((_, e)) = sup_find_image(crate::buzzer::HOST_NAME.as_bytes()) {
+    if let Some((_, e)) = azos_sched::supervisor::sup_find_image(crate::buzzer::HOST_NAME.as_bytes()) {
         if e.tid == tid && e.origin == SupOrigin::KernelHost && crate::buzzer::host_died() {
             let _ = azos_sched::supervisor::sup_retire(tid);
             defer_wake(tid);

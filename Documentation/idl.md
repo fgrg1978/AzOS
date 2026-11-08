@@ -85,11 +85,10 @@ The kernel's call has no wait bound of its own: it blocks until the server
 answers (the deadline in the message is checked before the call is queued and
 read by the server). A kernel component that must not wait on a server that
 hangs makes the call from a task of its own and waits for that task with a timer
-(the behavior loop's `ml-infer`, `kernel/src/behavior_ml.rs`; the power
-monitor's `powermon-call`, `kernel/src/powermon.rs`, whose readers that ask the
-same thing share one call). A client that
+(the power monitor's `powermon-call`, `kernel/src/powermon.rs`, whose readers
+that ask the same thing share one call). A client that
 needs to keep a `Cap<T>` argument wraps the transport so the entries go as
-copies (`kernel/src/behavior_infer.rs`, `Lending`).
+copies.
 
 Source: `crates/core/idl-macros/src/lib.rs`, `crates/core/idl/src/lib.rs`,
 `crates/core/libsys/src/dev.rs`, `crates/core/syscall/src/kcall.rs`.

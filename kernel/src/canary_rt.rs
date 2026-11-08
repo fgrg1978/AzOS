@@ -233,6 +233,12 @@ pub(crate) const NAMES: &[&str] = &[
     // volume mounted, so it is not marked clean and the next boot checks it
     // (gate row `boot count: orderly reboot`).
     "power-off-unmount-skip",
+    // smokes/mod.rs: start the probe of the ring-3 behaviour engine's choice
+    // (gate row `robot: ring-3 engine chooses`).
+    "behave-smoke",
+    // smokes/mod.rs: the kernel's L1 switch is off, so the engine must not
+    // turn (the canary row of `robot: ring-3 engine chooses`).
+    "behave-switch",
     // tasks/cam_capture.rs `camera_with_frame`: each reader of the camera
     // frame pool captures and encodes a frame of its own again, as before
     // B2 (ktest `camera_one_encode_per_frame`).

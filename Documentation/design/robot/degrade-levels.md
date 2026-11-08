@@ -69,14 +69,11 @@ the kernel cannot unlock speed by sending a level the kernel does not know.
 
 ## Wire protocol
 
-Source: `crates/domains/robot/behavior/src/brain_protocol.rs`, `kernel/src/tasks/behavior.rs`
+Source: `crates/domains/robot/behavior/src/brain_protocol.rs`, `crates/domains/robot/safety-core/src/frames.rs`
 
-Two packet types set the level. Both handlers exist on the network link and on
-the UART bridge in `kernel/src/tasks/behavior.rs`. The network link is a Noise
-session; the bridge carries frames with no authentication, and it is down in
-both directions under Kconfig `LINK_PROVISIONING_ENFORCED` (default `n`; the
-kernel's `vf2` and `k1` cargo features select it). On a bridge that is up,
-anyone on the wire can set the level.
+Two packet types set the level. The behaviour engine (ring 3) receives them on
+the brain link, a Noise session, and hands them to the kernel through the
+`Authority` interface, whose handler (`frames.rs`) sets the level and records it.
 
 **`PKT_SEMANTIC_LEVEL` (0x8B)** carries one byte, the level index.
 
@@ -190,7 +187,7 @@ the brain.
 
 ## Flight recorder
 
-Source: `crates/core/actuation/src/logger.rs`, `kernel/src/tasks/behavior.rs`
+Source: `crates/core/actuation/src/logger.rs`, `crates/domains/robot/safety-core/src/frames.rs`
 
 Level changes are safety events and are recorded.
 

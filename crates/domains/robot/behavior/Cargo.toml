@@ -6,13 +6,6 @@ license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
 
 [features]
-no-ml = []
-# Canary for the host suite (tests/host/behavior-tests): a missing ring-3
-# verdict becomes "no verdict" instead of STOP (`ml_link::fallback`).
-ml-fallback-canary = []
-# Canary for the host suite: a boot that never started the service gets "no
-# verdict" (L1 passes) instead of STOP.
-ml-absent-canary = []
 # Forwarded from kernel/Cargo.toml (Kconfig LINK_PROVISIONING_ENFORCED); the const
 # the policy reads lives in azos_crypto::secure_channel.
 link-provisioning-enforced = ["azos_crypto/link-provisioning-enforced"]

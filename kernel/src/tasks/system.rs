@@ -133,3 +133,21 @@ pub(crate) fn recovery_task(_arg: usize) {
     crate::console_mode::wait_for_recovery();
     azos_recovery::recovery_run()
 }
+
+/// The `bench-boot` task (`qemu` robot images that keep info lines): the
+/// `[BENCH-RES]` sweep once, then the WCET and jitter report every
+/// `WCET_REPORT_INTERVAL_S`, which the bench harness collects. The sweep never
+/// blocks (about 17 s of virtual time at `-icount shift=3`), so it runs here at
+/// `BOOT_BENCH_PRIORITY`, below every boot task, and never in a control or
+/// safety task.
+#[cfg(all(feature = "qemu", feature = "use-robot"))]
+pub(crate) fn bench_boot_task(_arg: usize) {
+    const WCET_REPORT_INTERVAL_S: u64 = 10;
+    azos_robot_bench::run_all(azos_limits::BOOT_BENCH_ITERS as u64);
+    loop {
+        let dl = azos_drv_sys::timebase::now() + WCET_REPORT_INTERVAL_S * azos_drv_sys::timebase::freq();
+        azos_sched::task_block(azos_sched::WaitReason::Timer(dl));
+        azos_drv_sys::wcet::wcet_report();
+        azos_drv_sys::wcet::jitter_report();
+    }
+}

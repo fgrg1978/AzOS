@@ -55,7 +55,7 @@ pub(crate) fn call_host(msg: &mut MsgDesc) -> IdlResult {
 // (`azos_syscall::kcall`), and a power read is made on the syscall path of
 // any task. So the call task makes the calls, one at a time, and a reader
 // waits for it with a timer, as the behavior loop waits for its inference
-// helper (`crate::behavior_ml`): a host that is alive and not answering costs
+// helper: a host that is alive and not answering costs
 // a reader `REPLY_TIMEOUT_MS`, then "no data", never more. Readers that ask
 // what the call under way asks (every read is the same request: the last
 // sample) share its answer; a different request (the counters) while one is

@@ -31,18 +31,28 @@
 #![no_main]
 
 use azos_libsys as sys;
-use sys::dev::{MotorCall, MotorClient, MotorIdl, Regs, Sample, SensorIdl};
+use sys::dev::{BehaviorCall, MotorCall, MotorClient, MotorIdl, Regs, Sample, SensorIdl};
 
 // The brain link, client side: the same Noise session as the kernel's own link
 // (wave 9, owner decision P3; Noise since D9). Every frame this client sends
 // or receives is a message of that session, so there is no second MAC.
 mod link;
+// The behaviour engine's choice of layer and speed (pure, host-tested).
+mod behave;
 
 // ── Protocol constants (must match brain_protocol.rs + protocol.py) ──────────
 const MAGIC: [u8; 2] = *b"BR";
 const PKT_SENSOR: u8 = 0x01;
 const PKT_ACTUATOR: u8 = 0x80;
-const PKT_CONFIG: u8 = 0x83;
+const PKT_STATUS: u8 = 0x03;
+const PKT_ESTOP: u8 = 0x88;
+const PKT_PREDICT: u8 = 0x89;
+const STATUS_PAYLOAD_SIZE: usize = 8;
+/// How often the engine reads the kernel's layer switches (ms).
+const LAYERS_POLL_MS: u64 = 1_000;
+/// The status frame's robot-type byte: this engine does not know the kernel's
+/// configured type, and says so.
+const ROBOT_TYPE_UNREPORTED: u8 = 0xFF;
 
 const SENSOR_PAYLOAD_SIZE: usize = 64;
 const FRAME_OVERHEAD: usize = 6;        // MAGIC(2) + TYPE(1) + LEN(2) + CRC(1)
@@ -120,18 +130,46 @@ fn motor_caps_init() -> bool {
     true
 }
 
-/// Stop both motors immediately.
-///
-/// Through the `Motor` interface's `speed` (register form): the wheel is the
-/// endpoint's badge, so this cannot command a motor the topology did not
-/// grant. Unlike `pid_target`, which writes PID state for the kernel's motor
-/// task to consume, it actuates.
+/// Stop the drivetrain: the command (0, 0), which the kernel always carries out.
 fn motor_stop() {
     // SAFETY: written once by `motor_caps_init`, read by value so no
     // reference to a `static mut` is ever formed.
-    let (l, r) = unsafe { (CAP_LEFT, CAP_RIGHT) };
-    let _ = MotorClient::new(Regs(l)).speed(0);
-    let _ = MotorClient::new(Regs(r)).speed(0);
+    let l = unsafe { CAP_LEFT };
+    let _ = MotorClient::new(Regs(l)).command(0, 0);
+}
+
+/// Publish `(left, right)` to the drivetrain's effect loop in the kernel.
+fn motor_command(left: i32, right: i32) {
+    // SAFETY: as in `motor_stop`.
+    let l = unsafe { CAP_LEFT };
+    let _ = MotorClient::new(Regs(l)).command(left, right);
+}
+
+// ── The kernel's authority ──────────────────────────────────────────────────
+
+/// The `authority` endpoint: the brain frames that ask for the kernel's
+/// authority (e-stop, degraded mode, the operator's release, payload and
+/// configuration effects) are handed there, and the kernel decides. 0: the
+/// topology granted none.
+static mut CAP_AUTHORITY: u32 = 0;
+
+fn authority_init() {
+    if let Some(c) = sys::dev::lookup(sys::dev::key::BEHAVIOR, 0) {
+        // SAFETY: single-threaded; written once before the engine loop.
+        unsafe { CAP_BEHAVIOR = c };
+    }
+    match sys::dev::lookup(sys::dev::key::AUTHORITY, 0) {
+        // SAFETY: single-threaded; written once before the engine loop.
+        Some(c) => unsafe { CAP_AUTHORITY = c },
+        None => sys::println(b"[brain_client] FAILED: no authority endpoint - the brain's authority frames are refused"),
+    }
+}
+
+/// Hand frame `kind` to the kernel. `false` when it did not reach it.
+fn authority_submit(kind: u8, payload: &[u8]) -> bool {
+    // SAFETY: as in `motor_stop`.
+    let cap = unsafe { CAP_AUTHORITY };
+    cap != 0 && sys::dev::authority::submit(&mut sys::dev::AuthorityClient::new(Regs(cap)), kind, payload).is_ok()
 }
 
 // ── Sensor capabilities ─────────────────────────────────────────────────────
@@ -353,41 +391,31 @@ fn ring_drain(ring: &sys::ioring::Ring, mut each: impl FnMut(sys::ioring::Cqe)) 
     true
 }
 
-/// Submit the `Motor::speed` call of each wheel as an `OP_CALL` entry on its
-/// `motor` endpoint, both in one submit, and print each completion as
-/// `[brain_client] ioring motor wheel=<w> status=<s> outcome=<o> flags=<f>`.
+/// Submit the brain's command as one `Motor::command` `OP_CALL` entry on the
+/// left wheel's endpoint and print its completion as
+/// `[brain_client] ioring command status=<s> outcome=<o> flags=<f>`.
 ///
-/// The kernel decides each entry the way it decides the typed call: this
-/// image's row must list the `motor` interface, the endpoint must carry WRITE,
-/// and the wheel goes through the effect gate and the motor layer, so a latched
-/// e-stop answers `REFUSED` (served: status 0, flags 0).
-fn motor_ring_submit(left: u32, right: u32) {
-    let Some(ring) = ring() else { return };
+/// The kernel decides the entry the way it decides the typed call: this
+/// image's row must list the `motor` interface, the table must carry WRITE on
+/// both wheels, and both wheels' effects go through the gate, so a latched
+/// e-stop answers `REFUSED` for motion (served: status 0, flags 0). `false`
+/// when there is no ring, and the caller uses the typed call.
+fn command_ring_submit(left: i32, right: i32) -> bool {
+    let Some(ring) = ring() else { return false };
     // SAFETY: written once by `motor_caps_init`; read by value.
-    let caps = unsafe { [CAP_LEFT, CAP_RIGHT] };
-    let hdr = sys::dev::header(MotorIdl::ID, MotorIdl::LEVEL, MotorIdl::OP_SPEED);
-    // Both wheels or neither: one queued alone would be submitted with the
-    // next command.
-    if ring.room() < 2 {
-        sys::print(b"[brain_client] FAILED: ioring motor: no room for both wheels\n");
-        return;
-    }
-    for (w, (&ep, pct)) in caps.iter().zip([left, right]).enumerate() {
-        if !ring.push_call(ep, motor_window(w), &[hdr, pct as u64], TAG_MOTOR + w as u64) {
-            sys::print(b"[brain_client] FAILED: ioring motor: push refused\n");
-            return;
-        }
+    let ep = unsafe { CAP_LEFT };
+    let hdr = sys::dev::header(MotorIdl::ID, MotorIdl::LEVEL, MotorIdl::OP_COMMAND);
+    if !ring.push_call(ep, motor_window(0), &[hdr, left as i64 as u64, right as i64 as u64], TAG_MOTOR) {
+        sys::print(b"[brain_client] FAILED: ioring command: push refused\n");
+        return false;
     }
     ring_drain(&ring, |(tag, result, flags)| {
-        let w = tag.wrapping_sub(TAG_MOTOR) as usize;
-        if w >= 2 {
+        if tag != TAG_MOTOR {
             return;
         }
-        let outcome = ring.reply(motor_window(w))[1];
+        let outcome = ring.reply(motor_window(0))[1];
         let mut line = Line::new();
-        line.push(b"[brain_client] ioring motor wheel=");
-        line.push_i64(w as i64);
-        line.push(b" status=");
+        line.push(b"[brain_client] ioring command status=");
         line.push_i64(result as i64);
         line.push(b" outcome=");
         line.push_i64(if flags & sys::ioring::CQE_F_REFUSED != 0 { -1 } else { outcome as i64 });
@@ -396,6 +424,7 @@ fn motor_ring_submit(left: u32, right: u32) {
         line.push(b"\n");
         sys::print(line.bytes());
     });
+    true
 }
 
 // ── The receive buffer: registered once, named by slot ─────────────────────
@@ -772,92 +801,34 @@ fn parse_frame(buf: &[u8], len: usize) -> Option<(u8, usize, usize)> {
 
 // ── ActuatorCmd decode ──────────────────────────────────────────────────────
 
-fn apply_actuator_cmd(payload: &[u8]) {
+fn apply_actuator_cmd(payload: &[u8], now_ms: u64) -> Option<behave::Remote> {
     if payload.len() < ACT_HDR_SIZE {
-        return;
+        return None;
     }
-    let _act_type = payload[0];
     let n_channels = payload[1] as usize;
     let flags = payload[2];
+    // The command's confidence is the kernel's to enforce (its envelope).
+    let _ = authority_submit(PKT_ACTUATOR, payload);
 
     if flags & FLAG_EMERGENCY != 0 {
-        // **An emergency, told to the kernel AS an emergency.**
-        //
-        // This used to be `motor_stop()` alone — two `speed(0)` calls the
-        // kernel cannot tell apart from "please go at 0%". The
-        // difference is not cosmetic: an ordinary zero does not latch, so the
-        // next command from anywhere drives again; it does not disarm the ESC;
-        // and it leaves NOTHING in the flight recorder, so an incident review
-        // cannot see that the brain ever called for a stop. Measured on this
-        // exact path: the emergency arrived, the wheels went to zero, and the
-        // whole boot log held no e-stop record of any kind.
-        //
-        // `estop` latches, stops the drivetrain, disarms and records.
+        // **An emergency, told to the kernel AS an emergency**: `estop`
+        // latches, stops the drivetrain, disarms and records. An ordinary
+        // zero does not latch, and leaves no record of the brain's call.
         // SAFETY: written once by `motor_caps_init`; read by value.
         let cap_l = unsafe { CAP_LEFT };
         let _ = MotorClient::new(Regs(cap_l)).estop();
-        // The direct stop stays as a FALLBACK, not as belt-and-braces: if the
-        // kernel refuses the call (no motor capability) or has not armed the
-        // handler, this program still does the most it is allowed to do rather
-        // than nothing. It is a no-op once the latch is on.
+        // The stop as a fallback if the kernel refused the call; a no-op once
+        // the latch is on.
         motor_stop();
-        return;
+        return Some(behave::Remote::stop(now_ms));
     }
-
     let ch_data = &payload[ACT_HDR_SIZE..];
     if n_channels >= 2 && ch_data.len() >= 4 {
-        // The brain sends signed i16 speeds; the kernel cannot take one.
-        //
-        // The `speed` op reads an UNSIGNED percentage and drives forward;
-        // `motor_set` then clamps with
-        // `speed_pct.min(100)`. The old code was `get_i16_le(..) as u64`, so a
-        // brain command of -50 ("back up") sign-extended to 0xFFFF...CE and
-        // clamped to 100 — the robot drove FULL SPEED FORWARD on a reverse
-        // command. Same defect as `userspace/services/reflex`'s motor_backup(); both
-        // trusted a libsys doc that claimed the kernel interpreted the sign.
-        //
-        // Split the sign off explicitly. Direction and speed cannot be sent
-        // in one `speed`/`direction` call, so a reverse command becomes
-        // `direction(BACKWARD)` at the kernel's fixed 50% and the
-        // brain's magnitude is not honoured on that path. A forward command
-        // keeps its exact magnitude.
-        // SAFETY: written once by `motor_caps_init` before the connect loop;
-        // read by value, so no reference to a `static mut` is formed.
-        let (cap_l, cap_r) = unsafe { (CAP_LEFT, CAP_RIGHT) };
-        let (left, right) = (get_i16_le(ch_data, 0), get_i16_le(ch_data, 2));
-        apply_motor_cmd(cap_l, left);
-        apply_motor_cmd(cap_r, right);
-
-        // The same command again, as one io_ring `OP_CALL` entry per wheel, so
-        // the ring meets the same e-stop latch as the typed calls.
-        //
-        // Forward only: `speed` has no direction, and a negative brain speed
-        // cast to `u32` would be clamped to 100 (the sign-extension described
-        // above). A reverse command has no ring twin.
-        if left >= 0 && right >= 0 {
-            motor_ring_submit(left as u32, right as u32);
-        }
+        // Signed percent per wheel; the command carries the sign itself.
+        let (left, right) = (get_i16_le(ch_data, 0) as i32, get_i16_le(ch_data, 2) as i32);
+        return Some(behave::Remote { left, right, at_ms: now_ms });
     }
-}
-
-/// Drive one motor from a signed brain command, without ever handing the
-/// kernel a sign-extended negative. See `apply_actuator_cmd`.
-///
-/// Both branches take the wheel from the endpoint `ep`, so neither can name a
-/// motor the topology did not grant:
-///
-/// * Forward goes through `speed` at the requested percentage.
-/// * Reverse goes through `direction`, which sets the direction at the
-///   kernel's fixed 50%. Not `pid_enable`, which arms the PID loop.
-fn apply_motor_cmd(ep: u32, speed: i16) {
-    let mut wheel = MotorClient::new(Regs(ep));
-    if speed < 0 {
-        // Reverse at the kernel's fixed 50% - see above.
-        let _ = wheel.direction(sys::dev::motor::DIR_BACKWARD);
-    } else {
-        // Forward at the requested percentage; the kernel clamps to 100.
-        let _ = wheel.speed(speed as u32);
-    }
+    None
 }
 
 // ── Main loop ───────────────────────────────────────────────────────────────
@@ -887,67 +858,192 @@ fn connect_to_brain(ip: [u8; 4], port: u16) -> isize {
     cap
 }
 
-fn brain_client_loop(sock: u32) {
-    let mut sensors = SensorData::new();
+/// One exchange with the brain: the sensor frame out, every frame in. A drive
+/// command updates `remote`; a frame asking for authority goes to the kernel;
+/// the predictive channel is printed. `false` when the session ended.
+fn exchange(sock: u32, sensors: &SensorData, remote: &mut Option<behave::Remote>, now_ms: u64,
+            recv_raw: &mut [u8; RECV_RAW_SIZE]) -> bool {
     let mut payload = [0u8; SENSOR_PAYLOAD_SIZE];
     let mut frame = [0u8; SENSOR_FRAME_SIZE];
-    let mut recv_raw = [0u8; RECV_RAW_SIZE]; // the typed poll's buffer, when none is registered.
-
-    loop {
-        // 1. Read all sensors
-        sensors.read_all();
-
-        // 2. Build, seal and send SensorPacket
-        build_sensor_payload(&mut payload, &sensors);
-        let frame_len = build_frame(&mut frame, PKT_SENSOR, &payload);
-        if !link::seal_frame(sock, &frame[..frame_len]) {
-            // Connection lost
-            sys::print(b"[brain_client] Send failed, disconnecting\n");
-            link::end();
-            break;
+    build_sensor_payload(&mut payload, sensors);
+    let frame_len = build_frame(&mut frame, PKT_SENSOR, &payload);
+    if !link::seal_frame(sock, &frame[..frame_len]) {
+        sys::print(b"[brain_client] Send failed, disconnecting\n");
+        return false;
+    }
+    // Frames are opened in `link::feed` BEFORE this client's own
+    // MAGIC/TYPE/LEN/CRC8 framing sees a byte; a frame that fails the AEAD
+    // ends the session.
+    let (n, wire): (isize, &[u8]) = match recv_ring(sock) {
+        Some(n) => (n, recv_bytes(n)),
+        None => {
+            let n = sys::recv_typed(sock, recv_raw);
+            (n, &recv_raw[..n.max(0) as usize])
         }
-
-        // 3. Check for incoming commands (non-blocking receive). Frames are
-        // opened in `link::feed` BEFORE this client's own MAGIC/TYPE/LEN/CRC8
-        // framing sees a byte; a frame that fails the AEAD ends the session.
-        let (n, wire): (isize, &[u8]) = match recv_ring(sock) {
-            Some(n) => (n, recv_bytes(n)),
-            None => {
-                let n = sys::recv_typed(sock, &mut recv_raw);
-                (n, &recv_raw[..n.max(0) as usize])
-            }
-        };
-        if n > 0 {
-            let fed = link::feed(wire, |inner| {
-                if let Some((pkt_type, pay_start, pay_len)) = parse_frame(inner, inner.len()) {
-                    let payload_slice = &inner[pay_start..pay_start + pay_len];
-                    match pkt_type {
-                        PKT_ACTUATOR => apply_actuator_cmd(payload_slice),
-                        PKT_CONFIG => {
-                            // Config commands handled by kernel behavior_task
-                            // (buzzer, LED, etc.) — forward via IPC in future
-                        }
-                        _ => {}
-                    }
+    };
+    if n < 0 {
+        sys::print(b"[brain_client] Recv error, disconnecting\n");
+        return false;
+    }
+    if n == 0 {
+        return true;
+    }
+    let fed = link::feed(wire, |inner| {
+        let Some((pkt_type, pay_start, pay_len)) = parse_frame(inner, inner.len()) else { return };
+        let body = &inner[pay_start..pay_start + pay_len];
+        match pkt_type {
+            PKT_ACTUATOR => {
+                if let Some(r) = apply_actuator_cmd(body, now_ms) {
+                    *remote = Some(r);
                 }
-            });
-            if let Err(e) = fed {
-                let mut line = Line::new();
-                line.push(b"[brain_client] link: transport ");
-                line.push(link::end_name(e));
-                line.push(b" - closing\n");
-                sys::print(line.bytes());
-                link::end();
-                break;
             }
-        } else if n < 0 {
-            // Error or connection closed
-            sys::print(b"[brain_client] Recv error, disconnecting\n");
-            link::end();
-            break;
+            PKT_PREDICT => sys::print(b"[brain_client] predictive command received\n"),
+            PKT_ESTOP => {
+                // The brain's standing command does not survive its e-stop.
+                *remote = Some(behave::Remote::stop(now_ms));
+                // An e-stop the kernel did not take is still carried out here.
+                if !authority_submit(PKT_ESTOP, body) {
+                    // SAFETY: written once by `motor_caps_init`; read by value.
+                    let _ = MotorClient::new(Regs(unsafe { CAP_LEFT })).estop();
+                }
+            }
+            other => {
+                let _ = authority_submit(other, body);
+            }
         }
+    });
+    if let Err(e) = fed {
+        let mut line = Line::new();
+        line.push(b"[brain_client] link: transport ");
+        line.push(link::end_name(e));
+        line.push(b" - closing\n");
+        sys::print(line.bytes());
+        return false;
+    }
+    true
+}
 
-        // 4. Sleep until next sensor period
+/// Dial the brain, run the encrypted handshake and send the status frame.
+fn dial(ip: [u8; 4], port: u16, rekey_secs: u64, now_ms: u64) -> Option<u32> {
+    sys::print(b"[brain_client] Connecting to brain server...\n");
+    let sock = connect_to_brain(ip, port);
+    if sock < 0 {
+        sys::print(b"[brain_client] Connection failed, retrying...\n");
+        return None;
+    }
+    sys::println(b"[brain_client] Connected!");
+    // SAFETY: written once before the engine loop; read by value.
+    let (key, pinned) = unsafe { (LINK_KEY, BRAIN_PK) };
+    let Some(key) = key else { sys::exit(1) };
+    if !link::handshake(sock as u32, unsafe { ENTROPY_CAP }, &key, pinned.as_ref(),
+                        rekey_secs.saturating_mul(1_000_000_000)) {
+        link::end();
+        sys::close_typed(sock as u32);
+        return None;
+    }
+    let mut st = [0u8; STATUS_PAYLOAD_SIZE];
+    st[0] = 1; // running
+    st[3..7].copy_from_slice(&((now_ms / 1000) as u32).to_le_bytes());
+    st[7] = ROBOT_TYPE_UNREPORTED;
+    let mut frame = [0u8; STATUS_PAYLOAD_SIZE + FRAME_OVERHEAD];
+    let n = build_frame(&mut frame, PKT_STATUS, &st);
+    let _ = link::seal_frame(sock as u32, &frame[..n]);
+    Some(sock as u32)
+}
+
+/// The layers the kernel's switches enable (`behavior enable|disable`,
+/// CONFIG.INI `behavior_l1_enabled` .. `_l3_` at boot), read through the
+/// `Behavior` interface: bit `n` for layer `n`. With no grant, or a refused
+/// read, every layer.
+fn layers_now() -> behave::Layers {
+    // SAFETY: single-threaded; written once before the engine loop.
+    let cap = unsafe { CAP_BEHAVIOR };
+    let mask = match sys::dev::BehaviorClient::new(Regs(cap)).status() {
+        Ok(o) if cap != 0 && o.is_ok() => o.value,
+        _ => return behave::Layers::ALL,
+    };
+    behave::Layers { avoid: mask & 1 << 1 != 0, remote: mask & 1 << 2 != 0, explore: mask & 1 << 3 != 0 }
+}
+
+/// The `behavior` endpoint, 0 for none.
+static mut CAP_BEHAVIOR: u32 = 0;
+
+fn layer_name(w: behave::Winner) -> &'static [u8] {
+    match w {
+        behave::Winner::Avoid => b"avoid",
+        behave::Winner::Remote => b"remote",
+        behave::Winner::Explore => b"explore",
+    }
+}
+
+/// The engine: every period read the sensors, exchange with the brain while
+/// a session is up (dialling again every `CONNECT_RETRY_MS` while none is and
+/// the link has its keys, `brain`),
+/// choose a layer and publish its command to the drivetrain's effect loop.
+/// The brain's command goes through the io_ring when there is one. A
+/// change of winner prints `[behave] <layer> drives (l,r)`.
+fn engine(brain: Option<([u8; 4], u16)>, rekey_secs: u64) -> ! {
+    let mut sensors = SensorData::new();
+    let mut recv_raw = [0u8; RECV_RAW_SIZE];
+    let mut sock: Option<u32> = None;
+    let mut remote: Option<behave::Remote> = None;
+    let mut next_dial = 0u64;
+    let mut last: Option<behave::Winner> = None;
+    let mut layers = layers_now();
+    let mut next_layers = 0u64;
+    loop {
+        let now = sys::vdso_now_ns() / 1_000_000;
+        if now >= next_layers {
+            layers = layers_now();
+            next_layers = now + LAYERS_POLL_MS;
+        }
+        sensors.read_all();
+        if let (None, Some((ip, port)), true) = (sock, brain, now >= next_dial) {
+            sock = dial(ip, port, rekey_secs, now);
+            next_dial = now + CONNECT_RETRY_MS;
+        }
+        if let Some(s) = sock {
+            if !exchange(s, &sensors, &mut remote, now, &mut recv_raw) {
+                link::end();
+                sys::close_typed(s);
+                sock = None;
+                remote = None;
+                next_dial = now + CONNECT_RETRY_MS;
+                sys::print(b"[brain_client] Disconnected, reconnecting...\n");
+            }
+        }
+        let nz = |mm: u16| (mm != 0).then_some(mm);
+        let inputs = behave::Inputs {
+            now_ms: now,
+            front_mm: nz(sensors.range_front),
+            right_mm: nz(sensors.range_right),
+            remote,
+            session_up: sock.is_some(),
+        };
+        let chosen = behave::arbitrate(layers, &inputs);
+        if let Some(((l, r), w)) = chosen {
+            if !(w == behave::Winner::Remote && command_ring_submit(l, r)) {
+                motor_command(l, r);
+            }
+        }
+        let winner = chosen.map(|(_, w)| w);
+        if winner != last {
+            let mut line = Line::new();
+            match chosen {
+                Some(((l, r), w)) => {
+                    line.push(b"[behave] ");
+                    line.push(layer_name(w));
+                    line.push(b" drives (");
+                    line.push_i64(l as i64);
+                    line.push(b",");
+                    line.push_i64(r as i64);
+                    line.push(b")\n");
+                }
+                None => line.push(b"[behave] no layer drives\n"),
+            }
+            sys::print(line.bytes());
+            last = winner;
+        }
         sys::sleep(SENSOR_PERIOD_MS);
     }
 }
@@ -1172,7 +1268,7 @@ fn parse_u16(v: &[u8]) -> Option<u16> {
 
 
 fn run() {
-    sys::println(b"[brain_client] Starting brain protocol client");
+    sys::println(b"[brain_client] Starting the behaviour engine and brain protocol client");
 
     // Before the network, before anything: every motor write below - the
     // emergency stop, the disconnect stop, the panic-handler stop - now goes
@@ -1196,9 +1292,11 @@ fn run() {
     // the gate's autorun and the one ring-3 network client that drives the
     // motors, so "refuse to start" is the honest outcome here, same
     // reasoning as the motor capability check two lines up.
-    if !link_key_init() {
-        sys::println(b"[brain_client] FATAL link key (or the brain key) unavailable - refusing to run");
-        sys::exit(1);
+    // No key, no entropy: no brain link (never in plaintext), but the engine
+    // still chooses for the layers that need no brain.
+    let mut brain = link_key_init();
+    if !brain {
+        sys::println(b"[brain_client] link key (or the brain key) unavailable - the brain link stays down");
     }
 
     // Wave 9 (P3/P9): every connection runs the Noise handshake with an
@@ -1208,11 +1306,11 @@ fn run() {
     // rule the kernel's own handshake applies on an enforced build.
     if let Err(rc) = entropy_init() {
         let mut line = Line::new();
-        line.push(b"[brain_client] FATAL entropy refused outcome=");
+        line.push(b"[brain_client] entropy refused outcome=");
         line.push_i64(rc as i64);
-        line.push(b" - no fresh keys, refusing to run the link\n");
+        line.push(b" - no fresh keys, the brain link stays down\n");
         sys::print(line.bytes());
-        sys::exit(1);
+        brain = false;
     }
     let rekey_secs = rekey_interval_from_config();
 
@@ -1241,38 +1339,10 @@ fn run() {
         sys::print(&line[..n]);
     }
 
-    loop {
-        sys::print(b"[brain_client] Connecting to brain server...\n");
-
-        let sock = connect_to_brain(brain_ip, brain_port);
-        if sock < 0 {
-            sys::print(b"[brain_client] Connection failed, retrying...\n");
-            sys::sleep(CONNECT_RETRY_MS);
-            continue;
-        }
-
-        sys::println(b"[brain_client] Connected!");
-        let (key, pinned) = unsafe { (LINK_KEY, BRAIN_PK) };
-        let Some(key) = key else { sys::exit(1) };
-        if link::handshake(sock as u32, unsafe { ENTROPY_CAP }, &key, pinned.as_ref(),
-                           rekey_secs.saturating_mul(1_000_000_000)) {
-            brain_client_loop(sock as u32);
-        } else {
-            link::end();
-        }
-
-        // Cleanup: revokes the handle and closes the socket in one call.
-        sys::close_typed(sock as u32);
-
-        // Stop motors on disconnect
-        motor_stop();
-
-        sys::print(b"[brain_client] Disconnected, reconnecting...\n");
-        sys::sleep(CONNECT_RETRY_MS);
-    }
+    authority_init();
+    engine(brain.then_some((brain_ip, brain_port)), rekey_secs);
 }
 
-// ── Entry point ─────────────────────────────────────────────────────────────
 
 #[no_mangle]
 pub extern "C" fn _start() -> ! {

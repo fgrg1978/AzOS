@@ -551,15 +551,6 @@ pub(crate) fn apply_config_to_subsystems() {
     azos_behavior::layer_set_enabled(3,
         azos_config::BEHAVIOR_L3_ENABLED.load(Ordering::Relaxed));
 
-    // Behavior VLA server
-    #[cfg(feature = "use-robot")]
-    let bport = azos_config::BEHAVIOR_SERVER_PORT.load(Ordering::Relaxed);
-    #[cfg(feature = "use-robot")]
-    if bport > 0 {
-        let bip = azos_config::behavior_server_ip_bytes();
-        azos_behavior::remote_configure(bip, bport as u16);
-    }
-
     // Encoder physical params
     #[cfg(feature = "use-robot")]
     azos_robot::set_ticks_per_m(
@@ -592,8 +583,6 @@ fn cmd_config(args: &[&[u8]; MAX_ARGS], argc: usize) {
                 azos_drv_sys::kconsoleln!();
             }
         }
-        azos_drv_sys::kconsoleln!("[CFG] ml_enabled (runtime)={}",
-            azos_config::ML_ENABLED.load(core::sync::atomic::Ordering::Relaxed) as u8);
         return;
     }
 

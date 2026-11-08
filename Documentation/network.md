@@ -597,7 +597,8 @@ shape (Kconfig `NET_NIC_QUEUES`):
   queue, so taking queue 0 takes the NIC.
 - **What is never handed over.** The primary interface, which every kernel
   service runs on, and the interface the route to the link peer (the brain the
-  behavior task dials, which carries the e-stop) leaves by. The attach is then
+  behaviour engine dials, CONFIG.INI `behavior_server_ip`, which carries the
+  e-stop) leaves by. The attach is then
   refused with `-EPERM` and recorded (`Rule::NicQueue`). These checks run at
   the attach, not at the seed: a NIC can come and go, and a route can change.
 - **The attachment ends** with `QUEUE_NICQ_DETACH`, the owner's exit, or a

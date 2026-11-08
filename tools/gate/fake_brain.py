@@ -47,7 +47,6 @@ MAGIC = b"BR"
 PKT_SEMANTIC_LEVEL = 0x8B
 PKT_DEGRADE = 0x8A
 PKT_ESTOP = 0x88
-PKT_STATUS = 0x03  # the kernel link's first message; brain_client opens with PKT_SENSOR
 PKT_UNKNOWN_PROBE = 0x7F  # deliberately not a type the kernel handles
 # The one frame this file SENDS BACK rather than at: ring 3's `brain_client`
 # turns it into motor commands, and so does the kernel's own brain link.
@@ -120,12 +119,8 @@ class EncPeer:
     """One accepted connection of `--serve`: the brain-side (Noise responder)
     handshake, then sealed frames both ways. The client dials and speaks first.
 
-    Two dialers reach the port in the ring-3 images: ring 3's `brain_client`
-    and the kernel's own brain link, and SLIRP hides which is which. They are
-    told apart by the first message of the session: the kernel's link opens
-    with its `PKT_STATUS`, `brain_client` with a `PKT_SENSOR`. A kernel session
-    is drained and never answered, so the script reaches only the client the
-    rows assert on.
+    The dialer is the robot's behaviour engine (`brain_client`, ring 3), the
+    image's one brain link.
 
     States: `await` (nothing received yet), `hs` (mid-handshake), `est`
     (session established), `dead`. `role` is None until the first message.
@@ -187,8 +182,8 @@ class EncPeer:
                 continue
             ptype = payload[2] if len(payload) > 2 else None
             if self.role is None:
-                self.role = "kernel" if ptype == PKT_STATUS else "client"
-                print(f"[fake-brain] session is the {self.role}'s "
+                self.role = "client"
+                print(f"[fake-brain] session is the client's "
                       f"(first message type 0x{ptype or 0:02x})", flush=True)
             if ptype == 0x01:
                 self.sensors += 1
@@ -792,8 +787,7 @@ def serve(host: str, port: int, duration: float, emergency: bool, psk: bytes) ->
                       f"sid={ep.sc.session_id.hex()}", flush=True)
             if ep.state != "est" or was != "est" or ep.role != "client":
                 # Nothing to answer: the handshake is still running or just
-                # finished, no message has said who this is yet, or it is the
-                # kernel's own link (drained, never answered).
+                # finished, or no message has arrived yet.
                 conns[c] = [a, step, got]
                 continue
             # Answer once per inbound read, walking the script and then
@@ -827,8 +821,7 @@ def serve(host: str, port: int, duration: float, emergency: bool, psk: bytes) ->
     print(f"[fake-brain] encrypted sessions={len(est)} "
           f"sealed_sensor_packets_opened={sum(p.sensors for p in peers)} "
           f"client_rekeys={sum(p.client_rekeys for p in peers)} "
-          f"brain_rekeys={brain_rekeys} "
-          f"kernel_sessions={sum(1 for p in peers if p.role == 'kernel')}", flush=True)
+          f"brain_rekeys={brain_rekeys}", flush=True)
 
     if accepts == 0:
         # Never treat silence as success.

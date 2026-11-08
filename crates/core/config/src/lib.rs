@@ -14,7 +14,6 @@
 //!
 //! ```text
 //! # AzOS Configuration
-//! ml_enabled=1
 //! sched_hz=100
 //! watchdog_ms=500
 //! motor_max_speed=100
@@ -43,7 +42,7 @@
 //! `cfg_load` is called once during single-threaded boot (before tasks start).
 //! `cfg_get` / `cfg_set` are only used from the shell task (single writer).
 //! Consumers that need safe concurrent access should copy values into an
-//! `AtomicBool` / `AtomicU32` after `cfg_load` (see `ML_ENABLED` etc.).
+//! `AtomicBool` / `AtomicU32` after `cfg_load` (see `BEHAVIOR_SERVER_PORT` etc.).
 
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
@@ -58,18 +57,11 @@ pub use signed::{
 
 // ── Runtime atomics (Phase 18 + G2) ──────────────────────────────────────────
 
-/// Runtime flag — true if the ML deliberative pipeline is enabled.
-pub static ML_ENABLED: AtomicBool = AtomicBool::new(true);
-
 /// Runtime: behavior VLA server IP packed as `(a<<24)|(b<<16)|(c<<8)|d`.
 pub static BEHAVIOR_SERVER_IP: AtomicU32 = AtomicU32::new(0);
 
 /// Runtime: behavior VLA server port (default 0 = disabled).
 pub static BEHAVIOR_SERVER_PORT: AtomicU32 = AtomicU32::new(0);
-
-/// Runtime: the brain's camera connection port (C1). Default 0: no camera
-/// connection, and camera frames stay on the control connection.
-pub static BEHAVIOR_CAMERA_PORT: AtomicU32 = AtomicU32::new(0);
 
 /// Runtime: behavior layer 1 (avoid-obstacle) enabled.
 pub static BEHAVIOR_L1_ENABLED: AtomicBool = AtomicBool::new(true);
@@ -79,15 +71,6 @@ pub static BEHAVIOR_L2_ENABLED: AtomicBool = AtomicBool::new(true);
 
 /// Runtime: behavior layer 3 (explore) enabled.
 pub static BEHAVIOR_L3_ENABLED: AtomicBool = AtomicBool::new(true);
-
-/// Runtime: multi-stream link framing enabled.  When set, every
-/// brain↔kernel frame is prefixed with a 1-byte stream-id + 2-byte length
-/// (`crates/net/multi-stream`), the OUTERMOST wire layer — control traffic rides
-/// `STREAM_CONTROL`, camera/lidar get their own stream-ids.  Composes outside
-/// the forward-secret AEAD layer.  Both sides MUST agree.
-///
-/// CONFIG.INI key: `multi_stream=1`.  Default off.
-pub static CFG_MULTI_STREAM: AtomicBool = AtomicBool::new(false);
 
 /// Runtime: run the synthetic microbench suite ONCE during early boot, then
 /// halt.  The early-boot window (after subsystem init, before the scheduler
@@ -234,9 +217,7 @@ pub fn behavior_server_ip_bytes() -> [u8; 4] {
 /// Subsequent calls (e.g. after `config load` in the shell) are safe because
 /// `AtomicBool::store` with `Release` ordering is visible to any `Acquire` load.
 pub fn cfg_apply() {
-    ML_ENABLED.store(cfg_get_u32(b"ml_enabled", 1) != 0, Ordering::Release);
     BEHAVIOR_SERVER_PORT.store(cfg_get_u32(b"behavior_server_port", 0), Ordering::Release);
-    BEHAVIOR_CAMERA_PORT.store(cfg_get_u32(b"behavior_camera_port", 0), Ordering::Release);
 
     // Parse behavior_server_ip as dotted-decimal → packed u32.
     if let Some(ip_val) = cfg_get(b"behavior_server_ip") {
@@ -250,7 +231,6 @@ pub fn cfg_apply() {
     BEHAVIOR_L2_ENABLED.store(cfg_get_u32(b"behavior_l2_enabled", 1) != 0, Ordering::Release);
     BEHAVIOR_L3_ENABLED.store(cfg_get_u32(b"behavior_l3_enabled", 1) != 0, Ordering::Release);
     // Multi-stream opt-in.  Off by default; both sides must set this together.
-    CFG_MULTI_STREAM.store(cfg_get_u32(b"multi_stream", 0) != 0, Ordering::Release);
     // Early-boot synthetic bench capture.  Off by default.
     CFG_BENCH_BOOT.store(cfg_get_u32(b"bench_boot", 0) != 0, Ordering::Release);
 
@@ -650,14 +630,12 @@ pub fn cfg_defaults() {
         COUNT   = 0;
     }
     // General
-    cfg_set(b"ml_enabled", b"1");
     cfg_set(b"sched_hz", b"100");
     cfg_set(b"watchdog_ms", b"500");
     cfg_set(b"motor_max_speed", b"100");
     // Behavior engine
     cfg_set(b"behavior_server_ip", b"0.0.0.0");
     cfg_set(b"behavior_server_port", b"0");
-    cfg_set(b"behavior_camera_port", b"0");
     cfg_set(b"behavior_l1_enabled", b"1");
     cfg_set(b"behavior_l2_enabled", b"1");
     cfg_set(b"behavior_l3_enabled", b"1");

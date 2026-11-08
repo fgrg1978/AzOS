@@ -168,6 +168,12 @@ pub(crate) fn create_service_tasks(hart_id: usize) {
     create_ioring_worker_task();
     // The sealer of the security log (Kconfig SEC_LOG; nothing with it off).
     crate::boot::seclog::create_task();
+    // The one-shot `[BENCH-RES]` sweep and the periodic WCET/jitter report,
+    // on a QEMU robot image that keeps info lines.
+    #[cfg(all(feature = "qemu", feature = "use-robot"))]
+    if azos_drv_sys::uart::LOG_LEVEL >= azos_drv_sys::uart::level::INFO {
+        azos_sched::task_create("bench-boot", bench_boot_task, 0, azos_limits::BOOT_BENCH_PRIORITY as u32);
+    }
     // N4: the RCU callback task (Kconfig RCU_QSBR; nothing with it off).
     create_rcu_callback_task();
     // The memory reclaim task (Kconfig MM_RECLAIM_COMPRESS; nothing with it off),
@@ -274,39 +280,6 @@ pub(crate) fn create_service_tasks(hart_id: usize) {
         kprintln!("[SCHED] Created rvv-iso-0/rvv-iso-1 tasks (RVV isolation probe) [hart 0]");
     }
 
-    // Phase G1: behavior engine (runs without ML too — L0, L2, L3 work).
-    // Pinned (Kconfig TASK_BEHAVIOR_PLACE: CPU 2 of 4) away from rt-motor +
-    // flight-ctrl (prio 8, rt.0) and imu + sensor-ahrs (prio 8/14, rt.1),
-    // as on hart 2 with those on harts 0 and 1. Without affinity the
-    // scheduler was leaving `behavior` competing for hart 3 against
-    // every other prio-14+ task, and the brain TCP dial never fired
-    // inside the E2E window. Hart 2 is otherwise idle so we get
-    // immediate scheduling.
-    #[cfg(feature = "use-robot")]
-    azos_sched::task_create_affinity(
-        "behavior", behavior_task, 0,
-        azos_sched::BEHAVIOR_PRIORITY, place::pin(place::BEHAVIOR));
-    #[cfg(feature = "use-robot")]
-    kprintln!("[SCHED] Created behavior task (subsumption L0-L3) [hart {}]", place::pin(place::BEHAVIOR));
-    // Wave 15 (B1): the behavior task only queues its brain-link messages;
-    // this task puts them on the socket. Below behavior on its hart, so a
-    // closed TCP window never delays the subsumption loop.
-    #[cfg(feature = "use-robot")]
-    azos_sched::task_create_affinity(
-        "brain-tx", brain_tx_task, 0,
-        azos_limits::BRAIN_TX_PRIORITY as u32, place::pin(place::BEHAVIOR));
-    // C1: camera frames on a brain connection of their own, only when
-    // CONFIG.INI sets `behavior_camera_port` (applied at boot, above). Below
-    // behavior on the same hart, so a camera send, capture or handshake never
-    // delays the behavior loop.
-    #[cfg(feature = "use-robot")]
-    if azos_config::BEHAVIOR_CAMERA_PORT.load(Ordering::Relaxed) != 0 {
-        CAMERA_TX_TASK.store(true, core::sync::atomic::Ordering::Release);
-        azos_sched::task_create_affinity(
-            "camera-tx", camera_tx_task, 0,
-            azos_sched::BEHAVIOR_PRIORITY + 1, place::pin(place::BEHAVIOR));
-        kprintln!("[SCHED] Created camera-tx task (camera connection) [hart {}]", place::pin(place::BEHAVIOR));
-    }
     // Wave 15 (S1): the imu task only queues its reads; where a controller
     // driver is compiled (DesignWare: VisionFive 2, Pi 5, Intel LPSS; the
     // K1's SpacemiT) this task runs the controller's steps (board validation
@@ -535,8 +508,7 @@ pub(crate) fn create_service_tasks(hart_id: usize) {
     // A row that may move between hosts needs the supervisor task even if
     // nothing else does: it does the moves, and supervises the kernel host.
     let elastic_rows = azos_topology::get().is_some_and(|t| t.tasks().iter().any(|r| r.place.elastic()));
-    let ml = cfg!(not(feature = "no-ml")) && ML_ENABLED.load(Ordering::Acquire);
-    if start_rows || ml || elastic_rows {
+    if start_rows || elastic_rows {
         drv_supervisor::start();
     }
 

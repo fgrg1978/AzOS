@@ -132,8 +132,6 @@ hyp-rd-open-canary	const	kernel/src/entry/aarch64/ext/hyp_monitor.rs: which sepa
 hyp-its-probe	pending	
 hyp-its-skip-mapti-canary	const	kernel/src/entry/aarch64/ext/hyp_monitor.rs: which separately built monitor image is `.incbin`'d (a link-time choice, no runtime site)
 hyp-lock-probe	pending	
-infer-model-canary	pending	
-infer-refusal-canary	pending	
 inspect-view-canary	pending	
 iommu-tx-canary	pending	
 ipc-census	hot	a site on crates/core/sched/src/scheduler/wake.rs, crates/core/syscall/src/dispatch.rs, crates/core/syscall/src/fastpath.rs, kernel/src/entry/riscv64/irq.rs
@@ -157,7 +155,6 @@ lat-canary	pending
 lat-irqsoff-canary	pending	
 lat-smoke	pending	a smoke kernel_main starts (kernel/src/smokes/): its task, a runtime smoke= name
 leader-cleartid-canary	pending	
-link-rekey-smoke	pending	
 linux-abi-caps-canary	pending	adds rows to the built-in topology (crates/core/topology/src/builder.rs): a runtime name needs the row gated at run time too (open)
 linux-abi-fork-canary	pending	adds rows to the built-in topology (crates/core/topology/src/builder.rs): a runtime name needs the row gated at run time too (open)
 linux-abi-fp-canary	pending	adds rows to the built-in topology (crates/core/topology/src/builder.rs): a runtime name needs the row gated at run time too (open)

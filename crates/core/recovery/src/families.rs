@@ -51,10 +51,7 @@ pub fn flight(_op: u64) -> i64 {
 #[cfg(feature = "use-robot")]
 pub fn behavior(op: u64, layer: u64) -> i64 {
     match op {
-        BEHAVIOR_OP_STATUS => azos_behavior::layer_statuses()
-            .iter()
-            .filter(|ls| ls.enabled)
-            .fold(0i64, |m, ls| m | 1 << ls.layer),
+        BEHAVIOR_OP_STATUS => azos_behavior::layer_mask() as i64,
         BEHAVIOR_OP_ENABLE | BEHAVIOR_OP_DISABLE => {
             let l = layer as usize;
             if l == 0 || l >= azos_behavior::NUM_LAYERS {

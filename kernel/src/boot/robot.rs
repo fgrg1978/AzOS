@@ -36,7 +36,6 @@ use crate::*;
 pub(crate) fn install_robot_payload_and_sensors() {
     #[cfg(feature = "use-robot")]
     {
-        azos_safety_core::sensor_tasks::set_beep(crate::buzzer::buzzer_beep);
         azos_safety_core::frames::set_buzzer(
             crate::buzzer::buzzer_beep, crate::buzzer::buzzer_alert, crate::buzzer::buzzer_off);
     }
@@ -81,7 +80,7 @@ pub(crate) fn install_robot_payload_and_sensors() {
         kprintln!("========================================");
         kprintln!();
     }
-    #[cfg(all(feature = "rvv", not(feature = "no-ml")))]
+    #[cfg(feature = "rvv")]
     {
         kprintln!("========================================");
         kprintln!(" Phase 14: Virtual Camera Driver");
@@ -209,22 +208,8 @@ pub(crate) fn bring_up_robot() {
     #[cfg(feature = "use-robot")]
     camera_capture_init();
 
-    // ---- Phase G1: Subsumption Behavior Engine + VLA Protocol ----
-
+    // The behaviour engine is ring 3's (BRAINCLI.ELF): it chooses, the kernel
+    // enforces (the robot enforcer, the effect loops, the gate).
     #[cfg(feature = "use-robot")]
-    kprintln!("========================================");
-    #[cfg(feature = "use-robot")]
-    kprintln!(" [BEHAVIOR] Phase G1: Subsumption Engine");
-    #[cfg(feature = "use-robot")]
-    kprintln!("   L0: emergency-stop  (IMU)");
-    #[cfg(all(feature = "use-robot", not(feature = "no-ml")))]
-    kprintln!("   L1: avoid-obstacle  (MLP)");
-    #[cfg(feature = "use-robot")]
-    kprintln!("   L2: remote-vla      (TCP)");
-    #[cfg(feature = "use-robot")]
-    kprintln!("   L3: explore         (wander)");
-    #[cfg(feature = "use-robot")]
-    kprintln!("========================================");
-    #[cfg(feature = "use-robot")]
-    kprintln!();
+    kprintln!("[BEHAVIOR] engine in ring 3; L0 (safety) enforced in the kernel");
 }

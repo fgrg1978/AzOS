@@ -722,7 +722,6 @@ dependencies = [
  "azos_limits",
  "azos_linux_abi",
  "azos_mm",
- "azos_multi_stream",
  "azos_nav",
  "azos_net",
  "azos_ota",
@@ -828,10 +827,6 @@ dependencies = [
  "azos_percpu",
  "azos_sync",
 ]
-
-[[package]]
-name = "azos_multi_stream"
-version = "0.1.0"
 
 [[package]]
 name = "azos_nav"

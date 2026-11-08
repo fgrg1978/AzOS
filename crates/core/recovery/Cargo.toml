@@ -6,7 +6,6 @@ license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
 
 [features]
-no-ml   = ["azos_behavior?/no-ml"]
 # The robot crates the family bodies (`families`, behind the ring-3 typed
 # calls) and `security`/`bench` call. Without it they answer ENOSYS / say the
 # image has no Robot domain.

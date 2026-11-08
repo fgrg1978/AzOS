@@ -1,9 +1,10 @@
 # Forward-secret encrypted link
 
-The link between the kernel and the brain (the off-board planner) is a Noise
+The link between the robot's behaviour engine (`BRAINCLI.ELF`, ring 3) and
+the brain (the off-board planner) is a Noise
 session whose keys come from fresh ephemeral keys on every connection, and it
 is the only mode the link has: no plaintext, no MAC-only mode, no runtime
-switch. The kernel seals each brain-protocol packet it sends as one transport
+switch. The engine seals each brain-protocol packet it sends as one transport
 message (a message it receives may carry a run of them), and the packet layout
 is unchanged. This note describes the handshake, the transport, rekeying, the
 policy and the limits of the forward-secrecy claim.
@@ -12,18 +13,15 @@ policy and the limits of the forward-secrecy claim.
 
 Source: `crates/core/crypto/src/secure_channel.rs`,
 `crates/core/crypto/src/noise.rs`,
-`crates/domains/robot/behavior/src/encrypt_link.rs`,
-`kernel/src/tasks/brain_link.rs`.
+`crates/domains/robot/behavior/src/encrypt_link.rs` (the link key and the
+provisioning policy, kernel side), `userspace/services/brain_client/src/link.rs`.
 
 Layers on the wire, outermost first:
 
-1. **Stream framing** (`crates/net/multi-stream`), only with `multi_stream=1`
-   in `CONFIG.INI` (off by default): a stream id and a length in front of each
-   frame, see `multi-stream-link.md`.
-2. **Noise transport** (`azos_crypto::secure_channel`): a Noise handshake
+1. **Noise transport** (`azos_crypto::secure_channel`): a Noise handshake
    (`IK` or `XX`, X25519, ChaCha20-Poly1305, SHA-256), then one transport
    message per frame.
-3. **Brain packet**: unchanged.
+2. **Brain packet**: unchanged.
 
 There is one MAC: the Poly1305 tag. Replay inside a session is refused by the
 transport's message counter, and a frame recorded in an earlier session fails
@@ -54,9 +52,9 @@ It does not hide packet sizes or timing (no padding, no cover traffic).
 
 Source: `crates/core/crypto/src/secure_channel.rs` (`Initiator`,
 `SessionIdCache`), `crates/core/crypto/src/noise.rs`,
-`kernel/src/tasks/brain_link.rs` (`brain_handshake`).
+`userspace/services/brain_client/src/link.rs` (`handshake`).
 
-The Noise roles match the TCP roles. The kernel dials the brain (TCP client)
+The Noise roles match the TCP roles. The engine dials the brain (TCP client)
 and is the Noise **initiator**; the brain is the TCP server and the
 responder. A single pattern byte (`I` or `X`) precedes the first frame and is
 bound into the prologue (`azos-brain-link-v1` followed by the pattern byte).
@@ -116,7 +114,7 @@ closes in-session replay.
 
 Source: `crates/core/crypto/src/secure_channel.rs` (`REKEY_MAX_RECORDS`,
 `REKEY_MAX_BYTES`, `REKEY_INTERVAL_SECS`, `rekey_interval_secs`),
-`kernel/src/tasks/behavior.rs`, `kernel/src/tasks/camera.rs`.
+`userspace/services/brain_client/src/main.rs`.
 
 A bare 16-byte tag (an empty message) is the rekey signal. After it the
 sender, and the receiver on reading it, replace that direction's key with
@@ -134,9 +132,8 @@ The message and byte limits are enforced by the link on both sides; a
 generation that overruns them without a rekey is a violation. The wall-clock
 trigger belongs to the caller, because the module has no clock: the kernel's
 behavior loop and the camera task call `request_rekey` when their timer
-expires. The thresholds are constants, not configuration keys: the kernel's
-timers use `REKEY_INTERVAL_SECS` (5 s under the gate's `link-rekey-smoke`
-feature, `BRAIN_LINK_REKEY_SECS` in `kernel/src/tasks/brain_link.rs`).
+expires. The engine rekeys every `REKEY_INTERVAL_SECS`, which CONFIG.INI
+`brain_client_rekey_secs` may only shorten (the gate's link rows set 5 or 10 s).
 `rekey_interval_secs`, the clamp a configured request would go through
 (5..3600 s, so a file on the USB-exported volume could only shorten a key's
 life), has no caller outside the host tests.
@@ -218,7 +215,7 @@ Source: `crates/core/crypto/src/noise.rs`,
 ## Limitations
 
 Source: `crates/core/crypto/src/secure_channel.rs`,
-`kernel/src/tasks/brain_link.rs`.
+`userspace/services/brain_client/src/link.rs`.
 
 - No link-key rotation protocol and no provisioning protocol for the first
   key: it is written into the reserved sector by an out-of-band step.

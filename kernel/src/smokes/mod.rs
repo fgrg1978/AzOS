@@ -50,6 +50,51 @@ mod ota;
 #[cfg(any(feature = "orderly-reboot-smoke", feature = "safe-mode-smoke", feature = "power-off-durability-smoke",
           feature = "orderly-drain-smoke"))]
 pub(crate) use ota::*;
+
+/// `behave-smoke`: the front rangefinder at 300 mm (inside the turn zone, out
+/// of the stop zone) must make the ring-3 engine publish its turn, then at
+/// 100 mm its stop; each read off the drivetrain's command channel, which only
+/// a commander writes. The engine needs some seconds to come up.
+#[cfg(all(feature = "qemu", feature = "use-robot"))]
+pub(crate) fn behave_smoke_task(_arg: usize) {
+    use azos_drv_sensor::rangefinder;
+    use azos_syscall::sleep::sleep_ms;
+    use azos_drv_sys::kprintln;
+    // `userspace/services/brain_client/src/behave.rs`: TURN and the stop.
+    const TURN: (i32, i32) = (60, 20);
+    let seen = |want: (i32, i32)| {
+        (0..40).any(|_| {
+            sleep_ms(250);
+            let c = azos_robot::motor_cmd_read();
+            (c.speed_l, c.speed_r) == want
+        })
+    };
+    sleep_ms(15_000);
+    rangefinder::us_set_distance(0, 300);
+    let turned = seen(TURN);
+    rangefinder::us_set_distance(0, 100);
+    let stopped = seen((0, 0));
+    rangefinder::us_set_distance(0, 1500);
+    match (turned, stopped) {
+        (true, true) => kprintln!("[BEHAVESMOKE] PASS: the engine turned at 300 mm and stopped at 100 mm"),
+        _ => kprintln!("[BEHAVESMOKE] FAIL: turn at 300 mm {}, stop at 100 mm {}", turned, stopped),
+    }
+}
+
+/// The `rtwd-window-smoke` commander: (0, 0) published 12 ticks of every 20
+/// at 10 Hz and nothing the other 8 (~0.8 s, past the 500 ms watchdog).
+#[cfg(feature = "rtwd-window-smoke")]
+pub(crate) fn rtwd_flap_task(_arg: usize) {
+    let mut tick: u32 = 0;
+    loop {
+        if tick % 20 < 12 {
+            azos_robot::motor_cmd_publish(0, 0);
+        }
+        tick = tick.wrapping_add(1);
+        let dl = azos_drv_sys::timebase::now() + azos_drv_sys::timebase::freq() / 10;
+        azos_sched::task_block(azos_sched::WaitReason::Timer(dl));
+    }
+}
 #[cfg(any(feature = "reflex-smoke", feature = "envelope-smoke", feature = "geofence-smoke",
           feature = "brain-lies-smoke", feature = "cap-deny-smoke", feature = "disk-part-row",
           feature = "rc-failsafe-smoke", feature = "fence-refuse-smoke",
@@ -342,6 +387,23 @@ pub(crate) fn spawn_system_smokes() {
             azos_sched::DEFAULT_PRIORITY, 2,
         );
     }
+
+    // Runtime `behave-smoke` (a QEMU robot image): the ring-3 engine's
+    // choice, read off the drivetrain's command channel. Its canary
+    // `behave-switch` turns L1 off at the kernel's switch, the engine's input.
+    #[cfg(all(feature = "qemu", feature = "use-robot"))]
+    if canary!("behave-smoke") {
+        if canary!("behave-switch") {
+            azos_behavior::layer_set_enabled(1, false);
+        }
+        azos_sched::task_create("behave-smoke", behave_smoke_task, 0, azos_sched::DEFAULT_PRIORITY);
+    }
+
+    // rtwd-window-smoke (gate row `rt watchdog recorded`): a commander that
+    // withholds its command 8 ticks of every 20 at 10 Hz, so the drivetrain's
+    // watchdog flaps on a schedule.
+    #[cfg(feature = "rtwd-window-smoke")]
+    azos_sched::task_create("rtwd-flap", rtwd_flap_task, 0, azos_sched::DEFAULT_PRIORITY);
 
     #[cfg(feature = "reflex-smoke")]
     {

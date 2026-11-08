@@ -23,6 +23,3 @@ pub(crate) const SYS_WDT: Place = Place::of_kconfig(azos_limits::TASK_SYS_WDT_PL
 pub(crate) const OTA_RECV: Place = Place::of_kconfig(azos_limits::TASK_OTA_RECV_PLACE);
 /// The effect loops a driver registers (`azos_ext_api::EffectLoop`).
 pub(crate) const EFFECT_LOOPS: Place = Place::of_kconfig(azos_limits::TASK_CONTROL_PLACE);
-/// behavior, brain-tx, camera-tx and ml-infer.
-#[cfg(feature = "use-robot")]
-pub(crate) const BEHAVIOR: Place = Place::of_kconfig(azos_limits::TASK_BEHAVIOR_PLACE);

@@ -232,9 +232,8 @@ const ROBOT_HOOKS: &[azos_ext_api::BootHook] = &[
 ];
 
 /// The robot extension, as the actuation core sees it: one effect provider
-/// for the wheels, the ESC and the payload, which owns the motor kind. The
-/// latch work makes the brain's cached remote action the stop; ring-3 images
-/// start only once the motor gate is in place (the loader asks
+/// for the wheels, the ESC and the payload, which owns the motor kind; ring-3
+/// images start only once the motor gate is in place (the loader asks
 /// `azos_actuation::gate::gate_installed`).
 pub static ROBOT: azos_ext_api::Manifest = azos_ext_api::Manifest {
     name: "robot",
@@ -244,7 +243,7 @@ pub static ROBOT: azos_ext_api::Manifest = azos_ext_api::Manifest {
         kinds: &[azos_actuation::kind::KIND_MOTOR],
         stop: stop_robot_actuators,
         panic_stop: stop_robot_actuators_panic,
-        on_latch: Some(azos_behavior::safety::on_estop_latched),
+        on_latch: None,
         ready: Some(azos_robot::motor::motor_gate_installed),
     }],
     hooks: ROBOT_HOOKS,
@@ -255,9 +254,8 @@ pub static ROBOT: azos_ext_api::Manifest = azos_ext_api::Manifest {
 /// `azos_actuation::gate::install`.
 pub fn install() {
     // The robot's stop work, registered into the shared latch first: from
-    // here on every latch (brain link, ring 3, kill switch, sys-wdt) stops
-    // the wheels, the ESC and the payload, and makes the cached remote
-    // action the stop.
+    // here on every latch (ring 3, the enforcer, kill switch, sys-wdt) stops
+    // the wheels, the ESC and the payload.
     if let Err(e) = azos_actuation::providers::install(&ROBOT) {
         panic!("the robot extension's providers were refused: {:?}", e);
     }

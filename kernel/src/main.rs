@@ -46,17 +46,6 @@ mod powermon;
 // Who has the console, the ring-3 user shell or the recovery console.
 mod console_mode;
 
-// Per-step timing of the behavior loop (`[BSTEP]`), see the module doc.
-#[cfg(feature = "use-robot")]
-mod behavior_step;
-
-// The behavior loop's client of the ring-3 inference service, see the module
-// doc; `behavior_infer` is the call itself, with no kernel in it.
-#[cfg(all(feature = "use-robot", not(feature = "no-ml")))]
-mod behavior_infer;
-#[cfg(all(feature = "use-robot", not(feature = "no-ml")))]
-mod behavior_ml;
-
 // The Robot application domain (wave 11, DOMAIN): a .config that selects
 // USE_ROBOT must be built with the `use-robot` feature, or the image
 // would silently lack the robot it was configured for. Build through
@@ -116,9 +105,6 @@ use entry::riscv64::{irq::*, trap::*};
 
 use core::arch::global_asm;
 use core::sync::atomic::Ordering;
-// NOT `#[cfg]`'d: read from the shared CONFIG.INI-apply block (kernel-main-
-// merge task) and from `camera_send_frame`, both now unconditional.
-use azos_config::ML_ENABLED;
 use azos_drv_sys::kprintln;
 // NOT `#[cfg]`'d, unlike its three ex-neighbours above: `create_sys_wdt_task`
 // is shared by both `kernel_main`s now, so this name has to resolve on both
@@ -426,8 +412,6 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
     // ---- ML ----
     // The MLP is a signed bundle (`/fat/BEHAVIOR.MBL`) that the ring-3 inference
     // service (`userspace/services/infsrv`) runs; the kernel carries no MLP of its own.
-    #[cfg(feature = "no-ml")]
-    kprintln!("[ML] Compile-time disabled (--features no-ml)");
     kprintln!();
 
     // ---- Phase C: ggml-nano / GGUF inference ----

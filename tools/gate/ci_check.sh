@@ -9440,10 +9440,9 @@ a64_kbuild "qemu" >/dev/null 2>&1 || true
 # INFER_MODEL_SIG_REQUIRED, default y. The behavior loop's model, the bundle
 # `/fat/BEHAVIOR.MBL`, carries its signature inside (over its manifest, which
 # holds the cost table the admission believes) and is verified whatever the
-# switch says. The service is started by the behavior loop
-# (`kernel/src/behavior_ml.rs`, compiled with `use-robot` only), so the rows
-# boot `qemu,use-robot` kernels, built from the robot cell (the generic gate
-# kernel never spawns MLSRV.ELF), one fresh disk copy per boot.
+# switch says. The service is started by its own row (`start`, the robot
+# preset's USERSPACE_MLSRV), so the rows boot `qemu,use-robot` kernels, built
+# from the robot cell, one fresh disk copy per boot.
 #
 #   signed:   the disk as `make` builds it -- the bundle loaded "(signature
 #             verified)", GGUF self-test 3/3.
@@ -12290,7 +12289,7 @@ echo "[2/4] Running host test suites..."
 HOST_SUITES="flight-sim regression-tests ota-tests sched-policy-tests scsi-tests
          tftp-tests topology-tests config-tests crypto-tests
          flight-math-tests abi-tests arch-api-tests arch-stub-tests kaslr-tests gguf-tests
-         multi-stream-tests drv-api-tests
+         drv-api-tests
          cam-ring-tests dtb-tests aead-link-tests
          cap-tests vmmd-tests hv-tests
          ipc-fast-tests ipc-tests sched-wake-tests
@@ -16951,6 +16950,9 @@ PY
     #   motor_commander_exit_stops_its_wheels  commander-exit-nostop-canary
     #                                 (a dead commander's wheel is taken, not
     #                                 stopped; wave 15, owner decision)
+    #   a_dead_engines_drivetrain_command_is_stopped_and_the_loop_runs
+    #                                 commander-exit-nostop-canary (the dead
+    #                                 behaviour engine's command stands)
     # Late canaries that break memory safety or the safety layer for the
     # whole boot keep a boot each, and their row names only their test:
     #   tlb_shootdown_cross_cpu             tlb-local-only (rv, arm),
@@ -17288,7 +17290,7 @@ PY
     KTEST_CANARIES=",percpu-oor-canary,commander-exit-nostop-canary,tmpfs-bound-canary"
     # F6: the boot-time ones are runtime canaries, armed in the same boot.
     KTEST_BOOT_CANARIES="canary=wx-skip,nx-skip,ro-seal-skip"
-    KTEST_CANARIED="mm_wx_image mm_nx_outside_image mm_ro_after_init_sealed percpu_areas_and_oor_refusal motor_commander_exit_stops_its_wheels ram_fs_bound_refuses"
+    KTEST_CANARIED="mm_wx_image mm_nx_outside_image mm_ro_after_init_sealed percpu_areas_and_oor_refusal motor_commander_exit_stops_its_wheels a_dead_engines_drivetrain_command_is_stopped_and_the_loop_runs ram_fs_bound_refuses"
     # Both ISAs (N2b): `wx-skip` leaves the kernel text writable, so
     # the one text-write path (`text_poke`, W^X kept) refuses NotRx and the
     # SpinWait probe sites stay linked to their fallback
@@ -20618,6 +20620,64 @@ CPU 5 lacks hwcap bits"
         -device virtio-blk-device,drive=hd0
     kbuild "qemu"
 
+    # THE RING-3 BEHAVIOUR ENGINE CHOOSES, THE KERNEL APPLIES (robot preset, no
+    # brain). BRAINCLI.ELF, the robot disk image's autorun, runs its layers
+    # without a brain link; a kernel task (runtime `canary=behave-smoke`) moves the simulated
+    # front rangefinder to 300 mm, then 100 mm, and reads the drivetrain's
+    # command channel: the engine's L1 must publish its turn, then its stop.
+    # Runtime canary `behave-switch`: the kernel's L1 switch is off, so the
+    # engine must not turn and the smoke prints FAIL. Arm first (HVF), then
+    # riscv64 in the batch. Declared for the arm phase; not run yet.
+    behave_engine_row() { # behave_engine_row <label> <rv|arm> <canaries> <PASS|FAIL>
+        local label="$1" isa="$2" can="$3" want="$4" feats="qemu,actuation-smoke"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local slug log disk kimg
+        slug="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')"
+        log="$CI_LOG_DIR/${slug}.log"; rm -f "$log"
+        if [ "$isa" = arm ]; then
+            a64_kbuild "$feats" || { bad; echo "      aarch64 kernel build with $feats failed"; return; }
+            disk="$CI_LOG_DIR/${slug}-disk.img"; kimg="$CI_LOG_DIR/${slug}-kernel.img"
+            rm -f $AZOS_OUT/build/disk-aarch64-braincli.img
+            make_disk $AZOS_OUT/build/disk-aarch64-braincli.img || return
+            cp $AZOS_OUT/build/disk-aarch64-braincli.img "$disk"; cp "$A64_IMG" "$kimg"
+            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+                -kernel "$kimg" -append "canary=$can" -global virtio-mmio.force-legacy=false \
+                -drive file="$disk",if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 \
+                >"$log" 2>&1 &
+        else
+            kbuild "$feats" || { bad; echo "      riscv64 kernel build with $feats failed"; return; }
+            disk="$CI_LOG_DIR/${slug}-disk.img"
+            rm -f $AZOS_OUT/build/disk.img
+            make_disk $AZOS_OUT/build/disk.img || return
+            cp $AZOS_OUT/build/disk.img "$disk"
+            "$QEMU" -machine virt -nographic -bios default -kernel "$KERNEL" -append "canary=$can" -smp 4 \
+                -global virtio-mmio.force-legacy=false \
+                -drive file="$disk",if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 \
+                >"$log" 2>&1 &
+        fi
+        local qpid=$! i=0
+        while [ "$i" -lt 240 ]; do
+            grep -aq "\[BEHAVESMOKE\] \(PASS\|FAIL\)" "$log" 2>/dev/null && break
+            kill -0 "$qpid" 2>/dev/null || break
+            i=$((i + 1)); sleep 0.5
+        done
+        kill "$qpid" 2>/dev/null; wait "$qpid" 2>/dev/null
+        if ! grep -aq "\[behave\]\|brain_client\] Starting" "$log" 2>/dev/null; then
+            bad; echo "      the behaviour engine never started (log kept: $log)"; return
+        fi
+        if grep -aq "\[BEHAVESMOKE\] $want" "$log" 2>/dev/null; then
+            ok; grep -a -m1 "\[BEHAVESMOKE\]" "$log" | sed "s|^|      |"; rm -f "$log" "$disk" ${kimg:+"$kimg"}
+        else
+            bad; echo "      want [BEHAVESMOKE] $want:"; grep -a "\[BEHAVESMOKE\]\|\[behave\]" "$log" | sed -n '1,6p' | sed "s|^|      |"
+            echo "      log kept: $log"
+        fi
+    }
+    par_row -s behave_engine_row "robot: ring-3 engine chooses (arm)" arm behave-smoke PASS
+    par_row -s behave_engine_row "robot: engine switch canary (arm)" arm behave-smoke,behave-switch FAIL
+    par_row -s behave_engine_row "robot: ring-3 engine chooses (rv)" rv behave-smoke PASS
+    par_row -s behave_engine_row "robot: engine switch canary (rv)" rv behave-smoke,behave-switch FAIL
+
     # The reflex daemon must REACT, not merely start. A kernel task moves the
     # simulated rangefinder to 100 mm and then back to 1500 mm; reflex has to
     # trip and then recover. Asserting on "Clear" rather than the trigger is
@@ -21944,38 +22004,14 @@ PY
     # scenario existing at all.
     #
     # THE ASSERTION IS THE PAIR `ask=60 duty=60`, NOT THE MARKER'S PRESENCE.
-    # `[ACTSMOKE]` prints after the actuation and carries the duty that landed
-    # on the PWM channel. A handler stubbed to return success without driving
-    # anything still prints the line — measured: `ask=60 duty=0 rc=0`. Only the
-    # applied value separates "ring 3 commanded a motor" from "the handler
-    # ran", which is exactly the distinction the reflex scenario could not make
-    # (stubbing the typed call left it green, 2026-09-07).
-    #
-    # THAT VALUE COMES OUT OF THE WRITE, NOT FROM READING THE CHANNEL BACK.
-    # The first version of this assertion did the readback at the call site
-    # with `pwm_get`, and it was racy: `rt_motor_task` drives these same two
-    # wheels every control tick, so between the write and the read its duty
-    # could be what came back. It was not theoretical — a run on 2026-09-10
-    # printed `ask=60 duty=0 rc=0` for wheel 0 with the handler intact, which
-    # is a red this scenario would have reported as a kernel defect. The
-    # opposite direction is worse: had the other writer happened to write 60,
-    # the scenario would have passed while proving nothing. The readback now
-    # happens inside the critical section that performs the write
-    # (`pwm::pwm_set_duty_pct_reporting`), which is what makes asserting
-    # `ask == duty` legitimate at all.
-    #
-    # Canaries, 2026-09-10: dropping the duty write while still reporting gives
-    # `duty=50` (the stale value) and 0/2; clamping `gate_speed` to half gives
-    # `ask=60 duty=30` and 0/2. Both compiled and booted, and the restored tree
-    # is 2/2.
-    #
-    # 60 is what `fake_brain.py --serve` sends first, and forward goes through
-    # the `motor.speed` op; `apply_motor_cmd` sends reverse down
-    # the `motor.direction` op, the typed form of the retired 231.
-    #
-    # `MotorServer::speed` is reachable only by `ecall`, so this marker
-    # cannot be produced by the kernel's own brain link, which also connects to
-    # this peer and drives motors through a channel instead.
+    # The ring-3 behaviour engine drives through the gate: the brain's 60 %
+    # (`fake_brain.py --serve`'s first command) is chosen by the engine's
+    # remote layer (`[behave] remote drives (60,60)`) and published with
+    # `Motor::command`, and the kernel's drivetrain loop writes both wheels
+    # (`[ACTSMOKE] kernel motor id=N duty=60`, printed by rt-motor on each
+    # transition, out of the write itself). The kernel marker is the stronger
+    # one: it proves the effect loop applied the command, not that a handler ran.
+    # Rewritten for the ring-3 engine; not run yet (BRAIN=1).
     ring3_actuation_scenario() {
         brain_peer_required || return 0
         local label="userspace: ring-3 drives motors"
@@ -22010,22 +22046,23 @@ PY
             bad; echo "      kernel panic or fatal exception:"; grep -aiE -m3 "panic|\[FATAL\]|\[PAGE FAULT\]" "$log" | sed "s|^|      |"
             echo "      logs kept: $log $blog"; return
         fi
-        if ! grep -aq "ACTSMOKE] ring3 motor" "$log" 2>/dev/null; then
-            bad; echo "      ring 3 never reached MotorServer::speed — the"
-            echo "      ActuatorCmd did not arrive, or was refused before the"
-            echo "      capability check."
+        if ! grep -aq "\[behave\] remote drives (60,60)" "$log" 2>/dev/null; then
+            bad; echo "      the behaviour engine never let the brain's 60 % drive: the"
+            echo "      ActuatorCmd did not arrive, or no layer chose it."
+            grep -a -m4 "\[behave\]" "$log" | sed "s|^|      |"
             echo "      peer said: $(tail -2 "$blog" 2>/dev/null | tr "\n" " ")"
             echo "      logs kept: $log $blog"; return
         fi
-        # Both wheels, and the duty must MATCH the ask on each.
+        # Both wheels, applied by the kernel's drivetrain loop (the command
+        # goes through `Motor::command` to the effect loop, which writes them).
         local m=0
         for id in 0 1; do
-            grep -aq "ACTSMOKE] ring3 motor id=$id ask=60 duty=60" "$log" 2>/dev/null \
+            grep -aq "ACTSMOKE] kernel motor id=$id duty=60" "$log" 2>/dev/null \
                 && m=$((m + 1))
         done
         if [ "$m" -ne 2 ]; then
-            bad; echo "      the handler ran but the motors were not driven to the"
-            echo "      commanded speed on both wheels ($m/2 matched):"
+            bad; echo "      the engine chose the command but the drivetrain loop did not"
+            echo "      drive both wheels at 60 % ($m/2 matched):"
             grep -a -m4 "ACTSMOKE" "$log" | sed "s|^|      |"
             echo "      logs kept: $log $blog"; return
         fi
@@ -22104,13 +22141,12 @@ PY
     # the robot kept going at 60% for 101 more commands, and the boot log held
     # no e-stop record of any kind.
     #
-    # WHY THE ASSERTION IS `ask=60 duty=0` AFTER, NOT `ask=0 duty=0` AT THE
-    # EMERGENCY. A stop command and a stubbed handler both print
-    # `ask=0 duty=0`; that pair has never been able to discriminate and it
-    # still cannot. What only a real e-stop produces is a REFUSAL of the next
-    # drive: the peer's script ends with a plain 60% command that repeats for
-    # the rest of the run, and every one of those must come back `duty=0`.
-    # Same ask, same marker, opposite duty, separated by the e-stop.
+    # WHY THE ASSERTION IS ON THE WRITES AFTER, NOT ON A STOP AT THE
+    # EMERGENCY. A stop command and a stubbed handler both end at duty 0; that
+    # pair has never been able to discriminate. What only a real e-stop
+    # produces is a REFUSAL of the next drive: the peer's script ends with a
+    # plain 60% command that repeats for the rest of the run, and no wheel may
+    # be written above duty 0 after the latch.
     #
     # AND NOT ON THE `[SAFETY]` LINE EITHER. Measured: a handler that stops the
     # wheels but skips `estop_activate()` still prints
@@ -22166,95 +22202,60 @@ PY
             echo "      logs kept: $log $blog"; return
         fi
 
-        # It has to have been DRIVING first, or "stopped" means nothing.
-        local drove_before
-        drove_before=$(grep -an "ACTSMOKE] ring3 motor id=[01] ask=60 duty=60" "$log" 2>/dev/null \
+        # It has to have been DRIVING first, or "stopped" means nothing: the
+        # drivetrain loop applied the brain's 60 % on both wheels.
+        local drove_before drove_after
+        drove_before=$(grep -an "ACTSMOKE] kernel motor id=[01] duty=60" "$log" 2>/dev/null \
                        | awk -F: -v n="$estop_line" '$1 < n' | grep -c .)
         if [ "$drove_before" -lt 2 ]; then
             bad; echo "      the wheels were never driven before the e-stop"
-            echo "      ($drove_before/2 wheels at 60%), so a later duty=0 proves"
+            echo "      ($drove_before/2 wheels at 60%), so a later stop proves"
             echo "      nothing. logs kept: $log $blog"; return
         fi
-
-        # After it: every 60% ask must be refused, on both wheels.
-        local drove_after refused_l refused_r
-        drove_after=$(grep -an "ACTSMOKE] ring3 motor id=[01] ask=60 duty=60" "$log" 2>/dev/null \
-                      | awk -F: -v n="$estop_line" '$1 > n' | grep -c .)
-        refused_l=$(grep -an "ACTSMOKE] ring3 motor id=0 ask=60 duty=0 rc=" "$log" 2>/dev/null \
-                    | awk -F: -v n="$estop_line" '$1 > n' | grep -c .)
-        refused_r=$(grep -an "ACTSMOKE] ring3 motor id=1 ask=60 duty=0 rc=" "$log" 2>/dev/null \
-                    | awk -F: -v n="$estop_line" '$1 > n' | grep -c .)
-
+        # After it no wheel is written above duty 0, though the peer keeps
+        # asking for 60 %: the latch refuses the motion.
+        drove_after=$(grep -an "ACTSMOKE] kernel motor id=[01] duty=" "$log" 2>/dev/null \
+                      | grep -v "duty=0$" | awk -F: -v n="$estop_line" '$1 > n' | grep -c .)
         if [ "$drove_after" -ne 0 ]; then
-            bad; echo "      THE E-STOP DID NOT HOLD: $drove_after commands reached the"
-            echo "      wheels at full duty after it latched."
-            grep -an "ACTSMOKE] ring3 motor id=[01] ask=60 duty=60" "$log" \
-                | awk -F: -v n="$estop_line" '$1 > n' | sed -n "1,3p" | sed "s|^|      |"
-            echo "      logs kept: $log $blog"; return
-        fi
-        # Two each, so one sampled refusal cannot carry the verdict.
-        if [ "$refused_l" -lt 2 ] || [ "$refused_r" -lt 2 ]; then
-            bad; echo "      the peer did not keep asking after the e-stop"
-            echo "      (refusals seen: left=$refused_l right=$refused_r, want >=2 each),"
-            echo "      so the latch was never actually tested."
+            bad; echo "      THE E-STOP DID NOT HOLD: $drove_after wheel writes above duty 0"
+            echo "      after it latched."
             echo "      logs kept: $log $blog"; return
         fi
 
-        # THE SAME LATCH THROUGH THE io_ring (owner decision 81).
-        # brain_client submits each forward command a second time as two
-        # `OP_CALL` entries, `Motor::speed` on each wheel's endpoint, in one
-        # submit, and prints each completion as
-        # `ioring motor wheel=<w> status=<s> outcome=<o> flags=<f>`. The entry
-        # is the interface's op (the effect gate, the halt rule), so its write
-        # prints the same `ring3 motor` marker the checks above count, and the
-        # latch's answer comes back in the reply: served (status 0, flags 0)
-        # with outcome 8, `REFUSED`. The checks: driven through the ring before
-        # the e-stop (outcome 0 on each wheel), never served OK after it, and
-        # refused on each wheel after it. An entry that skipped the halt rule
-        # would answer outcome 0 after the latch; one refused by the ring
-        # itself (flags 1) never reached the interface.
-        # The same boot reads its sensors through the ring: one submit of
-        # `Sensor::read` entries, reported once as `ioring sensors asked=N
-        # served=N`; a ring that refused them would leave served below asked.
+        # THE SAME LATCH THROUGH THE io_ring (owner decision 81): the engine
+        # submits the brain's command as one `Motor::command` OP_CALL entry and
+        # prints each completion as `ioring command status=<s> outcome=<o>
+        # flags=<f>`. Served OK before the e-stop, never OK after it, and
+        # answered REFUSED (outcome 8) after it.
         if grep -aq "\[brain_client\] FAILED: io_ring" "$log" 2>/dev/null; then
             bad; echo "      brain_client could not create its motor ring:"
             grep -a -m2 "\[brain_client\] FAILED: io_ring" "$log" | sed "s|^|      |"
             echo "      logs kept: $log $blog"; return
         fi
-        local ring_before_l ring_before_r ring_after ring_refused_l ring_refused_r ring_sensors
-        ring_before_l=$(grep -an "\[brain_client\] ioring motor wheel=0 status=0 outcome=0 flags=0" "$log" 2>/dev/null \
-                        | awk -F: -v n="$estop_line" '$1 < n' | grep -c .)
-        ring_before_r=$(grep -an "\[brain_client\] ioring motor wheel=1 status=0 outcome=0 flags=0" "$log" 2>/dev/null \
-                        | awk -F: -v n="$estop_line" '$1 < n' | grep -c .)
-        ring_after=$(grep -anE "\[brain_client\] ioring motor wheel=[01] status=0 outcome=0 " "$log" 2>/dev/null \
+        local ring_before ring_after ring_refused ring_sensors
+        ring_before=$(grep -an "\[brain_client\] ioring command status=0 outcome=0 flags=0" "$log" 2>/dev/null \
+                      | awk -F: -v n="$estop_line" '$1 < n' | grep -c .)
+        ring_after=$(grep -an "\[brain_client\] ioring command status=0 outcome=0 " "$log" 2>/dev/null \
                      | awk -F: -v n="$estop_line" '$1 > n' | grep -c .)
-        ring_refused_l=$(grep -an "\[brain_client\] ioring motor wheel=0 status=0 outcome=8 flags=0" "$log" 2>/dev/null \
-                         | awk -F: -v n="$estop_line" '$1 > n' | grep -c .)
-        ring_refused_r=$(grep -an "\[brain_client\] ioring motor wheel=1 status=0 outcome=8 flags=0" "$log" 2>/dev/null \
-                         | awk -F: -v n="$estop_line" '$1 > n' | grep -c .)
+        ring_refused=$(grep -an "\[brain_client\] ioring command status=0 outcome=8 flags=0" "$log" 2>/dev/null \
+                       | awk -F: -v n="$estop_line" '$1 > n' | grep -c .)
         ring_sensors=$(grep -a "\[brain_client\] ioring sensors asked=" "$log" 2>/dev/null \
                        | awk '{ for (i = 1; i <= NF; i++) { if ($i ~ /^asked=/) a = substr($i, 7) + 0; if ($i ~ /^served=/) s = substr($i, 8) + 0 }
                                 if (a > 0 && a == s) n++ } END { print n + 0 }')
-
-        if [ "$ring_before_l" -lt 1 ] || [ "$ring_before_r" -lt 1 ]; then
-            bad; echo "      the io_ring never drove the wheels before the e-stop"
-            echo "      (served ring entries: left=$ring_before_l right=$ring_before_r, want >=1 each),"
+        if [ "$ring_before" -lt 1 ]; then
+            bad; echo "      the io_ring never carried a served command before the e-stop,"
             echo "      so its refusals after it prove nothing. First ring lines:"
-            grep -a -m4 "ioring motor" "$log" | sed "s|^|      |"
+            grep -a -m4 "ioring command" "$log" | sed "s|^|      |"
             echo "      logs kept: $log $blog"; return
         fi
         if [ "$ring_after" -ne 0 ]; then
-            bad; echo "      THE E-STOP DID NOT HOLD ON THE io_ring: $ring_after ring entries"
+            bad; echo "      THE E-STOP DID NOT HOLD ON THE io_ring: $ring_after commands"
             echo "      were served OK after it latched."
-            grep -anE "ioring motor wheel=[01] status=0 outcome=0 " "$log" \
-                | awk -F: -v n="$estop_line" '$1 > n' | sed -n "1,3p" | sed "s|^|      |"
             echo "      logs kept: $log $blog"; return
         fi
-        if [ "$ring_refused_l" -lt 2 ] || [ "$ring_refused_r" -lt 2 ]; then
-            bad; echo "      the io_ring entries after the e-stop were not answered REFUSED by the"
-            echo "      interface (left=$ring_refused_l right=$ring_refused_r, want >=2 each)."
-            grep -an "ioring motor" "$log" \
-                | awk -F: -v n="$estop_line" '$1 > n' | sed -n "1,3p" | sed "s|^|      |"
+        if [ "$ring_refused" -lt 2 ]; then
+            bad; echo "      the io_ring commands after the e-stop were not answered REFUSED"
+            echo "      ($ring_refused, want >= 2)."
             echo "      logs kept: $log $blog"; return
         fi
         if [ "$ring_sensors" -lt 1 ]; then
@@ -23709,9 +23710,9 @@ PYEOF
             grep -a "FAIL\|Error" "$blog" | sed -n "1,3p" | sed "s|^|      |"
             echo "      log kept: $blog"; return
         fi
-        if ! "$CARGO" build --release --select actuation-smoke,link-rekey-smoke \
+        if ! "$CARGO" build --release --select actuation-smoke \
                 >/dev/null 2>&1; then
-            bad; echo "      kernel build with link-rekey-smoke failed; not booting the"
+            bad; echo "      kernel build with actuation-smoke failed; not booting the"
             echo "      previous binary in its place."; return
         fi
         # Hermetic: a fresh LINK.KEY image, and a copy only this boot writes.
@@ -23735,11 +23736,14 @@ PYEOF
             kill -0 "$bpid" 2>/dev/null || break
             i=$((i + 1)); sleep 0.5
         done
-        local port cport="" extra=""
+        # The behaviour engine's wall-clock rekey, shortened so one boot sees
+        # the client REKEY (`brain_client_rekey_secs` may only shorten it).
+        local port cport="" extra="brain_client_rekey_secs=5"
         port=$(sed -n 's/^\[link-peer\] listening on [0-9.]*:\([0-9][0-9]*\) .*/\1/p' "$blog" | sed -n 1p)
         if [ "$camera_port" != 0 ]; then
             cport=$(sed -n 's/^\[link-peer\] camera listener on [0-9.]*:\([0-9][0-9]*\)$/\1/p' "$blog" | sed -n 1p)
-            extra="behavior_camera_port=${cport:-none}"
+            extra="$extra
+behavior_camera_port=${cport:-none}"
         fi
         if [ -z "$port" ] || { [ "$camera_port" != 0 ] && [ -z "$cport" ]; } \
            || ! peer_port_image "$img" "$port" "$extra"; then
@@ -23769,7 +23773,7 @@ PYEOF
         kill "$bpid" 2>/dev/null; wait "$bpid" 2>/dev/null
 
         if grep -aq "FAIL no-robot" "$blog" 2>/dev/null; then
-            bad; echo "      the kernel's brain link never connected to the peer."
+            bad; echo "      the behaviour engine's brain link never connected to the peer."
             echo "      logs kept: $log $blog"; return
         fi
         if grep -aqiE "panic|\[FATAL\]" "$log" 2>/dev/null; then
@@ -23780,7 +23784,7 @@ PYEOF
         sid1=$(grep -a "\[link-peer\] session 1 established sid=" "$blog" 2>/dev/null \
                | sed -n '1s/.*sid=//p')
         if [ -z "$sid1" ]; then
-            bad; echo "      no encrypted-link handshake completed between the kernel and the peer:"
+            bad; echo "      no encrypted-link handshake completed between the engine and the peer:"
             grep -a "\[link-peer\] FAIL" "$blog" 2>/dev/null | sed "s|^|      |"
             grep -a "\[BRAIN\] hs:\|encrypted.link" "$log" 2>/dev/null | sed -n "1,3p" | sed "s|^|      |"
             echo "      logs kept: $log $blog"; return
@@ -23872,39 +23876,11 @@ PYEOF
                 | sed -n "1,3p" | sed "s|^|      |"
             echo "      logs kept: $log $blog"; return
         fi
-        est=$(grep -ac "\[BRAIN\] encrypted link established" "$log" 2>/dev/null)
+        est=$(grep -ac "\[brain_client\] link: Noise_. session established" "$log" 2>/dev/null)
         if [ "${est:-0}" -lt 2 ]; then
-            bad; echo "      the peer saw two sessions but the kernel logged ${est:-0}"
+            bad; echo "      the peer saw two sessions but the engine logged ${est:-0}"
             echo "      established links, want >= 2."
             echo "      logs kept: $log $blog"; return
-        fi
-        if [ "$camera_port" = 0 ]; then
-            # Without the key the kernel creates no camera task at all.
-            if grep -aq "Created camera-tx task" "$log" 2>/dev/null; then
-                bad; echo "      no behavior_camera_port is set, yet the kernel created camera-tx."
-                echo "      logs kept: $log $blog"; return
-            fi
-        else
-            # C1: camera frames on a connection of their own. The peer's
-            # `camera phase N done` lines carry the assertions: frames and a
-            # kernel REKEY on it, closing with its control session, a new one
-            # with the next session, four distinct session ids, no camera frame
-            # on a control connection and nothing else on a camera one.
-            if ! grep -aq "\[link-peer\] camera phase 5 done" "$blog" 2>/dev/null; then
-                bad; echo "      the camera connection did not complete its phases:"
-                grep -a "\[link-peer\] FAIL\|\[link-peer\] camera" "$blog" 2>/dev/null \
-                    | sed -n "1,4p" | sed "s|^|      |"
-                grep -a "\[CAM-TX\]" "$log" 2>/dev/null | sed -n "1,4p" | sed "s|^|      |"
-                echo "      logs kept: $log $blog"; return
-            fi
-            # The kernel must say it closed the camera connection because its
-            # control session ended (or was replaced before the task looked).
-            if ! grep -aq "\[CAM-TX\] closed (Control\(Ended\|Replaced\))" "$log" 2>/dev/null; then
-                bad; echo "      the peer saw the camera connection close, but the kernel never"
-                echo "      logged closing it for its control session:"
-                grep -a "\[CAM-TX\]" "$log" 2>/dev/null | sed -n "1,4p" | sed "s|^|      |"
-                echo "      logs kept: $log $blog"; return
-            fi
         fi
         if ! grep -aq "\[link-peer\] PASS" "$blog" 2>/dev/null; then
             bad; echo "      the peer did not finish its script:"
@@ -23915,7 +23891,6 @@ PYEOF
     }
     par_row -s link_peer_scenario "link: encrypted end to end" 0   # the peer on a host port of its own
     # C1: the same link with camera frames on a connection of their own.
-    par_row -s link_peer_scenario "link: camera connection" 1   # 1: with a camera port
 
     # ── The userspace ELFs the gate never executed ─────────────────────
     #
@@ -24936,7 +24911,7 @@ PYEOF
         # the VF shape) must count some. Anchored on the whole value.
         # Wave 15 (PI): `pi_io_all` counts the same for EVERY task (the exec
         # bounce buffer and KERNEL_FD_TABLE were the last two, from
-        # `behavior`'s spawn of MLSRV.ELF and from MLSRV.ELF's file opens);
+        # MLSRV.ELF's spawn and its file opens);
         # it must be 0 too. A PISITE:<lock> canary row puts that one lock back
         # as a Mutex held across its I/O: pi_io_all > 0 and a
         # `[LAT] fat pi_io_site` line naming <lock>.
@@ -25290,7 +25265,7 @@ PYEOF
         rm -f "$log" "$clean"
     }
     # lat-fat counts PI across I/O for every task: the exec bounce buffer and
-    # KERNEL_FD_TABLE are taken by the behavior loop's MLSRV spawn and opens,
+    # KERNEL_FD_TABLE are taken by MLSRV.ELF's spawn and opens,
     # robot programs, so these rows boot the robot cell.
     par_row -s lat_wake_row "lat: riscv64 wake-up, FAT writes" rv "qemu,use-robot,lat-fat" PASS
     par_row -s fat_lat_canary_row "lat: riscv64 FAT spinlock canary" rv "qemu,fat-mutate-spin-canary"
@@ -26956,7 +26931,7 @@ cat /ext4/link"
             make "$AZOS_OUT/build/image_hashes_aarch64.rs" >/dev/null 2>&1 || true
         fi
         # The images that ask for more stack than a task gets by default, run:
-        # MLSRV.ELF (64 KiB for its main thread, started by the behavior task,
+        # MLSRV.ELF (64 KiB for its main thread, started by its own row,
         # steady when it serves the Infer interface) and TOOLBOX.ELF's `ps`
         # beside it. Each died on a write fault below a 16 KiB stack: MLSRV at
         # every start (given up after three), `ps` on its first walk. The
@@ -26967,7 +26942,7 @@ cat /ext4/link"
             "#wait \[infsrv\] serving the Infer interface
 ps
 #sleep 2" 240 \
-            "[ML] ring-3 ML service /fat/MLSRV.ELF started" "[infsrv] serving the Infer interface on endpoint.infer" \
+            "[infsrv] serving the Infer interface on endpoint.infer" \
             "  TID  PPID PRI S NAME" " S MLSRV.ELF" " TOOLBOX.ELF"
         USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "sh: ps and the inference service canary ($ush_isa)" "$ush_isa" "$ush_feat,use-robot,user-stack-request-canary" FAIL \
             "#wait \[infsrv\] serving the Infer interface
@@ -28878,7 +28853,7 @@ sys.exit(0 if "login: alice" in t else 1)' "$log" || missing="$missing [login: a
     # $A64_IMG is touched.
     #
     # Build row: zero warnings; `cargo tree` of the kernel names no crate
-    # under crates/domains/robot/ (the shell lives in crates/core since w14), nor imu/baro/gps/multi_stream/camera;
+    # under crates/domains/robot/ (the shell lives in crates/core since w14), nor imu/baro/gps/camera;
     # `llvm-nm` finds no symbol of a robot crate in the ELF. Both checks are
     # run on the robot kernel of the same ISA first and must FIND robot crates
     # and symbols there, so a query that went blind cannot pass.
@@ -28896,7 +28871,7 @@ sys.exit(0 if "login: alice" in t else 1)' "$log" || missing="$missing [login: a
     GENERIC_ROBOT_CRATES="$(for d in "${REPO_ROOT}"/crates/domains/robot/*/ "${REPO_ROOT}"/crates/drivers/rc-esc/ "${REPO_ROOT}"/crates/lib/control/*/; do
             n="$(sed -n 's/^name *= *"\(.*\)"/\1/p' "$d/Cargo.toml" | sed -n 1p)"
             printf "%s\n" "$n"
-        done; printf '%s\n' azos_multi_stream azos_camera azos_imu azos_baro azos_gps)"
+        done; printf '%s\n' azos_camera azos_imu azos_baro azos_gps)"
     generic_robot_re="$(printf '%s\n' "$GENERIC_ROBOT_CRATES" | paste -sd'|' -)"
     generic_nm="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-nm"
     generic_build_row() { # generic_build_row <rv|arm>

@@ -362,6 +362,19 @@ const DRIVETRAIN_CAPS: [CapSpec<'static>; 2] = [
         target: MaybeStr::from_bytes(RESOURCE_MOTOR_1), transfer: false, ops: 0,
     },
 ];
+/// The behaviour layers' switches, read by the engine that obeys them.
+const BEHAVIOR_SWITCHES_CAP: CapSpec<'static> = CapSpec {
+    kind: CapKind::Endpoint,
+    perms: CapPerms::READ,
+    target: MaybeStr::from_bytes(b"behavior"), transfer: false, ops: 0,
+};
+/// The `Authority` interface's calling grant: the behaviour engine submits
+/// the brain frames that ask for the kernel's authority there.
+const AUTHORITY_CAP: CapSpec<'static> = CapSpec {
+    kind: CapKind::Endpoint,
+    perms: CapPerms::WRITE,
+    target: MaybeStr::from_bytes(b"authority"), transfer: false, ops: 0,
+};
 // ── The three hardware families, granted per RESOURCE ────────────────────
 //
 // Until 2026-09-10 no ring-3 task was granted a gpio, i2c or pwm endpoint at
@@ -1092,6 +1105,15 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
             n += 1;
         }
     }
+    // The drivetrain's commander is the behaviour engine: it hands the brain's
+    // authority frames to the kernel (`endpoint.authority`, `WRITE`) and reads
+    // the layer switches (`endpoint.behavior`, `READ`). Last, so no earlier
+    // slot moves.
+    if DRIVETRAIN && !cfg!(feature = "flight-tool-drivetrain") {
+        autorun_caps[n] = AUTHORITY_CAP;
+        autorun_caps[n + 1] = BEHAVIOR_SWITCHES_CAP;
+        n += 2;
+    }
     topo.push_task(
         MaybeStr::from_bytes(TASK_AUTORUN),
         MaybeStr::from_bytes(NAME_SOFT_RT),
@@ -1436,6 +1458,9 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
         )
         .expect("default_minimal_topology: MLSRV.ELF push failed");
         topo.set_last_task_mem_pages(MLSRV_MEM_PAGES);
+        // Started by its own row, whoever calls it (the component manager or,
+        // without one, the kernel's supervisor).
+        topo.set_last_task_start(true);
     }
 
     // Wave 9 (DRV1) — the ring-3 drivers; see `TASK_BUZZDRV_IMAGE`. After the

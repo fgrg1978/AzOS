@@ -2,21 +2,15 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 #![no_std]
 
-//! Subsumption Behavior Engine — Phase G1.
-//!
-//! Brooks-style layered behavior architecture with 4 priority levels:
-//! - L0: emergency-stop  (IMU fall/spin detection, always active)
-//! - L1: avoid-obstacle  (local MLP inference, gated by no-ml)
-//! - L2: remote-vla      (TCP ↔ external VLA server)
-//! - L3: explore          (default wander forward)
-//!
-//! The arbiter iterates L0→L3; the first layer that returns a valid
-//! `MotorOutput` wins and is published to the RT motor task.
+//! The robot's behaviour stack as the kernel keeps it: the safety layer's
+//! checks and envelope (L0, run by the robot enforcer), the brain protocol's
+//! framing and the frames that ask for authority, the payload drivers, the RC
+//! receiver's policy, the sensor bus and the layer switches the ring-3
+//! behaviour engine (`userspace/services/brain_client`) reads. Choosing a
+//! motion is the engine's.
 
 pub mod types;
-pub mod layers;
-pub mod arbiter;
-pub mod remote;
+pub mod switches;
 pub mod brain_protocol;
 pub mod encrypt_link;
 // Pure policy `encrypt_link` depends on (U09-8/V1.2). Its own module doc
@@ -25,52 +19,21 @@ pub mod encrypt_link;
 // `#[path]`-include it alone, the same pattern `crates/core/ota/src/pure.rs`
 // uses for `tests/host/ota-tests/`.
 pub mod encrypt_link_policy;
-pub mod brain_tx;
-pub mod camera_tx;
-pub mod offline;
 pub mod safety;
 // Wave 15: the RC receiver's safety policy (Kconfig `RC_INPUT`).
 #[cfg(feature = "rc-input")]
 pub mod rc_link;
-pub mod balance;
 pub mod sensor_bus;
-pub mod skill_profile;
-pub mod habit;
 pub mod payload;
 // The flight recorder and the e-stop latch moved to `azos_actuation`
 // (wave 11): they are cross-cutting. Re-exported at their old paths, so
 // `crate::logger` / `azos_behavior::logger` keep resolving.
 pub use azos_actuation::{estop, logger};
-pub mod ml_link;
 
 // Re-export public API
 pub use types::*;
-pub use skill_profile::{
-    SkillId, SkillProfile, SKILL_PROFILES, MAX_SKILLS,
-    CPU_BUDGET_TOTAL, SKILL_MAX_CPU_UNITS,
-    skill_admit, skill_start, skill_end, skill_profile,
-    skill_set_battery_pct, skill_battery_pct, skill_budget_info,
-};
 
-pub use habit::{
-    Habit, HabitTrigger, HABIT_PROMOTE_THRESHOLD, MAX_HABITS, HABIT_MAX_SEQ,
-    habit_record, habit_match, habit_prune, habit_stats,
-};
-pub use arbiter::{
-    arbitrate, layer_set_enabled, layer_is_enabled, last_winner,
-    layer_statuses, LAYER_NAMES,
-};
-pub use remote::{
-    encode_observation, decode_action_packet, decode_goal_packet,
-    remote_configure, remote_set_enabled, remote_is_enabled,
-    remote_server_ip, remote_server_port, remote_info, RemoteInfo,
-    current_goal, set_current_goal, last_action, set_last_action,
-    remote_set_connected, remote_set_socket, remote_socket,
-    remote_inc_sent, remote_inc_recv,
-    remote_actuation_from, RemoteActuation, REMOTE_PCT_TO_MILLI,
-    OBS_TOTAL, ACTION_PACKET_SIZE, GOAL_PACKET_SIZE,
-    OBS_MAGIC, ACT_MAGIC, GOAL_MAGIC,
-};
+pub use switches::{layer_mask, layer_set_enabled};
 pub use brain_protocol::{
     build_packet, parse_packet, crc8,
     encode_sensor_packet, encode_status_packet, decode_actuator_cmd,

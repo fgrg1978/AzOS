@@ -77,7 +77,7 @@ Source: `crates/core/topology/src/builder.rs` (the `*_CAPS` constants and the `p
 | `AUDIOD.ELF` | `userspace/services/audiod` | Kconfig `AUDIOD` | `endpoint.audio` (`Sound`) | `sound.0` | R `endpoint.audio`, RW `sound.0`, W `time` (the mixer thread's own deadline reservation, Kconfig `AUDIOD_PUMP_*`); the row itself is best effort, its calls served on `azos_srv` |
 | `VMMD.ELF` | `userspace/services/vmmd` | wherever the hypervisor core is built (Kconfig `HV`) | `endpoint.vmctl` (`VmCtl`) | `Vm`, `Vcpu` | RX `vm.0`, RWX `vcpu.0.k`, R `endpoint.vmctl`, RW `/fat/VM`, `ROOT_RO` |
 | `LXSRV.ELF` | `userspace/services/lxsrv` | `lx-server` builds | nothing | | R `entropy`, `ROOT_RO` |
-| `MLSRV.ELF` | `userspace/services/infsrv` | by the kernel's behavior task | `Infer`, `Decisions` (its receipts) and the verdict-log lease on `endpoint.infer` | | READ `endpoint.infer`, `WRITE` `memctl`, `ROOT_RO` |
+| `MLSRV.ELF` | `userspace/services/infsrv` | by its row (`start`) | `Infer`, `Decisions` (its receipts) and the verdict-log lease on `endpoint.infer` | | READ `endpoint.infer`, `WRITE` `memctl`, `ROOT_RO` |
 | lxrt | `userspace/services/lxrt` | mapped into each Linux process | the Linux system-call surface | | no row |
 | `BRAINCLI.ELF`, `REFLEX.ELF` | `userspace/services/brain_client`, `userspace/services/reflex` | the `autorun` choice | | | `BRAINCLI.ELF` `ROOT_RO` only; `REFLEX.ELF` none; the grant a running one gets is the `autorun` row's |
 
@@ -964,7 +964,7 @@ argument registers to the call the runtime answers, and the runtime writes the x
 
 Source: `userspace/services/infsrv/src/` (`lib.rs` is the broker, `main.rs` the program),
 `crates/core/devif/src/infer.rs`, `userspace/lib/ml/src/bundle.rs`; its client in the kernel is
-`kernel/src/behavior_ml.rs` and `kernel/src/behavior_infer.rs`. Tests: `tests/host/infsrv-tests`. The image is
+none yet (the behaviour engine's L1 does not ask it). Tests: `tests/host/infsrv-tests`. The image is
 `MLSRV.ELF`: the topology row, the seccomp profile and the disk-image recipes name it.
 
 The ring-3 inference service.
@@ -1019,22 +1019,8 @@ The latest verdict of each context (`azos_rings::Log<Verdict, 1>`) is published 
 object the service makes; `InferLog::log` lends it read-only and names the caller's cell, and a
 real-time reader polls it with no call (`infsrv::verdict::LogReader`).
 
-**The behavior loop is a client like any other.** The kernel's behavior task starts the service
-(supervised) and calls its `Infer` interface once per cycle, on `endpoint.infer`, through a
-capability the kernel mints for it with the badge of its own context: the model is the signed bundle
-`/fat/BEHAVIOR.MBL` (`tools/image/make_mbl.py` from `policy.gguf`; the kernel names it by its model
-reference, which the build checks), the input is `[front / 1000, right / 1000, 0.5, 0.9]` as `f32` in a
-memory object, the output the three logits in another, lent to the service for the call (so the
-loop keeps them and reads the answer after the reply), and the deadline is
-`ML_REPLY_TIMEOUT_US` (10 ms). The loop does not make the call itself: the kernel's endpoint call
-waits for as long as the server takes, so a task of its own, `ml-infer`, makes the calls one at a
-time and the loop waits for it with a timer. Every way a call can end that is not a class is a
-missing verdict and L1 holds STOP (`crates/domains/robot/behavior/src/ml_link.rs`): a refusal
-(`REFUSED` is `Late`, `NO_RESOURCE`, `NOT_READY`, `BUSY` and `UNSUPPORTED` are `Unavailable`, any other
-code `Malformed`), a deadline that passed, a service that is not there, a reply of another model
-than the one asked for, or logits that are not numbers. The reply's model reference, variant and
-backend travel with the verdict into the trajectory record of the motor command
-(`azos_robot::ModelRecord`). The start-up self-test classifies the policy file
+**Started by its own row** (`start`, Kconfig `USERSPACE_MLSRV`), by the component manager.
+The start-up self-test classifies the policy file
 `/fat/POLICY.GGF` once its signature `/fat/POLICY.SIG` (a `DSIG`) verifies (Kconfig
 `INFER_MODEL_SIG_REQUIRED`, default y; with it off the file is classified unchecked). Its row is `soft_rt` at priority 16 and grants `READ` on
 `endpoint.infer`, `WRITE` on `memctl` and `ROOT_RO`; it serves on its main thread. It runs
@@ -1045,12 +1031,26 @@ hard-float on aarch64.
 Source: `userspace/services/brain_client/src/main.rs`,
 `userspace/services/brain_client/src/link.rs`, `userspace/services/reflex/src/main.rs`.
 
-Two programs of the robot domain. `BRAINCLI.ELF` reads the sensors
-through syscalls, builds framed sensor packets, sends them sealed over TCP to a brain server
-(every connection begins with a Noise handshake in `link.rs`: the client is the initiator and
-speaks first, `Noise_IK` toward the brain key the topology pins in `[peer.brain]`, else
-`Noise_XX` with keys derived from the link key; there is no plaintext fallback), receives
-actuator commands and applies them to the `motor` endpoints.
+Two programs of the robot domain. `BRAINCLI.ELF` is the robot's behaviour engine and its
+one brain link, the autorun program of the robot disk image (`disk.img`). Every period
+(`SENSOR_PERIOD_MS`) it reads the sensors through io_ring `Sensor::read` calls, exchanges
+with the brain while a session is up (sealed sensor packets out, frames in; every connection
+begins with a Noise handshake in `link.rs`: the client is the initiator and speaks first,
+`Noise_IK` toward the brain key the topology pins in `[peer.brain]`, else `Noise_XX` with
+keys derived from the link key; there is no plaintext fallback, and with no key or no
+entropy the engine runs without a brain), chooses a layer (`behave.rs`, host-tested in
+`tests/host/behavior-tests`: L1 avoids an obstacle the rangefinders see, L2 follows the
+brain's command for 2 s, L3 explores while a session is up; the kernel's switches,
+`behavior enable|disable`, read through the `Behavior` interface, say which may drive) and
+publishes its command with `Motor::command`, so the kernel's drivetrain loop applies it
+through the safety layer's cap, the envelope, the PID and the motor-command watchdog. A
+cycle no layer wins publishes nothing, and the watchdog stops the wheels. The brain's frames
+that ask for authority (e-stop, degraded mode, the semantic level, a mode change with the
+operator's signed release, payload and configuration effects, an actuator command's
+confidence, any unknown type) go to the kernel through `endpoint.authority`; an emergency
+flag is a `Motor::estop`. An e-stop replaces the brain's standing command with a stop, so
+clearing the latch does not resume it. The operator's RC override is the kernel's and
+outranks the engine.
 `REFLEX.ELF` reads the rangefinder and the IMU and overrides motor commands when danger is
 detected (extreme tilt, then an obstacle too close, then a warning distance), whether or not
 the brain link is up. The topology holds a row for each (with `GPIODRV.ELF`, the GPIO driver

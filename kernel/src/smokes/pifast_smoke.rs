@@ -44,10 +44,9 @@ use azos_syscall::SyscallOut;
 
 /// Client above the hog above the server. All three are outside the RT band
 /// (`RT_PRIORITY_THRESHOLD` = 12), where ring-3 tasks live. 13, not 14: the
-/// boot's `behavior` task runs at 14 (`BEHAVIOR_PRIORITY`) and computes for
-/// ~1.5 s once (its one-shot bench sweep); at -smp 1 it shares this hart, and
-/// a client in its bucket would be time-sliced against it whatever the
-/// server's priority.
+/// robot's odometry and AHRS tasks run at 14 (`sensor_tasks::SENSING_PRIORITY`);
+/// at -smp 1 they share this hart, and a client in their bucket would be
+/// time-sliced against them whatever the server's priority.
 const CLIENT_PRIO: u32 = 13;
 const HOG_PRIO: u32 = 18;
 const SERVER_PRIO: u32 = 24;

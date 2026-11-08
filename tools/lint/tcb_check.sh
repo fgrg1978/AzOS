@@ -109,7 +109,7 @@ ina219 buzzer rings records seclog pci dma iommu
 ipc sched syscall stack energy
 crypto
 actuation channel ext-api
-config topology multi-stream dtb
+config topology dtb
 linux-abi
 percpu trace
 chaos decision

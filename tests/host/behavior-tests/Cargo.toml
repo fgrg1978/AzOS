@@ -8,11 +8,6 @@ description = "Host-side tests for the brain wire protocol in crates/domains/rob
 
 # Run with:  cd tests/host/behavior-tests && cargo test --release
 
-# `no-ml` mirrors `crates/domains/robot/behavior`'s own feature of the same name so
-# `#[cfg(not(feature = "no-ml"))]` in the `#[path]`-included `layers.rs` /
-# `arbiter.rs` (L1, avoid-obstacle) is a *known* cfg value here too — without
-# this declaration rustc's `unexpected_cfgs` lint fires on both files even
-# though the feature is (correctly) never enabled.
 [features]
 # logger.rs's RT-flush gate canary (wave 15): a known value, never enabled.
 rt-flush-canary = []
@@ -59,14 +54,6 @@ estop-unrecorded-canary = []
 default = ["geofence", "rc-input"]
 geofence = []
 rc-input = []
-no-ml = []
-ml-fallback-canary = []
-ml-absent-canary = []
-# kernel/src/behavior_infer.rs's canaries (known values in the kernel's features
-# of the same names): a refused `Infer` call passes as a class; the model that
-# answered is not compared with the one asked for.
-infer-refusal-canary = []
-infer-model-canary = []
 
 [dependencies]
 azos_common = { path = "../../../crates/core/common" }
