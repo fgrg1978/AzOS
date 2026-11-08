@@ -4,12 +4,14 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
-description = "The AzOS kernel log sink (Kconfig KLOG): maps the structured log's ring (MemObj klog.ring, read-only), polls it, and appends the records to a ring of KLOGn.TXT files under the tree its row grants, rotating and keeping the number of files Kconfig LOGD_* name. Holds no endpoint and no other authority. Excluded from workspace; built standalone."
+description = "The AzOS kernel log sink (Kconfig KLOG): maps the structured log's ring (MemObj klog.ring, read-only), polls it, and appends the records (the security records' `@security` lines among them, unfiltered) to a ring of KLOGn.TXT files under the tree its row grants, rotating and keeping the number of files Kconfig LOGD_* name. Holds no endpoint and no other authority. Excluded from workspace; built standalone."
 
 [dependencies]
 azos_libsys = { path = "../../../crates/core/libsys" }
 azos_abi = { path = "../../../crates/core/abi" }
 azos_limits = { path = "../../../crates/core/limits" }
+# The security records' line (the chain is the kernel's and the verifier's).
+azos_seclog = { path = "../../../crates/core/seclog", default-features = false }
 
 [features]
 # Gate canaries of the host rows over this program's pure modules

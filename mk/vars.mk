@@ -194,7 +194,7 @@ COMPSRV_SRC := $(wildcard $(COMPSRV_DIR)/src/*.rs) $(COMPSRV_DIR)/Cargo.toml $(w
 LOGD_DIR   := userspace/services/logd
 LOGD_BUILT := $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release/logd
 LOGD_ELF   := $(OUT_BUILD)/logd.elf
-LOGD_SRC   := $(LOGD_DIR)/src/main.rs $(LOGD_DIR)/src/store.rs $(LOGD_DIR)/src/keep.rs $(LOGD_DIR)/Cargo.toml $(LOGD_DIR)/build.rs crates/drivers/sys/src/klog/wire.rs
+LOGD_SRC   := $(LOGD_DIR)/src/main.rs $(LOGD_DIR)/src/store.rs $(LOGD_DIR)/src/keep.rs $(LOGD_DIR)/Cargo.toml $(LOGD_DIR)/build.rs crates/drivers/sys/src/klog/wire.rs crates/core/seclog/src/lib.rs crates/core/seclog/src/text.rs
 WHY_DIR       := userspace/services/why
 WHY_ELF       := $(OUT_BUILD)/why.elf
 # The ported programs (third_party/ports; `make ports`, mk/userspace.mk): one directory per ISA.

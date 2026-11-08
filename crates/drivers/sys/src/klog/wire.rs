@@ -359,6 +359,8 @@ pub const LOGD_MODULE: &[u8] = b"logd";
 pub const DECISION_MODULE: &[u8] = b"@decision";
 /// The module of a line `logd` wrote for a telemetry event.
 pub const TELEMETRY_MODULE: &[u8] = b"@telemetry";
+/// The module of a security record's line (`azos_seclog::text`).
+pub const SECURITY_MODULE: &[u8] = b"@security";
 
 /// The name of file `slot` (a FAT 8.3 name, root of the tree `logd` is
 /// granted), NUL-terminated.

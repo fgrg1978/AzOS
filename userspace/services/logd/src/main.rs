@@ -53,6 +53,7 @@ type Step = sys::record::Step;
 const SOURCE_KLOG: u8 = sys::record::SOURCE_KLOG;
 const SOURCE_DECISION: u8 = sys::record::SOURCE_DECISION;
 const SOURCE_TELEMETRY: u8 = sys::record::SOURCE_TELEMETRY;
+const SOURCE_SECURITY: u8 = sys::record::SOURCE_SECURITY;
 use wire::{Record, LINE_MAX};
 
 /// Telemetry budgets tracked in a period (Kconfig `LOGD_TELEMETRY_KEYS`).
@@ -245,6 +246,12 @@ fn render(env: &Envelope, payload: &[u8], hz: u64, out: &mut [u8]) -> Option<usi
             let r = Record::decode(env.seq, env.ts, env.kind as u8, env.flags, env.cpu, env.len, payload);
             Some(wire::line(&r, hz, out))
         }
+        SOURCE_SECURITY => {
+            let mut m = [0u8; azos_seclog::text::MSG_MAX];
+            let k = azos_seclog::text::render(env, payload, &mut m);
+            let r = Record::make(env.seq, env.ts, wire::LEVEL_INFO, 0, env.cpu, "@security", &m[..k]);
+            Some(wire::line(&r, hz, out))
+        }
         SOURCE_DECISION | SOURCE_TELEMETRY => {
             let module = if env.source == SOURCE_DECISION { wire::DECISION_MODULE } else { wire::TELEMETRY_MODULE };
             let mut m = [0u8; 160];
@@ -326,6 +333,7 @@ impl Sink {
             Some(SOURCE_KLOG) => b"klog: ",
             Some(SOURCE_DECISION) => b"decision: ",
             Some(SOURCE_TELEMETRY) => b"telemetry: ",
+            Some(SOURCE_SECURITY) => b"security: ",
             _ => b"",
         };
         let mut p = [0u8; 64];
@@ -455,7 +463,9 @@ fn run() -> i32 {
                 let n = wire::line(&r, hz, &mut line);
                 if t.matches(seq, &line[..n - 1]) {
                     rd.seek(k, (seq + 1).min(ring.head()));
-                    for (source, last) in [(SOURCE_DECISION, t.last_decision), (SOURCE_TELEMETRY, t.last_telemetry)] {
+                    for (source, last) in
+                        [(SOURCE_DECISION, t.last_decision), (SOURCE_TELEMETRY, t.last_telemetry), (SOURCE_SECURITY, t.last_security)]
+                    {
                         if let (Some(i), Some(s)) = (ring_index(&region, source), last) {
                             let r = region.ring(i);
                             rd.seek(i, (s + 1).max(r.map_or(0, |r| r.oldest())).min(r.map_or(0, |r| r.head())));
@@ -478,6 +488,13 @@ fn run() -> i32 {
         let seq = ring_index(&region, SOURCE_KLOG).map_or(0, |k| sink.rd.cursor(k)).saturating_sub(1);
         let msg: &[u8] = if resumed { b"start: resumed after the last record" } else { START_FRESH };
         sink.n += notice(&mut sink.batch, wire::LEVEL_INFO, seq, ts, hz, msg);
+        // The security records' reader starts afresh too: the verifier's seam.
+        if !resumed && ring_index(&region, SOURCE_SECURITY).is_some() {
+            let mut m = [0u8; 16];
+            let k = azos_seclog::text::render_seam(&mut m);
+            let n = sink.n;
+            sink.n += notice(&mut sink.batch[n..], wire::LEVEL_INFO, seq, ts, hz, &m[..k]);
+        }
     }
     let period_ns = azos_limits::LOGD_POLL_MS as u64 * 1_000_000;
     let mut next = sys::vdso_now_ns() + period_ns;

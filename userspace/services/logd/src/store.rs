@@ -16,7 +16,8 @@
 //! byte for byte, with the same sequence number rendered from the kernel log's
 //! ring ([`Tail::matches`]): equal means the region still is the stream that
 //! line came from, and the sink resumes every ring after its own last line
-//! (the decisions' and the telemetry's by their sequence numbers); anything
+//! (the decisions', the telemetry's and the security records' by their
+//! sequence numbers); anything
 //! else (a new boot, a ring that lapped the line) restarts every ring at its
 //! oldest record. A restart that starts every ring afresh writes the line
 //! [`START_FRESH`]: a seam, the files before it belong to another boot, and
@@ -48,9 +49,13 @@ pub struct Tail {
     pub last_decision: Option<u64>,
     /// The sequence number of the last telemetry line.
     pub last_telemetry: Option<u64>,
+    /// The sequence number of the last security record line.
+    pub last_security: Option<u64>,
 }
 
 impl Tail {
+    const EMPTY: Tail = Tail { rec: None, last_decision: None, last_telemetry: None, last_security: None };
+
     /// Is `ring_line` (record `seq` of the ring, rendered) the line this file
     /// last recorded for that sequence number?
     pub fn matches(&self, seq: u64, ring_line: &[u8]) -> bool {
@@ -87,7 +92,7 @@ fn scan<V: Vol>(vol: &mut V, slot: u8) -> Option<Scan> {
                 first = false;
                 s.serial = wire::head_serial(&l);
             }
-            let tail = s.tail.get_or_insert(Tail { rec: None, last_decision: None, last_telemetry: None });
+            let tail = s.tail.get_or_insert(Tail::EMPTY);
             // Canary: a start line is no seam.
             #[cfg(feature = "canary-logd-resume-across-seam")]
             let fresh = false;
@@ -98,10 +103,13 @@ fn scan<V: Vol>(vol: &mut V, slot: u8) -> Option<Scan> {
                 tail.rec = None;
                 tail.last_decision = None;
                 tail.last_telemetry = None;
+                tail.last_security = None;
             } else if l.module == wire::DECISION_MODULE {
                 tail.last_decision = Some(l.seq);
             } else if l.module == wire::TELEMETRY_MODULE {
                 tail.last_telemetry = Some(l.seq);
+            } else if l.module == wire::SECURITY_MODULE {
+                tail.last_security = Some(l.seq);
             } else if l.module != wire::LOGD_MODULE {
                 let mut b = [0u8; LINE_MAX];
                 b[..text.len()].copy_from_slice(text);
@@ -142,7 +150,7 @@ impl Store {
         // moment ago, or the source is rare) resumes by the files before it,
         // newest first, not from its ring's oldest record, which would write
         // its lines twice.
-        let mut tail = s.tail.unwrap_or(Tail { rec: None, last_decision: None, last_telemetry: None });
+        let mut tail = s.tail.unwrap_or(Tail::EMPTY);
         let mut crossed = s.seam;
         // Canary: look no further back than the file before the newest.
         #[cfg(feature = "canary-logd-resume-one-file")]
@@ -153,7 +161,7 @@ impl Store {
             if crossed {
                 break;
             }
-            if tail.rec.is_some() && tail.last_decision.is_some() && tail.last_telemetry.is_some() {
+            if tail.rec.is_some() && tail.last_decision.is_some() && tail.last_telemetry.is_some() && tail.last_security.is_some() {
                 break;
             }
             let Some(want) = serial.checked_sub(back).filter(|&w| w > 0) else { break };
@@ -166,8 +174,10 @@ impl Store {
             }
             tail.last_decision = tail.last_decision.or(p.last_decision);
             tail.last_telemetry = tail.last_telemetry.or(p.last_telemetry);
+            tail.last_security = tail.last_security.or(p.last_security);
         }
-        let tail = (tail.rec.is_some() || tail.last_decision.is_some() || tail.last_telemetry.is_some()).then_some(tail);
+        let tail = (tail.rec.is_some() || tail.last_decision.is_some() || tail.last_telemetry.is_some() || tail.last_security.is_some())
+            .then_some(tail);
         (Store { slot, serial, size: s.size, keep, limit }, tail)
     }
 

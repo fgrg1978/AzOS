@@ -145,7 +145,9 @@ fn the_other_sources_resume_by_their_own_last_line() {
     let mut v = Mem::default();
     let (mut s, _) = Store::recover(&mut v, 4, 4096);
     let mut b = batch(10, 12);
-    for (seq, module) in [(5u64, wire::DECISION_MODULE), (40, wire::TELEMETRY_MODULE), (6, wire::DECISION_MODULE)] {
+    for (seq, module) in
+        [(5u64, wire::DECISION_MODULE), (40, wire::TELEMETRY_MODULE), (6, wire::DECISION_MODULE), (3, wire::SECURITY_MODULE)]
+    {
         let r = Record::make(seq, 99, wire::LEVEL_INFO, 0, 0, core::str::from_utf8(module).unwrap(), b"rule=3");
         let mut nb = [0u8; LINE_MAX];
         let n = wire::line(&r, 1_000_000, &mut nb);
@@ -155,7 +157,32 @@ fn the_other_sources_resume_by_their_own_last_line() {
     let (_, tail) = Store::recover(&mut v, 4, 4096);
     let tail: Tail = tail.unwrap();
     assert_eq!(tail.rec_seq(), Some(11), "a decision or telemetry line is not a kernel log record");
-    assert_eq!((tail.last_decision, tail.last_telemetry), (Some(6), Some(40)));
+    assert_eq!((tail.last_decision, tail.last_telemetry, tail.last_security), (Some(6), Some(40), Some(3)));
+}
+
+/// A security record line in an older file still names where its ring
+/// resumes: the search back does not stop at the three other sources, so a
+/// restart never writes a security record twice (the verifier would take the
+/// second for a reorder).
+#[test]
+fn a_security_line_in_an_older_file_is_found() {
+    let mut v = Mem::default();
+    let (mut s, _) = Store::recover(&mut v, 4, 600);
+    let one = |seq: u64, module: &[u8]| {
+        let r = Record::make(seq, 99, wire::LEVEL_INFO, 0, 0, core::str::from_utf8(module).unwrap(), b"x");
+        let mut nb = [0u8; LINE_MAX];
+        let n = wire::line(&r, 1_000_000, &mut nb);
+        nb[..n].to_vec()
+    };
+    assert!(s.write(&mut v, &one(9, wire::SECURITY_MODULE), 0, 1_000_000));
+    let mut b = batch(10, 12);
+    b.extend_from_slice(&one(5, wire::DECISION_MODULE));
+    b.extend_from_slice(&one(40, wire::TELEMETRY_MODULE));
+    let pad = vec![b'x'; 600];
+    assert!(s.write(&mut v, &pad, 0, 1_000_000), "the padding rotates to a new file");
+    assert!(s.write(&mut v, &b, 0, 1_000_000));
+    let (_, tail) = Store::recover(&mut v, 4, 600);
+    assert_eq!(tail.unwrap().last_security, Some(9));
 }
 
 #[test]
