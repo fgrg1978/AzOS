@@ -40,6 +40,8 @@ use core::arch::global_asm;
 //   CPTR_EL2 = 0x22FF          RES1 bits set, every trap bit clear:
 //                              FP/SIMD, SVE and SME not trapped to
 //                              EL2 (B2-07 — see comment below)
+//   HCRX_EL2 = 0 | TCR2En      where FEAT_HCX: GCSEn 0 (no EL1&0 GCS);
+//                              TCR2En only with A64_POE on an S1POE core
 //   CNTHCTL_EL2 EL1PCEN+PCTEN  EL1 may use the physical counter/timer (the
 //                              kernel itself runs on the VIRTUAL ones, which
 //                              EL1 reaches without any grant; kept so a
@@ -152,23 +154,28 @@ _azos_drop_to_el1:
     movz    x10, #0x22FF
     msr     CPTR_EL2, x10
 
-.if {poe}
-    // FEAT_S1POE (Kconfig A64_POE): let EL1 at TCR2_EL1 (HCRX_EL2.TCR2En,
-    // bit 14, where FEAT_HCX); POR_EL1's grant is the FGT block below. A
-    // missing grant traps the first POR_EL1 write to EL2 (the arm-phase rows
-    // check the numbers on a core). HCRX_EL2 is written whole (its other
-    // fields are UNKNOWN out of reset and nothing else here needs one).
-    // SCR_EL3.TCR2En / PIEn are the firmware's.
-    mrs     x10, S3_0_C0_C7_3       // ID_AA64MMFR3_EL1
-    ubfx    x10, x10, #16, #4       // S1POE
-    cbz     x10, 8f
+    // FEAT_HCX: HCRX_EL2 is UNKNOWN out of reset, and among its fields are
+    // GCSEn (bit 22: guarded control stacks at EL1 and EL0) and TCR2En (bit
+    // 14: TCR2_EL1, itself UNKNOWN out of reset, takes effect). So it is
+    // written whole on every core that has it, as Linux's `__init_el2_hcrx`
+    // does: 0, plus TCR2En with A64_POE on a core with S1POE (POR_EL1's grant
+    // is the FGT block below; a missing grant traps the first write to EL2).
+    // GCSEn stays 0: the kernel runs no GCS (cpu/cfi.rs, "GCS"), so a
+    // GCSCR_EL1 left set by reset or firmware never takes effect. SCR_EL3.HXEn,
+    // TCR2En and PIEn are the firmware's.
     mrs     x10, ID_AA64MMFR1_EL1
     ubfx    x10, x10, #40, #4       // HCX
     cbz     x10, 8f
-    mov     x10, #(1 << 14)         // TCR2En
-    msr     S3_4_C1_C2_2, x10       // HCRX_EL2
-8:
+    mov     x11, #0
+.if {poe}
+    mrs     x10, S3_0_C0_C7_3       // ID_AA64MMFR3_EL1
+    ubfx    x10, x10, #16, #4       // S1POE
+    cbz     x10, 7f
+    mov     x11, #{tcr2en}
+7:
 .endif
+    msr     S3_4_C1_C2_2, x11       // HCRX_EL2
+8:
 
     // FEAT_FGT: HFGRTR_EL2, HFGWTR_EL2, HFGITR_EL2, HDFGRTR_EL2 and
     // HDFGWTR_EL2 are UNKNOWN out of reset, and a plain trap bit left set
@@ -266,6 +273,7 @@ _azos_drop_to_el1:
     hyp_mon = const cfg!(all(feature = "hyp-monitor", target_os = "none")) as u8,
     poe = const (!azos_limits::A64_POE_NEVER) as u8,
     npor_hw = const (crate::mmu::ptwin::HFGXTR_NPOR_EL1 >> 48) as u16,
+    tcr2en = const crate::mmu::ptwin::HCRX_TCR2EN,
 );
 
 // The immediate above is the top halfword of the constant.

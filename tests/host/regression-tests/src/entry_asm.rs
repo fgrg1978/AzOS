@@ -116,6 +116,26 @@ fn the_el2_drop_writes_the_fine_grained_traps_whole() {
     }
 }
 
+/// **The EL2 drop writes `HCRX_EL2` whole on every FEAT_HCX core**, not only
+/// in an A64_POE build: its UNKNOWN reset could hold GCSEn (bit 22, Linux
+/// arch/arm64/tools/sysreg `HCRX_EL2`), which would let a GCSCR_EL1 left set
+/// by reset or firmware turn on a guarded control stack the kernel never set
+/// up, so the next `bl` would push through an UNKNOWN GCSPR_EL1. The value
+/// is 0 or `TCR2En` and nothing else. Canaries: move the block back inside
+/// `.if {poe}` (first assert), or OR in `#(1 << 22)` (second).
+#[test]
+fn the_el2_drop_writes_hcrx_whole_without_gcsen() {
+    let drop = between("arch/aarch64/src/mmu/boot.rs", "//", "_azos_drop_to_el1:", "eret");
+    let w = at(&drop, "msr     S3_4_C1_C2_2, x11");
+    let gated = drop[..w].iter().filter(|l| l.starts_with(".if")).count() > drop[..w].iter().filter(|l| *l == ".endif").count();
+    assert!(!gated, "HCRX_EL2 is written only inside an `.if` block");
+    let hcx = at(&drop, "ubfx    x10, x10, #40, #4");
+    let set: Vec<&String> = drop[hcx..w].iter().filter(|l| l.contains("x11")).collect();
+    assert!(set.iter().all(|l| *l == "mov     x11, #0" || *l == "mov     x11, #{tcr2en}"),
+        "HCRX_EL2 takes more than 0 or TCR2En: {set:?}");
+    assert!(!drop.iter().any(|l| l.starts_with("mrs") && l.ends_with("S3_4_C1_C2_2")), "HCRX_EL2 is read back and ORed into its reset value");
+}
+
 /// **M3: an aarch64 IRQ/FIQ never decodes the stale `ESR_EL1`**: `class()`
 /// and the FP first-use arm both ask the vector first.
 #[test]
