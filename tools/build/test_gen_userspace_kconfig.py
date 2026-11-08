@@ -216,17 +216,33 @@ def main():
         r = subprocess.run([sys.executable, os.path.join(tmp, "tools/build/gen_userspace_kconfig.py"), "--root", tmp, "--all-on"],
                            capture_output=True, text=True)
         lines = r.stdout.split()
+        # The symbols the manifests name in `depends`, read here by their own
+        # text, not through the generator.
+        want_deps = set()
+        for dirpath, _, files in os.walk(os.path.join(tmp, "userspace")):
+            for f in files:
+                if f in ("Cargo.toml", "azos.toml"):
+                    with open(os.path.join(dirpath, f), encoding="utf-8") as fh:
+                        want_deps |= set(re.findall(r'^depends\s*=\s*"([A-Z0-9_]+)"\s*$', fh.read(), re.M))
+        got_deps = {ln[len("CONFIG_"):-2] for ln in lines if not ln.startswith("CONFIG_USERSPACE_")}
         check(r.returncode == 0 and "CONFIG_USERSPACE_SH=y" in lines and "CONFIG_USERSPACE_HELLO=y" in lines
-              and all(re.fullmatch(r"CONFIG_USERSPACE_[A-Z0-9_]+=y", ln) or ln == "CONFIG_BOARD_IO=y" for ln in lines)
-              and "CONFIG_BOARD_IO=y" in lines,
-              "--all-on: CONFIG_USERSPACE_<STEM>=y for every image and the symbols they depend on, nothing else")
+              and all(re.fullmatch(r"CONFIG_[A-Z0-9_]+=y", ln) for ln in lines)
+              and want_deps and got_deps == want_deps,
+              "--all-on: CONFIG_USERSPACE_<STEM>=y for every image and exactly the symbols their `depends` name, nothing else")
         rc, log, v = defconfig(tmp, "generic-sbc-riscv64-dev+qemu+linux+gui", cfg)
         with open(cfg, "a") as f:
             f.write(r.stdout)
         rc, log = olddefconfig(tmp, cfg)
         v = values(cfg)
-        check(rc == 0 and all(v.get(ln[len("CONFIG_"):-2]) == "y" for ln in lines),
-              "--all-on lines survive olddefconfig on a large board: every program is on")
+        # The ring-3 virtio-rng driver is the other placement of a device the
+        # kernel drives by default, and needs INSPECT and DMA_RING3_WITHOUT_IOMMU
+        # (a kernel-trust choice): a board that does not take that choice leaves
+        # the member and its image off. Naming the pair keeps the check from
+        # passing on a program that went off for another reason.
+        placed_apart = {"DRV_VIRTIO_RNG_PLACEMENT_RING3", "USERSPACE_RNGDRV"}
+        off = {ln[len("CONFIG_"):-2] for ln in lines if v.get(ln[len("CONFIG_"):-2]) != "y"}
+        check(rc == 0 and off == placed_apart,
+              f"--all-on lines survive olddefconfig on a large board: every program is on but the ring-3 rng placement ({sorted(off)})")
 
         # 6. USERLAND: each member changes what the image is built from.
         def userland(lines):
