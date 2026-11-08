@@ -9,7 +9,7 @@
 //! result against `SpawnReq::check_shape`, the kernel's own check.
 
 use azos_abi::ushell::{
-    Move, SpawnReq, MOVE_CONSOLE, MOVE_KIND_FD, SPAWN_ARGC_MAX, SPAWN_ARGV_MAX, SPAWN_CWD_MAX, SPAWN_ENVC_MAX,
+    Move, SpawnReq, MOVE_CONSOLE, MOVE_F_OFFER, MOVE_KIND_ENDPOINT, MOVE_KIND_FD, SPAWN_ARGC_MAX, SPAWN_ARGV_MAX, SPAWN_CWD_MAX, SPAWN_ENVC_MAX,
     SPAWN_ENV_MAX, SPAWN_MAX_MOVES, SPAWN_REQ_VERSION,
 };
 
@@ -22,6 +22,9 @@ pub enum Fd {
     Console,
     /// A handle of the caller's, moved to the child.
     Handle(u32),
+    /// A terminal call right of the caller's, offered to the child: moved
+    /// when the child's row receives `term`, else the fd is closed.
+    Terminal(u32),
 }
 
 /// A request under construction.
@@ -105,12 +108,13 @@ impl ReqBuilder {
         let mut moves = [Move::default(); SPAWN_MAX_MOVES];
         let mut n = 0;
         for (fd, what) in self.fds.iter().enumerate() {
-            let handle = match *what {
+            let (handle, kind) = match *what {
                 Fd::Closed => continue,
-                Fd::Console => MOVE_CONSOLE,
-                Fd::Handle(h) => h,
+                Fd::Console => (MOVE_CONSOLE, MOVE_KIND_FD),
+                Fd::Handle(h) => (h, MOVE_KIND_FD),
+                Fd::Terminal(h) => (h, MOVE_KIND_ENDPOINT | MOVE_F_OFFER),
             };
-            moves[n] = Move { child_fd: fd as u32, handle, perms: 0, kind: MOVE_KIND_FD };
+            moves[n] = Move { child_fd: fd as u32, handle, perms: 0, kind };
             n += 1;
         }
         SpawnReq {

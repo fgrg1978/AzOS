@@ -229,6 +229,9 @@ impl Vars for Scope<'_> {
 #[derive(Clone, Copy)]
 struct Job {
     used: bool,
+    /// The job's id for the terminal: the focus it is given, and the badge of
+    /// the terminal it is lent.
+    id: u32,
     tids: [u32; parse::MAX_STAGES],
     done: [bool; parse::MAX_STAGES],
     n: usize,
@@ -236,7 +239,8 @@ struct Job {
     status: i32,
 }
 
-const NO_JOB: Job = Job { used: false, tids: [0; parse::MAX_STAGES], done: [false; parse::MAX_STAGES], n: 0, status: 0 };
+const NO_JOB: Job =
+    Job { used: false, id: 0, tids: [0; parse::MAX_STAGES], done: [false; parse::MAX_STAGES], n: 0, status: 0 };
 
 impl Job {
     fn finished(&self) -> bool {
@@ -289,6 +293,8 @@ struct Shell {
     /// The terminal: the `Terminal` object over the endpoint the name server
     /// lends, asked for again when the lease lapses.
     term: TerminalClient<Renewing<SysCall>>,
+    /// The id the next job gets (never 0, the shell's own focus).
+    next_job: u32,
     /// The line the terminal delivered last.
     text: [u8; LINE_MAX],
     text_len: usize,
@@ -876,8 +882,16 @@ impl Shell {
     }
 
     /// Spawn every stage, connected by pipes; wait for a foreground job.
+    /// A fresh job id.
+    fn job_id(&mut self) -> u32 {
+        let id = self.next_job;
+        self.next_job = self.next_job.checked_add(1).unwrap_or(1);
+        id
+    }
+
     fn run_pipeline(&mut self) -> i32 {
         let n = self.line.n;
+        let id = self.job_id();
         let mut tids = [0u32; parse::MAX_STAGES];
         let mut spawned = 0usize;
         // The read end (a pipe token) the next stage takes as fd 0.
@@ -1057,6 +1071,18 @@ impl Shell {
             // redirection reads the terminal: the console is lent to it (the
             // kernel does so only for a Linux image) until it exits.
             let console_in = !self.line.background && spawned == 0 && c.stdin.is_none();
+            // And a native one is offered a terminal of its own as fd 0: a
+            // call right badged with the job, which the kernel moves only into
+            // a row that receives `term` (any other starts with fd 0 closed,
+            // and the shell's copy dies with the lend). The focus is the
+            // job's before it runs, so its first call is answered; when the
+            // focus comes back the terminal server revokes it wherever it is.
+            if console_in {
+                if let Some(t) = self.term.lend_job(id).ok().and_then(|l| l.get()) {
+                    rb.fd(0, Fd::Terminal(t.raw()));
+                    let _ = self.term.set_foreground(id);
+                }
+            }
             let r = rb.finish(sys::SPAWN_F_DIE_WITH_PARENT | if console_in { sys::SPAWN_F_CONSOLE_IN } else { 0 });
             let tid = sys::spawn_ex(&image[..il + 1], Some(&r));
             if tid <= 0 {
@@ -1092,6 +1118,7 @@ impl Shell {
         }
         let mut job = NO_JOB;
         job.used = true;
+        job.id = id;
         job.n = spawned;
         job.tids = tids;
         if failure != 0 {
@@ -1139,8 +1166,7 @@ impl Shell {
         let mut asked_at: Option<u64> = None;
         let mut forced = false;
         let mut poll = POLL_MIN_MS;
-        // The job's id for the terminal: its first task.
-        let _ = self.term.set_foreground(if job.n > 0 { job.tids[0] } else { 1 });
+        let _ = self.term.set_foreground(job.id);
         loop {
             job.reap();
             if job.finished() {
@@ -1238,6 +1264,7 @@ static SHELL: sys::Lock<Shell> = sys::Lock::new(Shell {
     jobs: [NO_JOB; JOBS],
     line: Pipeline::new(),
     term: TerminalClient::new(Renewing::new(SysCall, 0, [0; azos_names::NAME_WORDS], 0)),
+    next_job: 1,
     text: [0; LINE_MAX],
     text_len: 0,
 });

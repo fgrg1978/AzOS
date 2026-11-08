@@ -331,6 +331,29 @@ mod request_block {
         assert_eq!(r.check_shape(), Ok(()));
     }
 
+    /// The terminal a job is lent goes as an offered endpoint entry at fd 0
+    /// (moved only into a row that receives `term`), every other fd as a
+    /// descriptor entry; the kernel's shape check takes both.
+    ///
+    /// **Canary.** Build the terminal as a descriptor entry (`MOVE_KIND_FD`):
+    /// the kind assertion goes red (and the kernel would refuse the
+    /// endpoint with `ECAPKIND`).
+    #[test]
+    fn the_lent_terminal_is_an_offered_endpoint_entry() {
+        use azos_abi::ushell::{MOVE_F_OFFER, MOVE_KIND_ENDPOINT, MOVE_KIND_FD};
+        let mut b = ReqBuilder::new();
+        b.arg(b"kibi");
+        b.fd(0, Fd::Terminal(0x77));
+        b.fd(1, Fd::Console);
+        let r = b.finish(0);
+        assert_eq!(r.check_shape(), Ok(()));
+        let t = r.moves[..2].iter().find(|m| m.child_fd == 0).unwrap();
+        assert_eq!((t.handle, t.kind), (0x77, MOVE_KIND_ENDPOINT | MOVE_F_OFFER));
+        assert!(t.is_endpoint() && t.offered());
+        let c = r.moves[..2].iter().find(|m| m.child_fd == 1).unwrap();
+        assert_eq!(c.kind, MOVE_KIND_FD);
+    }
+
     #[test]
     fn a_closed_fd_is_not_a_move() {
         let mut b = ReqBuilder::new();
