@@ -108,12 +108,22 @@ impl Walk {
             self.child_on_path = false;
         }
         let mut name = [0u8; NAME_MAX];
-        let entry = match h.readdir(self.path.as_bytes(), self.idx[self.depth], &mut name) {
-            Ok(e) => e,
-            Err(e) => {
-                self.finished = true;
-                return Some(Err(e));
+        let (entry, l) = loop {
+            let entry = match h.readdir(self.path.as_bytes(), self.idx[self.depth], &mut name) {
+                Ok(e) => e,
+                Err(e) => {
+                    self.finished = true;
+                    return Some(Err(e));
+                }
+            };
+            let l = name.iter().position(|&b| b == 0).unwrap_or(NAME_MAX);
+            // A FAT directory lists its own `.` and `..`.
+            #[cfg(not(feature = "walk-dots-canary"))]
+            if entry.is_some() && matches!(&name[..l], b"." | b"..") {
+                self.idx[self.depth] += 1;
+                continue;
             }
+            break (entry, l);
         };
         let Some(entry) = entry else {
             self.leave();
@@ -123,7 +133,6 @@ impl Walk {
             return Some(Ok(Ev::DirPost));
         };
         self.idx[self.depth] += 1;
-        let l = name.iter().position(|&b| b == 0).unwrap_or(NAME_MAX);
         if let Err(e) = self.path.push(&name[..l]) {
             self.finished = true;
             return Some(Err(e));

@@ -357,3 +357,17 @@ fn a_tree_deeper_than_the_walk_is_an_error_not_a_loop() {
     assert!(m.err().contains("too long"), "{}", m.err());
     assert_eq!(run_with(&mut m, "rm", &["-r", "d0"], 4096), 1);
 }
+
+#[test]
+fn walks_skip_the_dot_entries_a_fat_directory_lists() {
+    let mut m = tree();
+    m.dots = true;
+    assert_eq!(run(&mut m, "find", &["t"]), 0);
+    assert_eq!(m.out(), "t\nt/a.txt\nt/b.log\nt/s\nt/s/c.txt\nt/s/u\nt/s/u/d.txt\n");
+    assert_eq!(run(&mut m, "cp", &["-r", "t", "u"]), 0);
+    assert_eq!(m.read("/w/u/s/u/d.txt").unwrap(), "4");
+    assert_eq!(run(&mut m, "grep", &["-rc", "3", "u"]), 0);
+    assert!(m.out().contains("u/s/c.txt:1"), "{}", m.out());
+    assert_eq!(run(&mut m, "rm", &["-r", "t", "u"]), 0);
+    assert_eq!(m.paths(), vec!["/w"]);
+}

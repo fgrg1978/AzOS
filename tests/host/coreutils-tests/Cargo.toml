@@ -23,6 +23,7 @@ tr-range-canary = ["azos_coreutils/tr-range-canary"]
 uniq-count-canary = ["azos_coreutils/uniq-count-canary"]
 args-bundle-canary = ["azos_coreutils/args-bundle-canary"]
 path-dotdot-canary = ["azos_coreutils/path-dotdot-canary"]
+walk-dots-canary = ["azos_coreutils/walk-dots-canary"]
 
 [dependencies]
 azos_coreutils = { path = "../../../userspace/lib/coreutils" }

@@ -23,6 +23,7 @@ tr-range-canary = []
 uniq-count-canary = []
 args-bundle-canary = []
 path-dotdot-canary = []
+walk-dots-canary = []
 
 [dependencies]
 

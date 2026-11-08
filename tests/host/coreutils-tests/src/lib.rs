@@ -36,6 +36,8 @@ pub struct Mem {
     pub other_volume: Option<Vec<u8>>,
     /// Paths under this prefix refuse every change.
     pub read_only: Option<Vec<u8>>,
+    /// A directory below the root lists `.` and `..` first, as a FAT one does.
+    pub dots: bool,
 }
 
 impl Mem {
@@ -55,6 +57,7 @@ impl Mem {
             block: 512,
             other_volume: None,
             read_only: None,
+            dots: false,
         }
     }
 
@@ -193,7 +196,10 @@ impl Host for Mem {
                 None => return Err(Error::NotFound),
             }
         }
-        let kids = self.children(p);
+        let mut kids = self.children(p);
+        if self.dots && p != b"/" {
+            kids.splice(0..0, [(b".".to_vec(), Node::Dir), (b"..".to_vec(), Node::Dir)]);
+        }
         let Some((n, node)) = kids.get(index as usize) else { return Ok(None) };
         name.fill(0);
         name[..n.len()].copy_from_slice(n);
