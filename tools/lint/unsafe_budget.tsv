@@ -148,6 +148,7 @@ userspace/services/audiod	4	0	1	0	0	-
 userspace/services/brain_client	23	0	0	0	0	-
 userspace/services/compmgr	1	0	0	0	0	-
 userspace/services/compositor	4	0	2	0	0	-
+userspace/services/coreutil	1	0	0	0	0	-
 userspace/services/decisd	1	0	0	0	0	-
 userspace/services/infsrv	11	2	0	0	0	-
 userspace/services/inputd	2	0	0	0	0	-
