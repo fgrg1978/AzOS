@@ -192,7 +192,7 @@ fn read_cr4() -> u64 {
 
 fn write_cr4(v: u64) {
     // SAFETY: the caller keeps the bits the kernel runs with and adds VMXE.
-    unsafe { asm!("mov cr4, {}", in(reg) v, options(nomem, nostack, preserves_flags)) };
+    unsafe { asm!("mov cr4, {}", in(reg) v, options(nostack, preserves_flags)) };
 }
 
 fn xsetbv(xcr0: u64) {

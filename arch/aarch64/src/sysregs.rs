@@ -265,7 +265,7 @@ pub fn write_ttbr0_el1(root_phys: usize, asid: u16) {
         core::arch::asm!(
             "msr TTBR0_EL1, {0}",
             in(reg) val,
-            options(nomem, nostack, preserves_flags),
+            options(nostack, preserves_flags),
         );
     }
 }
@@ -328,7 +328,7 @@ pub fn tlbi_vmalle1is() {
             "tlbi vmalle1is",
             "dsb ish",
             "isb",
-            options(nomem, nostack, preserves_flags),
+            options(nostack, preserves_flags),
         );
     }
 }
@@ -346,7 +346,8 @@ pub const fn tlbi_va_operand(va: u64) -> u64 {
 /// as `VA[55:12]` (the page number, not the byte address) — the same
 /// per-page shootdown RISC-V's `sfence.vma va, zero` performs after a
 /// single-PTE rewrite (COW break, demand materialize, permission widening,
-/// unmap).
+/// unmap). Not `nomem`, as every TLBI and translation-register write here: the
+/// asm is the compiler barrier that keeps the page-table store before it.
 #[cfg(target_arch = "aarch64")]
 #[inline]
 pub fn tlbi_vaae1is(va: usize) {
@@ -358,7 +359,7 @@ pub fn tlbi_vaae1is(va: usize) {
             "dsb ish",
             "isb",
             in(reg) op,
-            options(nomem, nostack, preserves_flags),
+            options(nostack, preserves_flags),
         );
     }
 }
@@ -373,7 +374,7 @@ pub fn write_mair_el1(val: u64) {
         core::arch::asm!(
             "msr MAIR_EL1, {0}",
             in(reg) val,
-            options(nomem, nostack, preserves_flags),
+            options(nostack, preserves_flags),
         );
     }
 }
@@ -386,7 +387,7 @@ pub fn write_tcr_el1(val: u64) {
         core::arch::asm!(
             "msr TCR_EL1, {0}",
             in(reg) val,
-            options(nomem, nostack, preserves_flags),
+            options(nostack, preserves_flags),
         );
     }
 }
@@ -473,7 +474,7 @@ pub fn write_ttbr1_el1(root_phys: usize, asid: u16) {
         core::arch::asm!(
             "msr TTBR1_EL1, {0}",
             in(reg) val,
-            options(nomem, nostack, preserves_flags),
+            options(nostack, preserves_flags),
         );
     }
 }
@@ -519,7 +520,7 @@ pub fn write_sctlr_el1(val: u64) {
             "msr SCTLR_EL1, {0}",
             "isb",
             in(reg) val,
-            options(nomem, nostack, preserves_flags),
+            options(nostack, preserves_flags),
         );
     }
 }
@@ -731,7 +732,7 @@ impl UserAccess {
                 core::arch::asm!(
                     ".arch_extension pan",
                     "msr PAN, #0",
-                    options(nomem, nostack, preserves_flags),
+                    options(nostack, preserves_flags),
                 );
             },
             ExtPolicy::Never => {}
@@ -740,7 +741,7 @@ impl UserAccess {
             #[cfg(not(target_os = "none"))]
             ExtPolicy::Probe => {
                 if pan_in_use() {
-                    unsafe { core::arch::asm!(".arch_extension pan", "msr PAN, #0", options(nomem, nostack, preserves_flags)) };
+                    unsafe { core::arch::asm!(".arch_extension pan", "msr PAN, #0", options(nostack, preserves_flags)) };
                 }
             }
         }
@@ -764,7 +765,7 @@ impl Drop for UserAccess {
                 core::arch::asm!(
                     ".arch_extension pan",
                     "msr PAN, #1",
-                    options(nomem, nostack, preserves_flags),
+                    options(nostack, preserves_flags),
                 );
             },
             ExtPolicy::Never => {}
@@ -773,7 +774,7 @@ impl Drop for UserAccess {
             #[cfg(not(target_os = "none"))]
             ExtPolicy::Probe => {
                 if pan_in_use() {
-                    unsafe { core::arch::asm!(".arch_extension pan", "msr PAN, #1", options(nomem, nostack, preserves_flags)) };
+                    unsafe { core::arch::asm!(".arch_extension pan", "msr PAN, #1", options(nostack, preserves_flags)) };
                 }
             }
         }

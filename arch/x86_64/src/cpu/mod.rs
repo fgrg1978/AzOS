@@ -339,8 +339,9 @@ pub fn rdmsr(msr: u32) -> u64 {
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]
 pub fn wrmsr(msr: u32, v: u64) {
-    // SAFETY: writing an architectural MSR at CPL0.
-    unsafe { core::arch::asm!("wrmsr", in("ecx") msr, in("eax") v as u32, in("edx") (v >> 32) as u32, options(nomem, nostack, preserves_flags)) };
+    // SAFETY: writing an architectural MSR at CPL0. Not `nomem`: an MSR such as
+    // IA32_PKRS, PAT or GS_BASE changes what the accesses around it mean.
+    unsafe { core::arch::asm!("wrmsr", in("ecx") msr, in("eax") v as u32, in("edx") (v >> 32) as u32, options(nostack, preserves_flags)) };
 }
 
 #[cfg(target_arch = "x86_64")]

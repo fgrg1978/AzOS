@@ -372,10 +372,9 @@ pub extern "C" fn aarch64_secondary_ttbr1_attach() -> u64 {
     }
     unsafe {
         azos_arch::sysregs::write_tcr_el1(tcr);
-        core::arch::asm!("msr TTBR1_EL1, {0}", in(reg) ttbr1, options(nomem, nostack));
-        core::arch::asm!("isb", options(nomem, nostack));
+        core::arch::asm!("msr TTBR1_EL1, {0}", "isb", in(reg) ttbr1, options(nostack));
         azos_arch::sysregs::tlbi_vmalle1is();
-        core::arch::asm!("isb", options(nomem, nostack));
+        core::arch::asm!("isb", options(nostack));
     }
     // U01-1: publish a REAL readback of TTBR1_EL1, for the boot CPU's own
     // check — see CORE_TTBR1's own doc. `current_cpu_id()` is valid here:
