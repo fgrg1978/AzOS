@@ -245,8 +245,8 @@ fn the_creator_of_a_socket_may_give_it_away() {
 ///
 /// **Canary.** Make `CapSpec::grant_perms` ignore `transfer`: the lend rows (when
 /// the build has them) read `WRITE` alone and the synthetic row below goes red.
-/// Drop `transfer` from `COMPOSITOR_SERVE` (builder.rs): one serving row of the
-/// two this build carries lends from its own endpoint.
+/// Drop `transfer` from `COMPOSITOR_SERVE` or `TERM_SERVE` (builder.rs): one
+/// serving row of those this build carries does not lend from its own endpoint.
 #[test]
 fn the_default_topology_hands_each_row_the_rights_its_flows_need() {
     use azos_topology::{CapSpec, MaybeStr};
@@ -254,8 +254,10 @@ fn the_default_topology_hands_each_row_the_rights_its_flows_need() {
     let lent: &[&[u8]] = &[b"endpoint.term", b"endpoint.decisions", b"endpoint.input", b"endpoint.compositor", b"endpoint.audio"];
     // The servers whose one grant of their own endpoint both serves (`READ`)
     // and is the call right their badged rights are derived from and lent
-    // (`builder.rs` `INPUT_SERVE`, `COMPOSITOR_SERVE`).
-    let serve_and_lend: &[(&str, &[u8])] = &[("INPUTD.ELF", b"endpoint.input"), ("COMPSRV.ELF", b"endpoint.compositor")];
+    // (`builder.rs` `INPUT_SERVE`, `COMPOSITOR_SERVE`, and `TERM_SERVE`: the
+    // terminal a job is lent).
+    let serve_and_lend: &[(&str, &[u8])] =
+        &[("INPUTD.ELF", b"endpoint.input"), ("COMPSRV.ELF", b"endpoint.compositor"), ("TERMD.ELF", b"endpoint.term")];
     let (mut transfers, mut regions, mut serving) = (0, 0, 0);
     for task in topo.tasks() {
         for c in topo.caps_of(task) {
@@ -306,7 +308,8 @@ fn the_default_topology_hands_each_row_the_rights_its_flows_need() {
     eprintln!("rights audit: {transfers} lend rows, {regions} region rows in the default topology of this build");
     // Each server's row of this build lends from its grant: one that lost
     // `transfer` would read no extra right above and still pass.
-    let want = azos_topology::builder::INPUTD_ROW as usize + azos_topology::builder::COMPOSITOR_ROW as usize;
+    let termd = topo.tasks().iter().any(|t| t.name.as_bytes() == azos_topology::builder::TASK_TERMD_IMAGE);
+    let want = azos_topology::builder::INPUTD_ROW as usize + azos_topology::builder::COMPOSITOR_ROW as usize + termd as usize;
     assert_eq!(serving, want, "a serving server's row in this build does not lend from its own endpoint");
     // The same rule on a row of our own, so the check holds in a build whose
     // default topology has no lend row.
