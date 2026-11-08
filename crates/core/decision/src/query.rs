@@ -77,13 +77,18 @@ pub fn lookup(id: u64) -> Option<ProvenanceRecord> {
     if id == 0 {
         return None;
     }
+    // The journal holds the whole record (topology row, image prefix); the
+    // ring's slot holds the four numbers every verdict has. A durable id is
+    // answered whole.
+    if DURABLE {
+        if let Some(p) = journal::get(id) {
+            return Some(p);
+        }
+    }
     if ON {
         if let Some(r) = crate::get(id) {
             return Some(ProvenanceRecord::from_record(&r));
         }
-    }
-    if DURABLE {
-        return journal::get(id);
     }
     None
 }

@@ -14097,7 +14097,7 @@ done
 # builds `durable` only, where the ids are dense and the keying cannot show.
 if ci_row_begin "decisions(ring)"; then
 printf "  %-26s" "decisions(ring)..."
-if dr_out=$( (cd "${REPO_ROOT}/tests/host/decisions-tests" && CARGO_TARGET_DIR="$AZOS_OUT/target/host-canary/decisions-tests" "$CARGO" test --release --features ring -- journal_ ring_ 2>&1) ) \
+if dr_out=$( (cd "${REPO_ROOT}/tests/host/decisions-tests" && CARGO_TARGET_DIR="$AZOS_OUT/target/host-canary/decisions-tests" "$CARGO" test --release --features ring 2>&1) ) \
    && echo "$dr_out" | qgrep -qE "^test result: ok\. [1-9][0-9]* passed"; then
     ok
 else

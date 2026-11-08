@@ -31,6 +31,12 @@ mod tests {
     /// writes records.
     static GUARD: Mutex<()> = Mutex::new(());
 
+    /// The lock, taken even after a test failed holding it: the next test then
+    /// reports its own result, not a `PoisonError` for the first one's failure.
+    fn guard() -> std::sync::MutexGuard<'static, ()> {
+        GUARD.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     fn rec(seq: u64, rule: Rule, verdict: Verdict, subject: u32, n: [u64; 3]) -> ProvenanceRecord {
         let mut p = ProvenanceRecord::new(rule as u8, verdict as u8, subject, n);
         p.seq = seq;
@@ -328,23 +334,25 @@ mod tests {
         include!("b3.rs");
     }
 
-    /// **A login is durable whatever the verdict.** With the ring off (this
-    /// crate builds `durable` only) an admitted session is held by id in the
-    /// journal, like a refused attempt, and another rule's admission is not.
+    /// **A login is durable whatever the verdict.** With the ring off an
+    /// admitted session is held by id in the journal, like a refused attempt,
+    /// and another rule's admission is not; with the ring on every verdict is
+    /// held, so the query meets that admission too.
     ///
     /// **Canary.** Take `Rule::Login` out of `to_sink` in
     /// `azos_decision::record_keyed`: the admit is not held, red.
     #[test]
     fn an_admitted_login_is_held_like_a_refusal() {
         use azos_decision::{lookup, query, record, total, Filter};
-        let _g = GUARD.lock().unwrap();
+        let _g = guard();
         let t0 = total();
         record(Rule::Login, Verdict::Admit, 3, [4, 0, 0]);
         record(Rule::Login, Verdict::Refuse, 0, [4, 1, 1]);
         record(Rule::DeadlineAdmission, Verdict::Admit, 3, [1, 2, 3]);
         let mut ids = [0u64; 8];
         let n = query(&Filter { after: t0, ..Filter::ANY }, &mut ids);
-        assert_eq!(n, 2, "the two login attempts, and not the deadline admission");
+        let held = if azos_decision::ON { 3 } else { 2 };
+        assert_eq!(n, held, "the two login attempts, and the deadline admission only where the ring holds every verdict");
         let admit = lookup(ids[0]).expect("the admit is held");
         assert_eq!((admit.rule, admit.verdict, admit.subject, admit.n), (Rule::Login as u8, Verdict::Admit as u8, 3, [4, 0, 0]));
         assert_eq!(lookup(ids[1]).map(|p| p.verdict), Some(Verdict::Refuse as u8));
@@ -356,7 +364,7 @@ mod tests {
     /// "not held", red.
     #[test]
     fn a_recorded_refusal_is_explained_through_the_interface() {
-        let _g = GUARD.lock().unwrap();
+        let _g = guard();
         let before = azos_decision::total();
         azos_decision::record(Rule::DeadlineAdmission, Verdict::Refuse, 4242, [500, 1000, 2 << 32]);
         let s = RefCell::new(Service(Kernel));
@@ -376,7 +384,7 @@ mod tests {
     /// **Canary** `mem-kill-unrecorded-canary`: the kill leaves no record.
     #[test]
     fn a_memory_kill_is_a_record_of_its_victim() {
-        let _g = GUARD.lock().unwrap();
+        let _g = guard();
         let before = azos_decision::total();
         azos_decision::record_mem_kill(4747, azos_decision::MemKillReason::Quota, 321, 2);
         assert_eq!(azos_decision::total(), before + 1, "the kill was recorded");
@@ -392,7 +400,7 @@ mod tests {
     #[test]
     fn a_record_is_stamped_on_tai() {
         const TAI_OFFSET_NS: u64 = 1_700_000_037_000_000_000;
-        let _g = GUARD.lock().unwrap();
+        let _g = guard();
         // 1 kHz timebase, "now" = 5000 ticks = 5 s since boot.
         azos_decision::set_clock(|| 5_000, 1_000);
         assert_eq!(azos_decision::ticks_to_tai_ns(2_000), 2_000_000_000, "no offset yet: since boot");
@@ -410,7 +418,7 @@ mod tests {
     /// (the old sink): both fields read 0, red.
     #[test]
     fn a_package_refusal_keeps_its_image_and_row() {
-        let _g = GUARD.lock().unwrap();
+        let _g = guard();
         let origin = azos_decision::Origin { topology_row_id: 12, image_hash_prefix: 0x1122_3344_5566_7788 };
         let id = azos_decision::record_with(Rule::PackageInstall, Verdict::Refuse, 0, [0, 2, 3], origin);
         assert_ne!(id, 0, "a refusal is a receipt");
@@ -424,7 +432,7 @@ mod tests {
     /// `Place` arm of `record_keyed`'s `to_sink`: the lookup is `None`, red.
     #[test]
     fn a_placement_move_is_kept_and_explained() {
-        let _g = GUARD.lock().unwrap();
+        let _g = guard();
         let before = azos_decision::total();
         // move = reason 1 (fault) << 16 | from 1 (kernel) << 8 | to 2 (ring 3)
         azos_decision::record(Rule::Placement, Verdict::Place, 6, [1 << 16 | 1 << 8 | 2, 0, 0]);
@@ -439,7 +447,10 @@ mod tests {
         assert!(out.contains("placement"), "{out}");
         // A placement `Admit` is not a move and is not kept.
         azos_decision::record(Rule::Placement, Verdict::Admit, 6, [0; 3]);
-        assert_eq!(azos_decision::total(), id, "an admit claims no id: nothing stores it");
+        // The ring stores every verdict, so there an admit claims an id of its own; the lookup still holds no move.
+        let claimed = if azos_decision::ON { id + 1 } else { id };
+        assert_eq!(azos_decision::total(), claimed, "an admit claims no id where nothing stores it");
+        assert!(azos_decision::lookup(id + 1).is_none_or(|p| p.verdict == Verdict::Admit as u8), "an admit is not kept as a move");
     }
 
     /// With the ring built, a decision is a record of the substrate's
@@ -452,7 +463,7 @@ mod tests {
     #[test]
     fn ring_a_decision_is_a_record_of_the_substrate() {
         use azos_records::record::{Envelope, Read};
-        let _g = GUARD.lock().unwrap();
+        let _g = guard();
         azos_decision::record(Rule::WaitCycle, Verdict::Refuse, 42, [7, 8, 9]);
         let id = azos_decision::total();
         let ring = azos_records::reader(azos_records::SOURCE_DECISION).expect("the dev cell keeps the ring");
@@ -476,7 +487,7 @@ mod tests {
     #[test]
     fn ring_a_decision_stamped_on_an_uncalibrated_clock_says_so() {
         use azos_records::record::{Envelope, Read};
-        let _g = GUARD.lock().unwrap();
+        let _g = guard();
         azos_decision::set_clock_flags(|| azos_records::FLAG_CLOCK_UNCALIBRATED);
         azos_decision::record(Rule::WaitCycle, Verdict::Refuse, 43, [1, 2, 3]);
         let id = azos_decision::total();
@@ -504,7 +515,7 @@ mod tests {
     #[test]
     fn journal_a_durable_record_outlives_the_ids_the_ring_claims() {
         use azos_decision::{durable_held, lookup, query, record, total, Filter, JOURNAL_ENTRIES, ON};
-        let _g = GUARD.lock().unwrap();
+        let _g = guard();
         let n = JOURNAL_ENTRIES as u64;
         let refuse = |subject| {
             record(Rule::DeadlineAdmission, Verdict::Refuse, subject, [1, 2, 0]);

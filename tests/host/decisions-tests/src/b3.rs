@@ -32,7 +32,7 @@ const DEVICE: u16 = 1 << 8 | 3;
 /// numbers print as the packed word, red.
 #[test]
 fn why_names_the_receipt_a_use_lacked() {
-    let _g = GUARD.lock().unwrap();
+    let _g = guard();
     let before = azos_decision::total();
     let old = receipt::word(DEVICE, KIND_SAFE, receipt::OLD);
     let missing = receipt::word(DEVICE, KIND_REVERSIBLE, receipt::MISSING);
