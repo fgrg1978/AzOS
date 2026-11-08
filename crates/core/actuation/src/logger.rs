@@ -3259,16 +3259,20 @@ pub fn gap_waits_for_test() -> u64 {
 /// Every queue's writer handle, held by the caller until dropped: other
 /// CPUs' pushes in flight, as long as the test likes.
 #[cfg(test)]
-pub struct HeldWriters(#[allow(dead_code)] std::vec::Vec<azos_rings::Producer<'static, Queued, LOG_QUEUE_CAPACITY>>);
+pub struct HeldWriters {
+    _writers: std::vec::Vec<azos_rings::Producer<'static, Queued, LOG_QUEUE_CAPACITY>>,
+}
 
 #[cfg(test)]
 pub fn hold_writers_for_test() -> HeldWriters {
-    HeldWriters(QUEUES.iter().map(|q| loop {
-        if let Some(w) = q.producer() {
-            break w;
-        }
-        std::thread::yield_now();
-    }).collect())
+    HeldWriters {
+        _writers: QUEUES.iter().map(|q| loop {
+            if let Some(w) = q.producer() {
+                break w;
+            }
+            std::thread::yield_now();
+        }).collect(),
+    }
 }
 
 /// Flush requests made so far (`FLUSH_REQ`).
