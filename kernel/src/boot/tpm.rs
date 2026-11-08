@@ -468,6 +468,15 @@ fn sha256(b: &[u8]) -> [u8; 32] {
     azos_crypto::sha256::sha256(b)
 }
 
+/// An NV index's password from public inputs: SHA-256 of `tag` and the
+/// index's number, big-endian.
+fn index_auth(tag: &[u8], index: u32) -> [u8; 32] {
+    let mut h = azos_crypto::sha256::Sha256::new();
+    h.update(tag);
+    h.update(&index.to_be_bytes());
+    h.finalize()
+}
+
 /// The kernel image: its build-id (SHA-256 of the linked text, before the
 /// boot-time rewrites) when Kconfig `LIVEPATCH` computed it, else SHA-256 of
 /// the text as it stands now, which is the same on one CPU and one mask but
@@ -509,11 +518,7 @@ pub(crate) fn measure_topology(caps: Option<&[u8]>) {
 /// (audit K2-H1): what keeps the keystore root is the session lock
 /// [`install_keystore_root`] issues right after its read (`secret_lock`).
 fn keystore_auth() -> [u8; 32] {
-    const TAG: &[u8; 24] = b"azos/keystore-tpm-nv/v1.";
-    let mut m = [0u8; 28];
-    m[..24].copy_from_slice(TAG);
-    m[24..].copy_from_slice(&azos_tpm::tpm::SECRET_INDEX.to_be_bytes());
-    sha256(&m)
+    index_auth(b"azos/keystore-tpm-nv/v1.", azos_tpm::tpm::SECRET_INDEX)
 }
 
 /// Define the keystore secret's NV index (once per TPM), read the secret out
@@ -653,10 +658,7 @@ fn install_floor() {
 /// keeps out software that does not know the scheme. Whoever has it can only
 /// extend the index, which the verifier then reports as a broken chain.
 fn chain_auth() -> [u8; 32] {
-    let mut m = [0u8; 18];
-    m[..14].copy_from_slice(b"azos/seclog/v1");
-    m[14..].copy_from_slice(&CHAIN_INDEX.to_be_bytes());
-    sha256(&m)
+    index_auth(b"azos/seclog/v1", CHAIN_INDEX)
 }
 
 fn chain_extend(head: &[u8; 32]) -> bool {
