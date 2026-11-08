@@ -16,9 +16,9 @@
 //! The backend is what [`install_hw`] installed at boot (the TPM's extend
 //! index, Kconfig `SEC_LOG_SEAL_TPM_NV`), never what Kconfig asked for: with
 //! none, the seals are forward-only and every record says they are advisory.
-//! An extend the TPM refuses ends the hardware seals for the boot: the later
-//! seals are advisory, and the next boot's anchor will not match this boot's
-//! last seal, which the verifier reports.
+//! An extend the TPM refuses ends the hardware seals for the boot: that seal
+//! and the later ones are advisory, and the next boot's anchor is the last
+//! seal the TPM took, where the verifier links the two boots.
 
 use azos_drv_sys::{kerr, kprintln, timebase};
 use azos_seclog::chain::Sealer;

@@ -73,6 +73,20 @@ impl Boot {
         self.publish(kind::SEAL, &s.encode());
     }
 
+    /// The kernel's pass when the TPM refuses the extend: the seal is
+    /// advisory. `taken`: the TPM did extend, and only its answer was lost.
+    fn seal_refused(&mut self, taken: bool) {
+        let from = self.sealer.next() as usize;
+        for r in self.recs[from..].to_vec() {
+            self.sealer.fold(&r.env, &r.payload);
+        }
+        let s = self.sealer.seal(false);
+        if taken {
+            self.tpm = extend(&self.tpm, &s.head);
+        }
+        self.publish(kind::SEAL, &s.encode());
+    }
+
     /// The ring lapped the sealer: `n` records it never folds, and the loss
     /// it declares.
     fn lapped(&mut self, n: usize) -> (u64, u64) {
@@ -288,6 +302,80 @@ fn forward_only_seals_are_advisory() {
     let (found, s) = verify(&b.lines());
     assert_eq!(found, vec![Finding::Advisory { boot: 1 }]);
     assert_eq!((s.seals_verified, s.seals_hardware, s.backend), (1, 0, Some(Backend::Forward)));
+    assert_eq!(s.last_anchor, None, "no hardware holds a forward-only anchor");
+}
+
+/// The TPM refuses an extend: the kernel marks that seal and the later ones
+/// advisory and stops extending, so the next boot reads the last seal the
+/// TPM took. That is a declared fallback, not a rewrite: no evidence, the
+/// boot is advisory, and the export ends at the value the TPM holds.
+#[test]
+fn a_seal_the_tpm_refused_links_the_next_boot_to_the_last_one_it_took() {
+    let mut b1 = tpm_boot([0; 32], 2);
+    let held = b1.tpm;
+    b1.event(Class::Microphone, 50);
+    b1.seal_refused(false);
+    b1.event(Class::Camera, 51);
+    b1.seal_refused(false);
+    assert_eq!(b1.tpm, held);
+    let b2 = tpm_boot(b1.tpm, 1);
+    let mut lines = b1.lines();
+    lines.push(seam());
+    lines.extend(b2.lines());
+    let (found, s) = verify(&lines);
+    assert_eq!(found, vec![Finding::Advisory { boot: 1 }]);
+    assert_eq!((s.seals, s.seals_verified, s.seals_hardware), (5, 5, 3));
+    assert_eq!(s.last_anchor, Some(b2.tpm));
+    // The refused boot is the last one exported: the TPM holds the last seal
+    // it took, not the advisory ones after it.
+    let (found, s) = verify(&b1.lines());
+    assert_eq!(evidence(&found), vec![]);
+    assert_eq!(s.last_anchor, Some(held));
+}
+
+/// A refused extend the TPM did take (its answer was lost): the next boot
+/// reads the first advisory seal's anchor, which links as well.
+#[test]
+fn a_refused_seal_the_tpm_did_take_links_too() {
+    let mut b1 = tpm_boot([0; 32], 1);
+    b1.event(Class::Update, 60);
+    b1.seal_refused(true);
+    b1.event(Class::Update, 61);
+    b1.seal_refused(false);
+    let b2 = tpm_boot(b1.tpm, 1);
+    let mut lines = b1.lines();
+    lines.push(seam());
+    lines.extend(b2.lines());
+    let (found, _) = verify(&lines);
+    assert_eq!(found, vec![Finding::Advisory { boot: 1 }]);
+}
+
+/// A forward-only boot between two TPM boots: the second TPM boot links to
+/// the first one's last seal, over the boot no hardware held.
+#[test]
+fn a_tpm_boot_links_over_a_forward_only_boot() {
+    let b1 = tpm_boot([0; 32], 2);
+    let mut mid = Boot::new(Backend::Forward, [0; 32]);
+    mid.event(Class::Login, 3);
+    mid.seal();
+    let b3 = tpm_boot(b1.tpm, 1);
+    let mut lines = b1.lines();
+    for b in [&mid, &b3] {
+        lines.push(seam());
+        lines.extend(b.lines());
+    }
+    let (found, s) = verify(&lines);
+    assert_eq!(found, vec![Finding::Advisory { boot: 2 }]);
+    assert_eq!(s.last_anchor, Some(b3.tpm));
+    // The same three boots with the second TPM boot anchored elsewhere.
+    let b3 = tpm_boot([9; 32], 1);
+    let mut lines = b1.lines();
+    for b in [&mid, &b3] {
+        lines.push(seam());
+        lines.extend(b.lines());
+    }
+    let (found, _) = verify(&lines);
+    assert!(found.contains(&Finding::LinkBroken { boot: 3 }), "{found:?}");
 }
 
 #[test]
@@ -351,4 +439,54 @@ fn every_class_and_backend_round_trips_its_number() {
     }
     assert_eq!(Class::from_u8(3), None, "screen capture has no producer");
     assert_eq!(Class::from_u8(8), None, "debug attach has no producer");
+}
+
+fn unhex(s: &str) -> Vec<u8> {
+    (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
+}
+
+/// Format version 1, byte for byte: the payloads, the canonical bytes, the
+/// genesis head, one fold, one extend and the line. The vectors were computed
+/// apart from this crate (Python's struct and hashlib); a change to any field
+/// is a new format version, never an edit of these.
+#[test]
+fn format_v1_is_frozen() {
+    let e = Event {
+        id: 0x0102_0304_0506_0708,
+        subject: 0x1122_3344,
+        rule: 59,
+        verdict: 1,
+        class: Class::Microphone,
+        n: [1, 2, 3],
+        image_hash_prefix: 0xab_cdef,
+        topology_row_id: 7,
+    };
+    let ev = "0807060504030201443322113b010100010000000000000002000000000000000300000000000000efcdab000000000007000000";
+    assert_eq!(e.encode().to_vec(), unhex(ev));
+    let mut v = [0u8; 32];
+    for (i, b) in v.iter_mut().enumerate() {
+        *b = i as u8;
+    }
+    let a = Anchor { backend: Backend::TpmNv, hardware: true, value: v };
+    assert_eq!(a.encode().to_vec(), unhex("0201000000000000000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"));
+    let seal = Seal { backend: Backend::Forward, hardware: false, count: 3, through: 9, head: [0xaa; 32], anchor: [0xbb; 32] };
+    let mut want = unhex("01000000030000000900000000000000");
+    want.extend([0xaa; 32]);
+    want.extend([0xbb; 32]);
+    assert_eq!(seal.encode().to_vec(), want);
+    assert_eq!(Loss { first: 5, count: 2 }.encode().to_vec(), unhex("05000000000000000200000000000000"));
+
+    let env = Envelope { seq: 4, ts: 1000, clock: 0, source: 4, kind: kind::EVENT, len: Event::LEN as u16, cpu: 2, flags: 1 };
+    let mut payload = [0u8; PAYLOAD];
+    payload[..Event::LEN].copy_from_slice(&e.encode());
+    let mut c = [0u8; azos_seclog::CANON_MAX];
+    let n = azos_seclog::canon(&env, &payload, &mut c);
+    assert_eq!(c[..n].to_vec(), unhex(&format!("010400000000000000e80300000000000000010002013400{ev}")));
+    let genesis = azos_seclog::chain::genesis();
+    assert_eq!(genesis.to_vec(), unhex("17281353216267c1bf28c9bfd1a21646dca81d39157ebc2bb413333552044d2d"));
+    let head = azos_seclog::chain::fold(&genesis, &env, &payload);
+    assert_eq!(head.to_vec(), unhex("1c51514985cf0b56db5b046ac02e2b019a0815a2c50698d8f488bf60f40385b6"));
+    assert_eq!(extend(&[0; 32], &head).to_vec(), unhex("3ca45c9bd392f242e67f216dbd9f2224c9e0ca6871ed3e024e12df0a4409d6e5"));
+    let r = Rec { env, payload };
+    assert_eq!(String::from_utf8(line(&r)).unwrap(), format!("v1 4 1000 0 1 2 1 {ev} event microphone rule=59 verdict=1"));
 }

@@ -163,7 +163,7 @@ fn describe(f: &Finding) -> String {
         Finding::Rewrite { boot, seq } => format!("boot {boot}: the seal at {seq} does not match the records before it: one was rewritten, added or removed"),
         Finding::Unverifiable { boot, seq } => format!("boot {boot}: the seal at {seq} covers records that are missing; it cannot be checked"),
         Finding::AnchorMismatch { boot, seq } => format!("boot {boot}: the seal at {seq} names an anchor its head does not give: a seal was forged or one is missing"),
-        Finding::LinkBroken { boot } => format!("boot {boot}: its anchor is not the previous boot's last seal: that boot's sealed tail is missing, or the anchor was reset"),
+        Finding::LinkBroken { boot } => format!("boot {boot}: its anchor is not the last seal the TPM took before it: that seal's records are missing, or the anchor was reset"),
         Finding::Unsealed { boot, count } => format!("boot {boot}: {count} records after the last seal; no seal covers them"),
         Finding::Advisory { boot } => format!("boot {boot}: its seals are advisory (no hardware held them)"),
         Finding::Malformed { boot, seq } => format!("boot {boot}: record {seq} does not decode as its kind"),

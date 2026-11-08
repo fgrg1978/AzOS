@@ -5,7 +5,8 @@
 //!
 //! It recomputes every head and compares it with each seal's, recomputes
 //! every anchor from the boot's [`Anchor`] record, and links each boot's
-//! anchor to the previous boot's last seal. It reports what it finds
+//! anchor, when the hardware gave it, to the last value the hardware took
+//! before it (an advisory seal is not in the hardware). It reports what it finds
 //! ([`Finding`]) as it goes and never stops at the first: a rewrite is
 //! reported, the chain resynchronised on the seal, and the records after it
 //! checked again.
@@ -43,8 +44,9 @@ pub enum Finding {
     /// The seal at `seq` names an anchor its head does not give from the one
     /// before it: a seal was forged or one is missing.
     AnchorMismatch { boot: u32, seq: u64 },
-    /// The boot's anchor is not the previous boot's last seal: the previous
-    /// boot's sealed tail is not in the export, or the anchor was reset.
+    /// The boot's anchor, read from the hardware, is not the value the
+    /// hardware held after the last seal before it: that seal's records are
+    /// not in the export, or the anchor was reset.
     LinkBroken { boot: u32 },
     /// `count` records after the boot's last seal: no seal covers them.
     Unsealed { boot: u32, count: u64 },
@@ -84,9 +86,10 @@ pub struct Summary {
     /// Seals the hardware holds.
     pub seals_hardware: u64,
     pub evidence: u64,
-    /// The last boot's backend, and the anchor its last seal (or, with none,
-    /// its boot anchor) names: what a live TPM index must hold if the export
-    /// is whole.
+    /// The last boot's backend, and the last value the export says the
+    /// hardware holds (the last seal it took, or a boot anchor read from it):
+    /// what a live TPM index must hold if the export is whole. `None`: no
+    /// hardware held any.
     pub backend: Option<Backend>,
     pub last_anchor: Option<Hash>,
 }
@@ -127,7 +130,11 @@ pub struct Verifier {
     unknown: bool,
     seam: bool,
     since_seal: u64,
-    prev_anchor: Option<Hash>,
+    /// The last value the hardware is known to hold, across boots, and the
+    /// anchor of the first seal it refused after that one: a refused extend
+    /// whose answer was lost may still have been taken.
+    hw_anchor: Option<Hash>,
+    refused: Option<Hash>,
     sum: Summary,
 }
 
@@ -154,7 +161,8 @@ impl Verifier {
             unknown: false,
             seam: false,
             since_seal: 0,
-            prev_anchor: None,
+            hw_anchor: None,
+            refused: None,
             sum: Summary::default(),
         }
     }
@@ -198,7 +206,6 @@ impl Verifier {
         if self.advisory {
             self.emit(Finding::Advisory { boot: self.boot }, out);
         }
-        self.prev_anchor = self.anchor;
     }
 
     fn flush_gaps(&mut self, out: &mut dyn FnMut(Finding)) {
@@ -267,8 +274,12 @@ impl Verifier {
         self.sum.seals += 1;
         if s.hardware {
             self.sum.seals_hardware += 1;
+            (self.hw_anchor, self.refused) = (Some(s.anchor), None);
         } else {
             self.advisory = true;
+            if self.hw_anchor.is_some() && self.refused.is_none() {
+                self.refused = Some(s.anchor);
+            }
         }
         let want = self.head_before(s.through);
         let head_ok = cfg!(feature = "canary-no-chain-check") || want == Some(s.head);
@@ -297,10 +308,12 @@ impl Verifier {
     fn check_anchor(&mut self, a: &Anchor, out: &mut dyn FnMut(Finding)) {
         if !a.hardware {
             self.advisory = true;
-        } else if let Some(p) = self.prev_anchor {
-            if p != a.value && !cfg!(feature = "canary-no-anchor-check") {
+        } else {
+            let linked = self.hw_anchor.is_none_or(|h| h == a.value) || self.refused == Some(a.value);
+            if !linked && !cfg!(feature = "canary-no-anchor-check") {
                 self.emit(Finding::LinkBroken { boot: self.boot }, out);
             }
+            (self.hw_anchor, self.refused) = (Some(a.value), None);
         }
         self.anchor = Some(a.value);
         self.sum.backend = Some(a.backend);
@@ -375,7 +388,7 @@ impl Verifier {
     /// The end of the export.
     pub fn finish(&mut self, out: &mut dyn FnMut(Finding)) -> Summary {
         self.end_boot(out);
-        self.sum.last_anchor = self.anchor;
+        self.sum.last_anchor = self.hw_anchor;
         self.sum
     }
 }

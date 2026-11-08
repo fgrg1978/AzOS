@@ -31,7 +31,7 @@
 //! `anchor_k = SHA-256(anchor_{k-1} || head_k)`, the rule of a TPM 2.0
 //! `NV_Extend` into a SHA-256 index, which the TPM computes itself and
 //! nothing can set back. The boot's [`Anchor`] record names `anchor_0`: on a
-//! TPM, the index's value at boot, which is the previous boot's last seal.
+//! TPM, the index's value at boot, which is the last seal the TPM took.
 //!
 //! What a seal proves depends on where the anchor lives, and every record
 //! says which ([`Backend`], [`FLAG_HARDWARE`]): a TPM's index cannot be
