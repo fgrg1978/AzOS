@@ -40,6 +40,7 @@
 //! and the local seal is advisory.
 
 #![no_std]
+#![forbid(unsafe_code)]
 
 #[cfg(feature = "chain")]
 pub mod chain;

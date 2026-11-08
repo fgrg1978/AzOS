@@ -105,7 +105,7 @@ crate_dir() {
 CORE_CRATES="
 abi arch/facade arch/api arch/riscv arch/aarch64 arch/x86_64 common sync mm limits
 api base irqchip sys gpio kill-switch bus virtio virtio-proto block net sensor actuator power
-ina219 buzzer rings records pci dma iommu
+ina219 buzzer rings records seclog pci dma iommu
 ipc sched syscall stack energy
 crypto
 actuation channel ext-api
@@ -158,6 +158,8 @@ kit image hyp-api
 
 # `records` is CORE: the record substrate the kernel log (drivers/sys, CORE)
 # and the decision records write into; it depends on rings and limits only.
+# `seclog` is CORE by the same direction: `records` and `decision` take the
+# security records' layout from it; it depends on rings and crypto only.
 
 # `linux-abi` joined CORE in wave 12: the Linux personality's
 # numbers and layouts, a dependency of `sched` (the initial stack's auxv) and
