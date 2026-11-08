@@ -58,6 +58,12 @@ pub const NODE_ID: u32 = 0x4E4F_4445;
 /// The interface id of [`Dir`] (ASCII "DIR ").
 pub const DIR_ID: u32 = 0x4449_5220;
 
+/// The badge of the kernel's capability on a ring-3 file server: the one
+/// caller the server answers as its root [`Dir`] (the kernel's VFS, which
+/// checks its own clients' authority first). An open file's badge is never
+/// this one.
+pub const DIR_BADGE: u32 = 1;
+
 /// Bytes one read or write moves at most: the kernel's clamp
 /// (`azos_abi::syscall_nr::IO_MAX_BYTES`).
 pub const READ_MAX: u32 = azos_abi::syscall_nr::IO_MAX_BYTES as u32;

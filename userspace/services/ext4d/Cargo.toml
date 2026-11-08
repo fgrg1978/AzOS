@@ -20,6 +20,11 @@ azos_limits = { path = "../../../crates/core/limits" }
 # half of what was asked and never says the file ended, which the client's
 # check refuses as a short read.
 short-read-canary = []
+# Host canaries too: the badge is the slot plus one again, and a slot whose
+# revoke failed is reused (`badge-slot-canary`); a completion of an earlier
+# entry is taken for a stray (`stale-completion-canary`).
+badge-slot-canary = []
+stale-completion-canary = []
 
 [profile.release]
 opt-level = "s"

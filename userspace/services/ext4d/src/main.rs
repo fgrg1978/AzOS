@@ -79,14 +79,15 @@ impl Dev {
         }
         let mut waited = 0;
         loop {
-            match self.ring.pop() {
-                Some((t, r, _)) if t == self.tag => {
+            match self.ring.pop().map(|(t, r, _)| service::completion(self.tag, t, r)) {
+                Some(service::Completion::Mine(r)) => {
                     if r as isize != buf.len() as isize {
                         return Err(IoError);
                     }
                     break;
                 }
-                Some(_) => return Err(IoError),
+                Some(service::Completion::Stale) => continue,
+                Some(service::Completion::Stray) => return Err(IoError),
                 None if waited >= BLOCK_WAIT_MS => return Err(IoError),
                 None => {
                     sys::sleep(1);
@@ -175,9 +176,15 @@ impl Host for Kernel {
         let h = sys::endpoint_derive(self.source, rights, badge, 0, &[]);
         (h > 0).then_some(h as u32)
     }
-    fn revoke(&mut self, handle: u32) {
+    fn revoke(&mut self, handle: u32) -> bool {
         let r = sys::cap_revoke(handle);
         let _ = sys::close_typed(if r > 0 { r as u32 } else { handle });
+        r > 0
+    }
+    fn incarnation(&mut self) -> u32 {
+        // The clock in milliseconds: a restart comes later than the last
+        // open of the run before it was numbered from its own start.
+        (sys::vdso_now_ns() / 1_000_000) as u32
     }
 }
 

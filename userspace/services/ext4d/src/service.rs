@@ -2,9 +2,13 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! The file protocol (`azos_devif::fs`) over a read-only ext4 volume.
 //!
-//! The unbadged capability on the endpoint is the volume's root [`Dir`]; an
-//! open file is a [`Node`]: a capability on the same endpoint derived with the
-//! badge of its slot ([`Host::derive`]) and lent to the opener. Names and data
+//! The kernel's capability on the endpoint, which carries [`DIR_BADGE`], is
+//! the volume's root [`Dir`]; no other caller is answered as a directory. An
+//! open file is a [`Node`]: a capability on the same endpoint derived with a
+//! badge of its own ([`Host::derive`]) and lent to the opener. The badge is
+//! the slot in its low bits and an open sequence above, which starts at the
+//! server's incarnation ([`Host::incarnation`]): a badge an earlier server or
+//! an earlier open of the slot lent reaches nothing. Names and data
 //! are in the region the server shares with its client: an [`Extent`] is an
 //! offset and a length in it, checked before it is touched.
 //!
@@ -14,7 +18,9 @@
 //!
 //! The slots are few ([`NODES`]); an open past them takes the slot used
 //! longest ago and revokes what was lent from it, so a client that kept a
-//! capability it no longer uses finds it stale and opens again.
+//! capability it no longer uses finds it stale and opens again. A slot whose
+//! revoke failed keeps serving its badge and is never used again: its copy
+//! may still be out there.
 
 use azos_abi::syscall_nr::{
     READDIR_NAME_BYTES, STATFS_BYTES, STATFS_OFF_BFREE, STATFS_OFF_BLOCKS, STATFS_OFF_BSIZE, STATFS_OFF_FFREE,
@@ -22,7 +28,8 @@ use azos_abi::syscall_nr::{
     STAT_OFF_MTIME, STAT_OFF_NLINK, STAT_OFF_SIZE, STAT_OFF_UID,
 };
 use azos_devif::fs::{
-    Dir, Entry, Extent, Node, OpenNode, ReadDone, IS_DIR, NAME_TOO_LONG, NOT_DIR, NOT_FOUND, READ_MAX, READ_ONLY,
+    Dir, Entry, Extent, Node, OpenNode, ReadDone, DIR_BADGE, IS_DIR, NAME_TOO_LONG, NOT_DIR, NOT_FOUND, READ_MAX,
+    READ_ONLY,
 };
 use azos_devif::{outcome, Out};
 use azos_ext4::{BlockSource, DirEntry, Error, Inode, Volume, PATH_MAX};
@@ -30,6 +37,9 @@ use azos_idl::Lent;
 
 /// Open files served at once.
 pub const NODES: usize = 32;
+/// The badge bits that name the slot (`NODES` slots).
+const SLOT_BITS: u32 = 5;
+const _: () = assert!(NODES == 1 << SLOT_BITS);
 /// The `statfs` type of an ext4 volume (`azos_abi::syscall_nr::STATFS_BYTES`).
 pub const STATFS_TYPE_EXT4: u32 = 6;
 /// What an opener is lent: the call right on the endpoint (`CapPerms::WRITE`).
@@ -44,8 +54,12 @@ pub trait Host {
     fn region(&mut self) -> &mut [u8];
     /// A capability on this server's endpoint carrying `badge`, to lend.
     fn derive(&mut self, badge: u32) -> Option<u32>;
-    /// Withdraw a capability [`Host::derive`] made, and what was lent of it.
-    fn revoke(&mut self, handle: u32);
+    /// Withdraw a capability [`Host::derive`] made, and what was lent of it:
+    /// `false` when the copies could not be revoked.
+    fn revoke(&mut self, handle: u32) -> bool;
+    /// A number this run of the server has and the previous one had not:
+    /// where its open sequence starts.
+    fn incarnation(&mut self) -> u32;
 }
 
 #[derive(Clone, Copy)]
@@ -53,17 +67,52 @@ struct Open {
     ino: Inode,
     pos: u64,
     handle: u32,
+    badge: u32,
     used: u64,
+    /// Its revoke failed: it keeps serving its badge, and the slot is never
+    /// handed out again.
+    pinned: bool,
+}
+
+#[derive(Clone, Copy)]
+enum Slot {
+    Free,
+    Open(Open),
+}
+
+/// What a block completion popped while waiting for entry `want` is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Completion {
+    /// The entry's own: its result.
+    Mine(i32),
+    /// An earlier entry's, which came after its waiter gave up: dropped.
+    Stale,
+    /// A tag no entry of this ring was given: the ring is not this server's.
+    Stray,
+}
+
+/// Classify the completion `(tag, result)` popped while waiting for `want`
+/// (tags are handed out increasing, one entry in flight at a time).
+pub fn completion(want: u64, tag: u64, result: i32) -> Completion {
+    if tag == want {
+        Completion::Mine(result)
+    } else if tag < want && !cfg!(feature = "stale-completion-canary") {
+        Completion::Stale
+    } else {
+        Completion::Stray
+    }
 }
 
 /// The service: the volume, the open files, the call being served.
 pub struct Service<S: BlockSource, H: Host> {
     pub vol: Volume<S>,
     pub host: H,
-    nodes: [Option<Open>; NODES],
-    /// The badge of the call being served: 0 the root directory, `n` slot
-    /// `n - 1`.
+    nodes: [Slot; NODES],
+    /// The badge of the call being served: [`DIR_BADGE`] the root
+    /// directory, else an open file's.
     pub badge: u32,
+    /// The open sequence: the high bits of the next badge.
+    seq: u32,
     clock: u64,
     /// Where the last listing stopped: directory, index of the next entry,
     /// its position.
@@ -115,13 +164,27 @@ fn name_of(region: &[u8], e: Extent, out: &mut [u8; PATH_MAX]) -> Result<usize, 
 }
 
 impl<S: BlockSource, H: Host> Service<S, H> {
-    pub fn new(vol: Volume<S>, host: H) -> Self {
-        Service { vol, host, nodes: [None; NODES], badge: 0, clock: 0, cursor: None }
+    pub fn new(vol: Volume<S>, mut host: H) -> Self {
+        let seq = host.incarnation();
+        Service { vol, host, nodes: [Slot::Free; NODES], badge: 0, seq, clock: 0, cursor: None }
+    }
+
+    /// The next badge for `slot`: never [`DIR_BADGE`], never 0.
+    fn next_badge(&mut self, slot: usize) -> u32 {
+        if cfg!(feature = "badge-slot-canary") {
+            return slot as u32 + 1;
+        }
+        loop {
+            self.seq = self.seq.wrapping_add(1) & (u32::MAX >> SLOT_BITS);
+            if self.seq != 0 {
+                return self.seq << SLOT_BITS | slot as u32;
+            }
+        }
     }
 
     /// The inode `e` names beneath the root, symlinks followed.
     fn resolve(&mut self, e: Extent) -> Result<Inode, u32> {
-        if self.badge != 0 {
+        if self.badge != DIR_BADGE {
             return Err(outcome::DENIED);
         }
         let mut buf = [0u8; PATH_MAX];
@@ -131,12 +194,24 @@ impl<S: BlockSource, H: Host> Service<S, H> {
 
     /// The open file of the call's badge.
     fn node(&mut self) -> Result<&mut Open, u32> {
-        let slot = (self.badge as usize).checked_sub(1).ok_or(outcome::DENIED)?;
+        if self.badge == DIR_BADGE || self.badge == 0 {
+            return Err(outcome::DENIED);
+        }
+        let slot = if cfg!(feature = "badge-slot-canary") {
+            (self.badge as usize).wrapping_sub(1)
+        } else {
+            (self.badge & ((1 << SLOT_BITS) - 1)) as usize
+        };
         self.clock += 1;
         let now = self.clock;
-        let o = self.nodes.get_mut(slot).and_then(|o| o.as_mut()).ok_or(outcome::NO_RESOURCE)?;
-        o.used = now;
-        Ok(o)
+        let badge = self.badge;
+        match self.nodes.get_mut(slot) {
+            Some(Slot::Open(o)) if o.badge == badge => {
+                o.used = now;
+                Ok(o)
+            }
+            _ => Err(outcome::NO_RESOURCE),
+        }
     }
 
     /// Write `bytes` to the region at `e`, which must hold them.
@@ -222,22 +297,36 @@ impl<S: BlockSource, H: Host> Dir for Service<S, H> {
             Ok(i) => i,
             Err(c) => return Out::new(c, Lent::none()),
         };
-        // A free slot, else the one used longest ago, whose lent copy goes.
-        let slot = match self.nodes.iter().position(|o| o.is_none()) {
-            Some(s) => s,
-            None => {
-                let oldest = self.nodes.iter().enumerate().filter_map(|(s, o)| o.map(|o| (s, o))).min_by_key(|(_, o)| o.used);
-                let Some((s, old)) = oldest else { return Out::new(outcome::BUSY, Lent::none()) };
-                self.host.revoke(old.handle);
-                self.nodes[s] = None;
-                s
+        // A free slot, else the one used longest ago, whose lent copy goes; a
+        // slot whose copy could not be revoked is dead, and the next oldest is
+        // tried.
+        let slot = loop {
+            if let Some(s) = self.nodes.iter().position(|o| matches!(o, Slot::Free)) {
+                break s;
+            }
+            let oldest = self
+                .nodes
+                .iter()
+                .enumerate()
+                .filter_map(|(s, o)| match o {
+                    Slot::Open(o) if !o.pinned => Some((s, *o)),
+                    _ => None,
+                })
+                .min_by_key(|(_, o)| o.used);
+            let Some((s, mut old)) = oldest else { return Out::new(outcome::BUSY, Lent::none()) };
+            if self.host.revoke(old.handle) || cfg!(feature = "badge-slot-canary") {
+                self.nodes[s] = Slot::Free;
+            } else {
+                old.pinned = true;
+                self.nodes[s] = Slot::Open(old);
             }
         };
-        let Some(handle) = self.host.derive(slot as u32 + 1) else {
+        let badge = self.next_badge(slot);
+        let Some(handle) = self.host.derive(badge) else {
             return Out::new(outcome::BUSY, Lent::none());
         };
         self.clock += 1;
-        self.nodes[slot] = Some(Open { ino, pos: 0, handle, used: self.clock });
+        self.nodes[slot] = Slot::Open(Open { ino, pos: 0, handle, badge, used: self.clock, pinned: false });
         Out::ok(Lent::dup(handle, NODE_RIGHTS))
     }
 
@@ -248,7 +337,7 @@ impl<S: BlockSource, H: Host> Dir for Service<S, H> {
 
     fn readdir(&mut self, name: Extent, index: u32, out: Extent) -> Out<Entry> {
         let r = (|| {
-            if self.badge != 0 {
+            if self.badge != DIR_BADGE {
                 return Err(outcome::DENIED);
             }
             let mut path = [0u8; PATH_MAX];

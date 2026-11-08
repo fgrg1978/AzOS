@@ -9,7 +9,7 @@ mod service;
 
 use azos_abi::syscall_nr::{READDIR_NAME_BYTES, STATFS_BYTES, STAT_BYTES};
 use azos_devif::fs::{
-    read_checked, DirCall, DirClient, DirIdl, Extent, NodeCall, NodeClient, NodeIdl, IS_DIR, NOT_FOUND, READ_MAX,
+    DIR_BADGE, read_checked, DirCall, DirClient, DirIdl, Extent, NodeCall, NodeClient, NodeIdl, IS_DIR, NOT_FOUND, READ_MAX,
     READ_ONLY,
 };
 use azos_devif::outcome;
@@ -28,6 +28,17 @@ const DATA: u64 = 4096;
 struct TestHost {
     region: Vec<u8>,
     revoked: Vec<u32>,
+    /// The badge of each handle derived: handle `BASE + i` carries `lent[i]`.
+    lent: Vec<u32>,
+    /// Whether a revoke succeeds.
+    revoke_ok: bool,
+    incarnation: u32,
+}
+
+impl TestHost {
+    fn new(incarnation: u32) -> Self {
+        TestHost { region: vec![0; 2 * 4096 + READ_MAX as usize], revoked: vec![], lent: vec![], revoke_ok: true, incarnation }
+    }
 }
 
 impl Host for TestHost {
@@ -35,11 +46,21 @@ impl Host for TestHost {
         &mut self.region
     }
     fn derive(&mut self, badge: u32) -> Option<u32> {
-        Some(BASE + badge)
+        self.lent.push(badge);
+        Some(BASE + self.lent.len() as u32 - 1)
     }
-    fn revoke(&mut self, handle: u32) {
+    fn revoke(&mut self, handle: u32) -> bool {
         self.revoked.push(handle);
+        self.revoke_ok
     }
+    fn incarnation(&mut self) -> u32 {
+        self.incarnation
+    }
+}
+
+/// The badge a handle the service lent carries.
+fn badge(s: &RefCell<Svc>, h: u32) -> u32 {
+    s.borrow().host.lent[(h - BASE) as usize]
 }
 
 type Svc = Service<Mem, TestHost>;
@@ -62,12 +83,16 @@ impl Transport for Loop<'_> {
     }
 }
 
-fn service() -> RefCell<Svc> {
+fn service_as(incarnation: u32) -> RefCell<Svc> {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("protocol");
     std::fs::create_dir_all(&dir).unwrap();
     let spec = Spec { name: "proto-1k", block: 1024, inode: 256, features: EXT4, extended: "", mib: 8, htree: true };
     let vol = azos_ext4::Volume::mount(Mem(image(&dir, &spec))).unwrap();
-    RefCell::new(Service::new(vol, TestHost { region: vec![0; 2 * 4096 + READ_MAX as usize], revoked: vec![] }))
+    RefCell::new(Service::new(vol, TestHost::new(incarnation)))
+}
+
+fn service() -> RefCell<Svc> {
+    service_as(1)
 }
 
 /// Put `name` (NUL-terminated) at the region's name slot.
@@ -80,7 +105,7 @@ fn name(s: &RefCell<Svc>, n: &str) -> Extent {
 
 fn open(s: &RefCell<Svc>, path: &str) -> Result<u32, u32> {
     let n = name(s, path);
-    let lent = outcome::served(DirClient::new(Loop(s, 0)).openat(n, 0))?;
+    let lent = outcome::served(DirClient::new(Loop(s, DIR_BADGE)).openat(n, 0))?;
     Ok(lent.get().expect("a served open lends a node").raw())
 }
 
@@ -88,7 +113,7 @@ fn open(s: &RefCell<Svc>, path: &str) -> Result<u32, u32> {
 /// `READ_MAX` pieces until a read says the file ended.
 fn read_file(s: &RefCell<Svc>, path: &str) -> Result<Vec<u8>, u32> {
     let h = open(s, path)?;
-    let mut node = NodeClient::new(Loop(s, h - BASE));
+    let mut node = NodeClient::new(Loop(s, badge(s, h)));
     let mut out = Vec::new();
     loop {
         let n = read_checked(&mut node, Extent { off: DATA, len: READ_MAX })?;
@@ -113,7 +138,7 @@ fn a_file_reads_whole_through_the_protocol() {
 fn seek_moves_the_offset() {
     let s = service();
     let h = open(&s, "big.bin").unwrap();
-    let mut node = NodeClient::new(Loop(&s, h - BASE));
+    let mut node = NodeClient::new(Loop(&s, badge(&s, h)));
     assert_eq!(outcome::served(node.seek(5000, 0)), Ok(5000));
     assert_eq!(outcome::served(node.seek(-1000, 1)), Ok(4000));
     let n = read_checked(&mut node, Extent { off: DATA, len: 16 }).unwrap();
@@ -127,7 +152,7 @@ fn seek_moves_the_offset() {
 #[test]
 fn stat_list_and_statfs_answer_the_records() {
     let s = service();
-    let mut dir = DirClient::new(Loop(&s, 0));
+    let mut dir = DirClient::new(Loop(&s, DIR_BADGE));
     let out = Extent { off: OUT, len: STAT_BYTES as u32 };
     let n = name(&s, "big.bin");
     assert_eq!(outcome::served(dir.statat(n, out)), Ok(()));
@@ -176,7 +201,7 @@ fn stat_list_and_statfs_answer_the_records() {
 #[test]
 fn every_change_is_refused_read_only() {
     let s = service();
-    let mut dir = DirClient::new(Loop(&s, 0));
+    let mut dir = DirClient::new(Loop(&s, DIR_BADGE));
     let n = name(&s, "hello.txt");
     assert_eq!(outcome::served(dir.openat(n, 0x1)).map(|_| ()), Err(READ_ONLY));
     assert_eq!(outcome::served(dir.openat(n, 0x40)).map(|_| ()), Err(READ_ONLY));
@@ -185,7 +210,7 @@ fn every_change_is_refused_read_only() {
     assert_eq!(outcome::served(dir.renameat(n, n)), Err(READ_ONLY));
     assert_eq!(outcome::served(dir.truncateat(n, 0)), Err(READ_ONLY));
     let h = open(&s, "hello.txt").unwrap();
-    let mut node = NodeClient::new(Loop(&s, h - BASE));
+    let mut node = NodeClient::new(Loop(&s, badge(&s, h)));
     assert_eq!(outcome::served(node.write(Extent { off: DATA, len: 1 })), Err(READ_ONLY));
     assert_eq!(outcome::served(node.fsync()), Ok(()));
 }
@@ -193,7 +218,7 @@ fn every_change_is_refused_read_only() {
 #[test]
 fn names_outside_the_directory_and_extents_outside_the_region_are_refused() {
     let s = service();
-    let mut dir = DirClient::new(Loop(&s, 0));
+    let mut dir = DirClient::new(Loop(&s, DIR_BADGE));
     let out = Extent { off: OUT, len: STAT_BYTES as u32 };
     for bad in ["/hello.txt", "../hello.txt", "deep/../../hello.txt"] {
         let n = name(&s, bad);
@@ -211,12 +236,12 @@ fn names_outside_the_directory_and_extents_outside_the_region_are_refused() {
     assert_eq!(outcome::served(dir.statat(n, Extent { off: region - 8, len: 64 })), Err(outcome::BAD_ARGUMENT));
     assert_eq!(outcome::served(dir.statat(n, Extent { off: u64::MAX, len: 64 })), Err(outcome::BAD_ARGUMENT));
     let h = open(&s, "hello.txt").unwrap();
-    let mut node = NodeClient::new(Loop(&s, h - BASE));
+    let mut node = NodeClient::new(Loop(&s, badge(&s, h)));
     assert_eq!(outcome::served(node.read(Extent { off: region, len: 1 })), Err(outcome::BAD_ARGUMENT));
     // A node's capability is no directory, and the directory is no node.
-    let mut as_dir = DirClient::new(Loop(&s, h - BASE));
+    let mut as_dir = DirClient::new(Loop(&s, badge(&s, h)));
     assert_eq!(outcome::served(as_dir.statat(n, out)), Err(outcome::DENIED));
-    let mut as_node = NodeClient::new(Loop(&s, 0));
+    let mut as_node = NodeClient::new(Loop(&s, DIR_BADGE));
     assert_eq!(outcome::served(as_node.fsync()), Err(outcome::DENIED));
 }
 
@@ -228,11 +253,91 @@ fn an_open_past_the_slots_revokes_the_oldest() {
         open(&s, "fast").unwrap();
     }
     assert!(s.borrow().host.revoked.is_empty());
-    let mut node = NodeClient::new(Loop(&s, first - BASE));
+    let mut node = NodeClient::new(Loop(&s, badge(&s, first)));
     assert_eq!(outcome::served(node.fsync()), Ok(()), "the oldest is touched, so another one goes");
     let again = open(&s, "hello.txt").unwrap();
     assert_eq!(s.borrow().host.revoked.len(), 1);
     assert_ne!(s.borrow().host.revoked[0], first);
     assert_eq!(read_file(&s, "hello.txt").unwrap(), b"hello ext4\n");
     let _ = again;
+}
+
+/// **An open's capability names that open and no other, across a restart
+/// of the server**: a badge an earlier server lent reaches nothing in the
+/// next one, even when the next one has the slot in use for another file.
+///
+/// **Canary.** `badge-slot-canary`: the badge is the slot, as before.
+#[test]
+fn a_badge_from_an_earlier_server_reaches_nothing() {
+    let old = service_as(1000);
+    let h = open(&old, "hello.txt").unwrap();
+    let stale = badge(&old, h);
+    // The server dies; the next one opens another file into the same slot.
+    let new = service_as(7);
+    open(&new, "big.bin").unwrap();
+    let mut node = NodeClient::new(Loop(&new, stale));
+    assert_eq!(outcome::served(node.read(Extent { off: DATA, len: 16 })).map(|d| d.count), Err(outcome::NO_RESOURCE));
+    // Within one server, a slot used again carries another badge.
+    let s = service();
+    let first = open(&s, "hello.txt").unwrap();
+    for _ in 0..NODES {
+        open(&s, "fast").unwrap();
+    }
+    assert!(s.borrow().host.revoked.contains(&first));
+    let mut node = NodeClient::new(Loop(&s, badge(&s, first)));
+    assert_eq!(outcome::served(node.fsync()), Err(outcome::NO_RESOURCE), "the revoked badge reaches the slot's new file");
+}
+
+/// **A slot whose capability could not be revoked is never used again**: the
+/// copy that was lent from it may still be out there.
+#[test]
+fn a_slot_whose_revoke_failed_is_not_reused() {
+    let s = service();
+    s.borrow_mut().host.revoke_ok = false;
+    let first = open(&s, "hello.txt").unwrap();
+    for _ in 1..NODES {
+        open(&s, "fast").unwrap();
+    }
+    let n = DirClient::new(Loop(&s, DIR_BADGE)).openat(name(&s, "big.bin"), 0);
+    assert_eq!(outcome::served(n).map(|_| ()), Err(outcome::BUSY), "no slot can be freed");
+    let mut node = NodeClient::new(Loop(&s, badge(&s, first)));
+    let got = read_checked(&mut node, Extent { off: DATA, len: READ_MAX }).unwrap();
+    assert_eq!(&s.borrow().host.region[DATA as usize..DATA as usize + got as usize], b"hello ext4\n");
+}
+
+/// **The directory answers only the kernel's capability** (its badge,
+/// `DIR_BADGE`): another holder of the endpoint cannot drive writes into
+/// the shared region.
+#[test]
+fn a_dir_call_without_the_kernels_badge_is_denied() {
+    let s = service();
+    let out = Extent { off: OUT, len: STAT_BYTES as u32 };
+    let n = name(&s, "hello.txt");
+    assert_eq!(outcome::served(DirClient::new(Loop(&s, 0)).statat(n, out)), Err(outcome::DENIED));
+    assert_eq!(outcome::served(DirClient::new(Loop(&s, DIR_BADGE)).statat(n, out)), Ok(()));
+}
+
+/// **A completion that comes after its waiter gave up is dropped, not taken
+/// for the next entry's**: the server's ring would otherwise answer every
+/// later read with the one before it.
+///
+/// **Canary.** `stale-completion-canary`.
+#[test]
+fn a_late_completion_is_dropped() {
+    use service::{completion, Completion};
+    // Entry 7 timed out; its completion, then entry 8's, are in the ring.
+    let ring = [(7u64, 512i32), (8, 1024)];
+    let mut got = None;
+    for &(tag, r) in &ring {
+        match completion(8, tag, r) {
+            Completion::Mine(r) => {
+                got = Some(r);
+                break;
+            }
+            Completion::Stale => continue,
+            Completion::Stray => break,
+        }
+    }
+    assert_eq!(got, Some(1024));
+    assert_eq!(completion(8, 9, 0), Completion::Stray, "a tag not yet given");
 }
