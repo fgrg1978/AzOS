@@ -173,3 +173,27 @@ fn tool_a_seal_a_crash_lost_matches_the_live_tpm() {
     assert_eq!(r.verdict, Verdict::Incomplete, "{}", render(&r));
     assert!(r.notes.iter().any(|n| n.contains("a crash lost")), "{:?}", r.notes);
 }
+
+/// The tool lists the declared losses of high-value classes on their own,
+/// by class, and says what the TPM indexes prove.
+#[test]
+fn tool_lists_high_value_losses_by_class() {
+    let mut b = tpm_boot([0; 32], 1);
+    b.event(Class::Camera, 3);
+    b.seal();
+    let lines: Vec<_> = b.lines();
+    let mut by_class = [0u32; azos_seclog::CLASSES];
+    by_class[Class::Microphone as usize] = 2;
+    let mut extra = lines.clone();
+    let loss = azos_seclog::Loss { first: 99, count: 2, by_class };
+    let mut p = [0u8; azos_seclog::PAYLOAD];
+    p[..azos_seclog::Loss::LEN].copy_from_slice(&loss.encode());
+    let env = azos_seclog::Envelope { seq: lines.len() as u64, ts: 1, clock: 0, source: 4, kind: kind::LOSS, len: azos_seclog::Loss::LEN as u16, cpu: 0, flags: 0 };
+    let mut out = [0u8; azos_seclog::text::MSG_MAX];
+    let n = azos_seclog::text::render(&env, &p, &mut out);
+    extra.push(out[..n].to_vec());
+    let r = verify(&[file(1, &extra)], &Options::default());
+    let text = render(&r);
+    assert!(text.contains("high-value records declared lost:\n  microphone 2 (never sealed)"), "{text}");
+    assert!(text.contains("owner hierarchy"), "{text}");
+}

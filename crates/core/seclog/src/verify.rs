@@ -161,6 +161,9 @@ pub struct Summary {
     pub backend: Option<Backend>,
     pub last_anchor: Option<Hash>,
     pub last_counter: Option<u64>,
+    /// The last boot's seals say both its TPM indexes are undeletable: a
+    /// rewrite cannot be replayed into them.
+    pub undeletable: bool,
 }
 
 /// How the hardware's live value relates to the export.
@@ -728,6 +731,7 @@ impl Verifier {
             self.refused = Some(s.anchor);
         }
         self.sum.backend = Some(s.backend);
+        self.sum.undeletable = hardware && s.flags & crate::FLAG_UNDELETABLE != 0;
         self.b.last_seal = Some(*s);
         self.b.last_seal_seq = seq;
         self.b.recent = NO_RANGES;

@@ -276,6 +276,23 @@ pub fn render(r: &Report) -> String {
     for n in &r.notes {
         let _ = writeln!(o, "note: {n}");
     }
+    // The declared losses of the classes whose loss hides what spyware does,
+    // by class: not evidence (the kernel declared them), never to be missed.
+    let mut hv: Vec<(u8, bool, u64)> = Vec::new();
+    for f in &r.findings {
+        if let (true, Finding::ClassLost { class, count, sink, .. }) = (f.high_value_loss(), f) {
+            match hv.iter_mut().find(|x| x.0 == *class && x.1 == *sink) {
+                Some(x) => x.2 += *count as u64,
+                None => hv.push((*class, *sink, *count as u64)),
+            }
+        }
+    }
+    if !hv.is_empty() {
+        let _ = writeln!(o, "high-value records declared lost:");
+        for (class, sink, n) in &hv {
+            let _ = writeln!(o, "  {} {}{}", class_name(*class), n, if *sink { " (logd did not write them)" } else { " (never sealed)" });
+        }
+    }
     let s = &r.summary;
     let _ = writeln!(
         o,
@@ -290,6 +307,15 @@ pub fn render(r: &Report) -> String {
     );
     if let Some(a) = &s.last_anchor {
         let _ = writeln!(o, "last anchor {}", hex(a));
+        let _ = writeln!(
+            o,
+            "{}",
+            if s.undeletable {
+                "TPM indexes undeletable: a rewrite cannot be replayed into them"
+            } else {
+                "TPM indexes in the owner hierarchy: they show a removed seal, not a rewritten record"
+            }
+        );
     }
     if !r.anchored {
         let _ = writeln!(o, "not anchored: pass --tpm-anchor or --witness; offline, an export rewritten whole is consistent with itself");
