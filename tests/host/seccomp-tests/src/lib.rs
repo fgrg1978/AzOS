@@ -1045,6 +1045,8 @@ mod image_profiles {
         // A signature by a kernel-held key: the call, and the one-page memory
         // object the message and the signature travel in (made, mapped, given back).
         ("keys_sign", &["SYS_IPC_CALL", "SYS_MO_CREATE", "SYS_MO_MAP", "SYS_MO_UNMAP"]),
+        // A login the caller decided, reported for the kernel's record: the call.
+        ("keys_login_report", &["SYS_IPC_CALL"]),
         // A sensor reading and the vDSO bind go over the v2 call too (the
         // reply is a five-word sample, past the register form).
         ("sensor_read", &["SYS_IPC_CALL"]),

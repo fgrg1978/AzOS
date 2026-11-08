@@ -39,6 +39,7 @@ fn the_op_constants_are_the_traits_order() {
         ("unwrap", op::UNWRAP),
         ("destroy", op::DESTROY),
         ("login", op::LOGIN),
+        ("login_report", op::LOGIN_REPORT),
     ];
     assert_eq!(KeysIdl::OPS.len(), want.len());
     for (name, n) in want {
