@@ -1004,7 +1004,8 @@ was made `wrappable`).
   contained: a signature is not an actuation); `WRITE` makes a key (refused while
   contained: no new secret is minted then; opening a *named* key is served, since
   the board determines it); `EXEC` wraps. A holder narrows itself with
-  the capability's `OP_MASK`: `SSHD.ELF` is granted `generate`, `public` and `sign`.
+  the capability's `OP_MASK`: `SSHD.ELF` is granted `generate`, `public`, `sign` and
+  `login_report`.
 - **Where the bytes go.** A request has seven words and a reply six. A name, a 32-byte
   secret or block and a sealed block (the 32 bytes and a 16-byte tag, an
   HMAC-SHA256-keyed synthetic IV with ChaCha20) travel inline; a signature and a
@@ -1013,6 +1014,10 @@ was made `wrappable`).
 - **The console login** is the `login` op (the eleventh; `EXEC`, the one op of the
   login service's mask). It is not a use of a handle: it checks a credential
   against the signed topology and arms a grant. See "Console login" below.
+- **An SSH login** is `login_report` (the twelfth, `WRITE`): the SSH server says what it
+  decided by public key and the kernel writes the `login` record (method 2, the server
+  as subject), so it is in the sealed security log. It grants nothing; a reason a key
+  login cannot have is `BAD_ARGUMENT`.
 - **The first user** is the SSH server: its host key is the named key `sshd.host`,
   bound to its image and derived from the board seed. The file `/fat/SSHHOST.KEY` and
   the sealing in ring 3 are gone; a compromised server can sign key exchanges (as it
