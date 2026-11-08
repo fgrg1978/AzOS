@@ -38,9 +38,8 @@ reaches the loop only with both admitted; neither op can fail once admitted,
 so the gate never compensates (a compensation would put the kernel's hold on a
 wheel for a command that moved nothing). Each wheel then names its caller, and
 the caller's exit puts a stop on the loop's channel as well as on the wheels
-(`motor_commander::exit_stop`). It is the deliberative layer's way to command
-the robot from ring 3 once the behaviour engine runs there; nothing calls it
-yet.
+(`motor_commander::exit_stop`). It is the ring-3 behaviour engine's way to command
+the robot (`BRAINCLI.ELF`).
 
 **The gate.** `azos_actuation::effect_gate` is the second check. It is built with
 Kconfig `EFFECT_WRITE_AHEAD` (default `y` when the robot domain is built in) and

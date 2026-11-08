@@ -73,8 +73,33 @@ releases yet. The ABI crate keeps its own file,
 
 - `Motor::command(left, right)`: the drivetrain's command published to its
   effect loop, both wheels' effects through the gate, `(0, 0)` always carried
-  out, motion refused while halted, and a dead commander's command stopped. No
-  caller yet: it is the ring-3 behaviour engine's output path.
+  out, motion refused while halted, and a dead commander's command stopped:
+  the ring-3 behaviour engine's output path.
+
+- The robot's behaviour engine runs in ring 3. `BRAINCLI.ELF`, the robot disk
+  image's autorun, is the engine and the one brain link: it chooses among L1
+  (avoid an obstacle the rangefinders see), L2 (the brain's command for 2 s)
+  and L3 (explore while a session is up), as the kernel's layer switches allow
+  (`Behavior::status`), publishes with `Motor::command`, and hands the brain's
+  authority frames to the kernel (`endpoint.authority`). It runs without a
+  brain when the image has no link key. The kernel keeps the enforcement: the
+  safety layer's cap (L0), the e-stop latch and the operator's release, the RC
+  override (which outranks the engine and survives its death), the geofence,
+  the envelope and the effect loops. `MLSRV.ELF` starts by its own row; the
+  `[BENCH-RES]` sweep and the WCET report are a QEMU boot task.
+
+### Removed
+
+- The kernel's behaviour, brain-tx and camera-tx tasks
+  (`kernel/src/tasks/{behavior,brain_link,camera}.rs`, `kernel/src/behavior_*.rs`),
+  the arbiter, layers, remote, brain-tx, camera-tx, offline, skill, habit,
+  balance and ML-link modules of `azos_behavior`, the multi-stream framing
+  (`crates/net/multi-stream`, `multi_stream=`), the brain-tx Kconfig
+  (`config/subsys/Kconfig.brain`), `NO_ML`, `TASK_BEHAVIOR_PLACE`,
+  `ML_REPLY_TIMEOUT_US`, the `ml_enabled` and `behavior_camera_port` keys, and
+  the robot-named priorities of `azos_sched` (the manifest declares each task's).
+  The camera's frames reach ring 3 through the `Frame` interface only; the
+  engine's L1 does not ask the inference service yet.
 
 - kibi, the ported terminal editor, is back as `KIBI.ELF` (Kconfig
   `USERSPACE_KIBI`, on for the desktop and server presets): the shell lends the
