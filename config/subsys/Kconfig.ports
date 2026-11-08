@@ -1,0 +1,41 @@
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+# SPDX-FileCopyrightText: 2026 Fernando Rodriguez
+# config/subsys/Kconfig.ports: the ported programs (third_party/ports).
+#
+# Their symbols are USERSPACE_<NAME> like every ring-3 image (mk/vars.mk reads
+# them to choose what the system volume carries), but these programs are not
+# directories under userspace/, so config/Kconfig.userspace (generated from
+# those) does not declare them.
+
+config USERSPACE_RG
+    bool "RG.ELF: ripgrep 15.2.0 (third_party/ports/ripgrep)"
+    depends on !HWCLASS_EMBEDDED
+    default y if PRESET_DESKTOP || PRESET_SERVER
+    default n
+    help
+      ripgrep, a recursive line-oriented search (`rg PATTERN [PATH]`), ported to
+      the native SDK std target: a std program on the vendored crates, with no C
+      (no PCRE2). It reads files and directories beneath the read-only root
+      directory its topology row grants (std::fs over the `*at` node ops), writes
+      to the console or a redirected stdout, and holds nothing else. Unlicense OR
+      MIT. Built by `make ports`.
+
+      y: the system volume carries /fat/RG.ELF and the built-in topology has its
+      row (the shell may start it). Cost: the image's size on the volume
+      (3.3 to 3.8 MB, by ISA).
+
+config USERSPACE_FD
+    bool "FD.ELF: fd 10.5.2 (third_party/ports/fd-find)"
+    depends on !HWCLASS_EMBEDDED
+    default y if PRESET_DESKTOP || PRESET_SERVER
+    default n
+    help
+      fd, a file finder (`fd PATTERN [PATH]`), ported to the native SDK std
+      target without its signal handler, owner filter and device-type probes
+      (which need unix). It lists directories beneath the read-only root
+      directory its topology row grants and writes to the console or a
+      redirected stdout. MIT OR Apache-2.0. Built by `make ports`.
+
+      y: the system volume carries /fat/FD.ELF and the built-in topology has its
+      row (the shell may start it). Cost: the image's size on the volume
+      (2.4 to 2.9 MB, by ISA).

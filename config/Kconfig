@@ -124,6 +124,10 @@ menu "Application packages"
 source "config/subsys/Kconfig.packages"
 endmenu # Application packages
 
+menu "Ported programs"
+source "config/subsys/Kconfig.ports"
+endmenu # Ported programs
+
 menu "Drivers"
 source "config/subsys/Kconfig.drivers"
 endmenu # Drivers
