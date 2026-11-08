@@ -12307,6 +12307,7 @@ host_job host_canary_row "coreutils: cut ranges canary" coreutils-tests cut-rang
 host_job host_canary_row "coreutils: tr ranges canary" coreutils-tests tr-range-canary tr_range_includes_the_last_letter
 host_job host_canary_row "ext4: a name past NAME_MAX canary" ext4-tests dirent-bound-canary mangled_images_never_panic
 host_job host_canary_row "ext4: inode checksum canary" ext4-tests csum-skip-canary a_flipped_inode_is_refused
+host_job host_canary_row "ext4: a name that is not one component canary" ext4-tests dirent-name-canary a_name_that_is_not_one_component_is_refused
 host_job host_canary_row "ext4: a short read as success canary" ext4-tests short-read-canary a_file_reads_whole_through_the_protocol
 host_job host_canary_row "ext4: the mount takes a short read canary" fs-tests endpoint-short-read-canary a_short_read_is_never_served_as_the_file
 host_job host_canary_row "ext4: the server's row holds one more partition canary" topology-tests ext4d-grant-canary ext4d_holds_its_partition_endpoint_and_region_and_nothing_else

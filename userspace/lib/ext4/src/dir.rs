@@ -98,9 +98,15 @@ impl<S: BlockSource> Volume<S> {
         if ino > self.sb.inodes_count {
             return Err(Corrupt::InodeRange.into());
         }
+        let name = &b[at + 8..at + 8 + nlen];
+        // A live entry names one component: never empty, no `/`, no NUL
+        // (Linux's `verify_dirent_name`). A deleted one's bytes are not read.
+        if ino != 0 && (nlen == 0 || name.iter().any(|&c| c == b'/' || c == 0)) && !cfg!(feature = "dirent-name-canary") {
+            return Err(Corrupt::DirEntry.into());
+        }
         out.ino = ino;
         out.name_len = nlen as u8;
-        out.name[..nlen].copy_from_slice(&b[at + 8..at + 8 + nlen]);
+        out.name[..nlen].copy_from_slice(name);
         out.file_type = ft;
         Ok(rec)
     }
@@ -190,11 +196,11 @@ impl<S: BlockSource> Volume<S> {
             comp[..clen].copy_from_slice(&work[at..end]);
             let comp = &comp[..clen];
             at = end;
-            if comp == b"." {
-                continue;
-            }
             if !cur.is_dir() {
                 return Err(Error::NotDir);
+            }
+            if comp == b"." {
+                continue;
             }
             if comp == b".." {
                 depth = depth.saturating_sub(1);

@@ -22,6 +22,9 @@ description = "Host-side tests for the read-only ext4 parser (userspace/lib/ext4
 dirent-bound-canary = ["azos_ext4/dirent-bound-canary"]
 csum-skip-canary = ["azos_ext4/csum-skip-canary"]
 short-read-canary = []
+#   dirent-name-canary: a name that is not one component is listed
+#     (`refuse::a_name_that_is_not_one_component_is_refused`)
+dirent-name-canary = ["azos_ext4/dirent-name-canary"]
 
 [dependencies]
 azos_ext4 = { path = "../../../userspace/lib/ext4" }

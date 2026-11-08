@@ -167,3 +167,36 @@ fn numbers_that_point_outside_the_volume_are_refused() {
     let f = v.resolve(b"hello.txt", true).unwrap();
     assert_eq!(read_all(&mut v, &f).err(), Some(Error::Corrupt(Corrupt::Extent)));
 }
+
+/// **A name from the image is one component**: a live entry whose name is
+/// empty or holds `/` or NUL is refused, as Linux's `verify_dirent_name`
+/// refuses it; a recursive walk would otherwise join it into a path that
+/// leaves the directory, or never ends.
+///
+/// **Canary.** `dirent-name-canary` takes the bytes as they are.
+#[test]
+fn a_name_that_is_not_one_component_is_refused() {
+    let base = image(&dir(), &PLAIN);
+    let at = find(&base, b"empty.txt");
+    for (what, patch) in [("a slash", b'/'), ("a NUL", 0u8)] {
+        let mut i = base.clone();
+        i[at + 4] = patch;
+        let mut v = mount(i).unwrap();
+        let root = v.inode(azos_ext4::ROOT_INO).unwrap();
+        assert_eq!(azos_ext4_tests::list(&mut v, &root).err(), Some(Error::Corrupt(Corrupt::DirEntry)), "{what}");
+    }
+    // The entry's name length (the byte before its file type).
+    let mut i = base.clone();
+    i[at - 2] = 0;
+    let mut v = mount(i).unwrap();
+    let root = v.inode(azos_ext4::ROOT_INO).unwrap();
+    assert_eq!(azos_ext4_tests::list(&mut v, &root).err(), Some(Error::Corrupt(Corrupt::DirEntry)), "an empty name");
+}
+
+/// `file/.` names no directory (POSIX: ENOTDIR).
+#[test]
+fn a_dot_after_a_file_is_not_a_directory() {
+    let mut v = mount(image(&dir(), &PLAIN)).unwrap();
+    assert_eq!(v.resolve(b"hello.txt/.", true).err(), Some(Error::NotDir));
+    assert_eq!(v.resolve(b"hello.txt/", true).map(|i| i.is_file()), Ok(true), "a trailing slash alone is the file");
+}

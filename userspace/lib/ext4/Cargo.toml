@@ -13,6 +13,8 @@ description = "A read-only ext4 parser: superblock, group descriptors, inodes, e
 #   csum-skip-canary: an inode's checksum is not verified
 dirent-bound-canary = []
 csum-skip-canary = []
+#   dirent-name-canary: a live entry's name is taken as it is (empty, `/`, NUL)
+dirent-name-canary = []
 
 [dependencies]
 azos_common = { path = "../../../crates/core/common" }
