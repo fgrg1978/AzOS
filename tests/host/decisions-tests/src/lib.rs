@@ -846,4 +846,36 @@ mod login_lines {
         assert!(line(Verdict::Refuse, 0, [4, 0, 5]).contains("reason=5"));
     }
 
+
+    /// The rules whose records the sealed security log copies, and their
+    /// class: every verdict alike, a `RefusalLimited` report as `limited`
+    /// when the rule it held back is one of them, and nothing else.
+    #[test]
+    fn the_security_rules_and_their_classes() {
+        use azos_decision::SecClass as C;
+        let want = [
+            (Rule::AudioCapture, C::Microphone),
+            (Rule::CamCapture, C::Camera),
+            (Rule::EnvelopeEgress, C::Egress),
+            (Rule::GuestEgress, C::Egress),
+            (Rule::CapDenial, C::CapDenial),
+            (Rule::Neverallow, C::CapDenial),
+            (Rule::ExecGrant, C::ImageLoad),
+            (Rule::Livepatch, C::ImageLoad),
+            (Rule::BootChain, C::ImageLoad),
+            (Rule::MeasuredBoot, C::ImageLoad),
+            (Rule::EnvelopeOta, C::Update),
+            (Rule::PackageInstall, C::Update),
+            (Rule::Login, C::Login),
+            (Rule::UsbAuthorize, C::Usb),
+        ];
+        for (r, c) in want {
+            assert_eq!(r.security_class(0), Some(c), "{r:?}");
+            assert_eq!(Rule::RefusalLimited.security_class(r as u64), Some(C::Limited), "{r:?} held back");
+        }
+        for r in [Rule::Placement, Rule::KeyUse, Rule::CoreDump, Rule::ThreadControl, Rule::PacketRefused] {
+            assert_eq!(r.security_class(Rule::AudioCapture as u64), None, "{r:?}");
+            assert_eq!(Rule::RefusalLimited.security_class(r as u64), None, "{r:?} held back");
+        }
+    }
 }

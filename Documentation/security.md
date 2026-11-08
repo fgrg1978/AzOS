@@ -817,7 +817,9 @@ debugger's attach (`Rule::ThreadControl` has no caller); their class numbers (3
 and 8) are reserved. A capability denial passes the same per-Domain bucket as
 its durable receipt: what the bucket holds back is not copied, and the
 bucket's `RefusalLimited` report is, so a flood of denials cannot push a
-microphone record out of the ring unseen.
+microphone record out of the ring unseen. With a rate of 0
+(`DECISION_DENY_DURABLE_PER_SEC`) there is no bucket and no report, and every
+denial is copied: a flood then laps the ring, which the sealer declares.
 
 **The chain.** Per boot, the `seclog` task folds every record of the ring, in
 sequence order, into `head_i = SHA-256(head_{i-1} || canon_i)` (`canon`: the
@@ -835,12 +837,16 @@ what Kconfig asked for, and every record says which:
 
 | Board class | Seal | Link to the previous boot |
 |-------------|------|----------------------------|
-| A TPM 2.0 (x86_64 ACPI `TPM2`; a `tcg,tpm_tis-spi` node on riscv64 and aarch64), `SEC_LOG_SEAL_TPM_NV` | `TPM2_NV_Extend` of each head into an NV index of type `TPM_NT_EXTEND` (`0x01500003`): the OS can add to it and never set it | the index's value at boot is the previous boot's last seal |
+| A TPM 2.0 (x86_64 ACPI `TPM2`; a `tcg,tpm_tis-spi` node on riscv64 and aarch64), `SEC_LOG_SEAL_TPM_NV` | `TPM2_NV_Extend` of each head into an NV index of type `TPM_NT_EXTEND` (`0x01500003`): the OS can add to it and never set it | the index's value at boot is the previous boot's last seal the TPM took |
 | No TPM: QEMU, the VF2, the K1, the Raspberry Pi 3 and 5, a microVM | forward-only: each seal is printed on the console (`seclog: seal <n> through <seq> head <hex> anchor <hex> <backend>`) for a receiver to keep; the local seal is advisory, and the records say so | none on the device (`anchor_0` is zero); the receiver's capture links the boots |
 | eMMC RPMB, a secure element, a TEE | not a backend: no driver in the tree | |
 
-A TPM extend that fails ends the hardware seals for the boot; the later ones are
-advisory, and the next boot's anchor does not match, which the verifier reports.
+A TPM extend that fails ends the hardware seals for the boot: that seal and the
+later ones are advisory, the next boot's anchor is the last seal the TPM took,
+and the verifier links the boots there (or at the first refused seal, whose
+extend the TPM may have taken with its answer lost) and reports the boot
+advisory, not tampered with. The value it compares with the live TPM is the
+last one the export says the hardware holds.
 Each seal is one NV write: `SEC_LOG_SEAL_S` (60 s) bounds the wear, and an idle
 system seals nothing. The index's password is derived from public inputs, as the
 floor's: whoever has it can only extend the index, which breaks the chain
@@ -855,7 +861,7 @@ and reports, per boot: records missing from the export (and whether the kernel
 declared the loss), a seal whose head the records before it do not give
 (a rewritten, inserted or removed record), records out of order, a seal whose
 anchor does not follow from the previous one (a forged seal), a boot whose
-anchor is not the previous boot's last seal, records after the last seal, and
+anchor is not the last seal the TPM took before it, records after the last seal, and
 advisory seals. Offline, an export rewritten whole, every head and anchor
 recomputed, is consistent with itself; two references refute it:
 `SECLOG_TPM_ANCHOR=<hex>`, the index's value read from the live TPM (a whole

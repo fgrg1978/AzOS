@@ -1849,14 +1849,14 @@ fn record_full(rule: Rule, verdict: Verdict, subject: u32, bucket: u32, n: [u64;
             || matches!(rule, Rule::Login)
             || (matches!(verdict, Verdict::Place) && matches!(rule, Rule::Placement)));
     // The bucket held this record back: it is in the count of the next
-    // `RefusalLimited` report instead.
+    // `RefusalLimited` report instead. With no bucket (a rate of 0) no report
+    // counts it, so the security ring still takes it.
     let mut held = false;
     if paced {
         if !SINK.is_set() {
             to_sink = matches!(verdict, Verdict::Refuse);
         } else if DENY_DURABLE_PER_SEC == 0 {
             DENY_DROPPED.fetch_add(1, Ordering::Relaxed);
-            held = true;
         } else if let Some(since) = paced_admit(rule, bucket) {
             if rule == Rule::CapDenial {
                 n[2] = since as u64;
