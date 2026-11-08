@@ -65,8 +65,9 @@ enum Phase {
 }
 
 /// Lent capabilities the mount gave back, which the call task closes (they
-/// are in its table): at most one per open file the mount keeps.
-const CLOSES: usize = 8;
+/// are in its table): the mount keeps 8 open files and gives back at most
+/// all of them, and one more, between two calls.
+const CLOSES: usize = 16;
 
 struct Job {
     phase: Phase,
@@ -96,10 +97,21 @@ fn wake(tid: u32, deadline: u64) {
     }
 }
 
-/// The handle of a capability the server lent in `msg`'s answer (its first
-/// entry), if it carries one.
-fn lent(msg: &MsgDesc) -> Option<u32> {
-    (msg.n_caps > 0).then(|| msg.caps[0].handle)
+/// Close the capabilities an answer carries beyond the `keep` its request
+/// expects (an open lends one, nothing else lends any), and take them off the
+/// answer: a server cannot fill the call task's table.
+fn close_extra(msg: &mut MsgDesc, keep: usize) {
+    let n = (msg.n_caps as usize).min(msg.caps.len());
+    for c in &msg.caps[keep.min(n)..n] {
+        close(c.handle);
+    }
+    msg.n_caps = keep.min(n) as u8;
+}
+
+/// Does `req` ask the server to open a file (the one call that lends)?
+fn lends(req: &MsgDesc) -> bool {
+    let w = req.words[0];
+    (w >> 32) as u32 == azos_devif::fs::DIR_ID && w as u16 == azos_abi::invoke::NODE_OPENAT
 }
 
 /// The call task: takes the posted call, makes it through its own
@@ -133,10 +145,14 @@ fn call_task(_: usize) {
             let _ = azos_sched::task_block_outcome(WaitReason::Timer(until));
             continue;
         };
-        let res = match node.or_else(|| kcall::endpoint_handle(ENDPOINT)) {
+        let opens = lends(&msg);
+        // The directory is the server's to answer for this capability alone
+        // (`DIR_BADGE`); an open file is the capability it lent.
+        let res = match node.or_else(|| kcall::endpoint_handle_badged(ENDPOINT, azos_devif::fs::DIR_BADGE)) {
             Some(h) => KernelEndpoint(h).call(&mut msg),
             None => Err(IdlError::Transport(-1)),
         };
+        close_extra(&mut msg, usize::from(opens && res.is_ok()));
         let (waiter, deadline) = {
             let mut j = JOB.lock();
             if j.phase == Phase::Abandoned {
@@ -150,9 +166,7 @@ fn call_task(_: usize) {
             }
         };
         if waiter == 0 {
-            if let Some(h) = lent(&msg).filter(|_| res.is_ok()) {
-                close(h);
-            }
+            close_extra(&mut msg, 0);
         } else {
             wake(waiter, deadline);
         }
@@ -167,13 +181,28 @@ fn close(h: u32) {
 struct KernelLink;
 
 impl KernelLink {
-    fn region(&self) -> Option<&'static mut [u8]> {
+    /// Copy `len` bytes between the region at `off` and `buf` (`into_region`
+    /// says which way), refusing a range outside it.
+    ///
+    /// Raw copies, never a reference into the region: ring 3 may write it at
+    /// any time, so the kernel takes each byte once and checks only its copy.
+    fn copy(&self, off: usize, buf: *mut u8, len: usize, into_region: bool) -> bool {
         let base = REGION.load(Ordering::Acquire);
-        // SAFETY: a kernel-owned region of `REGION_BYTES` bytes, created once
-        // and never freed. The server writes it only while it serves a call,
-        // and the mount touches it only around one (its claim): what is read
-        // is copied out before anything checks it.
-        (base != 0).then(|| unsafe { core::slice::from_raw_parts_mut(base as *mut u8, REGION_BYTES) })
+        if base == 0 || off.checked_add(len).is_none_or(|end| end > REGION_BYTES) {
+            return false;
+        }
+        let at = (base + off) as *mut u8;
+        // SAFETY: `[off, off + len)` lies inside the kernel-owned region of
+        // `REGION_BYTES` bytes created once and never freed; `buf` is the
+        // caller's slice of `len` bytes; the two do not overlap.
+        unsafe {
+            if into_region {
+                core::ptr::copy_nonoverlapping(buf as *const u8, at, len);
+            } else {
+                core::ptr::copy_nonoverlapping(at as *const u8, buf, len);
+            }
+        }
+        true
     }
 }
 
@@ -238,29 +267,26 @@ impl Link for KernelLink {
         };
         if queued {
             wake(CALL_TASK_TID.load(Ordering::Acquire), PARKED_UNTIL.load(Ordering::Acquire));
+        } else {
+            kwarn!("[EXT4] close queue full: a lent capability stays in the call task's table");
         }
+    }
+
+    fn epoch(&self) -> u64 {
+        // The task serving the endpoint now: a restarted server is another
+        // task, and what the earlier one lent names nothing in it.
+        azos_ipc::endpoint::endpoint_ref_by_name(ENDPOINT)
+            .and_then(|r| azos_ipc::endpoint::endpoint_owner_ref(r).ok())
+            .filter(|&t| t != azos_ipc::endpoint::UNCLAIMED)
+            .map_or(0, u64::from)
     }
 
     fn put(&self, off: usize, bytes: &[u8]) -> bool {
-        let Some(r) = self.region() else { return false };
-        match off.checked_add(bytes.len()).and_then(|end| r.get_mut(off..end)) {
-            Some(d) => {
-                d.copy_from_slice(bytes);
-                true
-            }
-            None => false,
-        }
+        self.copy(off, bytes.as_ptr() as *mut u8, bytes.len(), true)
     }
 
     fn get(&self, off: usize, out: &mut [u8]) -> bool {
-        let Some(r) = self.region() else { return false };
-        match off.checked_add(out.len()).and_then(|end| r.get(off..end)) {
-            Some(s) => {
-                out.copy_from_slice(s);
-                true
-            }
-            None => false,
-        }
+        self.copy(off, out.as_mut_ptr(), out.len(), false)
     }
 }
 

@@ -12310,6 +12310,11 @@ host_job host_canary_row "ext4: inode checksum canary" ext4-tests csum-skip-cana
 host_job host_canary_row "ext4: a name that is not one component canary" ext4-tests dirent-name-canary a_name_that_is_not_one_component_is_refused
 host_job host_canary_row "ext4: a short read as success canary" ext4-tests short-read-canary a_file_reads_whole_through_the_protocol
 host_job host_canary_row "ext4: the mount takes a short read canary" fs-tests endpoint-short-read-canary a_short_read_is_never_served_as_the_file
+host_job host_canary_row "ext4: a mid-file failure read as the end canary" fs-tests endpoint-eof-canary a_read_that_fails_mid_file_is_an_error_not_the_end
+host_job host_canary_row "ext4: a listed name not one component canary" fs-tests endpoint-name-canary a_listed_name_that_is_not_one_component_is_refused
+host_job host_canary_row "ext4: a restarted server's opens kept canary" fs-tests endpoint-epoch-canary a_restarted_server_is_opened_again
+host_job host_canary_row "ext4: an open's badge is its slot canary" ext4-tests badge-slot-canary a_badge_from_an_earlier_server_reaches_nothing
+host_job host_canary_row "ext4: a late block completion taken canary" ext4-tests stale-completion-canary a_late_completion_is_dropped
 host_job host_canary_row "ext4: the server's row holds one more partition canary" topology-tests ext4d-grant-canary ext4d_holds_its_partition_endpoint_and_region_and_nothing_else
 host_job host_canary_row "coreutils: uniq -c canary" coreutils-tests uniq-count-canary uniq_c_counts_the_run
 # The kernel half's page-table pool and its funnel (mm-tests, feature hyp-monitor,

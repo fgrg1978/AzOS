@@ -106,12 +106,13 @@ config FS_EXT4_RING3
 
 config FS_EXT4_RING3_PARTITION
     int "Partition of the boot medium the ext4 volume is on (1-based)"
-    range 1 16
+    range 2 16
     default 2
     help
       The `partition` of the built-in topology's `[volume.ext4]` row; the
       server's row is granted READ on that partition alone
-      (`block.part.<partition - 1>`). A signed topology file replaces both
+      (`block.part.<partition - 1>`). Never 1: partition 1 is the boot
+      volume, which the parser has no reason to read. A signed topology file replaces both
       rows. A board whose medium has no such partition starts the server,
       which finds nothing to serve and exits; the mount answers nothing.
 
