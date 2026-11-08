@@ -159,7 +159,7 @@ pub enum AdmissionError {
     /// at all when no row serves `endpoint.names`.
     UnknownImport,
     /// A row receives a name no row serves (`READ` on `endpoint.<name>`), or
-    /// a name it also imports.
+    /// a name it also imports or holds an endpoint grant on.
     UnknownReceive,
     /// A `[signer.NAME]` repeats a name or a key id, has no frame ceiling or
     /// a warrant ceiling that is not `kind:prefix`.

@@ -117,10 +117,10 @@ fn the_session_s_servers_outrank_it() {
 }
 
 /// The rule itself, on a two-row topology: a server below or equal to its
-/// client is found, one above it is not, and an `imports` entry is a call
-/// like a grant.
+/// client is found, one above it is not, and an `imports` or `receives`
+/// entry is a call like a grant.
 #[test]
-fn the_ceiling_rule_reads_grants_and_imports() {
+fn the_ceiling_rule_reads_grants_imports_and_receives() {
     use azos_abi::cap::{CapKind, CapPerms};
     use azos_topology::CapSpec;
     const SCHED: &[u8] = b"[class.best_effort]\ncpu_budget_min_pct = 5\npriority_range = [24, 30]\n";
@@ -149,6 +149,15 @@ fn the_ceiling_rule_reads_grants_and_imports() {
     t.push_task(MaybeStr::from_bytes(b"cli"), MaybeStr::from_bytes(b"best_effort"), 24, &[]).unwrap();
     t.set_last_task_imports(&[MaybeStr::from_bytes(b"demo")]).unwrap();
     assert_eq!(t.server_not_above_client().map(|e| (e.server, e.client)), Some((0, 1)));
+    // And one that is handed a call right by its spawner (`receives`).
+    //
+    // Canary: drop `receives` from `for_each_service_edge`: no edge, `None`.
+    let mut t = Box::new(Topology::empty());
+    azos_topology::parse_sched(SCHED, &mut t).expect("parse");
+    t.push_task(MaybeStr::from_bytes(b"srv"), MaybeStr::from_bytes(b"best_effort"), 26, &[serve]).unwrap();
+    t.push_task(MaybeStr::from_bytes(b"cli"), MaybeStr::from_bytes(b"best_effort"), 24, &[]).unwrap();
+    t.set_last_task_receives(&[MaybeStr::from_bytes(b"demo")]).unwrap();
+    assert_eq!(t.server_not_above_client().map(|e| (e.server, e.client)), Some((0, 1)), "a receiving row is a client");
 }
 
 /// What `topo_sched::row_reservation` reads for `INADRV.ELF`, row by row: a

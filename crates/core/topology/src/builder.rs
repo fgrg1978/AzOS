@@ -3006,13 +3006,20 @@ const SH_IMPORTS: &[MaybeStr<'static>] = &[MaybeStr::from_bytes(b"term")];
 /// its row imports `vmctl` (with the monitor's row present) and the name
 /// server lends the call right.
 const TOOLBOX_IMPORTS: &[MaybeStr<'static>] = &[MaybeStr::from_bytes(b"vmctl")];
-/// The server half: `READ` claims the endpoint for `TERMD.ELF`; `WRITE` with
-/// `transfer` is the source of the call right badged with a job's id it lends
-/// the shell for that job (`Terminal::lend_job`), the compositor's way with
-/// its windows. It calls nothing through it.
+/// The server half: `READ` claims the endpoint for `TERMD.ELF`. Not
+/// transferable: the serving right never leaves its server.
 const TERM_SERVE: CapSpec = CapSpec {
     kind: CapKind::Endpoint,
-    perms: CapPerms::READ.union(CapPerms::WRITE),
+    perms: CapPerms::READ,
+    target: MaybeStr::from_bytes(RESOURCE_ENDPOINT_TERM), transfer: false, ops: 0,
+};
+/// The source of the call right badged with a job's id that `TERMD.ELF` lends
+/// the shell for that job (`Terminal::lend_job`): `WRITE` with `transfer`, and
+/// no `READ`, so a slip in what it lends could hand on a call right, never
+/// the serving one. It calls nothing through it.
+const TERM_JOB_SOURCE: CapSpec = CapSpec {
+    kind: CapKind::Endpoint,
+    perms: CapPerms::WRITE,
     target: MaybeStr::from_bytes(RESOURCE_ENDPOINT_TERM), transfer: true, ops: 0,
 };
 
@@ -3059,14 +3066,17 @@ const TERM_CONSOLE_SCREEN: CapSpec = CapSpec {
 /// Behind a console login ([`LOGIND_ROW`]) it also holds the call right on
 /// `endpoint.login` ([`LOGIN_CALL`]), listed after the endpoint it serves: the
 /// credential its secure-attention prompt makes goes to the login service, and
-/// the end of the session is asked of it.
+/// the end of the session is asked of it. First of all, the source of the
+/// terminals it lends jobs ([`TERM_JOB_SOURCE`]): a lookup of the endpoint by
+/// its index finds the lowest slot, so the call right it mints from is that
+/// one, and the serving right is not looked up (accepting needs no handle).
 const TERMD_CAPS: &[CapSpec] = match (LOGIND_ROW, TERM_INPUT_RING, TERM_SCREEN_REGION) {
-    (false, true, true) => &[TERM_SERVE, TERM_INPUT_EVENTS, TERM_CONSOLE_SCREEN],
-    (false, true, false) => &[TERM_SERVE, TERM_INPUT_EVENTS],
-    (false, false, _) => &[TERM_SERVE],
-    (true, true, true) => &[TERM_SERVE, LOGIN_CALL, TERM_INPUT_EVENTS, TERM_CONSOLE_SCREEN],
-    (true, true, false) => &[TERM_SERVE, LOGIN_CALL, TERM_INPUT_EVENTS],
-    (true, false, _) => &[TERM_SERVE, LOGIN_CALL],
+    (false, true, true) => &[TERM_JOB_SOURCE, TERM_SERVE, TERM_INPUT_EVENTS, TERM_CONSOLE_SCREEN],
+    (false, true, false) => &[TERM_JOB_SOURCE, TERM_SERVE, TERM_INPUT_EVENTS],
+    (false, false, _) => &[TERM_JOB_SOURCE, TERM_SERVE],
+    (true, true, true) => &[TERM_JOB_SOURCE, TERM_SERVE, LOGIN_CALL, TERM_INPUT_EVENTS, TERM_CONSOLE_SCREEN],
+    (true, true, false) => &[TERM_JOB_SOURCE, TERM_SERVE, LOGIN_CALL, TERM_INPUT_EVENTS],
+    (true, false, _) => &[TERM_JOB_SOURCE, TERM_SERVE, LOGIN_CALL],
 };
 
 /// The login endpoint: `LOGIND.ELF` serves the `Login` object on it (`READ`),

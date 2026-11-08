@@ -6,9 +6,9 @@
 //! which it claims at start (it is the console program, `CONSOLE_PATH`). It
 //! serves the `Terminal` object (`userspace/lib/term`) to ONE client, the
 //! shell, over the `endpoint.term` endpoint the topology grants: this row
-//! holds `READ` (it serves) with `WRITE` and `transfer` (it mints the badged
-//! call right a job is lent, `Terminal::lend_job`), the shell's lent copy
-//! `WRITE` (it calls). The line
+//! holds `READ` (it serves) and, beside it, `WRITE` with `transfer` (the
+//! source of the badged call right a job is lent, `Terminal::lend_job`); the
+//! shell's lent copy is `WRITE` (it calls). The line
 //! discipline (`disc.rs`, over the editor `edit.rs`) and the interface's
 //! implementation (`service.rs`) are pure and tested on the host
 //! (`tests/host/term-tests`); this file is the loop around them.
@@ -204,19 +204,29 @@ impl Gate for LoginGate {
     }
 }
 
-/// The `Cap<Endpoint>` of the row whose `READ` right is `serves`: the one it
-/// serves (`endpoint.term`) or, with `false`, the call right on
-/// `endpoint.login`. The two are told apart by their rights, without calling
-/// either (a call on the endpoint it serves would wait for itself). 0: the
-/// row grants none.
-fn find_endpoint(serves: bool) -> u32 {
+/// The `Cap<Endpoint>` of the row whose rights `want` says are the ones: the
+/// call right on `endpoint.login` (`WRITE` alone) or the source of a job's
+/// terminal (`WRITE` and `DUP`, no `READ`). They are told apart by their
+/// rights, without calling either (a call on the endpoint it serves would wait
+/// for itself). 0: the row grants none.
+fn find_endpoint(want: fn(u8) -> bool) -> u32 {
     (0..16u32)
         .filter_map(|i| {
             let h = sys::cap_lookup(sys::ty::ENDPOINT.raw(), i);
             (h > 0).then_some(h as u32)
         })
-        .find(|&h| sys::cap_info(h).is_ok_and(|i| (i.rights & CapPerms::READ.bits() != 0) == serves))
+        .find(|&h| sys::cap_info(h).is_ok_and(|i| want(i.rights)))
         .unwrap_or(0)
+}
+
+/// The call right on `endpoint.login`: `WRITE`, nothing to lend, not served.
+fn is_login_call(r: u8) -> bool {
+    r & CapPerms::READ.bits() == 0 && r & CapPerms::DUP.bits() == 0 && r & CapPerms::WRITE.bits() != 0
+}
+
+/// The source of a job's terminal: `WRITE` and `DUP`, not served through it.
+fn is_job_source(r: u8) -> bool {
+    r & CapPerms::READ.bits() == 0 && r & CapPerms::DUP.bits() != 0 && r & CapPerms::WRITE.bits() != 0
 }
 
 struct ServiceCell(core::cell::UnsafeCell<Service<Uart, LoginGate>>);
@@ -247,8 +257,8 @@ fn main() -> ! {
         svc.d.push(&one[..n as usize]);
     }
     svc.inp = open_input();
-    svc.gate.ep = find_endpoint(false);
-    svc.con.term = find_endpoint(true);
+    svc.gate.ep = find_endpoint(is_login_call);
+    svc.con.term = find_endpoint(is_job_source);
     svc.sak_serial = azos_limits::LOGIN_SAK_SERIAL_BYTE as u8;
     svc.gate_up();
     let _ = sys::console_write(sys::STDOUT, b"[termd] AzOS terminal server (Terminal on endpoint.term)\n");

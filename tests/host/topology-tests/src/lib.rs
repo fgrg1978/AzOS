@@ -5698,12 +5698,13 @@ mod receives_tests {
     }
 
     /// **A received name is an endpoint some row serves, and a row never both
-    /// receives and imports one**: the import would reach the same server
-    /// through the name server without the spawner's badge. A malformed name
+    /// receives and imports one, or holds a grant on it**: the import or the
+    /// grant would reach the same server without the spawner's badge. A malformed name
     /// is refused when the row is committed, as an import's is.
     ///
-    /// **Canary.** Skip the receives loop in `admission_check`: the
-    /// `UnknownReceive` assertions go red.
+    /// **Canaries.** Skip the receives loop in `admission_check`: the
+    /// `UnknownReceive` assertions go red. Drop the `granted` test: the
+    /// "received and granted" one does.
     #[test]
     fn a_received_name_no_row_serves_or_also_imported_is_refused() {
         for bad in ["typo", "names2"] {
@@ -5714,6 +5715,10 @@ mod receives_tests {
         let (t, r) = parse(file(8, "receives = [\"term\"]\nimports = [\"term\"]\n"));
         assert_eq!(r, Ok(()));
         assert_eq!(t.admission_check(), Err(AdmissionError::UnknownReceive), "received and imported");
+        let granted = "receives = [\"term\"]\ncaps = [\n  { kind = \"endpoint\", target = \"endpoint.term\", perm = \"w\" },\n]\n[task.TAIL.ELF]\n";
+        let (t, r) = parse(file(8, granted));
+        assert_eq!(r, Ok(()));
+        assert_eq!(t.admission_check(), Err(AdmissionError::UnknownReceive), "received and granted");
         for bad in ["a.b", "", "endpoint.term"] {
             let (_, r) = parse(file(8, &format!("receives = [\"{bad}\"]\n")));
             assert_eq!(r, Err(ParseError::Admission(AdmissionError::BadImport)), "{bad:?}");
@@ -7271,14 +7276,15 @@ mod mcp_row_tests {
             t.caps_of(r).iter().filter(|c| c.kind == CapKind::Endpoint && c.target.as_bytes().starts_with(b"endpoint.")).map(|c| (c.perms, c.target.as_str().to_string())).collect()
         };
         let termd = eps(b"TERMD.ELF");
-        assert_eq!(termd[0], (CapPerms::RW, "endpoint.term".to_string()), "it serves the terminal first");
+        assert_eq!(termd[0], (CapPerms::WRITE, "endpoint.term".to_string()), "it lends jobs from a call right, found first");
+        assert_eq!(termd[1], (CapPerms::READ, "endpoint.term".to_string()), "and serves the terminal");
         let logind = row(azos_topology::builder::TASK_LOGIND_IMAGE);
         assert_eq!(logind.is_some(), azos_topology::builder::LOGIND_ROW, "a row exactly when Kconfig CONSOLE_LOGIN");
         let Some(l) = logind else {
-            assert_eq!(termd.len(), 1, "no login service, no call to it");
+            assert_eq!(termd.len(), 2, "no login service, no call to it");
             return;
         };
-        assert_eq!(termd[1], (CapPerms::WRITE, "endpoint.login".to_string()), "and calls the login service second");
+        assert_eq!(termd[2], (CapPerms::WRITE, "endpoint.login".to_string()), "and calls the login service third");
         assert!(l.start);
         assert_eq!(t.restart_of(b"LOGIND.ELF"), azos_topology::RestartPolicy::OnFailure);
         let caps = t.caps_of(l);

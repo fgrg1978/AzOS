@@ -85,8 +85,9 @@ pub struct ServiceEdge<'a> {
     /// The row holding `READ` on `endpoint.<endpoint>`: it accepts the calls.
     pub server: usize,
     /// A row that calls it: a call right (`WRITE` or `EXEC`, the badged form
-    /// the power service holds) without `READ` on the same endpoint, or an
-    /// `imports` entry naming it.
+    /// the power service holds) without `READ` on the same endpoint, an
+    /// `imports` entry naming it, or a `receives` entry (it calls through the
+    /// right its spawner hands it).
     pub client: usize,
     /// The endpoint name, without the `endpoint.` prefix.
     pub endpoint: &'a [u8],
@@ -119,7 +120,8 @@ impl<'a> Topology<'a> {
                             && crate::types::endpoint_target(cc) == Some(ep)
                     });
                     let imports = self.imports_of(c).iter().any(|n| n.as_bytes() == ep);
-                    if calls || imports {
+                    let receives = self.receives_of(c).iter().any(|n| n.as_bytes() == ep);
+                    if calls || imports || receives {
                         f(ServiceEdge { server: si, client: ci, endpoint: ep });
                     }
                 }

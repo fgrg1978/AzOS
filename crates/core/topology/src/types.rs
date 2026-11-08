@@ -4493,12 +4493,15 @@ impl<'a> Topology<'a> {
             }
         }
         // A row receives only an endpoint some row serves, and never one it
-        // also imports: the import would reach the same server through the
-        // name server, with none of the spawner's attenuation.
+        // also imports or holds a grant on: the import or the grant would
+        // reach the same server with none of the spawner's attenuation (an
+        // unbadged right is the server's client).
         for task in self.tasks() {
             let imports = self.imports_of(task);
             for n in self.receives_of(task) {
-                if !self.endpoint_served(n.as_bytes()) || imports.iter().any(|i| i.as_bytes() == n.as_bytes()) {
+                let n = n.as_bytes();
+                let granted = self.caps_of(task).iter().any(|c| c.kind == CapKind::Endpoint && endpoint_target(c) == Some(n));
+                if !self.endpoint_served(n) || imports.iter().any(|i| i.as_bytes() == n) || granted {
                     return Err(AdmissionError::UnknownReceive);
                 }
             }
