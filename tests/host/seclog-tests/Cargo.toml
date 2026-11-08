@@ -1,0 +1,20 @@
+[package]
+name = "azos_seclog_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for azos_seclog: the sealed security log's chain, seals, text lines and verifier, against logs a simulated kernel sealer writes and then tampered with. Excluded from the kernel workspace. Run with: cd tests/host/seclog-tests && cargo test --release"
+
+# Its own workspace root, like the other host-test crates.
+[workspace]
+
+[dependencies]
+azos_seclog = { path = "../../../crates/core/seclog" }
+
+[features]
+# Each forwards a canary of azos_seclog; the guarded test must go red.
+canary-no-gap-check = ["azos_seclog/canary-no-gap-check"]
+canary-no-chain-check = ["azos_seclog/canary-no-chain-check"]
+canary-no-order-check = ["azos_seclog/canary-no-order-check"]
+canary-no-anchor-check = ["azos_seclog/canary-no-anchor-check"]

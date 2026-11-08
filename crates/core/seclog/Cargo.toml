@@ -1,0 +1,23 @@
+[package]
+name = "azos_seclog"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "The sealed security log's format (Kconfig SEC_LOG): the security records of the record substrate's security ring, their canonical bytes, the hash chain over them, the seals that commit its head to a store the OS cannot rewrite, the text line logd writes, and the verifier the forensic tool runs."
+
+[dependencies]
+azos_rings = { workspace = true }
+azos_crypto = { workspace = true, optional = true }
+
+[features]
+default = ["chain"]
+# The hash chain, the sealer and the verifier (SHA-256). logd renders lines
+# only and builds without it.
+chain = ["dep:azos_crypto"]
+# Canaries of tests/host/seclog-tests: each turns one check of the verifier
+# off, so the test that guards it must go red. Never in a real build.
+canary-no-gap-check = []
+canary-no-chain-check = []
+canary-no-order-check = []
+canary-no-anchor-check = []

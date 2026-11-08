@@ -222,6 +222,8 @@ exclude = [
     # rings-tests — host-side tests for azos_rings (Queue, Log), with the
     # compile-fail proof that a second writer cannot be made.
     # Run with:  cd tests/host/rings-tests && cargo test --release
+    # seclog-tests — host-side tests for azos_seclog (the sealed security log).
+    "tests/host/seclog-tests",
     "tests/host/rings-tests",
     # bytepipe-tests — host-side tests for azos_bytepipe (the POSIX byte pipe
     # over a shared byte ring): EOF, EPIPE, O_NONBLOCK, PIPE_BUF, poll, fork.
@@ -449,6 +451,7 @@ members = [
     "crates/core/channel",
     "crates/core/rings",
     "crates/core/records",
+    "crates/core/seclog",
     "crates/core/bytepipe",
     "crates/core/hv",
     "crates/core/hyp-api",
@@ -599,6 +602,7 @@ azos_robot_sensors = { path = "crates/domains/robot/sensors" }
 azos_channel  = { path = "crates/core/channel" }
 azos_rings    = { path = "crates/core/rings" }
 azos_records  = { path = "crates/core/records" }
+azos_seclog   = { path = "crates/core/seclog", default-features = false }
 azos_bytepipe = { path = "crates/core/bytepipe" }
 azos_hv       = { path = "crates/core/hv" }
 azos_hyp_api  = { path = "crates/core/hyp-api" }
