@@ -191,6 +191,7 @@ mod tests {
         publish(Region::ConsoleScreen, NONE);
         publish(Region::KlogRing, NONE);
         publish(Region::FsShare, NONE);
+        publish(Region::KlogAck, NONE);
     }
 
     #[test]
@@ -210,6 +211,20 @@ mod tests {
     /// The log is granted `READ|MAP` and nothing else: a row that asks to
     /// write it (or for the other regions' rights) is refused, and the other
     /// regions refuse the log's rights.
+    #[test]
+    fn the_sinks_page_is_read_write_and_its_own() {
+        let _g = serial();
+        publish(Region::KlogRing, 2);
+        publish(Region::KlogAck, 3);
+        let tid = bound(43);
+        assert!(seed_mint(tid, TARGET_KLOG_ACK, VIEW).is_none(), "the page is written by its holder");
+        assert!(seed_mint(tid, TARGET_KLOG_ACK, RW.union(CapPerms::DUP)).is_none());
+        assert!(seed_mint(tid, TARGET_KLOG_ACK, RW).is_some());
+        assert_eq!(lookup_resource(azos_abi::cap::SHM_KLOG_ACK), crate::cap::objref::resource_index(ty::SHM, 3));
+        assert_ne!(lookup_resource(azos_abi::cap::SHM_KLOG_ACK), lookup_resource(SHM_KLOG_RING), "a key names one region");
+        clear();
+    }
+
     #[test]
     fn the_kernel_log_is_read_only() {
         let _g = serial();

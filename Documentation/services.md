@@ -61,7 +61,7 @@ Source: `crates/core/topology/src/builder.rs` (the `*_CAPS` constants and the `p
 | `TRACECTL.ELF` | `userspace/services/tracectl` | by the shell | nothing | `trace` | RW `trace` log, RW `/fat`, `ROOT_RO` |
 | `FLIGHT.ELF`, `BEHAVIOR.ELF`, `CONFIG.ELF`, `OTA.ELF` | `userspace/services/famtools` | by the shell | nothing | `flight`, `behavior`, `config`, `ota` | see [famtools](#famtools) |
 | `DECISD.ELF` | `userspace/services/decisd` | with Kconfig `DECISION_REFUSALS_DURABLE` or `DECISION_RECORDS_DEV` | `endpoint.decisions` (`Decisions`) | | R `endpoint.decisions`; with Kconfig `INSPECT` and an admin region: `tasks` view, R+M `MemObj inspect.public`, R+M `MemObj inspect.admin` |
-| `LOGD.ELF` | `userspace/services/logd` | with Kconfig `KLOG` | nothing | | R+M `MemObj klog.ring`, RW `/fat`, `ROOT_RO` |
+| `LOGD.ELF` | `userspace/services/logd` | with Kconfig `KLOG` | nothing | | R+M `MemObj klog.ring`, RW+M `MemObj klog.ack` (with `SEC_LOG`), RW `/fat`, `ROOT_RO` |
 | `INPUTD.ELF` | `userspace/services/inputd` | with Kconfig `INPUTD` | `endpoint.input` (`Input`) | | RW+transfer `endpoint.input` (R serves it; W+transfer is the source of its warrants), RWM `MemObj input.events` |
 | `COMPSRV.ELF` | `userspace/services/compositor` | with Kconfig `COMPOSITOR` | `endpoint.compositor` (`Compositor`) | `display.0`, `endpoint.input` (trusted), `endpoint.decisions` | R+W+transfer `endpoint.compositor` (R serves it; W+transfer is the source of its windows' rights), RWX `display.0`, WX `endpoint.input` (the kernel badges it as the trusted surface's), W `endpoint.decisions` (where `DECISD.ELF` runs) |
 | `WHY.ELF` | `userspace/services/why` | by the shell | nothing | `endpoint.decisions`, `endpoint.rpc-decisions` | W both, R `entropy`, `ROOT_RO`, R+M `MemObj inspect.public` (Kconfig `INSPECT`, not under `CONSOLE_LOCKDOWN`) |
@@ -72,7 +72,7 @@ Source: `crates/core/topology/src/builder.rs` (the `*_CAPS` constants and the `p
 | `ZENOHD.ELF` | `userspace/services/zenohd` | Kconfig `ZENOH_GW` | Zenoh queryables | `endpoint.decisions` | W+transfer `endpoint.decisions`, R `entropy` |
 | `MCPD.ELF` | `userspace/services/mcpd` | Kconfig `MCP_BRIDGE` | MCP tools | `endpoint.decisions` and the endpoints it fronts | W+transfer `endpoint.decisions`, R `entropy`, R `linkkey` (`node_key` only), R+M `MemObj inspect.mcp` |
 | `PTPD.ELF` | `userspace/services/ptpd` | Kconfig `PTPD` | nothing | `clock` | W `clock`, R+M `MemObj inspect.clock` |
-| `SSHD.ELF` | `userspace/services/sshd` | Kconfig `SSHD` (default y but on `MICRO`, certifiable and embedded-profile builds) | nothing; listens on TCP `SSHD_PORT` | `keys` (the host key's signatures) | R `entropy`, RW `keys` masked to `generate`, `public`, `sign`, RW `/fat`, X `TOOLBOX.ELF`, `ROOT_RO`, R+M `MemObj inspect.logins`; principal `user` |
+| `SSHD.ELF` | `userspace/services/sshd` | Kconfig `SSHD` (default y but on `MICRO`, certifiable and embedded-profile builds) | nothing; listens on TCP `SSHD_PORT` | `keys` (the host key's signatures) | R `entropy`, RW `keys` masked to `generate`, `public`, `sign`, `login_report` (its key logins, as the kernel's `login` records), RW `/fat`, X `TOOLBOX.ELF`, `ROOT_RO`, R+M `MemObj inspect.logins`; principal `user` |
 | `LOGIND.ELF` | `userspace/services/logind` | Kconfig `CONSOLE_LOGIN` (default n) | `Login` on `endpoint.login` | `TERMD.ELF` calls it | `READ` `endpoint.login`, `EXEC` `keys` masked to `login`, launch `SH.ELF`, R+M `MemObj inspect.logins` |
 | `AUDIOD.ELF` | `userspace/services/audiod` | Kconfig `AUDIOD` | `endpoint.audio` (`Sound`) | `sound.0` | R `endpoint.audio`, RW `sound.0`, W `time` (the mixer thread's own deadline reservation, Kconfig `AUDIOD_PUMP_*`); the row itself is best effort, its calls served on `azos_srv` |
 | `VMMD.ELF` | `userspace/services/vmmd` | wherever the hypervisor core is built (Kconfig `HV`) | `endpoint.vmctl` (`VmCtl`) | `Vm`, `Vcpu` | RX `vm.0`, RWX `vcpu.0.k`, R `endpoint.vmctl`, RW `/fat/VM`, `ROOT_RO` |
@@ -453,7 +453,9 @@ Source: `userspace/services/logd/src/main.rs`, `userspace/services/logd/src/stor
 The sink of the kernel's records (Kconfig `KLOG`): the structured kernel log, the
 decision records and the actuation telemetry, rings of one region behind one envelope (the substrate and its protocol
 are in [observability](observability.md#kernel-log)). Its row is its whole authority: `MemObj
-klog.ring` (`READ|MAP`, so it can neither write the region nor hand it on), the `/fat` tree
+klog.ring` (`READ|MAP`, so it can neither write the region nor hand it on), with Kconfig
+`SEC_LOG` its page `MemObj klog.ack` (`READ|WRITE|MAP`, a page of its own: where it says which
+security records it lost, which the kernel's sealer reads and declares), the `/fat` tree
 its files are written in, and the read-only root directory they are opened beneath. It
 serves and calls no endpoint.
 
