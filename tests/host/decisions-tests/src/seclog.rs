@@ -9,6 +9,7 @@
 
 use azos_decision::{Rule, SecClass, Verdict};
 use azos_seclog::{kind, Event};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The events in the security ring from sequence number `from`: `(class,
 /// rule, verdict, subject)`, and the ring's head.
@@ -31,9 +32,17 @@ fn head() -> u64 {
 
 static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// The decision clock of these tests: milliseconds, moved by hand.
+static TIME: AtomicU64 = AtomicU64::new(1);
+
+fn clock() {
+    azos_decision::set_clock(|| TIME.load(Ordering::Relaxed), 1000);
+}
+
 #[test]
 fn seclog_a_security_rules_record_is_copied_with_its_class() {
     let _g = ONE.lock().unwrap_or_else(|e| e.into_inner());
+    clock();
     assert!(azos_records::SECURITY, "run with SEC_LOG on");
     let from = head();
     azos_decision::record(Rule::AudioCapture, Verdict::Admit, 7, [1, 2, 3]);
@@ -48,6 +57,7 @@ fn seclog_a_security_rules_record_is_copied_with_its_class() {
 #[test]
 fn seclog_the_rate_cap_holds_a_flood_back_and_counts_it() {
     let _g = ONE.lock().unwrap_or_else(|e| e.into_inner());
+    clock();
     let from = head();
     let (_, held0) = azos_decision::security_tally();
     // A denial of a rule that is not paced by the durable bucket: Neverallow.
@@ -62,6 +72,15 @@ fn seclog_the_rate_cap_holds_a_flood_back_and_counts_it() {
     let (copied, held) = azos_decision::security_tally();
     assert!(held[SecClass::CapDenial as usize] > held0[SecClass::CapDenial as usize]);
     assert!(copied[SecClass::Camera as usize] >= 1);
+    // A second later every class's share has refilled, the drained one's
+    // too, even when another class is asked first.
+    TIME.store(TIME.load(Ordering::Relaxed) + 1000, Ordering::Relaxed);
+    let from = head();
+    azos_decision::record(Rule::EnvelopeEgress, Verdict::Admit, 10, [1, 3, 0]);
+    azos_decision::record(Rule::Neverallow, Verdict::Refuse, 300, [0, 0, 0]);
+    let (ev, _) = events(from);
+    assert!(ev.contains(&(SecClass::Egress as u8, Rule::EnvelopeEgress as u8, Verdict::Admit as u8, 10)), "{ev:?}");
+    assert!(ev.contains(&(SecClass::CapDenial as u8, Rule::Neverallow as u8, Verdict::Refuse as u8, 300)), "the denials' share refilled: {ev:?}");
 }
 
 /// A flood of one Domain's capability denials: the per-Domain bucket of the
@@ -70,6 +89,7 @@ fn seclog_the_rate_cap_holds_a_flood_back_and_counts_it() {
 #[test]
 fn seclog_what_the_durable_bucket_holds_back_is_its_report() {
     let _g = ONE.lock().unwrap_or_else(|e| e.into_inner());
+    clock();
     azos_decision::set_durable_sink(|_| {});
     let from = head();
     for _ in 0..(azos_limits::DECISION_DENY_DURABLE_BURST as u32 + 4) {

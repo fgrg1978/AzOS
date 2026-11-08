@@ -1974,8 +1974,10 @@ fn sec_admit(class: SecClass) -> bool {
     let gained = (now.saturating_sub(t.at) as u128 * rate as u128 / hz.max(1) as u128).min(u64::MAX as u128) as u64;
     t.at = now;
     t.all = (t.all + gained).min(all_max);
+    for x in t.class.iter_mut() {
+        *x = (*x + gained / 4).min(class_max);
+    }
     let c = class as usize;
-    t.class[c] = (t.class[c] + gained / 4).min(class_max);
     let paced = sec_paced(class);
     let ok = t.all >= 1000 && (!paced || t.class[c] >= 1000);
     if ok {
