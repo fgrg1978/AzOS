@@ -97,6 +97,12 @@ pub struct Decision {
     /// The key it used, if any.
     pub key: Option<[u8; 32]>,
     pub why: &'static str,
+    /// A login the kernel records (`keys`' `login_report`): `(reason,
+    /// attempt)`, the record's reason (0 admitted, 1 wrong secret, 3 the
+    /// method is not allowed) and the refusals before it on the connection.
+    /// `None`: not a login, or one nobody signed (a query for a key, which
+    /// any client can repeat for nothing).
+    pub report: Option<(u32, u32)>,
 }
 
 impl Decision {
@@ -531,6 +537,7 @@ impl<'c> Server<'c> {
                     subject: self.client_version.clone(),
                     key: None,
                     why: e.why(),
+                    report: None,
                 });
                 return Err((
                     DISCONNECT_KEY_EXCHANGE_FAILED,
@@ -671,7 +678,11 @@ impl<'c> Server<'c> {
         };
         let user = user.to_vec();
         let refuse = |s: &mut Self, env: &mut E, key: Option<[u8; 32]>, why: &'static str, counts: bool| -> Result<(), Fail> {
-            env.decision(Decision { rule: Rule::Login, verdict: Verdict::Refuse, subject: user.clone(), key, why });
+            // A key signed and refused is a wrong secret; any other refusal
+            // that counts is a method this server does not allow.
+            let reason = if key.is_some() { 1 } else { 3 };
+            let report = counts.then_some((reason, s.failures));
+            env.decision(Decision { rule: Rule::Login, verdict: Verdict::Refuse, subject: user.clone(), key, why, report });
             if counts {
                 s.failures += 1;
             }
@@ -722,6 +733,7 @@ impl<'c> Server<'c> {
                     subject: user.clone(),
                     key: Some(key),
                     why: "authorized key, signature verifies",
+                    report: Some((0, self.failures)),
                 });
                 self.send(&[MSG_USERAUTH_SUCCESS]);
                 self.events.push_back(Event::Authenticated { user, key });
@@ -760,7 +772,7 @@ impl<'c> Server<'c> {
         let window = r.u32().ok_or(bad)?;
         let max_packet = r.u32().ok_or(bad)?;
         let refuse = |s: &mut Self, env: &mut E, why: &'static str, reason: u32| {
-            env.decision(Decision { rule: Rule::Session, verdict: Verdict::Refuse, subject: kind.to_vec(), key: None, why });
+            env.decision(Decision { rule: Rule::Session, verdict: Verdict::Refuse, subject: kind.to_vec(), key: None, why, report: None });
             s.open_failure(sender, reason, why);
         };
         if kind != b"session" {
@@ -891,6 +903,7 @@ impl<'c> Server<'c> {
                     subject: kind.to_vec(),
                     key: None,
                     why: "channel request not offered (pty, shell, exec and window-change only)",
+                    report: None,
                 });
             }
         }

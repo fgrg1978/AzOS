@@ -325,6 +325,7 @@ impl Host {
             subject: format!("{n} connection(s)").into_bytes(),
             key: None,
             why: "one connection at a time",
+            report: None,
         });
     }
 }
@@ -340,9 +341,8 @@ impl Env for Host {
 
     fn decision(&mut self, d: Decision) {
         // A login is the kernel's record too: in the sealed security log.
-        if d.rule == Rule::Login {
-            let admitted = d.verdict == Verdict::Admit;
-            let _ = sys::dev::keys_login_report(self.keys, admitted, 0, if admitted { 0 } else { 1 });
+        if let (Rule::Login, Some((reason, attempt))) = (d.rule, d.report) {
+            let _ = sys::dev::keys_login_report(self.keys, d.verdict == Verdict::Admit, attempt, reason);
         }
         self.log(&d.line());
     }

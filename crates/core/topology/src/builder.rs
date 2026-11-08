@@ -417,12 +417,14 @@ pub const KEYS_SIGNER_OPS: u64 = 1 << 1 | 1 << 4 | 1 << 5;
 pub const KEYS_SSH_OPS: u64 = KEYS_SIGNER_OPS | 1 << 12;
 /// The grant of a task that signs with a key the kernel keeps (`SSHD.ELF`: its
 /// host key): `READ` (the public part, the signature) and `WRITE` (to open the
-/// key) on `keys`, with an op mask that lists those three ops and nothing else.
-/// The task cannot bring a key of its own in, derive from one, wrap one so that it
-/// leaves, or destroy one: the kernel holds every call through the capability to
-/// the mask before the interface runs. `EXEC` (wrapping) is not granted at all.
-/// The mask also lists `login_report`: the logins the server decides are the
-/// kernel's records.
+/// key) on `keys`, with an op mask that lists those three ops and
+/// `login_report` (the logins the server decides, as the kernel's records,
+/// which name the server as subject) and nothing else. The task cannot bring
+/// a key of its own in, derive from one, wrap one so that it leaves, or
+/// destroy one: the kernel holds every call through the capability to the mask
+/// before the interface runs. `EXEC` (wrapping) is not granted at all. A
+/// signed topology's grant of `keys` with `WRITE` and no mask (every op) can
+/// write login records too, naming its holder.
 const KEYS_SIGNER: CapSpec = CapSpec {
     kind: CapKind::Endpoint,
     perms: CapPerms::RW,

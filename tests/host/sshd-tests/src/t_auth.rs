@@ -155,6 +155,9 @@ fn an_unknown_key_is_refused_and_recorded_with_its_fingerprint() {
     assert_eq!(r[0].why, "key is not authorized");
     assert_eq!(r[0].subject, b"mallory");
     assert_eq!(r[0].key, Some(pubkey(&other_seed())));
+    // The unsigned query is no record of the kernel's (any client repeats it
+    // for nothing); the signed attempt is, a wrong secret.
+    assert_eq!((r[0].report, r[1].report), (None, Some((1, 0))));
     let line = String::from_utf8(r[0].line()).unwrap();
     assert!(line.contains("login refuse user=mallory key=SHA256:"), "{line}");
     assert!(line.contains("rejected=log in:"), "a record names the alternative it rejected: {line}");
@@ -184,6 +187,7 @@ fn a_listed_key_with_someone_elses_signature_is_refused() {
     cl.take_type(MSG_USERAUTH_FAILURE);
     assert!(!srv.is_authenticated());
     assert_eq!(refused(&env)[0].why, "signature does not verify");
+    assert_eq!(refused(&env)[0].report, Some((1, 0)));
 }
 
 #[test]

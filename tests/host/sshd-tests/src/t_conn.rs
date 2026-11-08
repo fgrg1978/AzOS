@@ -640,3 +640,4 @@ fn a_client_that_does_not_read_is_not_read_from_without_bound() {
     srv.advance(b.len());
     assert!(srv.wants_input(), "reading resumes once the replies are sent");
 }
+
