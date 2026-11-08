@@ -68,8 +68,19 @@ the port. The module list of `crates/core/stdrt/src/lib.rs` is the map.
 | Threads | `thread_create` on a stack the port maps with guard pages; `join` waits on the word the kernel clears at thread exit. Locks, condition variables, `Once` and the parker are futex based. Thread-local storage is keyed: the image has no `PT_TLS`, and a registry finds the running thread's block from its stack pointer. | `crates/core/stdrt/src/thread.rs`, `crates/core/stdrt/src/futex.rs`, `crates/core/stdrt/src/tls.rs` |
 | Time | `Instant` is the vDSO clock (no trap where ring 3 may read the counter); `sleep` is `SYS_SLEEP_UNTIL`. `SystemTime::now` is the real-time clock the vDSO publishes (the monotonic clock plus the offset a time source set), so it reads the uptime since 1970 until a source has set it. | `crates/core/stdrt/src/time.rs` |
 | Output | stdout and stderr are the console handle's `WRITE` op, or `NODE_WRITE` on a handle the spawner passed. The console has no read: console input belongs to the terminal server (`termd`). | `crates/core/stdrt/src/console.rs` |
+| Input | stdin is `NODE_READ` on a handle the spawner passed, or, when fd 0 is the terminal the shell lent the program's job (an endpoint call capability, `SYS_SPAWN_EX` `MOVE_KIND_ENDPOINT`), the `Terminal` interface's `read_event` in short waits: a line with its newline in cooked mode, bytes in raw mode. Without either, stdin is at its end. | `crates/core/stdrt/src/console.rs`, `crates/core/stdrt/src/terminal.rs` |
 | Randomness | The kernel pool through the `Entropy` interface (`HashMap` keys, the allocator seed). | `crates/core/stdrt/src/entropy.rs` |
 | Errors | `io::ErrorKind` is derived from the negative native result, never from an `errno`. | `sdk/std/sys/pal/azos/mod.rs` |
+
+### std::os::azos
+
+The platform's extensions, behind the `azos_ext` feature (`#![feature(azos_ext)]`):
+`std::os::azos::terminal::{set_raw, set_echo, size}` on the terminal the shell lent the
+job (`Unsupported` when the program was lent none, `PermissionDenied` when its job does
+not have the focus). The terminal server puts the shell's mode back when the job loses the
+focus, whatever the program did. The ported editor (`third_party/ports/kibi`) is the user.
+
+Source: `sdk/std/os/azos/terminal.rs`, `crates/core/stdrt/src/terminal.rs`.
 
 ### std::net
 
