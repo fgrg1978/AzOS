@@ -3,18 +3,18 @@
     {
       "name": "busybox",
       "upstream": "https://git.busybox.net/busybox",
-      "tag": "1_36_1",
-      "version": "1.36.1",
-      "commit": "1a64f6a20aaf6ea4dbba68bbfa8cc1ab7e5c57c4",
-      "pinned": "2026-10-23"
+      "tag": "1_38_0",
+      "version": "1.38.0",
+      "commit": "fc71374dfccd46448c62947269a35f1420d7ee28",
+      "pinned": "2026-11-08"
     },
     {
       "name": "limine",
       "upstream": "https://github.com/limine-bootloader/limine.git",
-      "tag": "v10.8.5-binary",
-      "version": "10.8.5",
-      "commit": "7a9013f305de0bea1f6310e76e7baba30499fef0",
-      "pinned": "2026-10-23"
+      "tag": "v11.4.1-binary",
+      "version": "11.4.1",
+      "commit": "5be26a73d7b7b4d4477d18be94e1d16e615adf56",
+      "pinned": "2026-11-08"
     },
     {
       "name": "linux",
@@ -23,6 +23,14 @@
       "version": "7.2.9",
       "commit": "5fce161649b4d779d1b76d9fcd52dc77779774b8",
       "pinned": "2026-10-21"
+    },
+    {
+      "name": "lvgl",
+      "upstream": "https://github.com/lvgl/lvgl.git",
+      "tag": "v9.6.0",
+      "version": "9.6.0",
+      "commit": "80ca777e37a2b176770726a02e07a6fb79ef0b39",
+      "pinned": "2026-11-08"
     },
     {
       "name": "relibc",

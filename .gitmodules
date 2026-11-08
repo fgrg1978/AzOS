@@ -16,7 +16,7 @@
 	url = https://git.busybox.net/busybox
 	shallow = true
 	update = none
-	tag = 1_36_1
+	tag = 1_38_0
 
 # Limine (BSD-2-Clause), a release's binary branch: BOOTX64.EFI and limine.c
 # for the x86 PC and PXE rows (mk/qemu.mk, tools/gate/netboot/).
@@ -25,7 +25,7 @@
 	url = https://github.com/limine-bootloader/limine.git
 	shallow = true
 	update = none
-	tag = v10.8.5-binary
+	tag = v11.4.1-binary
 
 # Linux (GPL-2.0-only), the kernel.org stable tree: the crates/drivers/lx/ layer's modules
 # are built against it (fetched sparse). Its tag is also the module
@@ -37,6 +37,16 @@
 	shallow = true
 	update = none
 	tag = v7.2.9
+
+# LVGL (MIT), the GUI library of the graphics front: only src/, lvgl.h, the
+# lv_conf template and the licence files are checked out (fetched sparse).
+# Nothing builds it yet.
+[submodule "third_party/lvgl"]
+	path = third_party/lvgl
+	url = https://github.com/lvgl/lvgl.git
+	shallow = true
+	update = none
+	tag = v9.6.0
 
 # relibc (Redox's libc, MIT), a commit of `master` (its last tag, 0.6.0, is a
 # 2020 tree unrelated to the current library): `make relibc`, patched by

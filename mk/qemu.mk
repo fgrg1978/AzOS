@@ -260,7 +260,6 @@ x86-pc-esp: x86_64-limine x86-pc-prereq $(X86_PC_UCODE)
 	cp $(X86_64_LIMINE_IMG) $(X86_PC_ESP)/boot/kernel.elf
 	$(if $(X86_PC_UCODE),cp $(X86_PC_UCODE) $(X86_PC_ESP)/UCODE.BIN)
 	printf 'timeout: 0\nserial: yes\n\n/AzOS\n    protocol: limine\n    path: boot():/boot/kernel.elf\n$(if $(X86_PC_UCODE),    module_path: boot():/UCODE.BIN\n)' > $(X86_PC_ESP)/limine.conf
-	printf 'TIMEOUT=0\nSERIAL=yes\n\n:AzOS\n    PROTOCOL=limine\n    KERNEL_PATH=boot:///boot/kernel.elf\n$(if $(X86_PC_UCODE),    MODULE_PATH=boot:///UCODE.BIN\n)' > $(X86_PC_ESP)/limine.cfg
 	cp "$(OVMF_VARS)" $(X86_PC_VARS)
 
 x86-pc-qemu-args:
