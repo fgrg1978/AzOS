@@ -1035,6 +1035,16 @@ fn home_queue() -> usize {
     azos_drv_sys::klog::cpu_tag() as usize % LOG_QUEUES
 }
 
+/// Runtime canary `log-queue-full-drops` (the kernel arms it at boot) and the
+/// host suites' `durable-full-canary`: a full queue answers as if it took the
+/// record, and keeps nothing.
+static LOG_CANARY_FULL_DROPS: AtomicBool = AtomicBool::new(false);
+
+/// Arm `canary=log-queue-full-drops` (boot, once).
+pub fn logger_canary_full_drops() {
+    LOG_CANARY_FULL_DROPS.store(true, Ordering::Relaxed);
+}
+
 /// Set by a queue's producer from before it takes its number until the record
 /// is published: the flusher waits for a number it cannot find only while a
 /// producer is between the two.
@@ -1058,7 +1068,7 @@ fn queue_push(rec: &LogRecord, admit: Admit) -> Result<Pushed, Refused> {
         // The consumer only takes records out, so the room this sees stays.
         let queued = q.len();
         if queued >= admit.limit() {
-            if !cfg!(feature = "durable-full-canary") {
+            if !cfg!(feature = "durable-full-canary") && !LOG_CANARY_FULL_DROPS.load(Ordering::Relaxed) {
                 return Err(Refused::Full);
             }
             // Canary: the full queue takes a number and keeps nothing, and

@@ -12523,6 +12523,19 @@ host_job host_canary_row "rt: CPU mask 32-bit canary" sched-policy-tests rt-mask
 host_job host_canary_row "logger: replay snapshot canary" behavior-tests replay-snapshot-canary a_long_history_costs_one_file_and_a_few_lookups
 host_job host_canary_row "logger: rotation latch canary" behavior-tests rotate-latch-canary a_rotation_carries_the_latch_and_the_nonce_into_the_new_file
 host_job host_canary_row "logger: wrap tail canary" behavior-tests wrap-tail-canary after_the_wrap_the_newest_file_is_found_by_its_serial
+# The flight recorder's durable records sit in one queue per CPU
+# (crates/core/actuation/src/logger.rs): the flusher writes them in push
+# order, a full queue refuses rather than drops, a batch leaves RAM only once
+# the medium took it, a real-time caller does no block I/O, and the reserve
+# keeps the latch's slots. Each canary breaks one; the named test, alone,
+# must go red.
+host_job host_canary_row "logger: merge order canary" behavior-tests durable-merge-canary records_of_every_cpu_reach_the_medium_in_push_order
+host_job host_canary_row "logger: latch restart canary" behavior-tests durable-merge-canary a_latch_after_a_release_on_another_cpu_survives_the_restart
+host_job host_canary_row "logger: full queue canary" actuation-tests durable-full-canary a_full_queue_refuses_its_cpus_effect_while_another_cpus_admits
+host_job host_canary_row "logger: full queue count canary" behavior-tests durable-full-canary a_full_queue_refuses_the_newest_record_counted_and_keeps_the_rest
+host_job host_canary_row "logger: staged batch canary" actuation-tests durable-staging-canary a_cut_flush_keeps_its_records_for_the_next_pass
+host_job host_canary_row "logger: rt caller canary" behavior-tests rt-flush-canary an_rt_durable_record_is_written_by_the_flusher_not_the_caller
+host_job host_canary_row "logger: reserve canary" actuation-tests ring-reserve-canary the_estop_is_recorded_when_the_ring_is_at_its_limit_and_no_effect_is_evicted
 # Proxy execution (`rt_core::proxy_chain`): a reservation whose holder is blocked
 # in a call never finds the passive server that works on it.
 host_job host_canary_row "sched: proxy execution canary" sched-policy-tests rt-proxy-canary \
@@ -17128,6 +17141,15 @@ PY
         "ioring_fsync_completes_after_flush" "canary=ioring-rt-inline" "$KTEST_RT_IO_PANIC" $AZOS_OUT/build/disk.img
     par "ktest disk RT-inline canary (arm)" ktest_row "ktest disk RT-inline canary (arm)" arm "" \
         "ioring_fsync_completes_after_flush" "canary=ioring-rt-inline" "$KTEST_RT_IO_PANIC" $AZOS_OUT/build/disk-aarch64.img
+    # The flight recorder's per-CPU queue (`logger_a_full_queue_refuses_an_effect_and_keeps_the_reserve`,
+    # in every ktest row; with a disk it writes the boot's own recorder file).
+    # NOT RUN YET (arm phase): its canary row, written without a QEMU run;
+    # `CI_LOGQ=1` includes it. `log-queue-full-drops` makes a full queue answer
+    # as if it took the record, so the refusal never comes.
+    if [ "${CI_LOGQ:-0}" = 1 ]; then
+        par "ktest disk queue-full canary (arm)" ktest_row "ktest disk queue-full canary (arm)" arm "" \
+            "logger_a_full_queue_refuses_an_effect_and_keeps_the_reserve" "canary=log-queue-full-drops" "" $AZOS_OUT/build/disk-aarch64.img
+    fi
     # `ram_fs_bound_refuses` (the RAM file systems' entry bound) rides on the
     # same boot: `tmpfs-bound-canary` makes a full table hand out slot 0.
     KTEST_CANARIES=",percpu-oor-canary,commander-exit-nostop-canary,tmpfs-bound-canary"
@@ -22854,43 +22876,60 @@ PYEOF
     # directory entry in `fat32_fsync` gives "1 dropped" and the same; the
     # tree before the flush existed fails "flush not negotiated" (QEMU then
     # runs writethrough and the kernel's flush is not what made it durable).
-    latch_flush_scenario() {
-        local label="safety: latch record flushed"
+    latch_flush_scenario() { # [isa: rv (default) | arm]
+        local isa="${1:-rv}" label="safety: latch record flushed" tag=latch-flush
+        local disk="$AZOS_OUT/build/disk.img" kern="" fatal="panic|\[FATAL\]"
+        local -a vm
+        if [ "$isa" = arm ]; then
+            label="aarch64: latch record flushed"; tag=latch-flush-a64
+            disk="$AZOS_OUT/build/disk-aarch64.img"; fatal="panic|\[FATAL\]|AARCH64-TRAP\] unhandled"
+        fi
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
-        local log1="$CI_LOG_DIR/latch-flush-boot1.log"
-        local log2="$CI_LOG_DIR/latch-flush-boot2.log"
-        local img="$CI_LOG_DIR/latch-flush.img"
-        local pristine="$CI_LOG_DIR/latch-flush-pristine.img"
-        local wlog="$CI_LOG_DIR/latch-flush.wlog"
-        local crash="$CI_LOG_DIR/latch-flush-crash.img"
+        local log1="$CI_LOG_DIR/${tag}-boot1.log"
+        local log2="$CI_LOG_DIR/${tag}-boot2.log"
+        local img="$CI_LOG_DIR/${tag}.img"
+        local pristine="$CI_LOG_DIR/${tag}-pristine.img"
+        local wlog="$CI_LOG_DIR/${tag}.wlog"
+        local crash="$CI_LOG_DIR/${tag}-crash.img"
         rm -f "$log1" "$log2" "$img" "$pristine" "$wlog" "$crash"
-        if ! kbuild "qemu,use-robot,estop-latch-smoke"; then return; fi
-        # A fresh image: earlier rows write to build/disk.img, and a latching
-        # record they left would let boot 2 restore the latch with no flush.
-        rm -f $AZOS_OUT/build/disk.img
-        make_disk $AZOS_OUT/build/disk.img
-        cp $AZOS_OUT/build/disk.img "$img"; cp $AZOS_OUT/build/disk.img "$pristine"
+        if [ "$isa" = arm ]; then
+            if ! a64_kbuild "qemu,use-robot,estop-latch-smoke"; then
+                bad; echo "      the estop-latch-smoke aarch64 kernel did not build"; return
+            fi
+            kern="$CI_LOG_DIR/kernel-${tag}.img"; cp "$A64_IMG" "$kern"
+            vm=(qemu-system-aarch64 -M "virt,gic-version=3" -cpu max,pauth=on -smp 2 -nographic
+                -kernel "$kern" -global virtio-mmio.force-legacy=false)
+        else
+            if ! kbuild "qemu,use-robot,estop-latch-smoke"; then return; fi
+            vm=("$QEMU" -machine virt -nographic -bios default -kernel "$KERNEL" -smp 2)
+        fi
+        # A fresh image: earlier rows write to the shared disk image, and a
+        # latching record they left would let boot 2 restore the latch with no
+        # flush.
+        rm -f "$disk"
+        make_disk "$disk"
+        cp "$disk" "$img"; cp "$disk" "$pristine"
         if ! qemu-img create -f raw "$wlog" 256M >/dev/null 2>&1; then
             bad; echo "      qemu-img could not create the write log"; return
         fi
 
         local pid i
         par_ready
-        "$QEMU" -machine virt -nographic -bios default -kernel "$KERNEL" -smp 2 \
+        "${vm[@]}" \
             -blockdev "driver=blklogwrites,node-name=d0,file.driver=file,file.filename=$img,log.driver=file,log.filename=$wlog,log-sector-size=512,log-super-update-interval=1" \
             -device virtio-blk-device,drive=d0,write-cache=on >"$log1" 2>&1 &
         pid=$!; i=0
         while [ "$i" -lt 240 ]; do
             grep -aq "ESTOPLATCHSMOKE\] parked" "$log1" 2>/dev/null && break
-            grep -aqiE "panic|\[FATAL\]" "$log1" 2>/dev/null && break
+            grep -aqiE "$fatal" "$log1" 2>/dev/null && break
             kill -0 "$pid" 2>/dev/null || break
             i=$((i + 1)); sleep 0.25
         done
         kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
-        if grep -aqiE "panic|\[FATAL\]" "$log1" 2>/dev/null; then
+        if grep -aqiE "$fatal" "$log1" 2>/dev/null; then
             bad; echo "      boot 1: kernel panic or fatal exception:"
-            grep -aiE -m3 "panic|\[FATAL\]" "$log1" | sed "s|^|      |"
+            grep -aiE -m3 "$fatal" "$log1" | sed "s|^|      |"
             echo "      log kept: $log1"; return
         fi
         if ! grep -aq "VIRTIO-BLK\] flush: negotiated" "$log1" 2>/dev/null; then
@@ -22924,13 +22963,13 @@ PYEOF
         fi
 
         par_ready
-        "$QEMU" -machine virt -nographic -bios default -kernel "$KERNEL" -smp 2 \
+        "${vm[@]}" \
             -drive "file=$crash,if=none,format=raw,id=d0" \
             -device virtio-blk-device,drive=d0 >"$log2" 2>&1 &
         pid=$!; i=0
         while [ "$i" -lt 240 ]; do
             grep -aq "ESTOPLATCHSMOKE\] parked" "$log2" 2>/dev/null && break
-            grep -aqiE "panic|\[FATAL\]" "$log2" 2>/dev/null && break
+            grep -aqiE "$fatal" "$log2" 2>/dev/null && break
             kill -0 "$pid" 2>/dev/null || break
             i=$((i + 1)); sleep 0.25
         done
@@ -22942,9 +22981,16 @@ PYEOF
             grep -a "SAFETY\] .*boot\|SAFETY\] ESTOP" "$log2" | tr -d '\r' | sed "s|^|        |"
             echo "      logs kept: $log1 $log2"; return
         fi
-        ok; rm -f "$log1" "$log2" "$img" "$pristine" "$wlog" "$crash"
+        ok; rm -f "$log1" "$log2" "$img" "$pristine" "$wlog" "$crash" ${kern:+"$kern"}
     }
     par "safety: latch record flushed" latch_flush_scenario
+    # NOT RUN YET (arm phase): the same power-cut row on aarch64, written
+    # without a QEMU run; `CI_A64_LATCH_FLUSH=1` includes it. The flight
+    # recorder keeps its records in one queue per CPU; the latch record a
+    # durable call called flushed must be on the image a power cut leaves.
+    if [ "${CI_A64_LATCH_FLUSH:-0}" = 1 ]; then
+        par "aarch64: latch record flushed" latch_flush_scenario arm
+    fi
 
     # FAT32 journal barriers under a power cut that REORDERS (wave 7, STOR).
     #

@@ -577,6 +577,10 @@ pub(crate) const NAMES: &[&str] = &[
     // write is deferred past the kill (rows `safety: kill switch (gpio)`,
     // no durable marker, and `safety: latch survives reboot`).
     "log-latch-defer",
+    // crates/core/actuation/src/logger.rs `queue_push`: a full per-CPU queue
+    // answers as if it took the record and keeps nothing (ktest
+    // `logger_a_full_queue_refuses_an_effect_and_keeps_the_reserve`).
+    "log-queue-full-drops",
     // crates/fs/src/fat32.rs `ClaimPi::donate`: a FAT32 claim waiter
     // lends its priority to nobody, so the claim owner keeps its own while
     // the waiter blocks (ktest `fat_claim_waiter_donates_to_owner`).

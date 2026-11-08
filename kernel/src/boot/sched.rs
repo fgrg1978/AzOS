@@ -847,6 +847,10 @@ pub(crate) fn create_sys_wdt_task(hart: i8) {
     if canary!("log-latch-defer") {
         azos_actuation::logger::logger_canary_latch_defer();
     }
+    // Runtime canary: a full recorder queue drops what it answers taken.
+    if canary!("log-queue-full-drops") {
+        azos_actuation::logger::logger_canary_full_drops();
+    }
     // Runtime canary: FAT32 claim waiters lend no priority (fat32.rs
     // `ClaimPi`; ktest `fat_claim_waiter_donates_to_owner`).
     if canary!("claim-no-donate") {

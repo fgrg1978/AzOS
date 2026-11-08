@@ -116,6 +116,9 @@ pub(crate) mod rcu;
 // The hung-task and stuck-CPU detectors (Kconfig HUNG_DETECT), every ISA.
 #[cfg(feature = "ktest")]
 pub(crate) mod hung;
+// The flight recorder's per-CPU queue: a full one refuses, the reserve holds.
+#[cfg(feature = "ktest")]
+mod durable_queue;
 // N5: PeerDied / Revoked completion, many
 // callers on one endpoint, the grace period before a slot is reused.
 #[cfg(feature = "ktest")]
