@@ -133,6 +133,13 @@ version = "0.1.0"
 [[package]]
 name = "beh_test_drivers"
 version = "0.1.0"
+dependencies = [
+ "azos_abi",
+ "azos_devif",
+ "azos_limits",
+ "azos_rings",
+ "cap_test_sync",
+]
 
 [[package]]
 name = "block-buffer"
