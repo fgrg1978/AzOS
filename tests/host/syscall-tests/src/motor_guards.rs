@@ -971,7 +971,7 @@ fn an_unset_provider_check_refuses_every_op() {
 /// latched or containment holds, the motor layer refuses forward and backward
 /// itself: nothing moves, so the gate is not asked, the caller still reads
 /// `REFUSED` with duty 0 written, and a task spamming motion ops cannot fill
-/// the recorder's ring with pinned records. A stop is still put to the gate
+/// the recorder's queue with effect records. A stop is still put to the gate
 /// and carried out. Once the halt lifts, motion goes through the gate again.
 ///
 /// **Canary.** Delete the `motor_halted()` pre-check in `through_gate`: the

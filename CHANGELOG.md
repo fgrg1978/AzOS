@@ -9,6 +9,19 @@ releases yet. The ABI crate keeps its own file,
 
 ### Added
 
+- The flight recorder keeps its durable records (the e-stop latch and release,
+  the release nonce floor and key pin, the write-ahead effect and stop records,
+  every other safety record) in one single-producer queue per CPU instead of one
+  overwrite ring (Kconfig `LOG_QUEUES`, `LOG_QUEUE_ENTRIES`,
+  `LOG_QUEUE_SAFETY_RESERVE`, which replace `LOG_RING_ENTRIES` and
+  `LOG_RING_SAFETY_RESERVE`). Nothing is evicted: a full queue refuses the new
+  record (an effect with `Why::RingFull`, anything else counted in
+  `events_dropped`), where the ring evicted the oldest; the effect pin and the
+  latch pin are gone. The flusher writes the records in push order across CPUs
+  and keeps a batch in RAM until the medium took it; a pass with nothing new
+  syncs again while a durable call's record is written and not yet covered
+  ([Documentation/effects.md](Documentation/effects.md#durability-invariants-of-the-recorder)).
+
 - kibi, the ported terminal editor, is back as `KIBI.ELF` (Kconfig
   `USERSPACE_KIBI`, on for the desktop and server presets): the shell lends the
   first stage of a foreground job a terminal of its own (`Terminal::lend_job`,

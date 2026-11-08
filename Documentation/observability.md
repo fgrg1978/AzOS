@@ -443,8 +443,8 @@ registers, the stack window (read through the page table without committing or
 copying a page), the maps, the decision records and the image hash go into a
 slot of the crash ring (`CRASHDUMP_RING`). There is no I/O, no allocation and
 no lock but two capability and tree tables, so a faulting real-time task never
-waits on a device. First of all a 32-byte record (task, status) goes on the
-flight recorder's ring, queue only; once the log flusher has written it out, a
+waits on a device. First of all a 32-byte record (task, status) goes into the
+flight recorder's queue of the CPU, queue only; once the log flusher has written it out, a
 reset does not lose it.
 
 **Off the fault path** (`drain`, a job of the log flusher task): the dump is
@@ -743,25 +743,28 @@ next owner, or the idle loop. A kernel writer in task context takes the same
 ownership; one in an interrupt handler or under a spinlock puts at most one chunk
 of the residual on the wire and defers its own line.
 
-**Flight recorder.** `crates/core/actuation/src/logger.rs` keeps a ring of
-fixed-size 32-byte records in RAM (`LOG_RING_ENTRIES`, a power of two; lock-free,
-many producers, one consumer) and a log flusher task writes them to
-`/LOG/LOGnnnnn.BIN` (a five-digit monotonic session serial), rotating when a file
-exceeds `LOG_FILE_ROTATE_BYTES`.
+**Flight recorder.** `crates/core/actuation/src/logger.rs` keeps fixed-size
+32-byte records in RAM, one single-producer queue per CPU (`LOG_QUEUES`, each
+`LOG_QUEUE_ENTRIES` deep, a power of two), and a log flusher task writes them, in
+the order they were pushed on any CPU, to `/LOG/LOGnnnnn.BIN` (a five-digit
+monotonic session serial), rotating when a file exceeds `LOG_FILE_ROTATE_BYTES`.
 
 | Part | Layout |
 |------|--------|
 | File header (16 bytes) | `RBL1`, version u16, state records u8, reserved u8, session serial u32, open timestamp (low word) u32; the state records (the e-stop latch, the release nonce floor, the release-key pin as of the open) follow it |
 | Record (32 bytes) | timestamp u64, kind u8, flags u8, 2 bytes padding, 20-byte payload |
 
-A full ring evicts the oldest record, counted in `events_dropped`, except a
-latching e-stop record not yet known durable or a committed write-ahead effect
-record, which are never evicted: then the new record is the one lost (and
-counted). Of the ring, `LOG_RING_SAFETY_RESERVE` slots are kept for safety
-records (an e-stop latch or release, the boot replay's restore record, the
-release nonce floor); a stop's record may use half of them. A safety record finds
-a slot without evicting anything until the reserve itself is full. Real-time producers never wait: durable
-entry points queue and wake the flusher instead of flushing in the caller. The
+Nothing is evicted: a queue with no room for a record refuses it, counted in
+`events_dropped` (a reversible effect is refused with a receipt instead), so a
+record the recorder took reaches the medium or is still in RAM. Of each queue,
+`LOG_QUEUE_SAFETY_RESERVE` slots are kept for safety records (an e-stop latch or
+release, the boot replay's restore record, the release nonce floor, the
+release-key pin); a stop's record may use half of them. A push takes its queue's
+one writer handle with interrupts off and a number from one counter; the flusher,
+the one consumer, merges the queue fronts by that number and keeps the batch it
+took until the medium took it. Real-time producers never wait: durable entry
+points queue and wake the flusher instead of flushing in the caller. The
+invariants and their tests: [effects.md](effects.md#durability-invariants-of-the-recorder). The
 recorder is where durable decision receipts, the per-fault crash record, safety
 violations and the e-stop log land.
 

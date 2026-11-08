@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
-description = "Host-side tests for write-ahead receipts (innovation B1): the effect gate in crates/core/actuation/src/effect_gate.rs over the real flight-recorder ring in logger.rs, with a power-cut model. Excluded from workspace."
+description = "Host-side tests for write-ahead receipts (innovation B1): the effect gate in crates/core/actuation/src/effect_gate.rs over the real flight-recorder queues in logger.rs, with a power-cut model. Excluded from workspace."
 
 # Run with:  cd tests/host/actuation-tests && cargo test --release
 # Canary:    cargo test --release --features effect-issue-before-commit-canary

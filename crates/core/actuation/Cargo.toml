@@ -24,7 +24,7 @@ rotate-latch-canary = []
 wrap-tail-canary = []
 # Kconfig EFFECT_WRITE_AHEAD (kernel feature `effect-gate`): a ring-3 motor op
 # is issued by the effect gate (`effect_gate.rs`), after its record is on the
-# flight recorder's ring. Off: the gate is not linked or installed.
+# flight recorder's queue. Off: the gate is not linked or installed.
 effect-gate = []
 # Gate canary only (host suite `actuation-tests`): the effect gate issues the
 # device op BEFORE committing its record, so the write-ahead tests must go red.
@@ -45,7 +45,7 @@ durable-merge-canary = []
 durable-full-canary = []
 durable-staging-canary = []
 # Gate canary only (host suite `behavior-tests`): the telemetry encoders push
-# onto the flight recorder's ring instead of the record region's, so a flood of
+# into the flight recorder's queues instead of the record region's, so a flood of
 # telemetry takes the queues' room and the telemetry tests must go red.
 telemetry-ring-canary = []
 # Gate canary only (host suites `behavior-tests`, `actuation-tests`): a release

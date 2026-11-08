@@ -90,7 +90,7 @@ exclude = [
     # Run with:  cd tests/host/cap-tests && cargo +stable test
     "tests/host/cap-tests",
     # actuation-tests: write-ahead receipts (the effect gate over the real
-    # flight-recorder ring, with a power-cut model). Run with:
+    # flight-recorder queues, with a power-cut model). Run with:
     #   cd tests/host/actuation-tests && cargo test --release
     "tests/host/actuation-tests",
     # fs-tests drives the REAL fat32.rs against hand-built volume images, via a
