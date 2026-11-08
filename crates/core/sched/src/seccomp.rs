@@ -943,7 +943,9 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     // kernel (`SYS_CAP_INFO`, `MEMOBJ_ACQUIRE`, `SYS_MO_MAP`), serves
     // `endpoint.ext4` (accept, reply) and lends each open file a right it
     // derives (`ENDPOINT_DERIVE`) and revokes when the slot is reused
-    // (`SYS_CAP_REVOKE`, `SYS_CAP_CLOSE`), and writes its start-up line. No
+    // (`SYS_CAP_REVOKE`, `SYS_CAP_CLOSE`), reads the clock its open sequence
+    // starts from (`DOMAIN_UPTIME` where ring 3 may not read the counter), and
+    // writes its start-up line. No
     // spawn, no file, no network, no other device.
     ImageProfile {
         image: "EXT4D.ELF",
@@ -953,7 +955,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             SYS_SLEEP_UNTIL,
         ],
         audit: false,
-        ops: inv_ops![LOG_CONSOLE_WRITE, MEMOBJ_ACQUIRE, ENDPOINT_DERIVE],
+        ops: inv_ops![LOG_CONSOLE_WRITE, MEMOBJ_ACQUIRE, ENDPOINT_DERIVE, DOMAIN_UPTIME],
         ifaces: &[azos_devif::key::BLOCK],
     },
     // The shell's power tool, the first privileged family with a
