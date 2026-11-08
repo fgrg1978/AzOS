@@ -5,8 +5,8 @@
 
 use crate::*;
 use azos_tpm::tpm::{
-    StartupType, CHAIN_ATTRS, CHAIN_BYTES, CHAIN_INDEX, FLOOR_ATTRS, FLOOR_INDEX, FLOOR_MAX, ORDINARY_ATTRS, SECRET_ATTRS, SECRET_BYTES,
-    SECRET_INDEX,
+    Adopted, StartupType, CHAIN_ATTRS, CHAIN_BYTES, CHAIN_INDEX, COUNTER_ATTRS, COUNTER_BYTES, COUNTER_INDEX, FLOOR_ATTRS, FLOOR_INDEX,
+    FLOOR_MAX, ORDINARY_ATTRS, SECRET_ATTRS, SECRET_BYTES, SECRET_INDEX, UNDELETABLE_ATTRS,
 };
 use azos_tpm::Error;
 use crate::fake::Dyn;
@@ -241,7 +241,7 @@ fn nv_public_rsp(name_alg: &str, attrs: &str, policy: &str, size: &str) -> Strin
     )
 }
 
-fn provision_against(public: &str) -> Result<(), Error> {
+fn provision_against(public: &str) -> Result<Adopted, Error> {
     let (mut t, r) = rig(Kind::Direct, 0);
     r.dev.borrow_mut().expect(NV_DEFINE_FLOOR, NV_DEFINED_RSP);
     r.dev.borrow_mut().expect(NV_READ_PUBLIC, public);
@@ -258,8 +258,16 @@ fn floor_provision_defines_once_and_adopts_only_our_own_index() {
     t.floor_provision(&[], FLOOR_INDEX, &[0xAA, 0xBB]).unwrap();
     r.assert_clean();
     // Already defined by us, never written, then written.
-    assert_eq!(provision_against(&nv_public_rsp("00 0B", "02 04 00 24", "", "00 08")), Ok(()));
-    assert_eq!(provision_against(&nv_public_rsp("00 0B", "22 04 00 24", "", "00 08")), Ok(()));
+    assert_eq!(provision_against(&nv_public_rsp("00 0B", "02 04 00 24", "", "00 08")), Ok(Adopted::Owner));
+    assert_eq!(provision_against(&nv_public_rsp("00 0B", "22 04 00 24", "", "00 08")), Ok(Adopted::Owner));
+    // The undeletable variant the platform hierarchy defined: the same
+    // rights plus PLATFORMCREATE | POLICY_DELETE, and a 32-byte policy.
+    let policy: String = (0..32).map(|i| format!("{i:02X}")).collect::<Vec<_>>().join(" ");
+    assert_eq!(provision_against(&nv_public_rsp("00 0B", "42 04 04 24", &policy, "00 08")), Ok(Adopted::Undeletable));
+    // Those attributes with no policy, or the policy without them: not ours.
+    assert_eq!(provision_against(&nv_public_rsp("00 0B", "42 04 04 24", "", "00 08")), Err(Error::NvMismatch));
+    assert_eq!(provision_against(&nv_public_rsp("00 0B", "02 04 00 24", &policy, "00 08")), Err(Error::NvMismatch));
+    assert_eq!(UNDELETABLE_ATTRS, 0x4000_0400);
     // Any other error from the define passes through.
     let (mut t, r) = rig(Kind::Direct, 0);
     r.dev.borrow_mut().expect(NV_DEFINE_FLOOR, "80 01 00 00 00 0A 00 00 09 21");
@@ -743,5 +751,143 @@ fn the_tpm_only_extends_the_chain_index_as_the_verifier_folds_it() {
     assert_eq!(t.nv_write(CHAIN_INDEX, a, 0, &[0; 32]), Err(Error::Tpm(0x82)));
     assert_eq!(t.nv_set_bits(CHAIN_INDEX, a, 1), Err(Error::Tpm(0x82)));
     assert_eq!(nv.borrow().digest, want);
+    r.assert_clean();
+}
+
+#[test]
+fn nv_increment_vector() {
+    for k in ALL {
+        let (mut t, r) = rig(k, 0);
+        r.dev.borrow_mut().expect(
+            "80 02 00 00 00 21 00 00 01 34 01 50 00 04 01 50 00 04 00 00 00 0B 40 00 00 09 00 00 01 00 02 AA BB",
+            &format!("80 02 00 00 00 13 00 00 00 00 {SESSION_RSP_TAIL}"),
+        );
+        t.nv_increment(COUNTER_INDEX, &[0xAA, 0xBB]).unwrap();
+        r.assert_clean();
+    }
+    assert_eq!((COUNTER_ATTRS & 0xF0, COUNTER_BYTES), (0x10, 8), "TPM_NT_COUNTER, one u64");
+}
+
+// ── Several indexes, undefined and defined again: the attacker's real moves ──
+
+/// A TPM's NV with several indexes, as TPM 2.0 Part 1 and Part 3 describe
+/// them: an index is defined (`NV_DefineSpace` under the owner) and
+/// undefined (`NV_UndefineSpace`); an extend index starts at zero; a counter
+/// takes, at its first `NV_Increment`, one more than the highest value any
+/// counter on the TPM has held (`maxCounter`, which an undefine raises and
+/// nothing lowers). Authorization is not modelled: the attacker holds the
+/// owner's empty password and the indexes' public ones.
+#[derive(Default)]
+struct Nv {
+    idx: std::collections::HashMap<u32, NvIndex>,
+    max_counter: u64,
+}
+
+const NT_COUNTER: u32 = 1;
+
+impl Nv {
+    /// `TPM2_NV_UndefineSpace(TPM_RH_OWNER, index)` with the owner's empty
+    /// password: what anyone who can send the TPM commands can do (the driver
+    /// has no such command; the attacker's tools do).
+    fn undefine(&mut self, index: u32) {
+        let i = self.idx.remove(&index).expect("defined");
+        if i.nt == NT_COUNTER {
+            self.max_counter = self.max_counter.max(i.value);
+        }
+    }
+
+    fn answer(&mut self, cmd: &[u8]) -> Vec<u8> {
+        let be32 = |a: usize| u32::from_be_bytes(cmd[a..a + 4].try_into().unwrap());
+        let cc = be32(6);
+        match cc {
+            // NV_DefineSpace: one handle, the auth area, TPM2B auth, TPM2B_NV_PUBLIC.
+            0x12A => {
+                let auth = be32(14) as usize;
+                let mut at = 18 + auth;
+                at += 2 + u16::from_be_bytes([cmd[at], cmd[at + 1]]) as usize;
+                let index = be32(at + 2);
+                let attrs = be32(at + 8);
+                if self.idx.contains_key(&index) {
+                    return rc(0x14C);
+                }
+                self.idx.insert(index, NvIndex { nt: (attrs >> 4) & 0xF, value: 0, digest: [0; 32], written: false });
+                ok(&[])
+            }
+
+            0x134 => match self.idx.get_mut(&be32(10)) {
+                Some(i) if i.nt == NT_COUNTER => {
+                    if !i.written {
+                        i.value = self.max_counter;
+                    }
+                    i.value += 1;
+                    i.written = true;
+                    self.max_counter = self.max_counter.max(i.value);
+                    ok(&[])
+                }
+                Some(_) => rc(0x82),
+                None => rc(0x18B),
+            },
+            _ => match self.idx.get_mut(&be32(10)) {
+                Some(i) => i.answer(cmd),
+                None => rc(0x18B),
+            },
+        }
+    }
+}
+
+fn nv_rig() -> (azos_tpm::tpm::Tpm<azos_tpm::tis::Tis<Dyn, FakeClock>>, Rig, std::rc::Rc<std::cell::RefCell<Nv>>) {
+    let (t, r) = rig(Kind::Direct, 0);
+    let nv = std::rc::Rc::new(std::cell::RefCell::new(Nv::default()));
+    let m = nv.clone();
+    r.dev.borrow_mut().responder = Some(Box::new(move |c| m.borrow_mut().answer(c)));
+    (t, r, nv)
+}
+
+/// What the kernel does per seal: increment the counter, extend the anchor
+/// with the seal's data (`azos_seclog::chain::seal_data`), read both back.
+fn seal(t: &mut azos_tpm::tpm::Tpm<azos_tpm::tis::Tis<Dyn, FakeClock>>, k: u32) -> ([u8; 32], u64, [u8; 32]) {
+    let a = &[0xAA, 0xBB];
+    let counter = t.counter_increment(COUNTER_INDEX, a).unwrap();
+    let data = azos_seclog::chain::seal_data(&[0; 32], 7, k, counter, 10 * k as u64, &[k as u8; 32]);
+    t.nv_extend(CHAIN_INDEX, a, &data).unwrap();
+    (data, counter, t.chain_read(CHAIN_INDEX, a).unwrap())
+}
+
+/// H2. Whoever can send owner commands undefines the anchor, defines it again
+/// and replays the seals' public data up to seal 2: the anchor is seal 2's
+/// again, so an export cut after it matches the live anchor. The counter
+/// cannot follow: undefined and defined again it starts above every value it
+/// held, so the live counter refutes the cut. The same replay with forged
+/// data and the counters the seals had is consistent with the live anchor:
+/// on an owner index the counter shows a removed seal, not a rewrite.
+#[test]
+fn an_owner_index_can_be_reset_and_replayed_and_the_counter_cannot() {
+    let (mut t, r, nv) = nv_rig();
+    let a = &[0xAA, 0xBB];
+    assert_eq!(t.chain_provision(&[], CHAIN_INDEX, a), Ok(Adopted::Owner));
+    assert_eq!(t.counter_provision(&[], COUNTER_INDEX, a), Ok(Adopted::Owner));
+    let seals: Vec<_> = (1..=4).map(|k| seal(&mut t, k)).collect();
+    assert_eq!(seals.iter().map(|s| s.1).collect::<Vec<_>>(), vec![1, 2, 3, 4]);
+    // The reset and the replay.
+    nv.borrow_mut().undefine(CHAIN_INDEX);
+    assert_eq!(t.chain_provision(&[], CHAIN_INDEX, a), Ok(Adopted::Owner), "nv_adopt cannot tell it apart");
+    assert_eq!(t.chain_read(CHAIN_INDEX, a), Ok([0; 32]));
+    for s in &seals[..2] {
+        t.nv_extend(CHAIN_INDEX, a, &s.0).unwrap();
+    }
+    assert_eq!(t.chain_read(CHAIN_INDEX, a), Ok(seals[1].2), "the anchor is seal 2's again");
+    // The counter kept going; reset too, it comes back above every value.
+    assert_eq!(t.counter_read(COUNTER_INDEX, a), Ok(4));
+    nv.borrow_mut().undefine(COUNTER_INDEX);
+    t.counter_provision(&[], COUNTER_INDEX, a).unwrap();
+    assert_eq!(t.counter_read(COUNTER_INDEX, a), Ok(0), "defined, not yet incremented");
+    assert_eq!(t.counter_increment(COUNTER_INDEX, a), Ok(5));
+    assert!(nv.borrow().max_counter >= 4);
+    // A rewrite with the same counters is consistent with the live anchor.
+    nv.borrow_mut().undefine(CHAIN_INDEX);
+    t.chain_provision(&[], CHAIN_INDEX, a).unwrap();
+    let forged = azos_seclog::chain::seal_data(&[0; 32], 7, 1, 1, 10, &[0xEE; 32]);
+    t.nv_extend(CHAIN_INDEX, a, &forged).unwrap();
+    assert_eq!(t.chain_read(CHAIN_INDEX, a), Ok(azos_seclog::chain::extend(&[0; 32], &forged)));
     r.assert_clean();
 }

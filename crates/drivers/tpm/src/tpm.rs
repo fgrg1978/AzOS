@@ -25,12 +25,22 @@
 //!   `NV_ReadPublic` cannot show is the index's auth value: a holder can still
 //!   raise the floor, which refuses images, but never lower it.)
 //!
-//! * `nv_extend` and `chain_*`: the sealed security log's anchor
-//!   (`azos_seclog`) in a `TPM_NT_EXTEND` NV index of 32 bytes. The TPM
-//!   accepts nothing on such an index but `NV_Extend`, which replaces the
-//!   value with `SHA-256(value || data)`: whoever holds the auth can add to
-//!   the chain of values and never set it to one of its choosing. Adopted
-//!   under the floor's rule.
+//! * `nv_extend`, `chain_*`, `nv_increment` and `counter_*`: the sealed
+//!   security log's anchor (`azos_seclog`) in a `TPM_NT_EXTEND` NV index of
+//!   32 bytes, and its counter in a `TPM_NT_COUNTER` index. The TPM accepts
+//!   nothing on an extend index but `NV_Extend`, which replaces the value
+//!   with `SHA-256(value || data)`, and nothing on a counter but
+//!   `NV_Increment`; a counter defined anew starts above the highest value
+//!   any counter on the TPM has held. Both are adopted under the floor's
+//!   rule. What none of that stops: an index the OS defines in the owner
+//!   hierarchy can be undefined by whoever can send owner commands (the
+//!   owner password is empty wherever the OS can define one), and an extend
+//!   index defined again can be replayed to any value of a chain whose data
+//!   is public. The counter cannot be brought back. An index created in the
+//!   platform hierarchy with `TPMA_NV_POLICY_DELETE` and a policy nothing
+//!   satisfies cannot be deleted by anyone; `nv_adopt` takes such an index
+//!   (the firmware's or a provisioning step's, never this driver's) and says
+//!   so ([`Adopted::Undeletable`]).
 //!
 //! * `secret_*`: a 32-byte secret in an NV index of its own, for the
 //!   keystore's TPM backend (`azos_crypto::keystore::Backend::TpmNv`). It is
@@ -94,6 +104,25 @@ pub const CHAIN_BYTES: u16 = DIGEST_BYTES as u16;
 /// Default NV index of the security log's anchor: the owner range, next to
 /// the floor and the keystore secret.
 pub const CHAIN_INDEX: u32 = 0x0150_0003;
+/// `TPM_NT_COUNTER` in `TPMA_NV` bits 7:4.
+pub const NV_NT_COUNTER: u32 = 1 << 4;
+/// `TPMA_NV` of the security log's counter: the ordinary rights as a
+/// counter.
+pub const COUNTER_ATTRS: u32 = ORDINARY_ATTRS | NV_NT_COUNTER;
+/// Size of a counter index: one big-endian `u64`.
+pub const COUNTER_BYTES: u16 = 8;
+/// Default NV index of the security log's counter, next to the anchor.
+pub const COUNTER_INDEX: u32 = 0x0150_0004;
+/// `TPMA_NV_POLICY_DELETE`: only `NV_UndefineSpaceSpecial`, under the
+/// index's policy, deletes it.
+pub const NV_POLICY_DELETE: u32 = 1 << 10;
+/// `TPMA_NV_PLATFORMCREATE`: the platform hierarchy defined it; the owner
+/// hierarchy's `NV_UndefineSpace` and `Clear` cannot remove it.
+pub const NV_PLATFORMCREATE: u32 = 1 << 30;
+/// The attributes an undeletable variant of an index adds to the driver's
+/// own, and the size of its policy (one SHA-256 digest).
+pub const UNDELETABLE_ATTRS: u32 = NV_POLICY_DELETE | NV_PLATFORMCREATE;
+pub const UNDELETABLE_POLICY_LEN: u16 = DIGEST_BYTES as u16;
 /// Size of the keystore secret's index: 32 bytes.
 pub const SECRET_BYTES: u16 = 32;
 /// Default NV index of the keystore secret: the owner range, next to the floor.
@@ -124,6 +153,16 @@ const fn nv_state(attrs: u32) -> u32 {
     NV_WRITTEN
         | if attrs & NV_WRITE_STCLEAR != 0 { NV_WRITELOCKED } else { 0 }
         | if attrs & NV_READ_STCLEAR != 0 { NV_READLOCKED } else { 0 }
+}
+
+/// Which index `nv_adopt` took.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Adopted {
+    /// The driver's own definition, in the owner hierarchy: whoever can send
+    /// owner commands can undefine it.
+    Owner,
+    /// The undeletable variant the platform hierarchy defined.
+    Undeletable,
 }
 
 /// The public area of an NV index (`TPMS_NV_PUBLIC`).
@@ -453,6 +492,20 @@ impl<T: Transport> Tpm<T> {
         wire::session_params(body).map(|_| ())
     }
 
+    /// `TPM2_NV_Increment` of a counter index, authorized by its own password.
+    pub fn nv_increment(&mut self, index: u32, auth: &[u8]) -> Result<(), Error> {
+        if auth.len() > AUTH_MAX {
+            return Err(Error::BadArgument);
+        }
+        let mut c = Cmd::new(wire::ST_SESSIONS, wire::CC_NV_INCREMENT);
+        c.u32(index);
+        c.u32(index);
+        c.pw_auth(auth);
+        let mut out = [0u8; RESP_MAX];
+        let body = self.run(c.finish()?, Duration::Medium, wire::ST_SESSIONS, &mut out)?;
+        wire::session_params(body).map(|_| ())
+    }
+
     /// `TPM2_NV_Read` of `out.len()` bytes at `offset`.
     pub fn nv_read(&mut self, index: u32, auth: &[u8], offset: u16, out: &mut [u8]) -> Result<(), Error> {
         if auth.len() > AUTH_MAX || out.is_empty() || out.len() > NV_MAX {
@@ -499,33 +552,41 @@ impl<T: Transport> Tpm<T> {
     /// Anything else, for instance an index a previous owner defined with
     /// weaker rights, is `Err(NvMismatch)`: what the index holds would not
     /// hold.
+    ///
+    /// The one other index taken is the undeletable variant: these
+    /// attributes plus [`UNDELETABLE_ATTRS`] and a 32-byte policy, which the
+    /// platform hierarchy defined (the driver never does). Whether nothing
+    /// satisfies that policy, `NV_ReadPublic` cannot show: it is the
+    /// provisioning step's to make so.
     fn nv_adopt(
         &mut self, owner_auth: &[u8], index: u32, attrs: u32, size: u16, auth: &[u8],
-    ) -> Result<(), Error> {
+    ) -> Result<Adopted, Error> {
         match self.nv_define(owner_auth, index, attrs, size, auth) {
             Err(Error::Tpm(wire::RC_NV_DEFINED)) => {
                 if cfg!(feature = "canary-nvsquat") {
-                    return Ok(());
+                    return Ok(Adopted::Owner);
                 }
                 let p = self.nv_read_public(index)?;
-                if p.attrs & !nv_state(attrs) == attrs
-                    && p.size == size
-                    && p.name_alg == wire::ALG_SHA256
-                    && p.policy_len == 0
-                {
-                    Ok(())
+                let defined = p.attrs & !nv_state(attrs);
+                if p.size != size || p.name_alg != wire::ALG_SHA256 {
+                    Err(Error::NvMismatch)
+                } else if defined == attrs && p.policy_len == 0 {
+                    Ok(Adopted::Owner)
+                } else if defined == attrs | UNDELETABLE_ATTRS && p.policy_len == UNDELETABLE_POLICY_LEN {
+                    Ok(Adopted::Undeletable)
                 } else {
                     Err(Error::NvMismatch)
                 }
             }
-            r => r,
+            Ok(()) => Ok(Adopted::Owner),
+            Err(e) => Err(e),
         }
     }
 
     /// Define the floor index ([`FLOOR_INDEX`] by default) once, at
     /// provisioning; an index that already exists is adopted only if it is the
     /// floor's (see `nv_adopt`).
-    pub fn floor_provision(&mut self, owner_auth: &[u8], index: u32, auth: &[u8]) -> Result<(), Error> {
+    pub fn floor_provision(&mut self, owner_auth: &[u8], index: u32, auth: &[u8]) -> Result<Adopted, Error> {
         self.nv_adopt(owner_auth, index, FLOOR_ATTRS, FLOOR_BYTES, auth)
     }
 
@@ -559,8 +620,31 @@ impl<T: Transport> Tpm<T> {
 
     /// Define the security log's anchor index ([`CHAIN_INDEX`] by default)
     /// once, adopting an existing one only if it is ours (see `nv_adopt`).
-    pub fn chain_provision(&mut self, owner_auth: &[u8], index: u32, auth: &[u8]) -> Result<(), Error> {
+    pub fn chain_provision(&mut self, owner_auth: &[u8], index: u32, auth: &[u8]) -> Result<Adopted, Error> {
         self.nv_adopt(owner_auth, index, CHAIN_ATTRS, CHAIN_BYTES, auth)
+    }
+
+    /// Define the security log's counter index ([`COUNTER_INDEX`] by
+    /// default) once, adopting an existing one only if it is ours.
+    pub fn counter_provision(&mut self, owner_auth: &[u8], index: u32, auth: &[u8]) -> Result<Adopted, Error> {
+        self.nv_adopt(owner_auth, index, COUNTER_ATTRS, COUNTER_BYTES, auth)
+    }
+
+    /// The counter's value: 0 while it was never incremented (the TPM sets
+    /// it on the first increment, above any counter it has held).
+    pub fn counter_read(&mut self, index: u32, auth: &[u8]) -> Result<u64, Error> {
+        let mut b = [0u8; COUNTER_BYTES as usize];
+        match self.nv_read(index, auth, 0, &mut b) {
+            Ok(()) => Ok(u64::from_be_bytes(b)),
+            Err(Error::Tpm(wire::RC_NV_UNINITIALIZED)) => Ok(0),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// `TPM2_NV_Increment` of a counter index, then its value.
+    pub fn counter_increment(&mut self, index: u32, auth: &[u8]) -> Result<u64, Error> {
+        self.nv_increment(index, auth)?;
+        self.counter_read(index, auth)
     }
 
     /// The anchor the index holds: zeros while nothing was ever extended into
@@ -577,7 +661,7 @@ impl<T: Transport> Tpm<T> {
     /// Define the keystore secret's index ([`SECRET_INDEX`] by default) once,
     /// adopting an existing one only if it is ours (see `nv_adopt`).
     pub fn secret_provision(&mut self, owner_auth: &[u8], index: u32, auth: &[u8]) -> Result<(), Error> {
-        self.nv_adopt(owner_auth, index, SECRET_ATTRS, SECRET_BYTES, auth)
+        self.nv_adopt(owner_auth, index, SECRET_ATTRS, SECRET_BYTES, auth).map(|_| ())
     }
 
     /// The stored secret, or `None` while the index is defined but was never

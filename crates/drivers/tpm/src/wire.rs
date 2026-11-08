@@ -13,6 +13,7 @@ pub const ST_NO_SESSIONS: u16 = 0x8001;
 pub const ST_SESSIONS: u16 = 0x8002;
 
 pub const CC_NV_DEFINE_SPACE: u32 = 0x0000_012A;
+pub const CC_NV_INCREMENT: u32 = 0x0000_0134;
 pub const CC_NV_SET_BITS: u32 = 0x0000_0135;
 pub const CC_NV_EXTEND: u32 = 0x0000_0136;
 pub const CC_NV_WRITE: u32 = 0x0000_0137;
