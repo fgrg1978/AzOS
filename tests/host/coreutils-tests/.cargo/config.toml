@@ -1,0 +1,6 @@
+[build]
+target = "host-tuple"
+
+[unstable]
+build-std = []
+build-std-features = []

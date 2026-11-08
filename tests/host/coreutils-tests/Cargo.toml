@@ -1,0 +1,33 @@
+[package]
+name = "azos_coreutils_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for the native basic utilities (userspace/lib/coreutils) over an in-memory tree, with the gate canaries that put one bug back each. Excluded from workspace."
+
+# Run with:  cd tests/host/coreutils-tests && cargo test --release
+
+[features]
+cp-no-truncate-canary = ["azos_coreutils/cp-no-truncate-canary"]
+rm-dir-without-r-canary = ["azos_coreutils/rm-dir-without-r-canary"]
+mkdir-p-parent-canary = ["azos_coreutils/mkdir-p-parent-canary"]
+grep-invert-canary = ["azos_coreutils/grep-invert-canary"]
+sort-numeric-canary = ["azos_coreutils/sort-numeric-canary"]
+head-count-canary = ["azos_coreutils/head-count-canary"]
+tail-count-canary = ["azos_coreutils/tail-count-canary"]
+find-type-canary = ["azos_coreutils/find-type-canary"]
+du-block-canary = ["azos_coreutils/du-block-canary"]
+cut-range-canary = ["azos_coreutils/cut-range-canary"]
+tr-range-canary = ["azos_coreutils/tr-range-canary"]
+uniq-count-canary = ["azos_coreutils/uniq-count-canary"]
+args-bundle-canary = ["azos_coreutils/args-bundle-canary"]
+path-dotdot-canary = ["azos_coreutils/path-dotdot-canary"]
+
+[dependencies]
+azos_coreutils = { path = "../../../userspace/lib/coreutils" }
+
+[profile.release]
+overflow-checks = true
+
+[workspace]

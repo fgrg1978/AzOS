@@ -1,0 +1,34 @@
+[package]
+name = "azos_coreutils"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "The native basic utilities (cp mv rm mkdir rmdir touch head tail grep find stat du df sort uniq tr cut tee date env pwd basename dirname seq printf and the typed refusals) as pure code over the Host trait: the multicall toolbox image (userspace/services/toolbox) implements Host on libsys handles, tests/host/coreutils-tests on an in-memory tree. no_std, no allocation. Standalone, not a member of the root workspace."
+
+[features]
+# Gate canaries: each puts one bug back so the tool's test turns red
+# (tools/gate/ci_check.sh, host_canary_row).
+cp-no-truncate-canary = []
+rm-dir-without-r-canary = []
+mkdir-p-parent-canary = []
+grep-invert-canary = []
+sort-numeric-canary = []
+head-count-canary = []
+tail-count-canary = []
+find-type-canary = []
+du-block-canary = []
+cut-range-canary = []
+tr-range-canary = []
+uniq-count-canary = []
+args-bundle-canary = []
+path-dotdot-canary = []
+
+[dependencies]
+
+[profile.release]
+opt-level = "s"
+panic = "abort"
+
+# Standalone, like the userspace images (see Cargo.toml's exclude list).
+[workspace]

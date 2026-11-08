@@ -145,8 +145,12 @@ exclude = [
     # The Names object: its interface, the ring-3 name server that answers
     # the signed rows' imports, and the host tests of both.
     "tests/host/names-tests",
+    # Host tests of the native basic utilities (userspace/lib/coreutils).
+    "tests/host/coreutils-tests",
     "tests/host/devif-tests",
     "userspace/lib/names",
+    # azos_coreutils — the native basic utilities (cp, grep, sort, ...) as pure code over a Host trait; no_std.
+    "userspace/lib/coreutils",
     "userspace/services/namesd",
     # The Decisions object (the decision query): its interface, the ring-3
     # decision server and its client tool `why`, and the host tests of all.
