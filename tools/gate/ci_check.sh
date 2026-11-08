@@ -10855,7 +10855,7 @@ safe_mode_row() {
         "[OTA] Boot loop detected (max=3) with nothing to roll back to: slot A IS last_good. Count kept at 4" \
         "[RECOVERY] armed: BootLoop { crashes: 3 } (Exhausted, slot A boot_count=4) -- SAFE MODE" \
         "[SAFE-MODE] boot-good mark withheld" \
-        "[AUTORUN] REFUSED: safe mode -- /fat/REFLEX.ELF not started" \
+        "[AUTORUN] REFUSED: safe mode -- /fat/BRAINCLI.ELF not started" \
         "[SAFE-MODE] probe: motor 0 forward 60% refused (rc=-2, applied 0%), spray refused" \
         "[SAFE-MODE] PASS probe: actuators held; 35 s up and BOOTMETA boot_count still 4"; do
         grep -aqF "$want" "$log" || missing="$missing

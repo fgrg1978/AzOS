@@ -233,8 +233,11 @@ const ABICHILD_MIN_FRAMES: u64 = 16;
 #[cfg(feature = "ipc-endpoint-canary")]
 const ABICHILD_INSTANCES: u16 = 8;
 /// Room for the autorun row's grants: its fixed list, which depends on the
-/// features.
-const AUTORUN_CAPS_MAX: usize = 40;
+/// features. The widest QEMU gate build fills about 39 (the drivetrain, the
+/// base list with every canary's grants, five launch grants, the inspect
+/// regions, the behaviour engine's two); the margin keeps an index past the
+/// end, a panic at boot, out of reach of the next grant.
+const AUTORUN_CAPS_MAX: usize = 48;
 /// The buzzer's PWM channel: free of both motors (channels 0 and 1) and of
 /// `autorun`'s `pwm.4`.
 const RESOURCE_PWM_BUZZER: &[u8] = b"pwm.5";

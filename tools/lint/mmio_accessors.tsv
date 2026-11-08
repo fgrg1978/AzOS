@@ -21,7 +21,6 @@
 9	crates/drivers/virtio/src/virtio/mod.rs	virtqueue rings, in RAM
 10	crates/drivers/virtio/src/virtio/pci.rs	a probe frame and its virtqueue, in RAM
 4	crates/drivers/virtio/src/virtio/snd.rs	virtqueue rings and status slots, in RAM
-2	kernel/src/behavior_ml.rs	a page shared with the service
 2	kernel/src/boot/dma.rs	IOMMU page tables, in RAM
 2	kernel/src/boot/early.rs	guard-page probes, which must fault
 1	kernel/src/boot/livepatch.rs	kernel text

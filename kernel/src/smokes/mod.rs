@@ -60,20 +60,21 @@ pub(crate) fn behave_smoke_task(_arg: usize) {
     use azos_drv_sensor::rangefinder;
     use azos_syscall::sleep::sleep_ms;
     use azos_drv_sys::kprintln;
-    // `userspace/services/brain_client/src/behave.rs`: TURN and the stop.
-    const TURN: (i32, i32) = (60, 20);
-    let seen = |want: (i32, i32)| {
+    // A turn away to the right (the left wheel faster, neither backward) and
+    // then a stop, whatever speeds the engine picks for them.
+    let seen = |want: fn(i32, i32) -> bool| {
         (0..40).any(|_| {
             sleep_ms(250);
             let c = azos_robot::motor_cmd_read();
-            (c.speed_l, c.speed_r) == want
+            want(c.speed_l, c.speed_r)
         })
     };
-    sleep_ms(15_000);
+    // As the reflex smoke: the autorun program is up by then on a loaded host.
+    sleep_ms(20_000);
     rangefinder::us_set_distance(0, 300);
-    let turned = seen(TURN);
+    let turned = seen(|l, r| l > r && r >= 0);
     rangefinder::us_set_distance(0, 100);
-    let stopped = seen((0, 0));
+    let stopped = seen(|l, r| (l, r) == (0, 0));
     rangefinder::us_set_distance(0, 1500);
     match (turned, stopped) {
         (true, true) => kprintln!("[BEHAVESMOKE] PASS: the engine turned at 300 mm and stopped at 100 mm"),

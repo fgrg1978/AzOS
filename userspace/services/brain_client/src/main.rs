@@ -958,8 +958,11 @@ fn dial(ip: [u8; 4], port: u16, rekey_secs: u64, now_ms: u64) -> Option<u32> {
 fn layers_now() -> behave::Layers {
     // SAFETY: single-threaded; written once before the engine loop.
     let cap = unsafe { CAP_BEHAVIOR };
+    if cap == 0 {
+        return behave::Layers::ALL;
+    }
     let mask = match sys::dev::BehaviorClient::new(Regs(cap)).status() {
-        Ok(o) if cap != 0 && o.is_ok() => o.value,
+        Ok(o) if o.is_ok() => o.value,
         _ => return behave::Layers::ALL,
     };
     behave::Layers { avoid: mask & 1 << 1 != 0, remote: mask & 1 << 2 != 0, explore: mask & 1 << 3 != 0 }
