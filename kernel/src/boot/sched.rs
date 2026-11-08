@@ -612,6 +612,7 @@ fn task_identity_moved(from: usize, to: usize, tid: u32) {
 /// the e-stop (Kconfig `MOTOR_COMMANDER_EXIT_STOP`,
 /// `azos_syscall::motor_commander`).
 fn commander_exit_stop(tid: u32) {
+    azos_syscall::authority_host::release(tid);
     let (taken, stopped) = azos_syscall::motor_commander::exit_stop(tid);
     if taken != 0 {
         #[cfg(all(feature = "ktest", feature = "use-robot"))]

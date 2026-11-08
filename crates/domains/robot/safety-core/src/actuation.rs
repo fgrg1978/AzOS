@@ -261,6 +261,8 @@ pub fn install() {
     if let Err(e) = azos_actuation::providers::install(&ROBOT) {
         panic!("the robot extension's providers were refused: {:?}", e);
     }
+    // The brain protocol's authority frames, from the ring-3 behaviour engine.
+    azos_syscall::authority_host::set_handler(crate::frames::submitted);
 
     // `#[allow(dead_code)]`: unused only under `gate-skip-smoke`, which
     // skips the one call below that would otherwise use it.

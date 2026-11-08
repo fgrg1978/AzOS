@@ -41,6 +41,7 @@ pub mod natfork;
 pub mod threads;
 pub mod topo_sched;
 pub mod motor_host;
+pub mod authority_host;
 pub mod sensor_host;
 pub mod block_host;
 pub mod link_key;

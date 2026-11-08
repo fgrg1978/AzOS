@@ -190,6 +190,9 @@ pub mod devices;
 // D6 part A: the `Motor` interface, the real file.
 #[path = "../../../../crates/core/syscall/src/motor_host.rs"]
 pub mod motor_host;
+// The `Authority` interface, the real file.
+#[path = "../../../../crates/core/syscall/src/authority_host.rs"]
+pub mod authority_host;
 #[path = "../../../../crates/core/syscall/src/sensor_host.rs"]
 pub mod sensor_host;
 // The stand-in for the robot crates that `use-robot` off selects (generic image).
@@ -620,6 +623,12 @@ mod handlers {
     mod file_ops_seam {
         use super::*;
         include!("file_ops_seam.rs");
+    }
+
+    #[cfg(test)]
+    mod authority_guards {
+        use super::*;
+        include!("authority_guards.rs");
     }
 
     #[cfg(all(test, feature = "use-robot"))]

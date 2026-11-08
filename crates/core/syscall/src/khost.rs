@@ -364,6 +364,7 @@ const HOSTED: &[Hosted] = {
         hosted!(k::DISPLAY, DisplayIdl, crate::display::Server),
         hosted!(k::MEMCTL, MemCtlIdl, crate::memctl::Server),
         hosted!(k::KEYS, KeysIdl, crate::keys::Server),
+        hosted!(k::AUTHORITY, AuthorityIdl, crate::authority_host::Server),
         #[cfg(feature = "use-robot")]
         hosted!(k::FRAME, FrameIdl, crate::frame_host::Server),
         hosted!(k::VOLUME, VolumeIdl, crate::volume_host::Server),

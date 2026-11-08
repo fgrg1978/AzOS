@@ -29,48 +29,6 @@ fn bridge_policy_permits() -> bool {
     false
 }
 
-/// A `PKT_MODE` frame that releases a device the kernel holds in its safe
-/// state (B2): the reserved reset mode id, then the operator's release proof
-/// and the device (`safe_state::release_from_frame`). `true` when the frame
-/// was one: it is answered here and touches neither the e-stop latch nor
-/// degraded mode, so the caller skips the mode handling. The release and each
-/// refusal are `Rule::SafeState` records written by `safe_state::release`;
-/// this only prints the outcome.
-#[cfg(feature = "effect-gate")]
-fn hold_release_frame(payload: &[u8], link: &str) -> bool {
-    use azos_actuation::safe_state::ReleaseError;
-    let Some((&mode_id, body)) = payload.split_first() else { return false };
-    if !azos_behavior::brain_protocol::mode_clears_containment(mode_id) {
-        return false;
-    }
-    match azos_actuation::safe_state::release_from_frame(body) {
-        None => false,
-        Some(Ok(())) => {
-            azos_drv_sys::kwarn!("[BRAIN] device hold released by verified operator authority ({})", link);
-            true
-        }
-        Some(Err(e)) => {
-            // Metered like a refused e-stop clear: a peer that cannot sign
-            // costs the machine nothing, so it must not cost it a console
-            // line per frame either (the 1st, 10th, 100th refusal prints).
-            if let Some(n) = azos_behavior::safety::note_refused_estop_clear() {
-                let why = match e {
-                    ReleaseError::NotHeld => "not held",
-                    ReleaseError::TooEarly { .. } => "inside the minimum hold",
-                    ReleaseError::NoWarrant(_) => "no valid warrant",
-                };
-                azos_drv_sys::kwarn!("[BRAIN] device hold release refused: {} ({}, refusal #{})", why, link, n);
-            }
-            true
-        }
-    }
-}
-
-#[cfg(not(feature = "effect-gate"))]
-fn hold_release_frame(_payload: &[u8], _link: &str) -> bool {
-    false
-}
-
 pub(crate) fn behavior_task(_: usize) {
     use azos_behavior::*;
 
@@ -481,283 +439,26 @@ pub(crate) fn behavior_task(_: usize) {
                         azos_behavior::remote_inc_recv();
                         let pay_start = cursor + rel_pay_start;
                         cursor += total;
-                        if pkt_type == PKT_ACTUATOR {
-                            let payload = &recv_buf[pay_start..pay_start + pay_len];
-                            if let Some(cmd) = decode_actuator_cmd(payload) {
-                                // Record command confidence so the motor
-                                // envelope can tighten the cap for low-confidence
-                                // (e.g. reactive-LLM) commands.
-                                azos_behavior::safety::cmd_set_low_confidence(
-                                    cmd.is_low_confidence());
-                                // Which path handled the brain's emergency
-                                // is the first question when reading this log:
-                                // the kernel's own link and the ring-3 client
-                                // both connect to the same peer and both
-                                // receive this frame, so "the motors stopped"
-                                // says nothing about which one stopped them.
-                                #[cfg(feature = "actuation-smoke")]
-                                if cmd.is_emergency() {
-                                    kprintln!("[ACTSMOKE] brainlink emergency (tcp)");
-                                }
-                                // ONE decision function, shared with the UART
-                                // bridge below. They were copies, and the copy
-                                // is why the emergency fix — replacing the
-                                // CACHED action, not just publishing zeros —
-                                // lived here and not there for months. All of
-                                // the reasoning that used to sit inline (why
-                                // the stop must become the standing action, why
-                                // `CMD_STOP` and not `CMD_NONE`, why an
-                                // ordinary command is routed through L0-L3
-                                // instead of published direct) now lives once,
-                                // next to the code it governs, in
-                                // `remote_actuation_from`.
-                                let plan = azos_behavior::remote_actuation_from(
-                                    &cmd, azos_behavior::last_action(), now);
-                                if plan.publish_stop {
-                                    azos_robot::motor_cmd_zero();
-                                }
-                                azos_behavior::set_last_action(plan.action);
-                                state.remote_action = plan.action;
-                            }
-                        } else if pkt_type == PKT_PREDICT {
-                            // Speculative actuation — capability v1: the
-                            // brain→kernel predictive CHANNEL. Receive + decode +
-                            // log the predicted next command (observable proof the
-                            // channel works). Acting on it early (through the
-                            // Fase-1 envelope, gated by SPECULATIVE_ACTUATION) is
-                            // the HW-measured layer, deferred.
-                            let payload = &recv_buf[pay_start..pay_start + pay_len];
-                            if let Some(p) = azos_behavior::decode_predict_cmd(payload) {
-                                let (pl, pr) = p.cmd.diff_drive();
-                                kprintln!("[PREDICT] next l={} r={} conf={}", pl, pr, p.confidence);
-                            }
-                        } else if pkt_type == PKT_CONFIG {
-                            let payload = &recv_buf[pay_start..pay_start + pay_len];
-                            if let Some(cfg) = decode_config_cmd(payload) {
-                                match cfg.config_key {
-                                    CFG_KEY_BUZZER => match cfg.value {
-                                        BUZZER_BEEP  => { let _ = crate::buzzer::buzzer_beep(); }
-                                        BUZZER_SIREN => { let _ = crate::buzzer::buzzer_alert(); }
-                                        BUZZER_OFF   => { let _ = crate::buzzer::buzzer_off(); }
-                                        _ => {}
-                                    },
-                                    CFG_KEY_CAMERA => {
-                                        if cfg.value == CAMERA_PWR_ON {
-                                            azos_drv_sensor::csi::csi_power_on();
-                                        } else if cfg.value == CAMERA_PWR_OFF {
-                                            azos_drv_sensor::csi::csi_power_off();
-                                        }
-                                    },
-                                    _ => {} // other config keys handled in future phases
-                                }
-                            }
-                        } else if pkt_type == PKT_PAYLOAD {
-                            // E04: payload command (spray / gripper / cam trigger)
-                            let payload = &recv_buf[pay_start..pay_start + pay_len];
-                            if let Some(cmd) = decode_payload_cmd(payload) {
-                                azos_behavior::payload::payload_exec(cmd);
-                            }
-                        } else if pkt_type == PKT_ESTOP {
-                            // **ALREADY LATCHED IS ALREADY DONE.** Identical guard, and
-                            // identical reasoning, to `ring3_estop`'s — which was written for
-                            // a ring-3 loop and left the two paths a REMOTE peer can reach
-                            // without it. Every repeat of this body costs a synchronous
-                            // `log_safety_violation_durable`, two motor writes, an ESC disarm
-                            // and a console line that busy-waits on the UART; the state is
-                            // already exactly what the frame asks for, so a peer sending
-                            // `PKT_ESTOP` every frame buys unmetered flash writes and console
-                            // stalls for nothing, and evicts the record that says why the
-                            // machine stopped. Both reasons the ring-3 guard checked hold here
-                            // too: `motor_envelope` opens with `if estop_is_active()`, and the
-                            // only `esc_arm()` in the tree is an operator shell command.
-                            // `cursor` is advanced before this dispatch chain, so `continue`
-                            // alone moves on to the next coalesced frame.
-                            if azos_behavior::safety::estop_is_active() {
-                                continue;
-                            }
-                            // Remote emergency stop — highest priority.
-                            // The sequence lives in one place; see
-                            // `actuation::latch_and_stop` for why the latch
-                            // precedes the wheels.
-                            azos_safety_core::actuation::latch_and_stop();
-                            azos_drv_sys::kwarn!("[BRAIN] ESTOP received — motors stopped");
-                            // Durable, not deferred: the motors are already
-                            // stopped, so the flush costs nothing that was going
-                            // to be spent on control, and an e-stop is the event
-                            // most likely to be followed by the reset that would
-                            // erase an unflushed record.
-                            let _ = azos_behavior::logger::log_safety_violation_durable(
-                                azos_behavior::logger::SAFETY_ESTOP, 0, 0);
-                        } else if pkt_type == PKT_DEGRADE {
-                            // Brain-triggered degraded mode. reason 0
-                            // clears; any non-zero reason arms capability
-                            // containment (user-task writes denied at the cap
-                            // chokepoint; in-kernel safe-stop unaffected).
-                            let payload = &recv_buf[pay_start..pay_start + pay_len];
-                            // **An absent reason byte ARMS, it does not clear.**
-                            //
-                            // This read `unwrap_or(DEGRADE_CLEAR)`, so a truncated
-                            // frame disarmed containment — and since `degraded_set`
-                            // writes the same atomic as the graded level, it also
-                            // reset a CONTAINED level to FULL. Its sibling 0x8B, on
-                            // the same atomic and the same malformed input, fails
-                            // closed. Two handlers, one state, opposite answers.
-                            let malformed_degrade = payload.is_empty();
-                            let reason = payload.first().copied()
-                                .unwrap_or(DEGRADE_REASON_MALFORMED);
-                            if reason == DEGRADE_CLEAR {
-                                azos_ipc::cap::degraded_set(false);
-                                azos_drv_sys::kwarn!("[BRAIN] degraded mode cleared");
-                                azos_behavior::logger::log_safety_violation(
-                                    azos_behavior::logger::SAFETY_DEGRADE, 0, 0);
-                            } else {
-                                azos_ipc::cap::degraded_set(true);
-                                if malformed_degrade {
-                                    azos_drv_sys::kwarn!("[BRAIN] degraded mode armed — reason byte missing");
-                                } else {
-                                    azos_drv_sys::kwarn!("[BRAIN] degraded mode armed — reason {}", reason);
-                                }
-                                azos_behavior::logger::log_safety_violation(
-                                    azos_behavior::logger::SAFETY_DEGRADE, 1, reason as u32);
-                            }
-                        } else if pkt_type == PKT_SEMANTIC_LEVEL {
-                            // Graded degrade-level command. 1-byte
-                            // payload = level index (0=FULL…3=CONTAINED). Missing
-                            // payload → fail-closed (CONTAINED).
-                            let payload = &recv_buf[pay_start..pay_start + pay_len];
-                            let malformed = payload.is_empty();
-                            let level = payload.first().copied()
-                                .unwrap_or(azos_ipc::cap::DEGRADE_LEVEL_CONTAINED);
-                            // Read the outgoing level BEFORE the store: the
-                            // record carries the transition, not just the
-                            // destination, and after the store it is gone.
-                            let previous = azos_ipc::cap::degrade_level();
-                            azos_ipc::cap::degrade_level_set(level);
-                            // `degrade_level_set` clamps, so record what took
-                            // effect rather than what the wire asked for.
-                            let effective = azos_ipc::cap::degrade_level();
-                            kprintln!("[BRAIN] semantic level set to {}", effective);
-                            if let Some((v, a, d)) =
-                                azos_behavior::logger::semantic_level_record(
-                                    malformed, effective, previous)
-                            {
-                                azos_behavior::logger::log_safety_violation(v, a, d);
-                            }
-                        } else if pkt_type == PKT_MODE {
-                            let payload = &recv_buf[pay_start..pay_start + pay_len];
-                            if hold_release_frame(payload, "TCP") {
-                                // answered: a hold release is no mode change
-                            } else if let Some(mode) = decode_mode_cmd(payload) {
-                                // **An e-stop cleared remotely is a security event, and it is the one the
-                                // recorder used to miss.** Activating one records `SAFETY_ESTOP`; clearing
-                                // one printed a console line and nothing else, so a black box read after an
-                                // incident showed the machine being stopped and never released.
-                                //
-                                // Owner decision, 2026-09-06: only `MODE_ID_ESTOP_RESET` may clear — see its
-                                // doc comment in `brain_protocol.rs` for why that value and not `0`. Every
-                                // other mode id changes mode and leaves the e-stop exactly as it was. Before
-                                // this gate, `decode_mode_cmd` handed back a byte NOTHING validated, and any
-                                // value cleared the e-stop.
-                                //
-                                // The decision (and the `action_code` it logs) lives in
-                                // `mode_estop_record`/`mode_degrade_record`, not inline here — those are the
-                                // functions the host tests call, so a test that only re-derived this `if`
-                                // locally would keep passing even if this gate were later deleted.
-                                if let Some((should_clear, action_code)) =
-                                    azos_behavior::brain_protocol::mode_estop_record(
-                                        mode.mode_id, azos_behavior::safety::estop_is_active())
-                                {
-                                    if should_clear {
-                                        // Owner decision, 2026-09-25: MODE_ID_ESTOP_RESET from the
-                                        // brain is a REQUEST, never a clear — see the module note on
-                                        // `safety::ReleaseAuthority`. The wire format is unchanged (a
-                                        // bare 1-byte payload is still exactly the historical request);
-                                        // a payload at least `RELEASE_PROOF_BYTES` longer carries an
-                                        // operator-signed release proof (nonce || Ed25519 sig) that the
-                                        // brain itself cannot produce, because it does not hold the key.
-                                        let proof = if payload.len()
-                                            >= 1 + azos_behavior::safety::RELEASE_PROOF_BYTES
-                                        {
-                                            let nonce = u64::from_be_bytes(
-                                                payload[1..9].try_into().unwrap());
-                                            let mut sig = [0u8;
-                                                azos_behavior::safety::RELEASE_SIG_BYTES];
-                                            sig.copy_from_slice(&payload[9..9
-                                                + azos_behavior::safety::RELEASE_SIG_BYTES]);
-                                            azos_behavior::safety::verify_operator_release(
-                                                nonce, &sig).ok()
-                                        } else {
-                                            None
-                                        };
-                                        if let Some(proof) = proof {
-                                            azos_behavior::safety::estop_release(proof);
-                                            azos_drv_sys::kwarn!("[BRAIN] ESTOP cleared by verified operator authority");
-                                            let _ = azos_behavior::logger::log_safety_violation_durable(
-                                                azos_behavior::logger::SAFETY_ESTOP, action_code, mode.mode_id as u32);
-                                        } else if let Some(n) =
-                                            azos_behavior::safety::note_refused_estop_clear()
-                                        {
-                                            // Same metering, and the same shared flight-recorder code
-                                            // (see `safety::ReleaseDenial`'s doc), as a wrong mode id
-                                            // below: to the recorder a brain-only request and a
-                                            // forged/absent proof both mean "stayed armed".
-                                            azos_drv_sys::kwarn!("[BRAIN] ESTOP_RESET recorded as a REQUEST — no verified operator authority, ESTOP stays armed (refusal #{})", n);
-                                            let _ = azos_behavior::logger::log_safety_violation_durable(
-                                                azos_behavior::logger::SAFETY_ESTOP,
-                                                azos_behavior::safety::ESTOP_ACTION_REFUSED_MIRROR,
-                                                (n << 8) | mode.mode_id as u32);
-                                        }
-                                    } else if let Some(n) =
-                                        azos_behavior::safety::note_refused_estop_clear()
-                                    {
-                                    // **A REFUSED CLEAR IS METERED, and that is the same
-                                    // argument `ring3_estop` makes in `crates/domains/robot/safety-core/src/actuation.rs`.**
-                                    //
-                                    // This recorded DURABLY — a synchronous flush — and printed a
-                                    // console line, once per frame, for a refusal that changes no
-                                    // state. A peer can coalesce 36 seven-byte MODE frames into one
-                                    // 256-byte read and repeat every tick: an unmetered path to
-                                    // evict the real e-stop record from the flight recorder with
-                                    // copies of itself, plus flash wear and a console stall, and it
-                                    // costs the peer nothing because the machine is already stopped.
-                                    // Ring 3 had exactly this and it was closed; the brain link is
-                                    // the same defect with a different actor.
-                                    //
-                                    // The 1st, 10th, 100th ... refusal is recorded, with its ordinal
-                                    // in the detail field, so an investigator still sees that it
-                                    // happened and roughly how often — bounded at log10(n) records
-                                    // for the whole run.
-                                        azos_drv_sys::kwarn!("[BRAIN] MODE mode_id={} is not the reset id — ESTOP stays armed (refusal #{})", mode.mode_id, n);
-                                        let _ = azos_behavior::logger::log_safety_violation_durable(
-                                            azos_behavior::logger::SAFETY_ESTOP, action_code,
-                                            (n << 8) | mode.mode_id as u32);
+                        let payload = &recv_buf[pay_start..pay_start + pay_len];
+                        match azos_safety_core::frames::authority_frame(pkt_type, payload, "") {
+                            azos_safety_core::frames::Answer::Actuator => {
+                                if let Some(cmd) = decode_actuator_cmd(payload) {
+                                    let plan = azos_behavior::remote_actuation_from(
+                                        &cmd, azos_behavior::last_action(), now);
+                                    if plan.publish_stop {
+                                        azos_robot::motor_cmd_zero();
                                     }
-                                }
-                                // A MODE command also clears degraded mode — gated on the SAME
-                                // reserved id (owner decision, 2026-09-06). Left ungated this is the
-                                // identical defect on the sibling piece of state this handler touches: any
-                                // mode change would silently lift capability containment too. The
-                                // documented, dedicated way to clear degraded mode remains `PKT_DEGRADE`
-                                // reason 0 (`DEGRADE_CLEAR`); this MODE path has always been a secondary one.
-                                if let Some((should_clear, action_code, detail)) =
-                                    azos_behavior::brain_protocol::mode_degrade_record(
-                                        mode.mode_id, azos_ipc::cap::degraded_active())
-                                {
-                                    if should_clear {
-                                        azos_ipc::cap::degraded_set(false);
-                                        azos_drv_sys::kwarn!("[BRAIN] degraded mode cleared by MODE command");
-                                    }
-                                    azos_behavior::logger::log_safety_violation(
-                                        azos_behavior::logger::SAFETY_DEGRADE, action_code, detail);
+                                    azos_behavior::set_last_action(plan.action);
+                                    state.remote_action = plan.action;
                                 }
                             }
-                        } else {
-                            // A type this build does not act on.
-                            // Recorded rather than dropped in silence — see
-                            // `SAFETY_UNKNOWN_PKT`.
-                            azos_behavior::logger::log_safety_violation(
-                                azos_behavior::logger::SAFETY_UNKNOWN_PKT,
-                                pkt_type, pay_len as u32);
+                            azos_safety_core::frames::Answer::NotAuthority => {
+                                if let Some(p) = azos_behavior::decode_predict_cmd(payload) {
+                                    let (pl, pr) = p.cmd.diff_drive();
+                                    kprintln!("[PREDICT] next l={} r={} conf={}", pl, pr, p.confidence);
+                                }
+                            }
+                            azos_safety_core::frames::Answer::Handled => {}
                         }
                     }
                 }
@@ -851,225 +552,26 @@ pub(crate) fn behavior_task(_: usize) {
                     azos_behavior::remote_inc_recv();
                     let pay_start = cursor + rel_pay_start;
                     cursor += total;
-                    if pkt_type == PKT_ACTUATOR {
-                        let payload = &recv_buf[pay_start..pay_start + pay_len];
-                        if let Some(cmd) = decode_actuator_cmd(payload) {
-                            // Record command confidence (UART path).
-                            azos_behavior::safety::cmd_set_low_confidence(
-                                cmd.is_low_confidence());
-                            // ONE decision function, shared with the TCP path
-                            // above. These two were copies, and the copy is
-                            // what let the emergency fix live on one side and
-                            // not the other for months — see
-                            // `remote_actuation_from`, which also carries the
-                            // reasoning that used to be duplicated here.
-                            //
-                            // STILL NOT DRIVEN BY ANY SCENARIO: the bridge is
-                            // `cfg(feature = "vf2")` and reads a UART that does
-                            // not exist on QEMU's virt machine, so this branch
-                            // cannot be exercised from the gate at all. What IS
-                            // covered is the decision itself, on the host —
-                            // `tests/host/behavior-tests`, module
-                            // `remote_actuation`. The transport waits for the
-                            // board.
-                            let plan = azos_behavior::remote_actuation_from(
-                                &cmd, azos_behavior::last_action(), now);
-                            if plan.publish_stop {
-                                azos_robot::motor_cmd_zero();
-                            }
-                            azos_behavior::set_last_action(plan.action);
-                            state.remote_action = plan.action;
-                        }
-                    } else if pkt_type == PKT_PREDICT {
-                        // Speculative actuation — capability v1 (UART
-                        // path): receive + decode + log the predictive channel.
-                        // Early-apply is HW-deferred.
-                        let payload = &recv_buf[pay_start..pay_start + pay_len];
-                        if let Some(p) = azos_behavior::decode_predict_cmd(payload) {
-                            let (pl, pr) = p.cmd.diff_drive();
-                            kprintln!("[PREDICT] next l={} r={} conf={}", pl, pr, p.confidence);
-                        }
-                    } else if pkt_type == PKT_CONFIG {
-                        let payload = &recv_buf[pay_start..pay_start + pay_len];
-                        if let Some(cfg) = decode_config_cmd(payload) {
-                            match cfg.config_key {
-                                CFG_KEY_BUZZER => match cfg.value {
-                                    BUZZER_BEEP  => { let _ = crate::buzzer::buzzer_beep(); }
-                                    BUZZER_SIREN => { let _ = crate::buzzer::buzzer_alert(); }
-                                    BUZZER_OFF   => { let _ = crate::buzzer::buzzer_off(); }
-                                    _ => {}
-                                },
-                                CFG_KEY_CAMERA => {
-                                    if cfg.value == CAMERA_PWR_ON {
-                                        azos_drv_sensor::csi::csi_power_on();
-                                    } else if cfg.value == CAMERA_PWR_OFF {
-                                        azos_drv_sensor::csi::csi_power_off();
-                                    }
-                                },
-                                _ => {}
-                            }
-                        }
-                    } else if pkt_type == PKT_PAYLOAD {
-                        // E04: payload command via UART bridge
-                        let payload = &recv_buf[pay_start..pay_start + pay_len];
-                        if let Some(cmd) = decode_payload_cmd(payload) {
-                            azos_behavior::payload::payload_exec(cmd);
-                        }
-                    } else if pkt_type == PKT_ESTOP {
-                        // Same guard as the TCP twin above — see its comment for why a
-                        // repeated PKT_ESTOP is an unmetered durable write and not a
-                        // second stop. `cursor` is advanced before this chain here too.
-                        if azos_behavior::safety::estop_is_active() {
-                            continue;
-                        }
-                        // Same one sequence as the TCP path above.
-                        azos_safety_core::actuation::latch_and_stop();
-                        azos_drv_sys::kwarn!("[BRAIN] ESTOP received (UART) — motors stopped");
-                        let _ = azos_behavior::logger::log_safety_violation_durable(
-                            azos_behavior::logger::SAFETY_ESTOP, 1, 0);
-                    } else if pkt_type == PKT_DEGRADE {
-                        // Brain-triggered degraded mode (UART bridge).
-                        let payload = &recv_buf[pay_start..pay_start + pay_len];
-                        // **An absent reason byte ARMS, it does not clear.**
-                        //
-                        // This read `unwrap_or(DEGRADE_CLEAR)`, so a truncated
-                        // frame disarmed containment — and since `degraded_set`
-                        // writes the same atomic as the graded level, it also
-                        // reset a CONTAINED level to FULL. Its sibling 0x8B, on
-                        // the same atomic and the same malformed input, fails
-                        // closed. Two handlers, one state, opposite answers.
-                        let malformed_degrade = payload.is_empty();
-                        let reason = payload.first().copied()
-                            .unwrap_or(DEGRADE_REASON_MALFORMED);
-                        // **Recorded, exactly as the TCP twin records it.** This branch
-                        // lifted and armed capability containment with a console line and
-                        // nothing else, while its twin writes `SAFETY_DEGRADE` on both
-                        // arms — so a black box read after an incident on the bridge showed
-                        // no arm and no clear at all. Two transports into the same piece of
-                        // safety state must leave the same evidence, or the recorder's
-                        // silence means "it did not happen" on one and "nobody wrote it
-                        // down" on the other. Deferred, not durable, on both: containment
-                        // is not the event a reset is about to erase.
-                        if reason == DEGRADE_CLEAR {
-                            azos_ipc::cap::degraded_set(false);
-                            azos_drv_sys::kwarn!("[BRAIN] degraded mode cleared (UART)");
-                            azos_behavior::logger::log_safety_violation(
-                                azos_behavior::logger::SAFETY_DEGRADE, 0, 0);
-                        } else {
-                            azos_ipc::cap::degraded_set(true);
-                            if malformed_degrade {
-                                azos_drv_sys::kwarn!("[BRAIN] degraded mode armed (UART) — reason byte missing");
-                            } else {
-                                azos_drv_sys::kwarn!("[BRAIN] degraded mode armed (UART) — reason {}", reason);
-                            }
-                            azos_behavior::logger::log_safety_violation(
-                                azos_behavior::logger::SAFETY_DEGRADE, 1, reason as u32);
-                        }
-                    } else if pkt_type == PKT_SEMANTIC_LEVEL {
-                        // Graded degrade-level command (UART bridge).
-                        // 1-byte payload = level index (0=FULL…3=CONTAINED).
-                        // Missing payload → fail-closed (CONTAINED).
-                        let payload = &recv_buf[pay_start..pay_start + pay_len];
-                        let malformed = payload.is_empty();
-                        let level = payload.first().copied()
-                            .unwrap_or(azos_ipc::cap::DEGRADE_LEVEL_CONTAINED);
-                        let previous = azos_ipc::cap::degrade_level();
-                        azos_ipc::cap::degrade_level_set(level);
-                        let effective = azos_ipc::cap::degrade_level();
-                        kprintln!("[BRAIN] semantic level set to {} (UART)", effective);
-                        if let Some((v, a, d)) =
-                            azos_behavior::logger::semantic_level_record(
-                                malformed, effective, previous)
-                        {
-                            azos_behavior::logger::log_safety_violation(v, a, d);
-                        }
-                    } else if pkt_type == PKT_MODE {
-                        let payload = &recv_buf[pay_start..pay_start + pay_len];
-                        if hold_release_frame(payload, "UART") {
-                            // answered: a hold release is no mode change
-                        } else if let Some(mode) = decode_mode_cmd(payload) {
-                            // **An e-stop cleared remotely is a security event, and it is the one the
-                            // recorder used to miss.** Activating one records `SAFETY_ESTOP`; clearing one
-                            // printed a console line and nothing else, so a black box read after an
-                            // incident showed the machine being stopped and never released.
-                            //
-                            // Owner decision, 2026-09-06: only `MODE_ID_ESTOP_RESET` may clear — see its
-                            // doc comment in `brain_protocol.rs` for why that value and not `0`. Every other
-                            // mode id changes mode and leaves the e-stop exactly as it was. This is the
-                            // `feature = "vf2"` UART bridge — it is compiled OUT of every QEMU build, so it
-                            // is also the site a QEMU-only check would never catch missing this gate.
-                            //
-                            // Same shared `mode_estop_record`/`mode_degrade_record` the TCP site calls — see
-                            // its twin of this branch for why the decision does not live inline here.
-                            if let Some((should_clear, action_code)) =
-                                azos_behavior::brain_protocol::mode_estop_record(
-                                    mode.mode_id, azos_behavior::safety::estop_is_active())
-                            {
-                                if should_clear {
-                                    // Owner decision, 2026-09-25: same change as the TCP twin — a
-                                    // REQUEST, not a clear, unless the payload carries a verified
-                                    // operator release proof. See `safety::ReleaseAuthority`'s
-                                    // module note and the TCP site's twin of this branch.
-                                    let proof = if payload.len()
-                                        >= 1 + azos_behavior::safety::RELEASE_PROOF_BYTES
-                                    {
-                                        let nonce = u64::from_be_bytes(
-                                            payload[1..9].try_into().unwrap());
-                                        let mut sig = [0u8;
-                                            azos_behavior::safety::RELEASE_SIG_BYTES];
-                                        sig.copy_from_slice(&payload[9..9
-                                            + azos_behavior::safety::RELEASE_SIG_BYTES]);
-                                        azos_behavior::safety::verify_operator_release(
-                                            nonce, &sig).ok()
-                                    } else {
-                                        None
-                                    };
-                                    if let Some(proof) = proof {
-                                        azos_behavior::safety::estop_release(proof);
-                                        azos_drv_sys::kwarn!("[BRAIN] ESTOP cleared by verified operator authority (UART)");
-                                        let _ = azos_behavior::logger::log_safety_violation_durable(
-                                            azos_behavior::logger::SAFETY_ESTOP, action_code, mode.mode_id as u32);
-                                    } else if let Some(n) =
-                                        azos_behavior::safety::note_refused_estop_clear()
-                                    {
-                                        azos_drv_sys::kwarn!("[BRAIN] ESTOP_RESET recorded as a REQUEST — no verified operator authority, ESTOP stays armed (UART, refusal #{})", n);
-                                        let _ = azos_behavior::logger::log_safety_violation_durable(
-                                            azos_behavior::logger::SAFETY_ESTOP,
-                                            azos_behavior::safety::ESTOP_ACTION_REFUSED_MIRROR,
-                                            (n << 8) | mode.mode_id as u32);
-                                    }
-                                } else if let Some(n) =
-                                    azos_behavior::safety::note_refused_estop_clear()
-                                {
-                                    // Metered exactly as the TCP twin — see its comment. The bridge
-                                    // is the cheaper line to flood, not the dearer one.
-                                    azos_drv_sys::kwarn!("[BRAIN] MODE mode_id={} is not the reset id — ESTOP stays armed (UART, refusal #{})", mode.mode_id, n);
-                                    let _ = azos_behavior::logger::log_safety_violation_durable(
-                                        azos_behavior::logger::SAFETY_ESTOP, action_code,
-                                        (n << 8) | mode.mode_id as u32);
+                    let payload = &recv_buf[pay_start..pay_start + pay_len];
+                    match azos_safety_core::frames::authority_frame(pkt_type, payload, " (UART)") {
+                        azos_safety_core::frames::Answer::Actuator => {
+                            if let Some(cmd) = decode_actuator_cmd(payload) {
+                                let plan = azos_behavior::remote_actuation_from(
+                                    &cmd, azos_behavior::last_action(), now);
+                                if plan.publish_stop {
+                                    azos_robot::motor_cmd_zero();
                                 }
-                            }
-                            // MODE also clears degraded mode — gated on the SAME reserved id
-                            // (owner decision, 2026-09-06). See the TCP site's twin of this branch for why.
-                            if let Some((should_clear, action_code, detail)) =
-                                azos_behavior::brain_protocol::mode_degrade_record(
-                                    mode.mode_id, azos_ipc::cap::degraded_active())
-                            {
-                                if should_clear {
-                                    azos_ipc::cap::degraded_set(false);
-                                    azos_drv_sys::kwarn!("[BRAIN] degraded mode cleared by MODE command (UART)");
-                                }
-                                azos_behavior::logger::log_safety_violation(
-                                    azos_behavior::logger::SAFETY_DEGRADE, action_code, detail);
+                                azos_behavior::set_last_action(plan.action);
+                                state.remote_action = plan.action;
                             }
                         }
-                    } else {
-                        // UART bridge: same record as the network
-                        // path. Both chains ended without an `else`, so this
-                        // one dropped unknown types in silence too.
-                        azos_behavior::logger::log_safety_violation(
-                            azos_behavior::logger::SAFETY_UNKNOWN_PKT,
-                            pkt_type, pay_len as u32);
+                        azos_safety_core::frames::Answer::NotAuthority => {
+                            if let Some(p) = azos_behavior::decode_predict_cmd(payload) {
+                                let (pl, pr) = p.cmd.diff_drive();
+                                kprintln!("[PREDICT] next l={} r={} conf={}", pl, pr, p.confidence);
+                            }
+                        }
+                        azos_safety_core::frames::Answer::Handled => {}
                     }
                 }
             }

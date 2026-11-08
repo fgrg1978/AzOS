@@ -39,6 +39,9 @@ pub use linkkey::{LinkKey, LinkKeyCall, LinkKeyClient, LinkKeyIdl, LINK_KEY_ID};
 pub mod power;
 pub use power::{Power, PowerCall, PowerClient, PowerIdl, POWER_ID};
 
+pub mod authority;
+pub use authority::{Authority, AuthorityCall, AuthorityClient, AuthorityIdl, AUTHORITY_ID};
+
 pub mod power_assert;
 pub use power_assert::{PowerAssert, PowerAssertCall, PowerAssertClient, PowerAssertIdl, POWER_ASSERT_ID};
 
@@ -285,6 +288,7 @@ pub mod key {
     pub const POWER_ASSERT: u16 = 27;
     pub const VOLUME: u16 = 28;
     pub const FRAME: u16 = 29;
+    pub const AUTHORITY: u16 = 30;
 }
 
 /// Every interface the kernel can host, by host key (`IFACES[key - 1]`).
@@ -318,6 +322,7 @@ pub const IFACES: &[Iface] = &[
     Iface { name: "powerassert", id: POWER_ASSERT_ID, key: key::POWER_ASSERT, resource: no_resource },
     Iface { name: "volume", id: VOLUME_ID, key: key::VOLUME, resource: volume_index },
     Iface { name: "frame", id: FRAME_ID, key: key::FRAME, resource: frame_camera },
+    Iface { name: "authority", id: AUTHORITY_ID, key: key::AUTHORITY, resource: no_resource },
 ];
 
 /// Split a topology target `<iface>[.<resource>]` into its interface and the
