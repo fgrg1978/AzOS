@@ -1157,6 +1157,8 @@ struct Flush {
     /// short one or a cut in the middle of one keeps them.
     staged: [Queued; LOG_FLUSH_BATCH_MAX],
     staged_n: usize,
+    /// Number + 1 of the newest record the medium took.
+    written: u64,
 }
 
 impl Flush {
@@ -1166,6 +1168,7 @@ impl Flush {
         next: 0,
         staged: [Queued::EMPTY; LOG_FLUSH_BATCH_MAX],
         staged_n: 0,
+        written: 0,
     };
 }
 
@@ -1456,7 +1459,10 @@ pub fn logger_flusher_task(_: usize) {
 pub fn logger_flusher_pass() -> u32 {
     let seen = FLUSH_REQ.load(Ordering::SeqCst);
     azos_decision::flush_limited();
-    if LOG_ACTIVE.load(Ordering::Acquire) && ring_len() > 0 && !LOG_FLUSHER_HELD.load(Ordering::Acquire) {
+    if LOG_ACTIVE.load(Ordering::Acquire)
+        && (ring_len() > 0 || durable_record_pending())
+        && !LOG_FLUSHER_HELD.load(Ordering::Acquire)
+    {
         let _ = logger_flush_now();
     }
     for slot in DEFERRED_IO.iter() {
@@ -1854,6 +1860,16 @@ fn flush_one_batch(storage: &'static dyn LogStorage, st: &mut Flush) -> BatchOut
         return BatchOutcome { consumed: 0, torn: false, failure: Some(LogStorageError::Unavailable), stop: true };
     };
     if n == 0 {
+        // Nothing new, but a durable call's record is written and no `Ok`
+        // fsync has covered it (the last one failed, or was cut): sync again.
+        let covered = DURABLE_POS.load(Ordering::Acquire);
+        if st.written > covered && DURABLE_WANT.load(Ordering::Acquire) > covered {
+            if let Err(e) = storage.fsync(open.handle) {
+                LOG_FLUSH_ERRORS.fetch_add(1, Ordering::Relaxed);
+                return BatchOutcome { consumed: 0, torn: false, failure: Some(e), stop: true };
+            }
+            DURABLE_POS.fetch_max(st.written, Ordering::AcqRel);
+        }
         return BatchOutcome { consumed: 0, torn: false, failure: None, stop: true };
     }
     let mut out = [0u8; LOG_FLUSH_BATCH_MAX * LOG_RECORD_SIZE];
@@ -1861,6 +1877,12 @@ fn flush_one_batch(storage: &'static dyn LogStorage, st: &mut Flush) -> BatchOut
         let mut buf = [0u8; LOG_RECORD_SIZE];
         q.rec.encode(&mut buf);
         raw.copy_from_slice(&buf);
+    }
+    // Canary: the batch leaves RAM before the medium took it.
+    let dropped_early = cfg!(feature = "durable-staging-canary");
+    if dropped_early {
+        st.staged_n = 0;
+        HELD.fetch_sub(n as u64, Ordering::AcqRel);
     }
 
     // Write the whole chunk, retrying the remainder. A short write is a
@@ -1879,10 +1901,13 @@ fn flush_one_batch(storage: &'static dyn LogStorage, st: &mut Flush) -> BatchOut
     open.bytes_written = open.bytes_written.saturating_add(off as u32);
     // Only records the medium actually took leave RAM.
     let whole = off / LOG_RECORD_SIZE;
-    let end = if whole > 0 { st.staged[whole - 1].seq + 1 } else { 0 };
-    st.staged.copy_within(whole..n, 0);
-    st.staged_n = n - whole;
-    HELD.fetch_sub(whole as u64, Ordering::AcqRel);
+    let end = if whole > 0 { st.staged[whole - 1].seq + 1 } else { st.written };
+    st.written = st.written.max(end);
+    if !dropped_early {
+        st.staged.copy_within(whole..n, 0);
+        st.staged_n = n - whole;
+        HELD.fetch_sub(whole as u64, Ordering::AcqRel);
+    }
 
     if off != len {
         // Either the device stopped making progress or it errored. If it

@@ -39,9 +39,11 @@ envelope-row-canary = []
 ring-reserve-canary = []
 # Gate canaries only (host suites `actuation-tests`, `behavior-tests`): the
 # flusher writes the per-CPU queues one after another instead of in push
-# order; a full queue answers as if it took the record and drops it.
+# order; a full queue answers as if it took the record and drops it; a batch
+# leaves RAM before the medium took it.
 durable-merge-canary = []
 durable-full-canary = []
+durable-staging-canary = []
 # Gate canary only (host suite `behavior-tests`): the telemetry encoders push
 # onto the flight recorder's ring instead of the record region's, so a flood of
 # telemetry takes the queues' room and the telemetry tests must go red.

@@ -1836,7 +1836,7 @@ mod decision_receipts {
     }
 
     /// A latching e-stop in a SpinLock section (no caller does this today)
-    /// stays pinned and owed, and the flusher's pass makes it durable: deferring
+    /// stays queued and owed, and the flusher's pass makes it durable: deferring
     /// it can delay the record, not lose it.
     ///
     /// **Canary.** Skip the latch tracking in `log_safety_violation_durable`:
@@ -2356,11 +2356,10 @@ mod flight_recorder_rt {
         logger_shutdown();
     }
 
-    /// FX11: an RT caller's latching e-stop record is pinned in the ring
-    /// until a flush whose fsync covered it. Producers that overrun the ring
-    /// meanwhile lose their own records, not the latch, and the flusher's
-    /// pass is what announces it durable. Without the pin (ring_push's
-    /// LATCH_PENDING check) the waypoints evict it and the file lacks it.
+    /// FX11: an RT caller's latching e-stop record stays in RAM until a flush
+    /// whose fsync covered it. Producers that overrun its queue meanwhile
+    /// lose their own records, not the latch (a queue evicts nothing), and
+    /// the flusher's pass is what announces it durable.
     #[test]
     fn a_pending_latch_record_survives_a_full_ring_and_is_announced_by_the_flusher() {
         let _g = begin(0x0A0B_0C10);
@@ -2385,9 +2384,9 @@ mod flight_recorder_rt {
         logger_shutdown();
     }
 
-    /// FX11: a non-RT durable record pushed while a pending latch record is
-    /// pinned at a full ring is not silently dropped behind an `Ok`: the
-    /// caller drains the ring and lands its own record (the release nonce
+    /// FX11: a non-RT durable record pushed while a pending latch record sits
+    /// in a queue at its limit is not silently dropped behind an `Ok`: the
+    /// caller drains the queues and lands its own record (the release nonce
     /// floor's `Ok` advances the in-memory floor).
     #[test]
     fn a_durable_record_behind_a_pinned_full_ring_still_lands_or_errs() {
@@ -2558,6 +2557,9 @@ mod flight_recorder_rt {
 
 #[cfg(test)]
 mod telemetry_ring;
+
+#[cfg(test)]
+mod durable_queues;
 
 #[cfg(test)]
 mod robot_sensor_tests;
@@ -4717,19 +4719,19 @@ mod motor_actuation_reaches_the_flight_recorder {
     /// so a successful motor command reached no recorder and this ring
     /// stayed empty for the life of a boot — the first assertion below has
     /// nothing to be equal to `LOG_QUEUE_CAPACITY` against a pre-fix tree
-    /// that never calls this function outside a test. It is the SAME ring
-    /// `log_safety_violation` uses, so a burst past capacity drops the
-    /// oldest motor record exactly as it drops the oldest safety record —
-    /// proved directly here rather than assumed from that other test.
+    /// that never calls this function outside a test. It is the SAME queue
+    /// `log_safety_violation` uses, so a burst past its limit is refused and
+    /// counted exactly as a safety record is — proved directly here rather
+    /// than assumed from that other test.
     #[test]
-    fn a_motor_command_reaches_the_bounded_ring_and_drops_the_oldest_past_capacity() {
+    fn a_motor_command_reaches_the_bounded_queue_and_is_refused_counted_past_its_limit() {
         let _g = begin(0x1000);
         let _ = logger_init();
 
         for i in 0..(ORDINARY_QUEUE_LIMIT + 5) {
             log_actuator_cmd(0, (i % 4) as i16, (i % 101) as i16, 0, 0);
         }
-        assert_eq!(logger_ring_len(), ORDINARY_QUEUE_LIMIT, "the ring is bounded for actuator records too");
+        assert_eq!(logger_ring_len(), ORDINARY_QUEUE_LIMIT, "the queue is bounded for actuator records too");
         assert_eq!(logger_analytics().events_dropped, 5, "5 pushed past capacity must be counted dropped");
 
         logger_shutdown();

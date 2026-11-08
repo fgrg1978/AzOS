@@ -341,7 +341,7 @@ fn a_missed_deadline_is_handled_by_exactly_one_party() {
             let n = records(base, Rule::SafeState).len();
             assert_eq!(n, 1, "iteration {i}: {n} records for one missed effect");
             total_records += n;
-            // Each committed effect record is pinned until the flusher takes it.
+            // Each committed effect record stays queued until the flusher takes it.
             logger_flusher_pass();
         }
     });

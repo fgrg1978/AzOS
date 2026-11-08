@@ -4,8 +4,9 @@
 //!
 //! The code under test is the code that ships: the effect gate
 //! (`crates/core/actuation/src/effect_gate.rs`) over the real flight-recorder
-//! ring and flusher (`logger.rs`), both pulled in with `#[path]`; only the
-//! medium, the clock and the sync primitives are host stand-ins.
+//! queues and flusher (`logger.rs`), both pulled in with `#[path]`; only the
+//! medium, the clock and the sync primitives are host stand-ins. The tests
+//! name the recorder's per-CPU queue "the ring" where one queue is meant.
 //!
 //! The properties, and the test that holds each:
 //!
@@ -25,13 +26,20 @@
 //!   `ordinary_records_never_queue_into_the_reserve`,
 //!   `no_committed_effect_is_ever_evicted_over_random_sequences`;
 //! * a power cut at any step leaves a record without an effect, never an
-//!   effect without a record: `a_power_cut_never_leaves_an_effect_without_its_record`.
+//!   effect without a record: `a_power_cut_never_leaves_an_effect_without_its_record`;
+//! * a full queue refuses its own CPU's effect while another CPU's admits:
+//!   `a_full_queue_refuses_its_cpus_effect_while_another_cpus_admits`;
+//! * a flush cut at any step keeps its records in RAM for the next pass:
+//!   `a_cut_flush_keeps_its_records_for_the_next_pass`.
 //!
 //! **Canaries.** `--features effect-issue-before-commit-canary` (the gate
 //! issues the op first): `the_op_runs_only_after_its_record_is_committed` and
 //! `a_power_cut_never_leaves_an_effect_without_its_record` must both FAIL.
 //! `--features ring-reserve-canary` (effects and ordinary records may use the
-//! reserve): the ring tests above must FAIL.
+//! reserve): the ring tests above must FAIL. `--features durable-full-canary`
+//! (a full queue answers as if it took the record): the refusal tests must
+//! FAIL. `--features durable-staging-canary` (a batch leaves RAM before the
+//! write): `a_cut_flush_keeps_…` and the power-cut model must FAIL.
 
 extern crate beh_test_drivers as azos_drv_sys;
 
@@ -233,8 +241,9 @@ pub(crate) mod tests {
 
     /// [`fresh`] for a caller that already holds the lock.
     fn fresh_in_place() {
-        // This ring's tests generate their ordinary records with the telemetry encoders.
+        // This recorder's tests generate their ordinary records with the telemetry encoders.
         telemetry_on_ring_for_test(true);
+        cpu_for_test(None);
         // No device is held in its safe state by an earlier test.
         crate::safe_state::clear_holds_for_test();
         logger_set_rt_probe(rt_no);
@@ -352,7 +361,7 @@ pub(crate) mod tests {
     ///
     /// **Canary** `ring-reserve-canary` does not apply (it opens the reserve
     /// to effects too); the reverting canary for this row is `Admit::Stop`
-    /// written back as `Admit::Evict`: the ring stays at `LIMIT` and the stop
+    /// written back as `Admit::Commit`: the queue stays at `LIMIT` and the stop
     /// is lost (`Full`, counted unrecorded), which fails the first assertion.
     #[test]
     fn a_stop_is_never_refused_by_a_full_ring_and_is_recorded_in_the_reserve() {
@@ -372,8 +381,8 @@ pub(crate) mod tests {
         assert_eq!(tags, want, "recording a stop evicted an effect record, or the stop has no record");
     }
 
-    /// **A loop of stops cannot take the e-stop's slots.** The ring at its
-    /// effect limit (a pinned tail), then far more stops than the reserve
+    /// **A loop of stops cannot take the e-stop's slots.** The queue at its
+    /// effect limit, then far more stops than the reserve
     /// holds: stops fill the reserve down to its last half, the rest are
     /// counted unrecorded, no effect record is evicted, and the latching
     /// e-stop still finds a slot for as many records as that half holds.
@@ -408,10 +417,9 @@ pub(crate) mod tests {
         assert_eq!(&tags[..LIMIT], &(100..100 + LIMIT as u32).collect::<Vec<_>>()[..], "an effect record was evicted");
     }
 
-    /// **Never dropped.** Ordinary records that overrun the ring evict each
-    /// other's predecessors but not a committed effect record: every one of
-    /// them is on the medium afterwards. Without the pin (`EFFECT_PIN`) the
-    /// first ordinary overrun evicts them.
+    /// **Never dropped.** Ordinary records that overrun the queue are refused
+    /// (counted) and evict nothing, a committed effect record least of all:
+    /// every one of them is on the medium afterwards.
     #[test]
     fn committed_effect_records_are_never_evicted() {
         let _g = fresh();
@@ -470,9 +478,9 @@ pub(crate) mod tests {
             .collect()
     }
 
-    /// A ring at its limit with a pinned tail: `LIMIT` reversible effects
-    /// (tags 100..). An ordinary record is now lost, not queued, and the
-    /// ring does not grow into the reserve.
+    /// A queue at its limit: `LIMIT` reversible effects (tags 100..). An
+    /// ordinary record is now lost, not queued, and the queue does not grow
+    /// into the reserve.
     fn ring_at_its_limit_of_pinned_effects() {
         for i in 0..LIMIT as u32 {
             issue0(&effect(Class::Reversible, 100 + i), || ()).expect("under the limit");
@@ -480,7 +488,7 @@ pub(crate) mod tests {
         assert_eq!(logger_ring_len(), LIMIT);
         let dropped0 = logger_analytics().events_dropped;
         log_error(1, 1, 0);
-        assert_eq!(logger_analytics().events_dropped, dropped0 + 1, "an ordinary record was queued behind a pinned tail");
+        assert_eq!(logger_analytics().events_dropped, dropped0 + 1, "an ordinary record was queued past the limit");
         assert_eq!(logger_ring_len(), LIMIT, "an ordinary record took a slot of the reserve");
     }
 
@@ -655,8 +663,8 @@ pub(crate) mod tests {
         assert_eq!(medium::class_seen().0, 0);
     }
 
-    /// **Only safety records use the reserve.** The same ring at its limit
-    /// with a pinned tail: a record that does not decide the latch (an
+    /// **Only safety records use the reserve.** The same queue at its limit:
+    /// a record that does not decide the latch (an
     /// envelope refusal, a commander-lost stop, the boot self-check's
     /// synthetic record) is lost, as every ordinary record is, takes no
     /// reserve slot, and every effect record is still there. With the reserve
@@ -701,10 +709,9 @@ pub(crate) mod tests {
         assert_eq!(tags, (100..100 + LIMIT as u32).collect::<Vec<_>>(), "an effect record was evicted");
     }
 
-    /// **Ordinary records stop at the limit.** A ring of ordinary records
-    /// (nothing pinned) never holds more than the limit: the oldest is evicted
-    /// (counted) rather than a reserve slot used, and the e-stop still finds
-    /// its slot.
+    /// **Ordinary records stop at the limit.** A queue of ordinary records
+    /// never holds more than the limit: the newest is refused (counted)
+    /// rather than a reserve slot used, and the e-stop still finds its slot.
     #[test]
     fn ordinary_records_never_queue_into_the_reserve() {
         let _g = fresh();
@@ -717,6 +724,80 @@ pub(crate) mod tests {
         log_safety_violation(SAFETY_ESTOP, 1, 0xE5);
         assert_eq!(logger_ring_len(), LIMIT + 1);
         assert_eq!(logger_analytics().events_dropped, dropped0);
+    }
+
+    /// **Queue full, per CPU.** CPU 0's queue at its effect limit refuses the
+    /// next effect on CPU 0 with a receipt (its op does not run), while CPU
+    /// 1's queue still admits one; the latching e-stop on CPU 0 still finds
+    /// the reserve. Every committed effect reaches the medium in push order.
+    ///
+    /// **Canary** `durable-full-canary`: the full queue answers as if it took
+    /// the record, the op runs with no record, and this goes red.
+    #[test]
+    fn a_full_queue_refuses_its_cpus_effect_while_another_cpus_admits() {
+        let _g = fresh();
+        cpu_for_test(Some(0));
+        for i in 0..LIMIT as u32 {
+            issue0(&effect(Class::Reversible, 100 + i), || ()).expect("under the limit");
+        }
+        let ran = AtomicU32::new(0);
+        let r = issue0(&effect(Class::Reversible, 999), || { ran.fetch_add(1, Ordering::Relaxed); });
+        assert!(matches!(r, Err(Refusal { why: Why::RingFull, .. })), "a full queue issued an effect: {r:?}");
+        assert_eq!(ran.load(Ordering::Relaxed), 0, "a refused effect reached the device");
+        let lost0 = logger_latch_stats().1;
+        log_safety_violation(SAFETY_ESTOP, 2, 0xF0);
+        assert_eq!(logger_latch_stats().1, lost0, "the latch found no slot in the reserve");
+        cpu_for_test(Some(1));
+        issue0(&effect(Class::Reversible, 2000), || { ran.fetch_add(1, Ordering::Relaxed); })
+            .expect("another CPU's queue is not full");
+        assert_eq!(ran.load(Ordering::Relaxed), 1);
+        cpu_for_test(None);
+        flush_all();
+        let files = medium::durable();
+        let mut want: Vec<u32> = (100..100 + LIMIT as u32).collect();
+        want.push(2000);
+        assert_eq!(effect_records(&files).iter().map(|e| e.a0).collect::<Vec<_>>(), want);
+        assert_eq!(estop_details(&files), vec![0xF0]);
+    }
+
+    /// **Flush after a crash.** A real-time caller's latch record (CPU 1,
+    /// between ordinary records of CPU 0) is queued; the flusher's pass is cut
+    /// at each step of its write and sync in turn. RAM survives the fault
+    /// (a fault, not a power loss): the record is still held, still pending,
+    /// and the next pass puts it on the medium once and announces it durable.
+    ///
+    /// **Canary** `durable-staging-canary`: the batch leaves RAM before the
+    /// write, so a cut inside the write loses it and this goes red.
+    /// By hand: skip the sync again of a pass that has nothing new to write
+    /// (`flush_one_batch`); a cut after the write took the record (step 3)
+    /// then leaves it pending, red.
+    #[test]
+    fn a_cut_flush_keeps_its_records_for_the_next_pass() {
+        let _g = fresh();
+        for cut_at in 1..=4u32 {
+            fresh_in_place();
+            cpu_for_test(Some(0));
+            log_error(1, 1, 1);
+            cpu_for_test(Some(1));
+            logger_set_rt_probe(rt_yes);
+            assert_eq!(log_safety_violation_durable(SAFETY_ESTOP, 2, 0xC0 + cut_at), Err(LogStorageError::Deferred));
+            logger_set_rt_probe(rt_no);
+            cpu_for_test(Some(0));
+            log_error(2, 2, 2);
+            cpu_for_test(None);
+            let (durable0, _, _) = logger_latch_stats();
+            medium::with(|m| m.cut_in = Some(cut_at));
+            let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| { logger_flusher_pass(); }));
+            medium::with(|m| m.cut_in = None);
+            assert!(run.is_err_and(|p| p.is::<PowerCut>()), "cut at {cut_at}: the pass was not cut");
+            assert!(durable_record_pending(), "cut at {cut_at}: the latch record is called durable");
+            assert_eq!(logger_latch_stats().0, durable0, "cut at {cut_at}: announced before an fsync covered it");
+            logger_flusher_pass();
+            assert!(!durable_record_pending(), "cut at {cut_at}: the next pass did not make it durable");
+            assert_eq!(logger_latch_stats().0, durable0 + 1, "cut at {cut_at}: not announced once");
+            let got = estop_details(&medium::durable());
+            assert!(got.contains(&(0xC0 + cut_at)), "cut at {cut_at}: the latch record was lost: {got:x?}");
+        }
     }
 
     /// One step of the randomized run.
@@ -755,7 +836,7 @@ pub(crate) mod tests {
             let mut next_tag = 0u32;
             // Half the sequences never flush: they fill the ring with effects
             // for as long as it takes to reach the limit, then push safety
-            // records into a ring with a pinned tail.
+            // records into a queue at its limit.
             let bias = rng.next() % 2 == 0;
             let fill_steps = 100 + (rng.next() % 100) as u32;
             let total = if bias { fill_steps + 1 + (rng.next() % 12) as u32 } else { 20 + (rng.next() % 300) as u32 };

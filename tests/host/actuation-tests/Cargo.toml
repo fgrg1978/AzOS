@@ -31,9 +31,11 @@ wrap-tail-canary = []
 # kept for safety records. Off unless the canary row builds with it.
 ring-reserve-canary = []
 # logger.rs's durable queue canaries: the per-CPU queues written one after
-# another, not in push order; a full queue dropping what it answered taken.
+# another, not in push order; a full queue dropping what it answered taken; a
+# batch dropped from RAM before the write.
 durable-merge-canary = []
 durable-full-canary = []
+durable-staging-canary = []
 # logger.rs's telemetry gate canary: a known value, never enabled here (the canary row is in behavior-tests).
 telemetry-ring-canary = []
 # estop.rs's unrecorded-release gate canary: a known value, never enabled by default.
