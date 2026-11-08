@@ -20,6 +20,7 @@ azos_limits = { path = "../../../crates/core/limits" }
 # tests/host/term-tests/src/input_tests.rs: the server stops draining the input
 # event ring, which every test of the consumer must notice. Never on in a build.
 canary-drop-input = []
+canary-keep-mode = []
 
 [profile.release]
 opt-level = "s"

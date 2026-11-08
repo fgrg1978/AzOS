@@ -1166,6 +1166,23 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         ops: inv_ops![LOG_CONSOLE_WRITE, NODE_OPENAT, NODE_READ, NODE_WRITE, DOMAIN_UPTIME, MEMOBJ_ACQUIRE],
         ifaces: &[azos_devif::key::ENTROPY],
     },
+    // The ported editor (Kconfig USERSPACE_KIBI: kibi, `third_party/ports`). A
+    // std program that reads and writes the file it edits beneath the trees its
+    // row grants (the whole file layer, mutators included: it saves), and reads
+    // its keys and sets raw mode through the terminal its shell lent the job
+    // (`SYS_IPC_CALL` on the badged capability it was handed as fd 0,
+    // `azos_stdrt::terminal`). No spawn, no network, no device.
+    ImageProfile {
+        image: "KIBI.ELF",
+        syscalls: sys_nrs![
+            SYS_EXIT, SYS_INVOKE, SYS_CAP_CLOSE, SYS_CAP_INFO, SYS_IPC_CALL,
+            SYS_MO_MAP, SYS_MO_UNMAP, SYS_GETPID, SYS_SLEEP_UNTIL, SYS_YIELD,
+            SYS_FUTEX_WAIT, SYS_FUTEX_WAKE, SYS_THREAD_CREATE, SYS_THREAD_EXIT,
+        ],
+        audit: false,
+        ops: inv_ops![LOG_CONSOLE_WRITE, NODE_OPENAT, NODE_READ, NODE_WRITE, NODE_MKDIRAT, DOMAIN_UPTIME, MEMOBJ_ACQUIRE],
+        ifaces: &[azos_devif::key::ENTROPY],
+    },
     // The package installer. Serves `endpoint.packages` (the v2 accept/reply),
     // copies the package out of the memory object a client hands it (acquire,
     // map, release), reads the volume (open, stat, readdir, read of typed files: the signed

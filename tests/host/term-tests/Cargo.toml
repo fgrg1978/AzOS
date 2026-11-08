@@ -22,6 +22,10 @@ azos_login = { path = "../../../userspace/lib/login" }
 # red with it (`cargo test --release --features canary-drop-input`). Never on
 # in a build of TERMD.ELF.
 canary-drop-input = []
+# A job's end leaves its mode and echo behind (`Service::end_lend` does not put
+# the client's back): the gate row `sh: kibi ... canary` and
+# `a_lent_job_reads_its_terminal_only_while_it_has_the_focus` go red.
+canary-keep-mode = []
 
 [profile.release]
 overflow-checks = true

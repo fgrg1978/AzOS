@@ -1284,6 +1284,15 @@ mod image_profiles {
             src!("third_party/ports/fd-find/src/filesystem.rs"),
             src!("third_party/ports/fd-find/src/dir_entry.rs"),
         ]),
+        // The ported editor: it names `std::fs` (the file it edits is read and
+        // saved through it), which brings the whole file layer into the row,
+        // and reaches the terminal through `std::os::azos` (the port layer's
+        // endpoint call). Its other sources call its own `sys` module, the
+        // platform backend, not libsys: they are not listed.
+        ("KIBI.ELF", Lang::RustStd, &[
+            src!("third_party/ports/kibi/src/syntax.rs"),
+            src!("third_party/ports/kibi/src/azos.rs"),
+        ]),
         // The Packages object's installer (the pure half is the library's)
         // and its client tool. The installer is a std program (its package
         // source dials a pinned HTTPS server with `std::net`, userspace/lib/tls).

@@ -39,3 +39,22 @@ config USERSPACE_FD
       y: the system volume carries /fat/FD.ELF and the built-in topology has its
       row (the shell may start it). Cost: the image's size on the volume
       (2.4 to 2.9 MB, by ISA).
+
+config USERSPACE_KIBI
+    bool "KIBI.ELF: kibi 0.3.3 (third_party/ports/kibi)"
+    depends on !HWCLASS_EMBEDDED
+    default y if PRESET_DESKTOP || PRESET_SERVER
+    default n
+    help
+      kibi, a small text editor (`kibi FILE`), ported to the native SDK std
+      target. It needs a terminal in raw mode and its size: the shell lends a
+      foreground job a terminal of its own (a call capability on the terminal
+      server, badged with the job, moved in at spawn into a row that receives
+      `term`), and the editor sets raw mode and reads the keys through it
+      (std::os::azos::terminal). It reads and writes files beneath the root
+      directory its topology row grants, and holds nothing else. MIT OR
+      Apache-2.0. Built by `make ports`.
+
+      y: the system volume carries /fat/KIBI.ELF and the built-in topology has
+      its row (the shell may start it). Cost: the image's size on the volume
+      (about 0.2 MB).

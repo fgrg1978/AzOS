@@ -1848,6 +1848,15 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
             .expect("default_minimal_topology: FD.ELF push failed");
         topo.set_last_task_mem_pages(FD_MEM_PAGES);
     }
+    // The ported editor (Kconfig USERSPACE_KIBI): it writes the shell's trees,
+    // and receives the terminal the shell lends its job (`receives`); its row
+    // holds no right on the terminal itself.
+    if azos_limits::USERSPACE_KIBI {
+        topo.push_task(MaybeStr::from_bytes(TASK_KIBI_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), TOOL_PRIORITY, KIBI_CAPS)
+            .expect("default_minimal_topology: KIBI.ELF push failed");
+        topo.set_last_task_mem_pages(KIBI_MEM_PAGES);
+        topo.set_last_task_receives(KIBI_RECEIVES).expect("default_minimal_topology: KIBI.ELF receives");
+    }
     // The package installer (`userspace/services/pkgd`, the Packages object)
     // and its client tool (`PKG.ELF`). The installer serves `endpoint.packages`
     // and holds a read-write tree on `/fat/PKG`, where it stages packages and
@@ -2972,6 +2981,12 @@ const SH_CAPS_BASE: &[CapSpec] = &[
         perms: CapPerms::EXEC,
         target: MaybeStr::from_bytes(TASK_FD_IMAGE), transfer: false, ops: 0,
     },
+    // The ported editor.
+    CapSpec {
+        kind: CapKind::Node,
+        perms: CapPerms::EXEC,
+        target: MaybeStr::from_bytes(TASK_KIBI_IMAGE), transfer: false, ops: 0,
+    },
     FAT_RW,
     TMP_RW,
     TASK_VIEW_CAP,
@@ -3624,6 +3639,21 @@ const FD_MEM_PAGES: u32 = 1536;
 /// What the ported tools hold: the read-only root directory they read beneath,
 /// and the `entropy` interface that keys and randomizes the allocator `std` brings.
 pub const PORT_TOOL_CAPS: &[CapSpec] = &[ROOT_RO, WHY_ENTROPY];
+
+/// The ported editor's image (`third_party/ports/kibi`).
+pub const TASK_KIBI_IMAGE: &[u8] = b"KIBI.ELF";
+/// Frame budget of `KIBI.ELF`: the image (a `std` program of about 0.2 MB),
+/// the stack, the hardened allocator's blocks and the rows of the file it
+/// edits.
+const KIBI_MEM_PAGES: u32 = 512;
+/// What the editor holds: the shell's write trees (only `/tmp` under
+/// `CONSOLE_LOCKDOWN`, as `COREUTIL.ELF`), the root directory they are opened
+/// beneath, and the `entropy` interface `std`'s allocator is keyed from.
+pub const KIBI_CAPS: &[CapSpec] =
+    if azos_limits::CONSOLE_LOCKDOWN { &[TMP_RW, ROOT_RO, WHY_ENTROPY] } else { &[FAT_RW, TMP_RW, ROOT_RO, WHY_ENTROPY] };
+/// What the editor may be handed at spawn: the terminal its shell lends the job
+/// (`endpoint.term`, badged with the job), never a grant of its own.
+pub const KIBI_RECEIVES: &[MaybeStr<'static>] = &[MaybeStr::from_bytes(b"term")];
 
 /// The package installer's endpoint: `PKGD.ELF` serves the `Packages` object
 /// on it (`READ`), `PKG.ELF` calls it (`WRITE`).

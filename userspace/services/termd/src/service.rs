@@ -279,8 +279,11 @@ impl<C: Console, G: Gate> Service<C, G> {
     fn end_lend(&mut self) {
         if let Some(l) = self.lent.take() {
             self.con.revoke_job(l.handle);
-            self.d.set_raw(l.raw);
-            self.d.set_echo(l.echo);
+            #[cfg(not(feature = "canary-keep-mode"))]
+            {
+                self.d.set_raw(l.raw);
+                self.d.set_echo(l.echo);
+            }
         }
     }
 

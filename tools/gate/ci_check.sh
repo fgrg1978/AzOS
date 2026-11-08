@@ -26113,6 +26113,11 @@ PYEOF
                 fi
                 if [ "${line#!}" != "$line" ]; then ush_type "${line#!}"; printf '\r' >&8; continue; fi
                 if [ "$line" = "#intr" ]; then printf '\003' >&8; continue; fi
+                # `#ctl X`: the control byte of letter X (`#ctl S` is ^S), typed
+                # with no wait: a raw-mode program's key.
+                if [ "${line#\#ctl }" != "$line" ]; then
+                    printf "\\$(printf '%03o' $(( $(printf '%d' "'${line#\#ctl }") & 31 )))" >&8; continue
+                fi
                 # `#key NAME...`: raw key presses through the monitor (USH_VKBD),
                 # for a task that reads the events and not the typed line.
                 if [ "${line#\#key }" != "$line" ]; then python3 tools/gate/qemu_sendkeys.py --raw "$vsock" ${line#\#key }; continue; fi
@@ -26552,6 +26557,46 @@ echo x > ONE.TXT
 echo y > TWO.LOG
 fd -e zzz . /fat/FDT" 150 \
             "/fat/FDT/ONE.TXT"
+        # NOT RUN YET (arm phase): written without a QEMU run; `CI_KIBI=1` includes
+        # them; until they have passed once on arm they are not part of the gate.
+        # The ported editor (Kconfig USERSPACE_KIBI) on the terminal the shell lends
+        # its job (SYS_SPAWN_EX hands the badged Terminal call right to a row that
+        # receives `term`): open a new file, type a line, save (^S), quit (^Q); open
+        # another and stop it with ^C in raw mode, which the editor never gets to
+        # undo; then the shell must read a cooked line again. The text the file holds
+        # comes back upper-cased by `tr`, so the marker is in no typed line. The
+        # canary's terminal server leaves a job's mode behind (TERMD_FEATURES=
+        # canary-keep-mode, a volume and a kernel of its own, built with no other job
+        # running since the ELF in build/ is shared): after the ^C the terminal
+        # stays raw, the shell never gets its line and the marker is missing.
+        if [ "$ush_isa" = arm ] && [ "${CI_KIBI:-0}" = 1 ]; then
+            kibi_script="!kibi /fat/KB.TXT
+#wait \^Q quit
+!kibi-wrote-this
+#ctl S
+#wait written to
+#ctl Q
+#count 2 azos[$] 
+!kibi /fat/KB2.TXT
+#sleep 5
+^C
+tr a-z A-Z < /fat/KB.TXT"
+            USH_FORBID="$RECOVERY_PROMPT_RE|PAGE FAULT|Killing user task" par_row ushell_row "sh: kibi edits and saves a file ($ush_isa)" "$ush_isa" "$ush_feat,CONFIG_USERSPACE_KIBI=y" PASS \
+                "$kibi_script" 240 "KIBI-WROTE-THIS"
+            par_drain
+            kibi_canary_img="$CI_LOG_DIR/ush-kibi-keep-mode.img"
+            rm -f "$kibi_canary_img" "$AZOS_OUT/build/disk-aarch64-sh.img"
+            if make TERMD_FEATURES=canary-keep-mode "$AZOS_OUT/build/disk-aarch64-sh.img" >"$CI_LOG_DIR/kibi-canary-disk.log" 2>&1; then
+                cp "$AZOS_OUT/build/disk-aarch64-sh.img" "$kibi_canary_img"
+                USH_IMG="$kibi_canary_img" USH_FORBID="$RECOVERY_PROMPT_RE|PAGE FAULT|Killing user task" ushell_row "sh: kibi mode not restored canary ($ush_isa)" "$ush_isa" "$ush_feat,CONFIG_USERSPACE_KIBI=y" FAIL \
+                    "$kibi_script" 240 "KIBI-WROTE-THIS"
+            else
+                printf "  %-26s" "sh: kibi mode not restored canary ($ush_isa)..."; bad; echo "      the canary volume did not build (see $CI_LOG_DIR/kibi-canary-disk.log)"
+            fi
+            rm -f "$AZOS_OUT/build/disk-aarch64-sh.img"
+            make "$AZOS_OUT/build/disk-aarch64-sh.img" >/dev/null 2>&1 \
+                && cp -p "$AZOS_OUT/build/disk-aarch64-sh.img" "$AZOS_OUT/build/disk-aarch64-sh.img.pristine"
+        fi
         # The images that ask for more stack than a task gets by default, run:
         # MLSRV.ELF (64 KiB for its main thread, started by the behavior task,
         # steady when it serves the Infer interface) and TOOLBOX.ELF's `ps`

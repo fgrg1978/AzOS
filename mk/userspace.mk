@@ -283,9 +283,19 @@ $(SH_ELF): $(SH_SRC) $(LIBSYS_SRC)
 	cp $(SH_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(TERMD_ELF): $(TERMD_SRC) $(LIBSYS_SRC)
+# Extra termd cargo features: its gate canary (`TERMD_FEATURES=canary-keep-mode`,
+# the `sh: kibi ... canary` row: a job's end leaves its raw mode behind). The
+# stamp as ina_drv's, so the canary ELF is never reused by a later default build.
+TERMD_FEATURES ?=
+TERMD_FEATURES_ARG := $(if $(strip $(TERMD_FEATURES)),--features $(strip $(TERMD_FEATURES)))
+$(OUT_BUILD)/termd.features: FORCE
 	@mkdir -p $(OUT_BUILD)
-	cd $(TERMD_DIR) && export CARGO_TARGET_DIR="$(UTGT_RV64)" && $(USPACE_BUILD) $(RV_UFLAGS)
+	@printf '%s\n' '$(strip $(TERMD_FEATURES))' | cmp -s - $@ \
+	    || printf '%s\n' '$(strip $(TERMD_FEATURES))' >$@
+
+$(TERMD_ELF): $(TERMD_SRC) $(LIBSYS_SRC) $(OUT_BUILD)/termd.features
+	@mkdir -p $(OUT_BUILD)
+	cd $(TERMD_DIR) && export CARGO_TARGET_DIR="$(UTGT_RV64)" && $(USPACE_BUILD) $(RV_UFLAGS) $(TERMD_FEATURES_ARG)
 	cp $(TERMD_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
@@ -917,9 +927,9 @@ $(RNG_DRV_ELF_AARCH64): $(RNG_DRV_SRC) $(LIBSYS_SRC) $(OUT_BUILD)/rng_drv.featur
 	cp $(UTGT_AARCH64)/$(TARGET_AARCH64)/release/rng_drv $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(TERMD_ELF_AARCH64): $(TERMD_SRC) $(LIBSYS_SRC)
+$(TERMD_ELF_AARCH64): $(TERMD_SRC) $(LIBSYS_SRC) $(OUT_BUILD)/termd.features
 	@mkdir -p $(AARCH64_DIR)
-	cd $(TERMD_DIR) && export CARGO_TARGET_DIR="$(UTGT_AARCH64)" && $(USPACE_BUILD) $(AARCH64_UFLAGS)
+	cd $(TERMD_DIR) && export CARGO_TARGET_DIR="$(UTGT_AARCH64)" && $(USPACE_BUILD) $(AARCH64_UFLAGS) $(TERMD_FEATURES_ARG)
 	cp $(UTGT_AARCH64)/$(TARGET_AARCH64)/release/termd $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
@@ -1299,9 +1309,9 @@ $(MLSRV_ELF_X86_64): $(MLSRV_DEPS) $(TOPOLOGY_KEY_STAMP) $(X86_64_KCONFIG)
 	cd $(MLSRV_DIR) && export CARGO_TARGET_DIR="$(UTGT_X86_64)" && $(MLSRV_QEMU_BUILD) $(X86_64_UFLAGS) $(MLSRV_KEY_FEATURES)
 	cp $(UTGT_X86_64)/$(X86_64_UBUILT)/infsrv $@
 
-$(TERMD_ELF_X86_64): $(TERMD_SRC) $(LIBSYS_SRC) $(X86_64_KCONFIG)
+$(TERMD_ELF_X86_64): $(TERMD_SRC) $(LIBSYS_SRC) $(X86_64_KCONFIG) $(OUT_BUILD)/termd.features
 	@mkdir -p $(X86_64_DIR)
-	cd $(TERMD_DIR) && export CARGO_TARGET_DIR="$(UTGT_X86_64)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
+	cd $(TERMD_DIR) && export CARGO_TARGET_DIR="$(UTGT_X86_64)" && $(USPACE_BUILD) $(X86_64_UFLAGS) $(TERMD_FEATURES_ARG)
 	cp $(UTGT_X86_64)/$(X86_64_UBUILT)/termd $@
 
 $(NAMESD_ELF_X86_64): $(NAMESD_SRC) $(LIBSYS_SRC) $(X86_64_KCONFIG)
@@ -1424,10 +1434,10 @@ $(RPCQUIC_ELF_X86_64): $(RPCQUIC_SRC) $(X86_64_KCONFIG) $(SDK_KEY_x86_64)
 	cp $(TLSPROBE_TGT)/x86_64-unknown-azos/release/rpcquic $@
 	@echo "[SDK] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-# The ported programs (third_party/ports: ripgrep `rg`, fd-find `fd`, kibi) on the same
-# vendored tree and target directory as the probe. `make ports` builds the three for the
-# three ISAs. None is on a system volume: std has no `fs` for the azos target yet (see
-# third_party/ports/README.md).
+# The ported programs (third_party/ports: ripgrep `rg`, fd-find `fd` and kibi `kibi`,
+# system-volume images by Kconfig USERSPACE_RG, USERSPACE_FD and USERSPACE_KIBI) on the
+# same vendored tree and target directory as the probe. `make ports` builds the three for
+# the three ISAs.
 PORTS_DIR := third_party/ports
 PORTS_BIN_ripgrep := rg
 PORTS_BIN_fd-find := fd

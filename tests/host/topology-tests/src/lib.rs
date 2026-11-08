@@ -1928,7 +1928,10 @@ mod builder_tests {
             + azos_topology::builder::SSHD_ROW as usize
             + azos_topology::builder::LOGIND_ROW as usize
             + azos_topology::builder::VMMD_ROW as usize
-            + azos_topology::builder::INPUTD_ROW as usize); // +1 with Kconfig INPUTD: INPUTD.ELF; +1 with Kconfig HV: VMMD.ELF; +1 with Kconfig MCP_BRIDGE: MCPD.ELF; +1 with Kconfig SSHD: SSHD.ELF; +1 with Kconfig CONSOLE_LOGIN: LOGIND.ELF; +1 with Kconfig PTPD: PTPD.ELF; +1 with Kconfig AUDIOD: AUDIOD.ELF; +1 with Kconfig RPC_QUIC: RPCQUIC.ELF; +1 with Kconfig ZENOH_GW: ZENOHD.ELF; +1 with Kconfig USERSPACE_COMPMGR: COMPMGR.ELF; +3 in wave 11: SH.ELF, TOOLBOX.ELF, POWER; +4 in wave 12: FLIGHT/BEHAVIOR/CONFIG/OTA.ELF; -1 per driver placed in the kernel; +1 under lx-server: LXSRV.ELF; +1 for the wave-12 Linux test row (gate only); +1 in wave 15: TRACECTL.ELF
+            + azos_topology::builder::INPUTD_ROW as usize
+            + azos_limits::USERSPACE_RG as usize
+            + azos_limits::USERSPACE_FD as usize
+            + azos_limits::USERSPACE_KIBI as usize); // +1 per ported program (Kconfig USERSPACE_RG, USERSPACE_FD, USERSPACE_KIBI); +1 with Kconfig INPUTD: INPUTD.ELF; +1 with Kconfig HV: VMMD.ELF; +1 with Kconfig MCP_BRIDGE: MCPD.ELF; +1 with Kconfig SSHD: SSHD.ELF; +1 with Kconfig CONSOLE_LOGIN: LOGIND.ELF; +1 with Kconfig PTPD: PTPD.ELF; +1 with Kconfig AUDIOD: AUDIOD.ELF; +1 with Kconfig RPC_QUIC: RPCQUIC.ELF; +1 with Kconfig ZENOH_GW: ZENOHD.ELF; +1 with Kconfig USERSPACE_COMPMGR: COMPMGR.ELF; +3 in wave 11: SH.ELF, TOOLBOX.ELF, POWER; +4 in wave 12: FLIGHT/BEHAVIOR/CONFIG/OTA.ELF; -1 per driver placed in the kernel; +1 under lx-server: LXSRV.ELF; +1 for the wave-12 Linux test row (gate only); +1 in wave 15: TRACECTL.ELF
         let supervisor = t
             .find_task(&MaybeStr::from_bytes(b"supervisor"))
             .expect("supervisor present");
@@ -2359,7 +2362,10 @@ mod state_tests {
             + azos_topology::builder::SSHD_ROW as usize
             + azos_topology::builder::LOGIND_ROW as usize
             + azos_topology::builder::VMMD_ROW as usize
-            + azos_topology::builder::INPUTD_ROW as usize); // +1 with Kconfig INPUTD: INPUTD.ELF; +1 with Kconfig HV: VMMD.ELF; +1 with Kconfig MCP_BRIDGE: MCPD.ELF; +1 with Kconfig SSHD: SSHD.ELF; +1 with Kconfig CONSOLE_LOGIN: LOGIND.ELF; +1 with Kconfig PTPD: PTPD.ELF; +1 with Kconfig AUDIOD: AUDIOD.ELF; +1 with Kconfig RPC_QUIC: RPCQUIC.ELF; +1 with Kconfig ZENOH_GW: ZENOHD.ELF; +1 with Kconfig USERSPACE_COMPMGR: COMPMGR.ELF; +3 in wave 11: SH.ELF, TOOLBOX.ELF, POWER; +4 in wave 12: FLIGHT/BEHAVIOR/CONFIG/OTA.ELF; -1 per driver placed in the kernel; +1 under lx-server: LXSRV.ELF; +1 for the wave-12 Linux test row (gate only); +1 in wave 15: TRACECTL.ELF
+            + azos_topology::builder::INPUTD_ROW as usize
+            + azos_limits::USERSPACE_RG as usize
+            + azos_limits::USERSPACE_FD as usize
+            + azos_limits::USERSPACE_KIBI as usize); // +1 per ported program (Kconfig USERSPACE_RG, USERSPACE_FD, USERSPACE_KIBI); +1 with Kconfig INPUTD: INPUTD.ELF; +1 with Kconfig HV: VMMD.ELF; +1 with Kconfig MCP_BRIDGE: MCPD.ELF; +1 with Kconfig SSHD: SSHD.ELF; +1 with Kconfig CONSOLE_LOGIN: LOGIND.ELF; +1 with Kconfig PTPD: PTPD.ELF; +1 with Kconfig AUDIOD: AUDIOD.ELF; +1 with Kconfig RPC_QUIC: RPCQUIC.ELF; +1 with Kconfig ZENOH_GW: ZENOHD.ELF; +1 with Kconfig USERSPACE_COMPMGR: COMPMGR.ELF; +3 in wave 11: SH.ELF, TOOLBOX.ELF, POWER; +4 in wave 12: FLIGHT/BEHAVIOR/CONFIG/OTA.ELF; -1 per driver placed in the kernel; +1 under lx-server: LXSRV.ELF; +1 for the wave-12 Linux test row (gate only); +1 in wave 15: TRACECTL.ELF
 
         // A second init must fail with AlreadyInit, by either path, and
         // `init_with` must not run its fill on a slot it does not hold.
@@ -2409,7 +2415,10 @@ mod state_tests {
             + azos_topology::builder::SSHD_ROW as usize
             + azos_topology::builder::LOGIND_ROW as usize
             + azos_topology::builder::VMMD_ROW as usize
-            + azos_topology::builder::INPUTD_ROW as usize); // +1 with Kconfig INPUTD: INPUTD.ELF; +1 with Kconfig HV: VMMD.ELF; +1 with Kconfig MCP_BRIDGE: MCPD.ELF; +1 with Kconfig SSHD: SSHD.ELF; +1 with Kconfig CONSOLE_LOGIN: LOGIND.ELF; +1 with Kconfig PTPD: PTPD.ELF; +1 with Kconfig AUDIOD: AUDIOD.ELF; +1 with Kconfig RPC_QUIC: RPCQUIC.ELF; +1 with Kconfig ZENOH_GW: ZENOHD.ELF; +1 with Kconfig USERSPACE_COMPMGR: COMPMGR.ELF; +3 in wave 11: SH.ELF, TOOLBOX.ELF, POWER; +4 in wave 12: FLIGHT/BEHAVIOR/CONFIG/OTA.ELF; -1 per driver placed in the kernel; +1 under lx-server: LXSRV.ELF; +1 for the wave-12 Linux test row (gate only); +1 in wave 15: TRACECTL.ELF
+            + azos_topology::builder::INPUTD_ROW as usize
+            + azos_limits::USERSPACE_RG as usize
+            + azos_limits::USERSPACE_FD as usize
+            + azos_limits::USERSPACE_KIBI as usize); // +1 per ported program (Kconfig USERSPACE_RG, USERSPACE_FD, USERSPACE_KIBI); +1 with Kconfig INPUTD: INPUTD.ELF; +1 with Kconfig HV: VMMD.ELF; +1 with Kconfig MCP_BRIDGE: MCPD.ELF; +1 with Kconfig SSHD: SSHD.ELF; +1 with Kconfig CONSOLE_LOGIN: LOGIND.ELF; +1 with Kconfig PTPD: PTPD.ELF; +1 with Kconfig AUDIOD: AUDIOD.ELF; +1 with Kconfig RPC_QUIC: RPCQUIC.ELF; +1 with Kconfig ZENOH_GW: ZENOHD.ELF; +1 with Kconfig USERSPACE_COMPMGR: COMPMGR.ELF; +3 in wave 11: SH.ELF, TOOLBOX.ELF, POWER; +4 in wave 12: FLIGHT/BEHAVIOR/CONFIG/OTA.ELF; -1 per driver placed in the kernel; +1 under lx-server: LXSRV.ELF; +1 for the wave-12 Linux test row (gate only); +1 in wave 15: TRACECTL.ELF
     }
 
     /// The kernel installs `fill_default_minimal` in place
@@ -4927,6 +4936,41 @@ mod launch_cap_tests {
                 assert_eq!(held, want, "{} holds other than PORT_TOOL_CAPS", String::from_utf8_lossy(image));
             }
         }
+    }
+
+    /// The ported editor (`KIBI.ELF`): the shell's write trees, the root and the
+    /// `entropy` interface, and NO right on the terminal: it receives the one
+    /// the shell lends its job (`receives = ["term"]`), which admission accepts
+    /// because `TERMD.ELF` serves `endpoint.term`. The shell may start it. With
+    /// the symbol off there is no row.
+    ///
+    /// **Canaries.** Drop the `set_last_task_receives` of the row: red on the
+    /// receives assertion. Put `TERM_SERVE` in `KIBI_CAPS`: red on "holds a
+    /// right on the terminal".
+    #[test]
+    fn the_editor_receives_the_terminal_and_holds_no_right_on_it() {
+        use azos_abi::cap::CapPerms;
+        use azos_topology::builder::{KIBI_CAPS, KIBI_RECEIVES, TASK_KIBI_IMAGE};
+        assert!(
+            KIBI_CAPS.iter().all(|c| c.kind != CapKind::Endpoint || c.target.as_bytes() != b"endpoint.term"),
+            "the editor holds a right on the terminal",
+        );
+        assert_eq!(KIBI_RECEIVES.iter().map(|n| n.as_bytes()).collect::<Vec<_>>(), [&b"term"[..]]);
+        assert!(KIBI_CAPS.iter().any(|c| c.kind == CapKind::Node && c.target == MaybeStr::from_bytes(b"/tmp") && c.perms == CapPerms::RW));
+        let topo = default_minimal();
+        let row = topo.tasks().iter().find(|t| t.name == MaybeStr::from_bytes(TASK_KIBI_IMAGE));
+        assert_eq!(row.is_some(), azos_limits::USERSPACE_KIBI, "a row exactly when its symbol is on");
+        if let Some(t) = row {
+            assert_eq!(topo.receives_of(t).iter().map(|n| n.as_bytes()).collect::<Vec<_>>(), [&b"term"[..]]);
+            assert!(topo.imports_of(t).is_empty(), "the editor would reach the terminal past its job's badge");
+            assert_eq!(topo.admission_check(), Ok(()));
+        }
+        let sh = topo.find_task(&MaybeStr::from_bytes(b"SH.ELF")).unwrap();
+        assert_eq!(
+            topo.caps_of(sh).iter().any(|c| c.perms == CapPerms::EXEC && c.target.as_bytes() == TASK_KIBI_IMAGE),
+            !azos_limits::CONSOLE_LOCKDOWN,
+            "the shell may start the editor (not under the lockdown)",
+        );
     }
 
     /// Kconfig INSPECT: the tool image (`inspect`) holds the public region and,

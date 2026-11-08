@@ -9,6 +9,16 @@ releases yet. The ABI crate keeps its own file,
 
 ### Added
 
+- kibi, the ported terminal editor, is back as `KIBI.ELF` (Kconfig
+  `USERSPACE_KIBI`, on for the desktop and server presets): the shell lends the
+  first stage of a foreground job a terminal of its own (`Terminal::lend_job`,
+  interface level 2: a call right badged with the job, offered in the spawn's
+  move list as fd 0), the terminal server answers that badge only while the job
+  has the focus and only for size, mode, echo and input, and revokes it and puts
+  the shell's mode back when the focus returns. The std runtime reads fd 0
+  through it and `std::os::azos::terminal` (feature `azos_ext`) gives raw mode,
+  echo and the size ([Documentation/design/user-shell.md](Documentation/design/user-shell.md)).
+
 - `SYS_SPAWN_EX` hands an endpoint call capability to the child (`Move::kind =
   MOVE_KIND_ENDPOINT`, request version 2): a badged call right the caller holds
   with `TRANSFER`, moved with the call right alone, its badge and its place in

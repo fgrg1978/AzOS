@@ -45,10 +45,12 @@ makes the program build there; `make ports` builds all three for the three ISAs.
   target that is neither unix nor redox, where upstream had only a windows arm;
   `one_file_system` is `false` where the flag does not exist (`src/main.rs`).
 - kibi: `src/azos.rs`, the terminal backend selected by `target_os = "azos"`
-  (`src/lib.rs`), shaped like `wasi.rs`. A program reads fd 0, the handle its spawner
-  passed, and writes the console. The terminal server switches cooked and raw mode
-  only for its one client, the shell, so `enable_raw_mode` returns `Unsupported` and
-  the editor stops with that error instead of running on line-buffered input.
+  (`src/lib.rs`, which also enables the `azos_ext` feature there), shaped like `wasi.rs`.
+  The shell lends a foreground job a terminal of its own: a call capability on the
+  terminal server, badged with the job, which `SYS_SPAWN_EX` moves in as fd 0 into a row
+  that `receives = ["term"]`. `enable_raw_mode`, the restore and the window size go
+  through `std::os::azos::terminal`, and `stdin` is `std::io::stdin`, which the port
+  layer reads through that capability (`azos_stdrt::terminal`). There is no resize signal.
 
 ## On the system volume
 
@@ -59,7 +61,11 @@ a seccomp row (`crates/core/sched/src/seccomp.rs`) and boot rows (`sh: rg finds 
 file`, `sh: fd lists a directory`, each with a canary). They read through `std::fs`
 (`sdk/std/sys/fs/azos.rs`), which names every path beneath the task's root `Cap<Dir>`.
 
-`kibi` is built (`make ports`) but is not an image: it needs the terminal in raw mode and its
-size, and the terminal server hands those to one client only, the shell. A child program that
-holds a Terminal handle the shell passed it at spawn, with the server restoring cooked mode
-when that handle closes, is the design; it is not implemented, so `enable_raw_mode` refuses.
+`kibi` is an image too (Kconfig `USERSPACE_KIBI`, the same presets). Its row holds the
+shell's write trees (only `/tmp` under the console lockdown), the root directory and the
+`entropy` interface, and `receives = ["term"]`: no right on the terminal of its own. The
+terminal server answers the job's badge only while the job has the focus, and when the shell
+takes the focus back it revokes the badge and puts the shell's mode back, so an editor
+stopped in raw mode leaves a cooked terminal. Its boot rows (`sh: kibi edits and saves a
+file`, and the canary whose terminal server leaves the mode behind) are arm-phase rows
+(`CI_KIBI=1`).

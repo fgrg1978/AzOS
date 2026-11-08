@@ -1,6 +1,7 @@
 //! # Kibi
 //!
 //! Kibi is a text editor in ≤1024 lines of code.
+#![cfg_attr(target_os = "azos", feature(azos_ext))]
 
 pub use crate::{config::Config, editor::run, error::Error, sys::stdin};
 
