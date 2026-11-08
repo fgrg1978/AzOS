@@ -307,12 +307,6 @@ pub(crate) fn create_service_tasks(hart_id: usize) {
             azos_sched::BEHAVIOR_PRIORITY + 1, place::pin(place::BEHAVIOR));
         kprintln!("[SCHED] Created camera-tx task (camera connection) [hart {}]", place::pin(place::BEHAVIOR));
     }
-    // Dedicated sensor tasks (AQ0: IO-wait, priority-separated)
-    #[cfg(feature = "use-robot")]
-    let imu = azos_sched::task_create_affinity("imu", imu_task, 0,
-        azos_sched::RT_MOTOR_PRIORITY, place::pin(place::SENSING)); // RT priority
-    #[cfg(feature = "use-robot")]
-    azos_sched::rt::exempt_from_band_cap(imu);
     // Wave 15 (S1): the imu task only queues its reads; where a controller
     // driver is compiled (DesignWare: VisionFive 2, Pi 5, Intel LPSS; the
     // K1's SpacemiT) this task runs the controller's steps (board validation
@@ -323,13 +317,6 @@ pub(crate) fn create_service_tasks(hart_id: usize) {
         azos_sched::task_create("i2c-svc", i2c_service_task, 0,
             azos_limits::I2C_SERVICE_PRIORITY as u32);
     }
-    #[cfg(feature = "use-robot")]
-    azos_sched::task_create("odom", odom_task, 0, azos_sched::BEHAVIOR_PRIORITY);
-    #[cfg(feature = "use-robot")]
-    azos_sched::task_create("sensor-slow", sensor_slow_task, 0, azos_sched::DEFAULT_PRIORITY);
-    #[cfg(feature = "use-robot")]
-    kprintln!("[SCHED] Sensor tasks: imu(RT,{}Hz) odom({}Hz) sensor-slow({}Hz)",
-        azos_limits::SENSOR_IMU_HZ, azos_limits::SENSOR_ODOM_HZ, azos_limits::SENSOR_SLOW_HZ);
 
     // Fast-IPC slot census, diagnostic only. Gated so production builds and
     // ordinary QEMU runs never create the task at all.
@@ -379,14 +366,6 @@ pub(crate) fn create_service_tasks(hart_id: usize) {
     }
     #[cfg(feature = "net")]
     start_net_clients();
-
-    // Phase I1: sensor + AHRS fusion task (~100 Hz).
-    // Hart 1: sensor fusion — dedicated to avoid contention with motor PID on hart 0.
-    #[cfg(feature = "use-robot")]
-    azos_sched::task_create_affinity("sensor-ahrs", sensor_ahrs_task, 0,
-        azos_sched::SENSOR_AHRS_PRIORITY, place::pin(place::SENSING));
-    #[cfg(feature = "use-robot")]
-    kprintln!("[SCHED] Created sensor-ahrs task (IMU+baro+GPS→AHRS→channels) [hart {}]", place::pin(place::SENSING));
 
     // Phase L: telemetry task (attitude + GPS → UDP).
     #[cfg(feature = "use-robot")]

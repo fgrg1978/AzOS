@@ -53,9 +53,10 @@ pub const IDLE_PRIORITY: u32 = 31;
 /// longest storable name is `TASK_NAME_CAPACITY - 1` characters.
 pub const TASK_NAME_CAPACITY: usize = 32;
 
-/// High priority for real-time motor control (PID loop).
-/// Must run promptly to maintain control loop timing.
-pub const RT_MOTOR_PRIORITY: u32 = 8;
+/// The top of the hard real-time band (the topology's `hard_rt` class,
+/// 8..=15): the priority of a loop with a hard deadline over an effect, the
+/// one an extension's driver registers.
+pub const HARD_RT_PRIORITY: u32 = 8;
 
 /// Priority for the network polling task (Kconfig TASK_NET_POLL_PRIORITY).
 /// Slightly above default so incoming packets are processed promptly.
@@ -64,14 +65,6 @@ pub const NET_POLL_PRIORITY: u32 = azos_limits::TASK_NET_POLL_PRIORITY as u32;
 /// Priority for the behavior engine (sensor→decision→motor).
 /// Above default since it drives the robot's actions.
 pub const BEHAVIOR_PRIORITY: u32 = 14;
-
-/// Priority for sensor fusion / AHRS task (~100 Hz).
-/// Matches behavior priority — both are critical for control.
-pub const SENSOR_AHRS_PRIORITY: u32 = 14;
-
-/// Priority for the flight controller (PID→mixer→ESC).
-/// Same as rt-motor — real-time critical.
-pub const FLIGHT_CTRL_PRIORITY: u32 = 8;
 
 /// Priority for the system watchdog task.
 ///
@@ -103,7 +96,7 @@ pub const FLIGHT_CTRL_PRIORITY: u32 = 8;
 /// 11 is chosen, not comfortable: inside the RT band
 /// (< `RT_PRIORITY_THRESHOLD`) so a canary sweep is not interrupted by the
 /// tick half-way through, and still BELOW the two hard control loops
-/// (`RT_MOTOR_PRIORITY` / `FLIGHT_CTRL_PRIORITY` = 8) so the watchdog can
+/// (`HARD_RT_PRIORITY` = 8) so the watchdog can
 /// never preempt the actuation it supervises.
 ///
 /// And the priority is only half of it: at RT priority the old body — a 500 ms

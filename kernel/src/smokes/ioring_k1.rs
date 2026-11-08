@@ -241,7 +241,7 @@ azos_ktest::ktest_late! {
         DONE.store(0, SeqCst);
         RAN_ON_RT.store(0, SeqCst);
         ring::io_ring_register_ops(&K1_OPS);
-        let rt = round(azos_sched::RT_MOTOR_PRIORITY);
+        let rt = round(azos_sched::HARD_RT_PRIORITY);
         let ran_on_rt = RAN_ON_RT.load(SeqCst);
         let normal = round(azos_sched::DEFAULT_PRIORITY);
         ring::io_ring_register_ops(&azos_syscall::ioring_ops::KERNEL_IORING_OPS);

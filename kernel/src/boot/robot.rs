@@ -34,6 +34,8 @@ use crate::*;
 /// stated reason).
 #[inline(always)]
 pub(crate) fn install_robot_payload_and_sensors() {
+    #[cfg(feature = "use-robot")]
+    azos_safety_core::sensor_tasks::set_beep(crate::buzzer::buzzer_beep);
     kprintln!("========================================");
     kprintln!(" Phase 10: Drivers + Robot Framework");
     kprintln!("========================================");

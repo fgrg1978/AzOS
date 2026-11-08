@@ -53,7 +53,7 @@ GATE = "use-robot"
 SURFACE = {
     "arch/facade",
     "crates/core/abi", "crates/core/actuation", "crates/core/channel", "crates/core/common",
-    "crates/core/config", "crates/core/crypto", "crates/core/ipc", "crates/core/limits", "crates/core/rings",
+    "crates/core/config", "crates/core/crypto", "crates/core/ipc", "crates/core/limits", "crates/core/percpu", "crates/core/rings",
     "crates/core/sched", "crates/core/sync", "crates/core/syscall", "crates/core/topology", "crates/core/wcet-macro",
 }
 EXTENSION_OPEN = ("crates/core/ext-api", "crates/drivers", "crates/lib")

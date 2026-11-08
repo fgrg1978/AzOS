@@ -60,3 +60,12 @@ azos_config   = { workspace = true }
 azos_limits   = { workspace = true }
 azos_flight   = { workspace = true }
 azos_ahrs     = { workspace = true }
+azos_imu      = { workspace = true }
+azos_baro     = { workspace = true }
+azos_gps      = { workspace = true }
+azos_nav      = { workspace = true }
+azos_drv_sensor = { workspace = true }
+azos_drv_gpio = { workspace = true }
+azos_drv_base = { workspace = true }
+azos_abi      = { workspace = true }
+azos_percpu   = { workspace = true }

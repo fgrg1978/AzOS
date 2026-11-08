@@ -191,12 +191,18 @@ fn wire_motor_effects() {
     kprintln!("[SAFETY] motor effects watched against their deadline (safe-state sweep in sys-wdt)");
 }
 
+/// The drivetrain loop's priority: the top of the hard real-time band.
+pub const RT_MOTOR_PRIORITY: u32 = azos_sched::HARD_RT_PRIORITY;
+/// The flight controller's: the same band, on the same CPU (it writes what
+/// rt-motor reads).
+pub const FLIGHT_CTRL_PRIORITY: u32 = azos_sched::HARD_RT_PRIORITY;
+
 /// The drivetrain's command-to-PWM loop: the PID, the motor-command watchdog
 /// and the wheel writes (`rt_motor`).
 pub static RT_MOTOR: azos_ext_api::EffectLoop = azos_ext_api::EffectLoop {
     name: "rt-motor",
     body: crate::rt_motor::rt_motor_task,
-    priority: azos_sched::RT_MOTOR_PRIORITY,
+    priority: RT_MOTOR_PRIORITY,
 };
 
 /// The flight controller: PID, mixer and ESC writes, with its failsafes
@@ -204,7 +210,7 @@ pub static RT_MOTOR: azos_ext_api::EffectLoop = azos_ext_api::EffectLoop {
 pub static FLIGHT_CTRL: azos_ext_api::EffectLoop = azos_ext_api::EffectLoop {
     name: "flight-ctrl",
     body: crate::flight_ctrl::flight_control_task,
-    priority: azos_sched::FLIGHT_CTRL_PRIORITY,
+    priority: FLIGHT_CTRL_PRIORITY,
 };
 
 #[cfg(feature = "effect-gate")]
@@ -212,12 +218,14 @@ const ROBOT_HOOKS: &[azos_ext_api::BootHook] = &[
     azos_ext_api::BootHook::Devices(azos_robot_sensors::register),
     azos_ext_api::BootHook::Effects(wire_motor_effects),
     azos_ext_api::BootHook::EffectLoop(&RT_MOTOR),
+    azos_ext_api::BootHook::Tasks(crate::sensor_tasks::create),
     azos_ext_api::BootHook::EffectLoop(&FLIGHT_CTRL),
 ];
 #[cfg(not(feature = "effect-gate"))]
 const ROBOT_HOOKS: &[azos_ext_api::BootHook] = &[
     azos_ext_api::BootHook::Devices(azos_robot_sensors::register),
     azos_ext_api::BootHook::EffectLoop(&RT_MOTOR),
+    azos_ext_api::BootHook::Tasks(crate::sensor_tasks::create),
     azos_ext_api::BootHook::EffectLoop(&FLIGHT_CTRL),
 ];
 

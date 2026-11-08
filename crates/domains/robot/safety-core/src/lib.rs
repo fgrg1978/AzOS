@@ -14,6 +14,7 @@
 pub mod actuation;
 pub mod flight_ctrl;
 pub mod rt_motor;
+pub mod sensor_tasks;
 pub mod txn;
 pub mod txn_rule;
 

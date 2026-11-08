@@ -92,7 +92,7 @@ fn rt_console_probe(_: usize) {
 #[cfg(feature = "ktest")]
 azos_ktest::ktest_late! {
     fn console_rt_lines_only_append() {
-        crate::ktest::probe("rt-console-probe", rt_console_probe, 0, azos_sched::RT_MOTOR_PRIORITY, -1)?;
+        crate::ktest::probe("rt-console-probe", rt_console_probe, 0, azos_sched::HARD_RT_PRIORITY, -1)?;
         if BASE_PRIO.load(Ordering::SeqCst) >= azos_sched::RT_PRIORITY_THRESHOLD {
             Err("the probe did not run in the RT band")
         } else if !azos_limits::CONSOLE_RT_APPEND_ONLY {
