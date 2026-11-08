@@ -848,6 +848,13 @@ impl Warrant {
         Warrant { parent: 0, depth: 0, expiry_ns: 0, quota: Quota::NONE, flags: 0, caveats: Caveats::NONE };
     /// The slot and everything derived from it resolves read-only.
     pub const WEAK: u8 = 1;
+    /// The slot's badge was stamped by the kernel when the topology was
+    /// seeded (`cap_store::grant_badged`, `grant_op_masked`), and every copy
+    /// derived or moved from it keeps the mark: its server may read the row's
+    /// authority into the badge, so it is never handed to a child
+    /// (`SYS_SPAWN_EX`). A badge a server mints comes from an unbadged source
+    /// and never carries it.
+    pub const STAMPED: u8 = 2;
 
     /// A root that is weak.
     pub const WEAK_ROOT: Self = Warrant { flags: Self::WEAK, ..Self::ROOT };
@@ -865,6 +872,7 @@ const META_BLOCK_SHIFT: u32 = 48;
 const META_BYTES: u64 = 1 << 60;
 const META_KIDS: u64 = 1 << 61;
 const META_WEAK: u64 = 1 << 62;
+const META_STAMPED: u64 = 1 << 63;
 
 /// Canary (weak caps): the hot word is published without its weak bit, so a
 /// weak slot resolves with the rights it was granted. Read only where a weak
@@ -911,7 +919,8 @@ impl WarrantCell {
             | (block as u64) << META_BLOCK_SHIFT
             | (w.depth as u64) << META_DEPTH_SHIFT
             | if w.quota.bytes { META_BYTES } else { 0 }
-            | if w.is_weak() { META_WEAK } else { 0 };
+            | if w.is_weak() { META_WEAK } else { 0 }
+            | if w.flags & Warrant::STAMPED != 0 { META_STAMPED } else { 0 };
         self.meta.store(meta, Relaxed);
     }
 
@@ -931,7 +940,8 @@ impl WarrantCell {
             depth: ((m >> META_DEPTH_SHIFT) & 0xf) as u8,
             expiry_ns: self.expiry.load(Relaxed),
             quota: Quota { bytes: m & META_BYTES != 0, amount: m & Quota::MAX },
-            flags: if m & META_WEAK != 0 { Warrant::WEAK } else { 0 },
+            flags: if m & META_WEAK != 0 { Warrant::WEAK } else { 0 }
+                | if m & META_STAMPED != 0 { Warrant::STAMPED } else { 0 },
             caveats: Caveats::NONE,
         }
     }

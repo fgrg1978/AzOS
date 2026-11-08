@@ -211,20 +211,32 @@ fn entry(fd: u32, handle: CapHandle, offered: bool) -> Move {
     Move { child_fd: fd, handle: handle.as_raw(), perms: 0, kind: MOVE_KIND_ENDPOINT | if offered { MOVE_F_OFFER } else { 0 } }
 }
 
-/// **A badge the kernel stamped at seeding is never handed on**: it is a root
-/// of the warrant tree, and its server may read authority into it. Only a
-/// badge a server derived (a copy with a parent) goes.
+/// **A badge the kernel stamped at seeding is never handed on**, nor any copy
+/// of it: the grant carries `Warrant::STAMPED`, every derive and move keeps
+/// it, and its server may read authority into the badge. A DUP through a
+/// message gives the copy a parent, so "a root" would not have caught it. Only
+/// a badge a server minted from an unbadged source goes.
 ///
-/// **Canary.** Drop the `root` test from `check_held`: the seeded root is
-/// planned and this goes red.
+/// **Canaries.** Drop the `stamped` test from `check_held`: the seeded grant
+/// and its DUP are planned. Seed `grant_badged` without `STAMPED`: the same.
 #[test]
-fn a_kernel_stamped_badged_root_is_refused() {
+fn a_kernel_stamped_badge_and_its_copies_are_refused() {
     let _g = serial();
     let s = scene(CapPerms::WRITE.union(CapPerms::TRANSFER));
-    let seeded = cap_store::grant_badged::<azos_ipc::cap::targets::Endpoint>(SHELL, CapPerms::WRITE.union(CapPerms::DELEGATE), s.resource, 5)
+    let rights = CapPerms::WRITE.union(CapPerms::DELEGATE);
+    let seeded = cap_store::grant_badged::<azos_ipc::cap::targets::Endpoint>(SHELL, rights, s.resource, 5)
         .expect("a seeded badged grant")
         .raw();
     assert_eq!(plan(SHELL, &[entry(0, seeded, false)]).err(), Some(Errno::ECAPPERMS), "a seeded badge was handed on");
+    // The same stamp, DUPed to the shell by a peer through a message.
+    let peer_seeded = cap_store::grant_badged::<azos_ipc::cap::targets::Endpoint>(CHILD, rights, s.resource, 6).unwrap().raw();
+    let mut x = CapXfer::new(peer_seeded, true);
+    x.rights = Some(CapPerms::WRITE.union(CapPerms::TRANSFER));
+    let mut out = [CapHandle::from_raw(0); 1];
+    cap_store::move_caps(CHILD, SHELL, &[x], true, &mut out).expect("the DUP");
+    let w = cap_store::read_table(SHELL, |t| t.warrant_of(out[0])).flatten().unwrap();
+    assert_ne!(w.parent, 0, "the DUP has a parent: a root test would let it through");
+    assert_eq!(plan(SHELL, &[entry(0, out[0], false)]).err(), Some(Errno::ECAPPERMS), "a stamped badge's copy was handed on");
     assert!(plan(SHELL, &[entry(0, s.lent, false)]).is_ok(), "the server's derived badge is refused");
     teardown();
 }

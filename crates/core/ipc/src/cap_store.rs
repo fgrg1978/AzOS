@@ -1097,7 +1097,7 @@ pub fn grant_badged<T: CapTarget>(
                     perms,
                     resource,
                     crate::cap::CapExt { badge, ..crate::cap::CapExt::NONE },
-                    crate::cap::Warrant::ROOT,
+                    crate::cap::Warrant { flags: crate::cap::Warrant::STAMPED, ..crate::cap::Warrant::ROOT },
                 )
                 .map(Cap::from_raw);
             drop(table);
@@ -1125,6 +1125,7 @@ pub fn grant_op_masked<T: CapTarget>(
     }
     let warrant = Warrant {
         caveats: Caveats::NONE.with(Caveat::new(caveat::OP_MASK, ops)).ok()?,
+        flags: if badge != 0 { Warrant::STAMPED } else { 0 },
         ..Warrant::ROOT
     };
     loop {

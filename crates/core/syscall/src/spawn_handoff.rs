@@ -21,10 +21,12 @@
 //! say, and the row grants nothing itself.
 //!
 //! **Whose badge.** Only a badge a server minted for the purpose
-//! (`ENDPOINT_DERIVE`, a link of the warrant tree with a parent) is handed on.
-//! A badge the kernel stamped at seeding is a topology root, and its server may
-//! read authority into it (the `power` and `input` classes do): handed to a
-//! child narrowed to WRITE, it would still say what the row was granted.
+//! (`ENDPOINT_DERIVE`, from an unbadged source) is handed on. A badge the
+//! kernel stamped at seeding carries `Warrant::STAMPED`, which every copy
+//! derived or moved from it keeps (a DUP through a message included), and its
+//! server may read authority into it (the `power` and `input` classes do):
+//! handed to a child narrowed to WRITE, it would still say what the row was
+//! granted.
 //!
 //! The move list as a whole is planned here too ([`plan`], [`Plan`]): every
 //! entry checked against the caller's table before anything moves, the rows
@@ -41,18 +43,18 @@ use azos_abi::ushell::{Move, StartupFd, FD_CONSOLE, FD_HANDLE, MOVE_CONSOLE, SPA
 pub const HANDED_RIGHTS: CapPerms = CapPerms::WRITE;
 
 /// May the capability the caller holds as `(kind, held, badge)` be handed to
-/// a child, `root` saying it has no parent in the warrant tree? `ECAPKIND`
-/// for anything but an endpoint; `ECAPPERMS` for one without the call right,
-/// without `TRANSFER`, with `READ`, unbadged, or badged by the kernel at
-/// seeding (a root).
-pub fn check_held(kind: CapType, held: CapPerms, badge: u32, root: bool) -> Result<(), Errno> {
+/// a child, `stamped` saying its badge comes from the kernel's seeding
+/// (`Warrant::STAMPED`)? `ECAPKIND` for anything but an endpoint;
+/// `ECAPPERMS` for one without the call right, without `TRANSFER`, with
+/// `READ`, unbadged, or stamped.
+pub fn check_held(kind: CapType, held: CapPerms, badge: u32, stamped: bool) -> Result<(), Errno> {
     if kind != ty::ENDPOINT {
         return Err(Errno::ECAPKIND);
     }
     if !held.contains(CapPerms::WRITE) || !held.contains(CapPerms::TRANSFER) || held.contains(CapPerms::READ) {
         return Err(Errno::ECAPPERMS);
     }
-    if badge == 0 || root {
+    if badge == 0 || stamped {
         return Err(Errno::ECAPPERMS);
     }
     Ok(())
@@ -181,11 +183,12 @@ pub fn plan(me: u32, moves: &[Move]) -> Result<Plan, Errno> {
         let peek = azos_ipc::cap_store::with_table(me, |t| t.peek_raw(h)).flatten();
         let Some((kind, held, resource)) = peek else { return Err(Errno::ECAPSTALE) };
         let entry = if m.is_endpoint() {
-            let (badge, root) = azos_ipc::cap_store::with_table(me, |t| {
-                (t.ext_of(h).map_or(0, |e| e.badge), t.warrant_of(h).map_or(true, |w| w.parent == 0))
+            let (badge, stamped) = azos_ipc::cap_store::with_table(me, |t| {
+                let stamped = t.warrant_of(h).map_or(true, |w| w.flags & azos_ipc::cap::Warrant::STAMPED != 0);
+                (t.ext_of(h).map_or(0, |e| e.badge), stamped)
             })
             .unwrap_or((0, true));
-            check_held(kind, held, badge, root)?;
+            check_held(kind, held, badge, stamped)?;
             Moving { handle: m.handle, kind, rights: HANDED_RIGHTS, resource, offered: m.offered(), ..NOT_MOVING }
         } else {
             match kind {
