@@ -271,7 +271,7 @@ reader cannot disagree about what a file means.
 | 5 | Task keys `imports`, `timer_slack`. |
 | 6 | Sections `[device.NAME]`, `[signer.NAME]`, `[peer.NAME]`; task keys `export`, `place`, `stateless`, `call_budget_us`, `lx_class`. |
 | 7 | Task keys `shadow`, `isolated`, `kmem_kib`, `principal`; device keys `safe_state`, `commit_ns`, `compensate`; peer keys `noise_pk`, `measurement`; sections `[policy.NAME]`, `[livepatch.NAME]`, `[degrade.NAME]`, `[clock]`, `[swap.NAME]`, `[login.NAME]`, `[volume.NAME]`, `[guest.NAME]`, `[route.NAME]`, `[firewall.NAME]`. |
-| 8 | Task keys `security_boundary`, `partition_id`; guest keys `passthrough`, `static`, `pcpus`, `mem_base`; the sections of "Format 8 rows" below. |
+| 8 | Task keys `security_boundary`, `partition_id`, `mem_pages_max`, `receives`; guest keys `passthrough`, `static`, `pcpus`, `mem_base`; the sections of "Format 8 rows" below. |
 
 The three binding keys (format 4 or later, each at most once, before the
 first section) sit inside the signed bytes:
@@ -324,6 +324,7 @@ rows.
 | `isolated` | 7 | boolean | The row owns one CPU of `[sched] isolcpus` by itself. |
 | `kmem_kib` | 7 | integer (`u32`) | Ceiling on the kernel memory charged to the row's domain. 0 means no ceiling of its own. |
 | `principal` | 7 | string | `system`, `service`, `user` or `agent`: who the row acts as, over its class's. Default: the class's; and when that is `system`, the principal of the task that spawned it (an agent's children stay agents). |
+| `receives` | 8 | string array | Endpoint names (`term` for `endpoint.term`) the row may be handed a call capability on by its spawner (`SYS_SPAWN_EX`, `MOVE_KIND_ENDPOINT`). Grants nothing. |
 
 Notes on the keys:
 
@@ -346,6 +347,12 @@ Notes on the keys:
   what the row may ask the name server for, and the server lends a derived
   capability or records a refusal. Every imported name must be one the name
   server's row holds (see admission).
+- `receives` names follow the rules of `imports` (alphabet, no repeats, at most
+  `TOPOLOGY_MAX_IMPORTS`, once per row) and share its pool. A name is not
+  authority: the row is granted nothing, and what it may receive is the badged
+  call capability its spawner holds; a handed endpoint the row does not name is
+  refused at the spawn. Every received name must be an endpoint some row
+  serves, and a row may not also import it (see admission).
 - `export` entries are checked when the row is committed (alphabet, no
   repeats, only `RPCSRV.ELF`) and at admission (the row holds the endpoint
   with the lend right, and the peer class exists).
@@ -791,6 +798,7 @@ known.
 | Every task names a declared class. | `UnknownClass` |
 | No two rows hold `WRITE` on one motor; `flight` implies both wheels. | `MotorWriteConflict`, `FlightWithoutDrivetrain` |
 | Every `imports` name is one the name server's row lends: the row holding `READ` on `endpoint.names` must also hold a `WRITE` grant with `transfer = true` and no `READ` on that name. | `UnknownImport` |
+| Every `receives` name is an endpoint some row serves (`READ` on `endpoint.<name>`), and not one the same row imports. | `UnknownReceive` |
 | Every `export` names an endpoint the row may lend and a declared peer class. | `UnknownExport` |
 | No `neverallow` rule is broken (when `TOPOLOGY_NEVERALLOW` is set). | `Neverallow` |
 | The real-time profiles are feasible (below). | `Deadline` |

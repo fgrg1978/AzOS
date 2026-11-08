@@ -31,6 +31,7 @@ pub(crate) mod phys_map;
 pub mod ioport;
 pub mod sleep;
 pub mod spawn;
+pub mod spawn_handoff;
 /// Wave 14 (SPAWNCACHE): the verified-image digest cache.
 pub mod image_cache;
 /// Wave 13: what a native fork child holds (descriptors, its row's capabilities).

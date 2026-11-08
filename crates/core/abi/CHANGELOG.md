@@ -9,6 +9,15 @@ changelog is [`../../../CHANGELOG.md`](../../../CHANGELOG.md).
 
 ### Changed
 
+- `SpawnReq` is version 2 (`SPAWN_REQ_VERSION`): the last word of a move-list
+  entry, padding before, is `Move::kind`. `MOVE_KIND_FD` (0) is the entry it
+  was; `MOVE_KIND_ENDPOINT` (1) hands the child a badged endpoint call
+  capability (moved with `WRITE` alone; the child's topology row must list the
+  endpoint in `receives`, or the spawn is `-EACCES`); `MOVE_F_OFFER` (bit 8)
+  makes such an entry optional (skipped, the fd closed, for a row that does not
+  receive it). A version 1 request, an unknown kind and a flagged descriptor
+  are `-EINVAL`. No syscall number or capability kind is added.
+
 - `SHM_ATTR_SWAPPABLE` means something: the owner's Domain may compress and swap the
   object's pages and any mapper's fault brings them back. The kernel does not read
   such an object by address, a kernel ring over one is refused, and its owner's MOVE

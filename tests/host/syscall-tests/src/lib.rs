@@ -345,6 +345,12 @@ pub mod ioport;
 // (`crate::sleep::wait_until_ms`, wave 11). At the crate root, where the
 // kernel's `lib.rs` declares it; `#[path]`, not `include!`, for the same
 // reason as `file_ops`.
+// `SYS_SPAWN_EX`'s endpoint entries: the checks and the move
+// (`spawn_handoff_tests`). At the crate root, where the kernel's `lib.rs`
+// declares it.
+#[path = "../../../../crates/core/syscall/src/spawn_handoff.rs"]
+pub mod spawn_handoff;
+
 #[path = "../../../../crates/core/syscall/src/sleep.rs"]
 #[allow(dead_code)]
 pub mod sleep;
@@ -721,6 +727,12 @@ mod handlers {
     mod subtree_policy {
         use super::*;
         include!("subtree_policy.rs");
+    }
+
+    #[cfg(test)]
+    mod spawn_handoff_tests {
+        use super::*;
+        include!("spawn_handoff_tests.rs");
     }
 
     #[cfg(test)]

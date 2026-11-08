@@ -9,6 +9,16 @@ releases yet. The ABI crate keeps its own file,
 
 ### Added
 
+- `SYS_SPAWN_EX` hands an endpoint call capability to the child (`Move::kind =
+  MOVE_KIND_ENDPOINT`, request version 2): a badged call right the caller holds
+  with `TRANSFER`, moved with the call right alone, its badge and its place in
+  the warrant tree kept, so the server that minted the badge revokes it where
+  it sits. Only into a row that names the endpoint in the new CAPS.TOML
+  format-8 task key `receives = ["term"]` (which grants nothing); a required
+  entry the row does not receive is `-EACCES`, an offered one (`MOVE_F_OFFER`)
+  is skipped. Admission refuses a received name no row serves or one the row
+  also imports ([Documentation/abi.md](Documentation/abi.md)).
+
 - The native basic utilities (`userspace/lib/coreutils`, run by `COREUTIL.ELF`, an image whose row holds the root directory and the shell's write trees and nothing else):
   `cp mv rm mkdir rmdir touch stat du df find head tail grep sort uniq tr cut tee
   date env pwd basename dirname seq printf` with the common flags, over a `Host`

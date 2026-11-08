@@ -176,6 +176,11 @@ struct Moving {
     /// at (fd 0 reads, any other fd writes; `azos_bytepipe`'s rule, the one
     /// `libsys` adopts the region by).
     ends: u8,
+    /// An endpoint entry the child may go without (`MOVE_F_OFFER`).
+    offered: bool,
+    /// An offered endpoint the child's row does not receive: it stays with
+    /// the caller and the child's fd is closed.
+    skipped: bool,
 }
 
 /// The end of a pipe region a child's `fd` names.
@@ -294,15 +299,18 @@ pub fn sys_spawn_ex(path_ptr: u64, req_ptr: u64) -> i64 {
 
     // The move list, validated whole before anything moves: each distinct
     // handle once, a File descriptor, a Pipe end or a pipe's region (shared,
-    // not moved), rights kept or lowered.
+    // not moved), rights kept or lowered; or an endpoint call capability
+    // (`crate::spawn_handoff`), whose row check waits for the child's row.
     let me = azos_sched::current_task_tid();
     let console_args = {
         let hook = *CONSOLE_START_HOOK.lock();
         hook.and_then(|f| f(&path_buf[..path_len], me))
     };
     let console_block = console_args.map(|a| azos_abi::ushell::console_argv(&path_buf[..path_len], a));
-    let mut moving = [Moving { handle: 0, kind: CapType::NULL, rights: CapPerms::NONE, resource: 0, moved: 0, ends: 0 };
-        SPAWN_MAX_MOVES];
+    let mut moving = [Moving {
+        handle: 0, kind: CapType::NULL, rights: CapPerms::NONE, resource: 0, moved: 0, ends: 0, offered: false,
+        skipped: false,
+    }; SPAWN_MAX_MOVES];
     let mut nmoving = 0usize;
     let mut fds = [StartupFd::default(); STARTUP_FDS];
     let mut fd_slot = [usize::MAX; STARTUP_FDS];
@@ -313,6 +321,10 @@ pub fn sys_spawn_ex(path_ptr: u64, req_ptr: u64) -> i64 {
             continue;
         }
         if let Some(i) = moving[..nmoving].iter().position(|x| x.handle == m.handle) {
+            // A call capability is one child fd.
+            if m.is_endpoint() || moving[i].kind == ty::ENDPOINT {
+                return err(Errno::EINVAL);
+            }
             // `> f 2>&1`: one handle, two child fds. Moved once; the rights
             // asked for must agree.
             let want = if m.perms == 0 {
@@ -327,8 +339,21 @@ pub fn sys_spawn_ex(path_ptr: u64, req_ptr: u64) -> i64 {
             moving[i].ends |= pipe_end_of_fd(fd);
             continue;
         }
-        let peek = azos_ipc::cap_store::with_table(me, |t| t.peek_raw(CapHandle::from_raw(m.handle))).flatten();
-        let Some((kind, held, resource)) = peek else { return err(Errno::ECAPSTALE) };
+        let h = CapHandle::from_raw(m.handle);
+        let peek = azos_ipc::cap_store::with_table(me, |t| t.peek_raw(h).zip(t.ext_of(h))).flatten();
+        let Some(((kind, held, resource), ext)) = peek else { return err(Errno::ECAPSTALE) };
+        if m.is_endpoint() {
+            if let Err(e) = crate::spawn_handoff::check_held(kind, held, ext.badge) {
+                return err(e);
+            }
+            moving[nmoving] = Moving {
+                handle: m.handle, kind, rights: crate::spawn_handoff::HANDED_RIGHTS, resource, moved: 0, ends: 0,
+                offered: m.offered(), skipped: false,
+            };
+            fd_slot[fd] = nmoving;
+            nmoving += 1;
+            continue;
+        }
         match kind {
             // A POSIX pipe's region (`azos_bytepipe`): shared with the child,
             // not moved. The caller keeps its capability and its mapping.
@@ -349,7 +374,10 @@ pub fn sys_spawn_ex(path_ptr: u64, req_ptr: u64) -> i64 {
         if !held.contains(needs) || !held.contains(want) {
             return err(Errno::ECAPPERMS);
         }
-        moving[nmoving] = Moving { handle: m.handle, kind, rights: want, resource, moved: 0, ends: pipe_end_of_fd(fd) };
+        moving[nmoving] = Moving {
+            handle: m.handle, kind, rights: want, resource, moved: 0, ends: pipe_end_of_fd(fd), offered: false,
+            skipped: false,
+        };
         fd_slot[fd] = nmoving;
         nmoving += 1;
     }
@@ -400,10 +428,31 @@ pub fn sys_spawn_ex(path_ptr: u64, req_ptr: u64) -> i64 {
                     return false;
                 }
             }
+            // An endpoint goes only into a row that receives it: asked of
+            // every entry before anything moves.
+            let row = crate::natfork::row_of(ctid);
+            for mv in moving[..nmoving].iter_mut().filter(|m| m.kind == ty::ENDPOINT) {
+                let received = crate::spawn_handoff::row_receives(row, mv.resource);
+                match crate::spawn_handoff::row_decision(received, mv.offered) {
+                    Ok(hand) => mv.skipped = !hand,
+                    Err(e) => {
+                        azos_drv_sys::kwarn!(
+                            "[SPAWN] REFUSED: tid={} hands tid={} an endpoint its row does not receive", me, ctid,
+                        );
+                        refusal.set(err(e));
+                        return false;
+                    }
+                }
+            }
             // Moves, in list order. A failure moves back what already moved.
             for i in 0..nmoving {
                 let mv = moving[i];
-                let res = if mv.kind == ty::SHM {
+                if mv.skipped {
+                    continue;
+                }
+                let res = if mv.kind == ty::ENDPOINT {
+                    crate::spawn_handoff::hand(me, ctid, CapHandle::from_raw(mv.handle))
+                } else if mv.kind == ty::SHM {
                     // Shared: the child gets a derived copy and the caller
                     // keeps its handle and its mapping.
                     let mut out = [CapHandle::from_raw(0); 1];
@@ -444,7 +493,12 @@ pub fn sys_spawn_ex(path_ptr: u64, req_ptr: u64) -> i64 {
                     // the child's table (the caller never lost its own).
                     let undo = |m: &Moving| {
                         let h = CapHandle::from_raw(m.moved);
-                        if m.kind == ty::SHM {
+                        if m.skipped {
+                            return;
+                        }
+                        if m.kind == ty::ENDPOINT {
+                            crate::spawn_handoff::take_back(me, ctid, CapHandle::from_raw(m.handle), h);
+                        } else if m.kind == ty::SHM {
                             let _ = azos_ipc::cap_store::with_table(ctid, |t| t.delete_raw(h));
                             azos_ipc::memobj::memobj_pipe_drop_all_ref(ctid, m.resource);
                             let _ = azos_ipc::memobj::memobj_release_ref(ctid, m.resource);
@@ -468,7 +522,7 @@ pub fn sys_spawn_ex(path_ptr: u64, req_ptr: u64) -> i64 {
                 }
             }
             for fd in 0..STARTUP_FDS {
-                if fd_slot[fd] != usize::MAX {
+                if fd_slot[fd] != usize::MAX && !moving[fd_slot[fd]].skipped {
                     fds[fd] = StartupFd { kind: FD_HANDLE, handle: moving[fd_slot[fd]].moved };
                 }
             }

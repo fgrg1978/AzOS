@@ -3644,15 +3644,6 @@ impl<'a> Topology<'a> {
         &self.imports_pool[start..start + task.receives_count as usize]
     }
 
-    /// Does row `task` receive the endpoint called `endpoint` (the full
-    /// name, `endpoint.term`)? What `SYS_SPAWN_EX` asks of the child's row
-    /// before it moves a call capability on that endpoint into it.
-    pub fn row_receives(&self, task: &TaskSpec<'a>, endpoint: &[u8]) -> bool {
-        endpoint
-            .strip_prefix(b"endpoint.")
-            .is_some_and(|n| self.receives_of(task).iter().any(|r| r.as_bytes() == n))
-    }
-
     /// The declared package signers.
     pub fn signers(&self) -> &[SignerSpec<'a>] {
         &self.signers[..self.signers_len as usize]

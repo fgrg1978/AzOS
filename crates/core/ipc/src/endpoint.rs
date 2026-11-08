@@ -1574,6 +1574,18 @@ pub fn endpoint_name_owner(i: usize) -> Option<([u8; ENDPOINT_NAME_MAX], usize, 
     (e.active && e.name_len != 0).then(|| (e.name, e.name_len as usize, e.owner_tid))
 }
 
+/// Is the endpoint the packed reference `r` names live and called `name`?
+/// What `SYS_SPAWN_EX` asks of a call capability it is to hand a child,
+/// against the names the child's row receives.
+pub fn ref_is_named(r: u32, name: &[u8]) -> bool {
+    let i = LAYOUT.idx(r) as usize;
+    if lookup_ref(r).is_err() {
+        return false;
+    }
+    let eps = ENDPOINTS.lock_irqsave();
+    eps.get(i).is_some_and(|e| e.active && e.generation == LAYOUT.gen(r) && e.name_bytes() == name)
+}
+
 /// The reference of the endpoint called `name`, or `None`. For the kernel-side
 /// caller that needs to reach a named endpoint without holding a capability —
 /// a boot report, and the tests.

@@ -47,11 +47,18 @@ const SCHED: &str = "[class.best_effort]\ncpu_budget_min_pct = 5\npolicy = \"fai
 /// Four rows: `JOBS.ELF` holds a `self` row (no ports) and a `subtree` row (no
 /// endpoints), so both are narrowed together on it; `CAPPED.ELF` holds a
 /// `subtree` ceiling of 4 pages; `PLAIN.ELF` holds none.
-const CAPS: &str = "format = 7\n\
+///
+/// And the spawn hand-off's (`spawn_handoff_tests`): `HOSRV.ELF` serves
+/// `endpoint.ho_term`, `HOJOB.ELF` receives it, and `HOOTHER.ELF` serves
+/// `endpoint.ho_other`, which nobody receives.
+const CAPS: &str = "format = 8\n\
 [task.JOBS.ELF]\ncaps = []\n\
 [task.CAPPED.ELF]\ncaps = []\n\
 [task.PLAIN.ELF]\ncaps = []\n\
 [task.MOTORDRV.ELF]\ncaps = []\nplace = \"ring3\"\ncall_budget_us = 900\n\
+[task.HOSRV.ELF]\ncaps = [\n  { kind = \"endpoint\", target = \"endpoint.ho_term\", perm = \"rw\", transfer = true },\n]\n\
+[task.HOOTHER.ELF]\ncaps = [\n  { kind = \"endpoint\", target = \"endpoint.ho_other\", perm = \"r\" },\n]\n\
+[task.HOJOB.ELF]\nreceives = [\"ho_term\"]\ncaps = []\n\
 [device.motor.0]\nmatch = \"dt:azos,motor0\"\ndriver = \"MOTORDRV.ELF\"\nsafe_state = \"brake\"\ncommit_ns = 400000\ncompensate = \"stop\"\n\
 [policy.jobsself]\ndomain = \"JOBS.ELF\"\ncreate_ports = false\n\
 [policy.jobstree]\ndomain = \"JOBS.ELF\"\nscope = \"subtree\"\ncreate_endpoints = false\n\

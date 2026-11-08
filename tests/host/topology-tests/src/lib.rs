@@ -5619,8 +5619,7 @@ mod receives_tests {
 
     /// **`receives` is a format-8 key** listing the endpoint names a row may
     /// be handed a call capability on by its spawner. It grants nothing:
-    /// the row holds no capability for it, and `row_receives` answers by the
-    /// full endpoint name the kernel knows the handed capability by.
+    /// the row holds no capability for it and imports nothing.
     ///
     /// **Canaries.** Make `TaskExt::commit` skip `set_last_task_receives`:
     /// the list is empty and the first assertion goes red. Accept the key
@@ -5635,10 +5634,7 @@ mod receives_tests {
         assert_eq!(names, [&b"term"[..]]);
         assert!(t.caps_of(kibi).is_empty(), "receiving is not a grant");
         assert!(t.imports_of(kibi).is_empty(), "nor an import");
-        assert!(t.row_receives(kibi, b"endpoint.term"));
-        assert!(!t.row_receives(kibi, b"term"), "the kernel asks by the endpoint's full name");
-        assert!(!t.row_receives(kibi, b"endpoint.names"));
-        assert!(!t.row_receives(&t.tasks()[0], b"endpoint.term"), "the server's row receives nothing");
+        assert!(t.receives_of(&t.tasks()[0]).is_empty(), "the server's row receives nothing");
 
         let text = format!("{}[task.NEXT.ELF]\ncaps = []\n", file(8, "receives = [\"term\"]\n")).leak();
         let (t, r) = parse(text);
