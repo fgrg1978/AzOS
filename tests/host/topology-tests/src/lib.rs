@@ -1911,6 +1911,7 @@ mod builder_tests {
         // +1 with the structured kernel log: its sink (LOGD.ELF).
         assert_eq!(t.tasks_len(), if cfg!(feature = "ipc-endpoint-canary") { 28 } else { 26 }
             - !azos_topology::builder::BRAIN_LINK_ROW as usize
+            - !azos_topology::builder::BRAINCLI_ROW as usize
             - 2 * !azos_topology::builder::PKGD_ROW as usize
             - !azos_topology::builder::INADRV_ROW as usize
             - !azos_topology::builder::BUZZDRV_ROW as usize
@@ -1976,7 +1977,16 @@ mod builder_tests {
     #[test]
     fn board_service_registry_declares_the_three_real_board_images() {
         let t = default_minimal();
-        for name in [&b"GPIODRV.ELF"[..], &b"REFLEX.ELF"[..], &b"BRAINCLI.ELF"[..]] {
+        assert_eq!(
+            t.find_task(&MaybeStr::from_bytes(b"BRAINCLI.ELF")).is_some(),
+            azos_topology::builder::BRAINCLI_ROW,
+            "the brain client's row follows USERSPACE_BRAINCLI"
+        );
+        let mut names = vec![&b"GPIODRV.ELF"[..], &b"REFLEX.ELF"[..]];
+        if azos_topology::builder::BRAINCLI_ROW {
+            names.push(b"BRAINCLI.ELF");
+        }
+        for name in names {
             let task = t
                 .find_task(&MaybeStr::from_bytes(name))
                 .unwrap_or_else(|| panic!("board service row missing: {:?}", core::str::from_utf8(name)));
@@ -2332,6 +2342,7 @@ mod state_tests {
         // +1 with the structured kernel log: its sink (LOGD.ELF).
         assert_eq!(t.tasks_len(), if cfg!(feature = "ipc-endpoint-canary") { 28 } else { 26 }
             - !azos_topology::builder::BRAIN_LINK_ROW as usize
+            - !azos_topology::builder::BRAINCLI_ROW as usize
             - 2 * !azos_topology::builder::PKGD_ROW as usize
             - !azos_topology::builder::INADRV_ROW as usize
             - !azos_topology::builder::BUZZDRV_ROW as usize
@@ -2381,6 +2392,7 @@ mod state_tests {
         // +1 with the structured kernel log: its sink (LOGD.ELF).
         assert_eq!(t.tasks_len(), if cfg!(feature = "ipc-endpoint-canary") { 28 } else { 26 }
             - !azos_topology::builder::BRAIN_LINK_ROW as usize
+            - !azos_topology::builder::BRAINCLI_ROW as usize
             - 2 * !azos_topology::builder::PKGD_ROW as usize
             - !azos_topology::builder::INADRV_ROW as usize
             - !azos_topology::builder::BUZZDRV_ROW as usize
@@ -3800,7 +3812,11 @@ mod row_sched_tests {
         assert_eq!(applied(&t, b"autorun"), ("soft_rt".into(), 16, 16));
         // The three board programs: best_effort at the service number, 24,
         // declared as such (no row relies on the clamp).
-        for n in [&b"GPIODRV.ELF"[..], b"REFLEX.ELF", b"BRAINCLI.ELF"] {
+        let mut boards = vec![&b"GPIODRV.ELF"[..], b"REFLEX.ELF"];
+        if azos_topology::builder::BRAINCLI_ROW {
+            boards.push(b"BRAINCLI.ELF");
+        }
+        for n in boards {
             assert_eq!(applied(&t, n), ("best_effort".into(), 24, 24));
         }
         // The ML service: soft_rt at the default 16; it runs at the behavior

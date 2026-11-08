@@ -141,6 +141,9 @@ const TASK_MLSRV_IMAGE: &[u8] = b"MLSRV.ELF";
 // device needs: the one PWM channel or I2C slave behind it.
 /// Does the topology declare the brain link's row? Only the robot extension has the link.
 pub const BRAIN_LINK_ROW: bool = azos_limits::USE_ROBOT;
+/// Does the topology declare the brain client's row? Whenever the volume carries
+/// `BRAINCLI.ELF` (Kconfig `USERSPACE_BRAINCLI`, on with the robot extension).
+pub const BRAINCLI_ROW: bool = azos_limits::USERSPACE_BRAINCLI;
 /// The buzzer ring-3 host's image, the name of its row.
 pub const TASK_BUZZDRV_IMAGE: &[u8] = b"BUZZDRV.ELF";
 /// Does this topology declare the buzzer's ring-3 host? Whenever the volume
@@ -1378,7 +1381,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
         topo.push_task(MaybeStr::from_bytes(TASK_REFLEX_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), SERVICE_PRIORITY, &[])
             .expect("default_minimal_topology: REFLEX.ELF push failed");
     }
-    if azos_limits::USERSPACE_BRAINCLI {
+    if BRAINCLI_ROW {
         topo.push_task(MaybeStr::from_bytes(TASK_BRAINCLI_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), SERVICE_PRIORITY, &[ROOT_RO])
             .expect("default_minimal_topology: BRAINCLI.ELF push failed");
     }
@@ -4009,7 +4012,7 @@ mod tests {
         // BRAINCLI.ELF — see the block comment above `TASK_GPIODRV_IMAGE`),
         // the ML service (MLSRV.ELF) and the two ring-3 driver rows
         // (BUZZDRV.ELF/INADRV.ELF).
-        assert_eq!(topo.tasks_len(), 9 - !BRAIN_LINK_ROW as usize);
+        assert_eq!(topo.tasks_len(), 9 - !BRAIN_LINK_ROW as usize - !BRAINCLI_ROW as usize);
         assert!(topo.admission_check().is_ok());
 
         // Budgets sum to exactly 100.
