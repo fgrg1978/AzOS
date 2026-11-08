@@ -83,6 +83,10 @@ IF_RE = re.compile(r'^(\s*)if\s+\[\s+"\$(\w+)"\s+(=|!=)\s+"?([\w.-]+)"?\s+\]\s*;
 VAR_RE = re.compile(r'\$\{(\w+)\}|\$(\w+)')
 FN_RE = re.compile(r'^(\s*)([a-zA-Z_][a-zA-Z_0-9]*)\(\)\s*\{')
 
+# The rows that boot a std program (the SDK, `*-unknown-azos`) and what builds one.
+STD_ROW_RE = r"sdktest|^sh: (rg|fd) "
+STD_DEPS = "crates/core/stdrt/** sdk/std/** tools/build/sdk_std.py third_party/ports/** third_party/patches/** third_party/VENDOR_PIN"
+
 # Subsystem -> (key/function/feature regex, path globs). A row depends on the
 # paths of every subsystem its key, function or features name.
 SUBSYS = [
@@ -98,6 +102,9 @@ SUBSYS = [
      "crates/core/mm/** crates/core/percpu/**"),
     ("user", r"userspace|abitest|ipctest|captest|\bsh\b|sh:|shell|busybox|seccomp|threads|orphan|zombie|exit|natfork|proc|abi|syscall|futex",
      "userspace/** crates/core/abi/** crates/core/syscall/** crates/core/libsys/** sdk/targets/**"),
+    # The std programs (the SDK, `*-unknown-azos`) are built from the port layer, the std overlay and the
+    # vendored crates, and the ported tools from their upstream sources and patches.
+    ("std", STD_ROW_RE, STD_DEPS),
     ("drivers", r"driver|ina219|buzzer|gpio|i2c|uart|console|pci|rng|entropy|sensor|camera|virtio|ramfb|hdmi|irq|pl011|restart|supervis|placed",
      "crates/drivers/** kernel/src/drv_supervisor.rs kernel/src/console_mode.rs kernel/src/boot/launch.rs"),
     ("security", r"secure boot|secboot|topology|\bota\b|ota:|config|signed|seccomp|\bcap|toposign|key|tamper|crypto|spectre",
@@ -1130,6 +1137,8 @@ def required_deps(r):
         # A host job (`-a`: no QEMU of its own) that builds a kernel builds the
         # one of the ISA its label names: that ISA's sources change its bytes.
         add(ARCH_DEPS[isa_of(r)].split(), "arch", "the row builds this ISA's kernel")
+    if re.search(STD_ROW_RE, r["key"].lower()):
+        add(STD_DEPS.split(), "std", "a std program (the SDK) is built from the port layer, the std overlay and the vendored crates")
     if r["fn"] == "host_canary_row" and len(r["args"]) > 1:
         suite = r["args"][1] if "/" in r["args"][1] else "tests/host/" + r["args"][1]
         add(_path_globs(suite), "crate", "suite " + suite)
