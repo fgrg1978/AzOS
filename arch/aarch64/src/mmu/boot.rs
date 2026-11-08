@@ -41,9 +41,8 @@ use core::arch::global_asm;
 //                              FP/SIMD, SVE and SME not trapped to
 //                              EL2 (B2-07 — see comment below)
 //   HCRX_EL2 = 0 | TCR2En      where FEAT_HCX: GCSEn 0 (no EL1&0 GCS);
-//                              TCR2En only with A64_POE on an S1POE core or
-//                              A64_S1PIE on an S1PIE core, and then
-//                              TCR2_EL1 = 0 (UNKNOWN out of reset)
+//                              TCR2En on a FEAT_TCR2 core, but with the
+//                              hypervisor stub (boot.S zeroes TCR2_EL1)
 //   CNTHCTL_EL2 EL1PCEN+PCTEN  EL1 may use the physical counter/timer (the
 //                              kernel itself runs on the VIRTUAL ones, which
 //                              EL1 reaches without any grant; kept so a
@@ -160,11 +159,11 @@ _azos_drop_to_el1:
     // GCSEn (bit 22: guarded control stacks at EL1 and EL0) and TCR2En (bit
     // 14: TCR2_EL1, itself UNKNOWN out of reset, takes effect). So it is
     // written whole on every core that has it, as Linux's `__init_el2_hcrx`
-    // does: 0, plus TCR2En with A64_POE on a core with S1POE or A64_S1PIE on
-    // one with S1PIE (POR_EL1's and the PIR registers' grants are the FGT
-    // block below; a missing grant traps the first write to EL2). With TCR2En,
-    // TCR2_EL1 is zeroed here, so the MMU comes up under the direct
-    // permissions until the kernel's own composed write (`mmu::pie`).
+    // does: 0, plus TCR2En on a core with FEAT_TCR2 (MMFR3.TCRX), so EL1 can
+    // zero TCR2_EL1 before its MMU-on (boot.S `azos_tcr2_zero`) and compose
+    // it later (`mmu::pie`; POR_EL1's and the PIR registers' grants are the
+    // FGT block below). Not with the hypervisor stub, whose world switch does
+    // not save TCR2_EL1: TCR2En stays 0 there and the register has no effect.
     // GCSEn stays 0: the kernel runs no GCS (cpu/cfi.rs, "GCS"), so a
     // GCSCR_EL1 left set by reset or firmware never takes effect. SCR_EL3.HXEn,
     // TCR2En and PIEn are the firmware's.
@@ -172,23 +171,13 @@ _azos_drop_to_el1:
     ubfx    x10, x10, #40, #4       // HCX
     cbz     x10, 8f
     mov     x11, #0
-.if {poe}
+.if !{hv}
     mrs     x10, S3_0_C0_C7_3       // ID_AA64MMFR3_EL1
-    ubfx    x10, x10, #16, #4       // S1POE
+    ubfx    x10, x10, #0, #4        // TCRX
     cbz     x10, 7f
     mov     x11, #{tcr2en}
 7:
 .endif
-.if {pie}
-    mrs     x10, S3_0_C0_C7_3       // ID_AA64MMFR3_EL1
-    ubfx    x10, x10, #8, #4        // S1PIE
-    cbz     x10, 5f
-    mov     x11, #{tcr2en}
-5:
-.endif
-    cbz     x11, 4f
-    msr     S3_0_C2_C0_3, xzr       // TCR2_EL1
-4:
     msr     S3_4_C1_C2_2, x11       // HCRX_EL2
 8:
 

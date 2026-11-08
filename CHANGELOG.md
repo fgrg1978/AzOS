@@ -142,8 +142,8 @@ releases yet. The ABI crate keeps its own file,
   count for memory objects, nospec on io_ring ids, and stricter ARP, IGMP,
   DHCP, DNS, NTP and Neighbour Discovery parsers.
 - aarch64: the EL2 trampoline writes `HCRX_EL2` whole on every core with
-  FEAT_HCX (0, plus `TCR2En` with `A64_POE` on a core with S1POE), not only in
-  `A64_POE` builds, so `GCSEn` is 0 and no guarded control stack is on at EL1
+  FEAT_HCX (0, plus `TCR2En` on a core with FEAT_TCR2, but under the
+  hypervisor stub), not only in `A64_POE` builds, so `GCSEn` is 0 and no guarded control stack is on at EL1
   or EL0. `A64_GCS` now defaults to `n`; it is still probed and reported only,
   because a kernel GCS needs the kernel's mappings on FEAT_S1PIE first
   ([Documentation/security.md](Documentation/security.md), "Control-flow
@@ -155,9 +155,15 @@ releases yet. The ABI crate keeps its own file,
   meaning (overlays applied) and nothing to the rest but the kernel GCS page
   (`vmm::map_gcs`, `Mmu::pte_make_gcs_leaf`), the step a kernel guarded control
   stack waits for. `TCR2_EL1` is one composed value (POE and PIE) on every CPU
-  path, and the EL2 trampoline grants it and both registers and zeroes it
-  before the MMU comes up ([Documentation/security.md](Documentation/security.md),
-  "Control-flow integrity").
+  path, and the EL2 trampoline grants it and both registers
+  ([Documentation/security.md](Documentation/security.md), "Control-flow
+  integrity").
+- aarch64: `TCR2_EL1` is zeroed before the MMU comes up on every entry path
+  (the boot CPU, each secondary and each resumed PE) wherever FEAT_TCR2 is
+  implemented, in every build but the split monitor's and the hypervisor
+  stub's, as Linux's `__cpu_setup` does: its UNKNOWN reset PIE or POE bits no
+  longer apply to the boot identity map, which closes that exposure for
+  `A64_POE` too when the kernel enters at EL1.
 - Initial import of the tree.
   - **Kernel:** `kernel/` (boot sequence, trap entry and boot hooks for
     riscv64, aarch64 and x86_64, kernel tasks, panic handler) over the core

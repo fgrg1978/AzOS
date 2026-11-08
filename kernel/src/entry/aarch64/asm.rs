@@ -38,6 +38,10 @@ global_asm!(
     // The bootstrap map's DRAM gigabyte: boot.S rounds the image's address
     // down to it ("Where RAM is").
     boot_window_shift = const azos_arch::mmu::BOOT_WINDOW.trailing_zeros(),
+    // `azos_tcr2_zero`: the split monitor holds TCR2_EL1; the hypervisor stub
+    // leaves it without effect.
+    hyp_mon = const cfg!(feature = "hyp-monitor") as u8,
+    hv = const cfg!(feature = "hv") as u8,
 );
 
 // TrapFrame layout + vector-number constants (B2-01 pattern): read off the

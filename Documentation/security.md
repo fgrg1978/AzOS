@@ -306,7 +306,8 @@ boot CPU turns PIE on once only the kernel's tables are live (the low half
 device-only) and before any other CPU runs; each secondary, and a CPU back from
 a power-down, follows before anything else in one `TCR2_EL1` write with POE, or
 halts. EL2 grants `TCR2_EL1` and both registers (`HCRX_EL2.TCR2En`,
-`nPIR_EL1`, `nPIRE0_EL1`) and zeroes `TCR2_EL1` before the first MMU-on. Not
+`nPIR_EL1`, `nPIRE0_EL1`), and every entry path zeroes `TCR2_EL1` before its
+MMU-on (boot.S `azos_tcr2_zero`, wherever FEAT_TCR2 is implemented). Not
 with the hypervisor or the split monitor, which do not save or allow
 `TCR2_EL1` and the PIR registers. Premises taken from the encodings rather than
 the Arm ARM (not reachable): PAN applies to a page `PIRE0_EL1` lets EL0 read

@@ -50,6 +50,31 @@
 
 .equ MAX_HARTS, {max_harts}
 
+// TCR2_EL1 = 0 before this PE turns its MMU on, on every entry path, wherever
+// FEAT_TCR2 is implemented (ID_AA64MMFR3_EL1.TCRX): the register is UNKNOWN out
+// of reset and its PIE, POE and D128 fields change what the boot identity map's
+// descriptors mean. Linux's `__cpu_setup` writes it at the same point. EL2 lets
+// EL1 at it: `_azos_drop_to_el1` grants HCRX_EL2.TCR2En on such a core, and a
+// firmware or hypervisor that enters at EL1 must as well. Not in a split image,
+// whose monitor zeroes TCR2_EL1 itself and traps EL1's accesses, nor where the
+// hypervisor stub kept EL2: it leaves TCR2En 0, so TCR2_EL1 has no effect and
+// a write would trap into the stub. Clobbers x9, x10.
+.macro azos_tcr2_zero
+.if !{hyp_mon}
+    mrs     x9, S3_0_C0_C7_3         // ID_AA64MMFR3_EL1
+    ubfx    x9, x9, #0, #4           // TCRX
+    cbz     x9, 9f
+.if {hv}
+    adrp    x10, azos_hv_state
+    ldrb    w10, [x10, :lo12:azos_hv_state]
+    cbnz    w10, 9f
+.endif
+    msr     S3_0_C2_C0_3, xzr        // TCR2_EL1
+    isb
+9:
+.endif
+.endm
+
 .section .text.boot
 .globl _start
 _start:
@@ -314,6 +339,7 @@ clear_bss_done:
     // to run before any lock exists. x19 (dtb ptr) / x20 (hart id) are
     // callee-saved across the `bl` per AAPCS64, same guarantee this file
     // already leans on for `_azos_drop_to_el1` above.
+    azos_tcr2_zero
     mov     x0, x23                  // DRAM base
     bl      aarch64_early_mmu_init
 
@@ -588,6 +614,7 @@ _aarch64_secondary_entry:
     add     x0, x0, :lo12:_start
     lsr     x0, x0, #{boot_window_shift}
     lsl     x0, x0, #{boot_window_shift}
+    azos_tcr2_zero
     bl      aarch64_early_mmu_init
     bl      aarch64_secondary_ttbr1_attach
     cbz     x0, _secondary_park           // no TTBR1 to attach: never run on the boot alias (K1 L9)

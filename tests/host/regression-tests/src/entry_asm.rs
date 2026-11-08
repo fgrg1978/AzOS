@@ -121,12 +121,11 @@ fn the_el2_drop_writes_the_fine_grained_traps_whole() {
 /// arch/arm64/tools/sysreg `HCRX_EL2`), which would let a GCSCR_EL1 left set
 /// by reset or firmware turn on a guarded control stack the kernel never set
 /// up, so the next `bl` would push through an UNKNOWN GCSPR_EL1. The value
-/// is 0 or `TCR2En` and nothing else (A64_POE and A64_S1PIE both ask for
-/// TCR2En), and where it is TCR2En, `TCR2_EL1` (S3_0_C2_C0_3, UNKNOWN out of
-/// reset) is zeroed first, so no PIE or POE bit of its reset value takes
-/// effect at the first MMU-on. Canaries: move the block back inside
-/// `.if {poe}` (first assert), OR in `#(1 << 22)` (second), or drop the
-/// `TCR2_EL1` zeroing (third).
+/// is 0 or `TCR2En` and nothing else, and `TCR2En` comes from the FEAT_TCR2
+/// field (MMFR3.TCRX, bits 3:0), as Linux's `__init_el2_hcrx`, so EL1 may zero
+/// `TCR2_EL1` before its MMU-on. Canaries: move the block back inside
+/// `.if {poe}` (first assert), OR in `#(1 << 22)` (second), probe S1POE
+/// (`#16, #4`) instead of TCRX (third).
 #[test]
 fn the_el2_drop_writes_hcrx_whole_without_gcsen() {
     let drop = between("arch/aarch64/src/mmu/boot.rs", "//", "_azos_drop_to_el1:", "eret");
@@ -138,10 +137,30 @@ fn the_el2_drop_writes_hcrx_whole_without_gcsen() {
     let set: Vec<&String> = drop[hcx..w].iter().filter(writes_x11).collect();
     assert!(set.iter().all(|l| *l == "mov     x11, #0" || *l == "mov     x11, #{tcr2en}"),
         "HCRX_EL2 takes more than 0 or TCR2En: {set:?}");
-    let zero = drop[hcx..w].iter().position(|l| l == "msr     S3_0_C2_C0_3, xzr").map(|i| i + hcx);
-    let zero = zero.expect("TCR2_EL1 is not zeroed before TCR2En takes effect");
-    assert_eq!(drop[zero - 1], "cbz     x11, 4f", "TCR2_EL1 is zeroed on a core where it may not exist");
+    let grant = hcx + at(&drop[hcx..w], "mov     x11, #{tcr2en}");
+    assert!(drop[hcx..grant].iter().any(|l| l == "ubfx    x10, x10, #0, #4"), "TCR2En is not granted on the FEAT_TCR2 field");
     assert!(!drop.iter().any(|l| l.starts_with("mrs") && l.ends_with("S3_4_C1_C2_2")), "HCRX_EL2 is read back and ORed into its reset value");
+}
+
+/// **`TCR2_EL1` is 0 before every MMU-on**, on the boot CPU's path and the
+/// path every secondary and every resumed PE takes: out of reset its PIE, POE
+/// and D128 fields are UNKNOWN and would change what the boot identity map's
+/// descriptors mean (Linux's `__cpu_setup` writes it at the same point). Where
+/// FEAT_TCR2 is implemented (MMFR3.TCRX) only, and an `isb` makes it take
+/// before the MMU comes up. Canaries: drop `azos_tcr2_zero` from either path
+/// (the loop), or the `isb` (the macro check).
+#[test]
+fn both_entry_paths_zero_tcr2_before_the_mmu_comes_up() {
+    let f = "kernel/src/entry/aarch64/asm/boot.S";
+    let mac = between(f, "//", ".macro azos_tcr2_zero", ".endm");
+    let probe = at(&mac, "ubfx    x9, x9, #0, #4");
+    let zero = at(&mac, "msr     S3_0_C2_C0_3, xzr");
+    assert!(probe < zero && mac[probe + 1] == "cbz     x9, 9f", "TCR2_EL1 is written without the FEAT_TCR2 probe: {mac:?}");
+    assert_eq!(mac[zero + 1], "isb", "no isb after the TCR2_EL1 write");
+    for from in ["_start:", "_aarch64_secondary_entry:"] {
+        let path = between(f, "//", from, "bl      aarch64_early_mmu_init");
+        assert!(path.iter().any(|l| l == "azos_tcr2_zero"), "{from}: the MMU comes up with TCR2_EL1 as reset left it");
+    }
 }
 
 /// **M3: an aarch64 IRQ/FIQ never decodes the stale `ESR_EL1`**: `class()`
