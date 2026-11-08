@@ -6,7 +6,7 @@ use core::cmp::Ordering;
 
 use crate::argp::{parse_u64, Argp, Item, NUM};
 use crate::fs_tools::OPERANDS_MAX;
-use crate::host::{Error, Host, Kind, Open};
+use crate::host::{Error, Host, Open};
 use crate::lines::LineReader;
 use crate::regex::{contains, Regex};
 use crate::util::*;
@@ -915,6 +915,3 @@ pub fn tee<H: Host>(h: &mut H, args: &[&[u8]], scratch: &mut [u8]) -> i32 {
     }
     status
 }
-
-#[allow(dead_code)]
-fn unused(_: Kind) {}
