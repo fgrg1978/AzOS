@@ -317,7 +317,7 @@ fn a_dot_or_dot_dot_entry_is_refused_for_the_tree_ops() {
 }
 
 /// **A name longer than the copy is `-ENAMETOOLONG`, not a fault**: a page of
-/// readable bytes with no NUL in the first `SYS_PATH_MAX`, for a name op and
+/// readable bytes with no NUL in the first `PATH_MAX_BYTES`, for a name op and
 /// an open alike; nothing reaches the filesystem.
 ///
 /// **Canary.** Answer `-EFAULT` for every failed copy in

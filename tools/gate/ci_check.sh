@@ -2745,7 +2745,7 @@ fi; ci_row_end
 # its own), then scan every other .rs file for a bare `const`/`static` of one
 # of those EXACT names assigned directly to a numeric literal. Matching by
 # exact canonical name, not by the bare `SYS_` prefix, is deliberate: this
-# tree also has `SYS_PATH_MAX` / `SYS_SERVICE_NAME_MAX` (buffer-size limits,
+# tree also has `SYS_SERVICE_NAME_MAX` (a buffer-size limit,
 # not syscall numbers) and `userspace/bench/vsbench/src/abi_linux.rs` (the Linux/
 # riscv64 syscall ABI, hand-encoded on purpose for the kernel-vs-Linux
 # comparison — see that file's own header — and excluded by path below). A

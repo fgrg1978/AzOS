@@ -68,7 +68,7 @@ pub const fn rdtime_is_native(magic: u32, flags: u32) -> bool {
 /// `b"/fat/X\0"` plus trailing slack is legal and must not be rejected.
 ///
 /// Cost: O(len), one byte-compare per byte, on paths bounded by the kernel's
-/// `SYS_PATH_MAX`. Every caller is a filesystem
+/// `PATH_MAX_BYTES`. Every caller is a filesystem
 /// syscall — none is on a control-loop hot path. Nothing in the hot path
 /// (`sensor_read`, `motor_speed`, `write`) calls this.
 #[inline]

@@ -1469,7 +1469,7 @@ pub fn sys_file_openat_typed(dir_raw: u64, rel_ptr: u64, flags: u64) -> i64 {
         Ok(n) => n,
         Err(e) => return e,
     };
-    let mut buf = [0u8; SYS_PATH_MAX];
+    let mut buf = [0u8; PATH_MAX_BYTES];
     let rel = match copy_path_from_user(&mut buf, rel_ptr) { Ok(p) => p, Err(e) => return e };
     if open_changes_tree(flags) {
         if let Err(e) = write_tree_covers_open(&root[..root_len], rel) {
@@ -2024,7 +2024,7 @@ pub fn sys_lseek(fd: u64, offset: u64, whence: u64) -> i64 {
 
 // ── Filesystem ────────────────────────────────────────────────────────────────
 
-use azos_abi::syscall_nr::SYS_PATH_MAX;
+use azos_abi::syscall_nr::PATH_MAX_BYTES;
 
 /// Copy a NUL-terminated name from a user pointer into `dst`, returning the
 /// name slice, so a malformed/kernel pointer can't
@@ -2113,7 +2113,7 @@ fn name_beneath(
     if name_ptr == 0 {
         return Err(Errno::EFAULT.to_syscall_ret());
     }
-    let mut buf = [0u8; SYS_PATH_MAX];
+    let mut buf = [0u8; PATH_MAX_BYTES];
     let name = copy_path_from_user(&mut buf, name_ptr)?;
     if entry && matches!(name.split(|&b| b == b'/').filter(|c| !c.is_empty()).last(), Some(b".") | Some(b"..")) {
         return Err(Errno::EINVAL.to_syscall_ret());

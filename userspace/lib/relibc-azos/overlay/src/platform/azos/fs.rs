@@ -62,7 +62,7 @@ use crate::{
     sync::Mutex,
 };
 
-/// Bytes the kernel reads for a path (`SYS_PATH_MAX`), its NUL included.
+/// Bytes the kernel reads for a path (`PATH_MAX_BYTES`), its NUL included.
 const PATH_MAX: usize = 256;
 
 /// Largest transfer one node op takes (`azos_libsys::IO_MAX_BYTES`): longer

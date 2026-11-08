@@ -8,7 +8,7 @@ use azos_abi::syscall_nr::{STAT_BYTES, STAT_OFF_ATIME, STAT_OFF_CTIME, STAT_OFF_
 use azos_abi::syscall_nr::{STAT_S_IFDIR, STAT_S_IFMT};
 
 /// Bytes the kernel reads for a path, its NUL included.
-pub const PATH_MAX: usize = azos_abi::syscall_nr::SYS_PATH_MAX;
+pub const PATH_MAX: usize = azos_abi::syscall_nr::PATH_MAX_BYTES;
 
 /// An absolute path, lexically normal, NUL-terminated.
 #[derive(Clone, Copy)]

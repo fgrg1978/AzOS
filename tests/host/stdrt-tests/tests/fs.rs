@@ -116,8 +116,8 @@ fn the_parent_drops_the_last_component() {
     assert_eq!(p("/"), "/");
 }
 
-/// A path as long as the kernel reads (`SYS_PATH_MAX`, NUL included) passes, one more byte does not.
+/// A path as long as the kernel reads (`PATH_MAX_BYTES`, NUL included) passes, one more byte does not.
 #[test]
 fn the_limit_is_the_kernels() {
-    assert_eq!(PATH_MAX, azos_abi::syscall_nr::SYS_PATH_MAX);
+    assert_eq!(PATH_MAX, azos_abi::syscall_nr::PATH_MAX_BYTES);
 }
