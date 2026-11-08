@@ -35,6 +35,7 @@ dependencies = [
  "azos_common",
  "azos_limits",
  "azos_records",
+ "azos_seclog",
 ]
 
 [[package]]
@@ -77,11 +78,19 @@ version = "0.1.0"
 dependencies = [
  "azos_limits",
  "azos_rings",
+ "azos_seclog",
 ]
 
 [[package]]
 name = "azos_rings"
 version = "0.1.0"
+
+[[package]]
+name = "azos_seclog"
+version = "0.1.0"
+dependencies = [
+ "azos_rings",
+]
 
 [[package]]
 name = "block-buffer"

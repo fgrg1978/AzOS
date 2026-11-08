@@ -28,6 +28,7 @@ dependencies = [
  "azos_common",
  "azos_limits",
  "azos_records",
+ "azos_seclog",
 ]
 
 [[package]]
@@ -44,6 +45,7 @@ version = "0.1.0"
 dependencies = [
  "azos_limits",
  "azos_rings",
+ "azos_seclog",
 ]
 
 [[package]]
@@ -59,6 +61,13 @@ dependencies = [
  "azos_common",
  "azos_decision",
  "azos_limits",
+]
+
+[[package]]
+name = "azos_seclog"
+version = "0.1.0"
+dependencies = [
+ "azos_rings",
 ]
 
 [[package]]
