@@ -242,6 +242,41 @@ impl Plan {
         (o, k)
     }
 
+    /// Undo the moves of a spawn that does not go ahead, the last first: a
+    /// moved file goes back to `me` (its owner too, once that moved), a
+    /// pipe's shared copy and its reference are dropped in the child (`me`
+    /// never lost its own), and a handed endpoint is destroyed
+    /// ([`drop_handed`]). What did not move is left; a second undo does
+    /// nothing.
+    pub fn undo(&mut self, me: u32, ctid: u32) {
+        let (order, n) = self.order();
+        for &i in order[..n].iter().rev() {
+            let m = self.moving[i];
+            if m.moved == 0 {
+                continue;
+            }
+            let h = CapHandle::from_raw(m.moved);
+            match m.kind {
+                ty::ENDPOINT => drop_handed(ctid, h),
+                ty::SHM => {
+                    let _ = azos_ipc::cap_store::with_table(ctid, |t| t.delete_raw(h));
+                    azos_ipc::memobj::memobj_pipe_drop_all_ref(ctid, m.resource);
+                    let _ = azos_ipc::memobj::memobj_release_ref(ctid, m.resource);
+                }
+                _ => {
+                    if m.landed {
+                        if let Some(o) = crate::file_ops::file_ops() {
+                            let _ = o.set_owner(m.resource as i32, ctid, me);
+                        }
+                    }
+                    let _ = azos_ipc::cap_store::move_cap(ctid, me, h, None);
+                }
+            }
+            self.moving[i].moved = 0;
+            self.moving[i].landed = false;
+        }
+    }
+
     /// The child's descriptors: the console where the list said so, the
     /// handle each moved entry took in the child's table, and nothing (closed)
     /// for a skipped one.

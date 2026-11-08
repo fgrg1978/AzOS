@@ -174,7 +174,7 @@ Source: `crates/core/abi/src/cap.rs` (`CapPerms`).
 
 | Syscall          | Effect                                                                                      |
 |------------------|---------------------------------------------------------------------------------------------|
-| `SYS_CAP_INFO`   | reads what the caller holds without using it. Queries: `CAP_INFO_LOOKUP` (find a handle by type and resource), `CAP_INFO_TREE` (find the directory tree covering a path), `CAP_INFO_QUERY` (type, rights, badge, expiry of a handle). Needs no right and is not subject to containment. |
+| `SYS_CAP_INFO`   | reads what the caller holds without using it. Queries: `CAP_INFO_LOOKUP` (find a handle by type and resource), `CAP_INFO_TREE` (find the directory tree covering a path), `CAP_INFO_QUERY` (type, rights, badge, expiry of a handle), `CAP_INFO_ENDPOINT` (the handle on the endpoint of a given name with the rights asked for; `-ENOENT` when the caller's row grants none, `-ECAPSTALE` when it grants one the caller does not hold). Needs no right and is not subject to containment. |
 | `SYS_CAP_CLOSE`  | deletes a handle and releases the object it names by type (io_ring, port, memory object, file, socket or endpoint); copies derived from it stay alive. Closing the last `READ` (serving) capability of an endpoint the caller serves ends its role as a server's death does: queued calls end `PEER_DIED`, a named endpoint stays unclaimed, an anonymous one is freed |
 | `SYS_CAP_DERIVE` | mints a badged, optionally dated copy of an endpoint capability that holds `DUP`; the copy is a child of the source in the warrant tree. A kernel-hosted endpoint refuses it, because its badge is the resource. An expiry already past is refused with `EDEADLINE` before anything is minted (`Rule::DeadlineExpired`). |
 | `SYS_CAP_REVOKE` | revokes every capability derived from a handle and keeps the handle; returns the replacement handle, and the old value is stale |
@@ -195,7 +195,7 @@ same expiry rule as `SYS_CAP_DERIVE`.
 
 Source: `crates/core/abi/src/syscall_nr.rs` (`SYS_CAP_INFO`, `SYS_CAP_CLOSE`,
 `SYS_CAP_DERIVE`, `SYS_CAP_REVOKE`, `CAP_INFO_LOOKUP`, `CAP_INFO_TREE`,
-`CAP_INFO_QUERY`), `crates/core/syscall/src/caps.rs`,
+`CAP_INFO_QUERY`, `CAP_INFO_ENDPOINT`), `crates/core/syscall/src/caps.rs`, `crates/core/syscall/src/named_cap.rs`,
 `crates/core/abi/src/ipc_msg.rs` (`CapDesc`, `CAP_MODE_MOVE`, `CAP_MODE_DUP`),
 `crates/core/abi/src/invoke.rs` (`ENDPOINT_DERIVE`, `EndpointDerive`),
 `crates/core/ipc/src/cap_store.rs` (`move_caps`, `CapXfer`).

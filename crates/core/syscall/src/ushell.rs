@@ -383,7 +383,7 @@ pub fn sys_spawn_ex(path_ptr: u64, req_ptr: u64) -> i64 {
                 };
                 plan.moving[i].landed = ok;
                 if !ok {
-                    undo_moves(me, ctid, &mut plan);
+                    plan.undo(me, ctid);
                     refusal.set(err(Errno::EMFILE));
                     return false;
                 }
@@ -437,7 +437,7 @@ pub fn sys_spawn_ex(path_ptr: u64, req_ptr: u64) -> i64 {
             #[cfg(not(feature = "linux-abi"))]
             let wrote = write_native(child);
             if !wrote {
-                undo_moves(me, ctid, &mut plan);
+                plan.undo(me, ctid);
                 refusal.set(err(Errno::ENOMEM));
                 return false;
             }
@@ -479,39 +479,6 @@ pub fn sys_spawn_ex(path_ptr: u64, req_ptr: u64) -> i64 {
         }
         crate::spawn::SpawnEx::Aborted => refusal.get(),
         crate::spawn::SpawnEx::Failed(e) => e,
-    }
-}
-
-/// Undo the moves of a spawn that does not go ahead, the last first: a moved
-/// file goes back to the caller (its owner too), a pipe's shared copy and
-/// its reference are dropped in the child (the caller never lost its own),
-/// and a handed endpoint is destroyed (`spawn_handoff::drop_handed`).
-fn undo_moves(me: u32, ctid: u32, plan: &mut crate::spawn_handoff::Plan) {
-    let (order, n) = plan.order();
-    for &i in order[..n].iter().rev() {
-        let m = plan.moving[i];
-        if m.moved == 0 {
-            continue;
-        }
-        let h = CapHandle::from_raw(m.moved);
-        match m.kind {
-            ty::ENDPOINT => crate::spawn_handoff::drop_handed(ctid, h),
-            ty::SHM => {
-                let _ = azos_ipc::cap_store::with_table(ctid, |t| t.delete_raw(h));
-                azos_ipc::memobj::memobj_pipe_drop_all_ref(ctid, m.resource);
-                let _ = azos_ipc::memobj::memobj_release_ref(ctid, m.resource);
-            }
-            _ => {
-                if m.landed {
-                    if let Some(o) = crate::file_ops::file_ops() {
-                        let _ = o.set_owner(m.resource as i32, ctid, me);
-                    }
-                }
-                let _ = azos_ipc::cap_store::move_cap(ctid, me, h, None);
-            }
-        }
-        plan.moving[i].moved = 0;
-        plan.moving[i].landed = false;
     }
 }
 

@@ -7,6 +7,14 @@ changelog is [`../../../CHANGELOG.md`](../../../CHANGELOG.md).
 
 ## [Unreleased]
 
+### Added
+
+- `CAP_INFO_ENDPOINT` (3), a `SYS_CAP_INFO` query: the caller's handle on the
+  endpoint named `endpoint.<name>` (`a0` the name, `a2` its length, `a3` the
+  rights needed and refused), told apart by the endpoint and not by its rights
+  or its slot; `-ENOENT` when the caller's row grants no such right,
+  `-ECAPSTALE` when it grants one the caller does not hold.
+
 ### Changed
 
 - `SpawnReq` is version 2 (`SPAWN_REQ_VERSION`): the last word of a move-list

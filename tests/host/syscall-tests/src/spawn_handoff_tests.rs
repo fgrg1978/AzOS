@@ -344,3 +344,107 @@ fn an_endpoint_made_again_under_the_name_is_another() {
     assert!(!row_receives(job, s.resource), "a capability on the old endpoint was received");
     teardown();
 }
+
+/// The owner moves the undo makes (`FileOps::set_owner`): `(fd, from, to)`.
+static OWNERS: std::sync::Mutex<Vec<(i32, u32, u32)>> = std::sync::Mutex::new(Vec::new());
+
+struct Owners;
+
+impl crate::file_ops::FileOps for Owners {
+    fn open_at(&self, _: &[u8], _: &[u8], _: u32) -> i64 { -1 }
+    fn close(&self, _: i32) -> i64 { 0 }
+    fn read(&self, _: i32, _: &mut [u8]) -> i64 { -1 }
+    fn write(&self, _: i32, _: &[u8]) -> i64 { -1 }
+    fn lseek(&self, _: i32, _: i64, _: i32) -> i64 { -1 }
+    fn dup(&self, _: i32) -> i64 { -1 }
+    fn mkdir(&self, _: &[u8]) -> i64 { -1 }
+    fn unlink(&self, _: &[u8]) -> i64 { -1 }
+    fn readdir(&self, _: &[u8], _: u32) -> Option<([u8; azos_abi::syscall_nr::READDIR_NAME_BYTES], u32, bool)> { None }
+    fn release_all(&self, _: u32) -> usize { 0 }
+    fn read_whole(&self, _: &[u8], _: &mut [u8]) -> usize { 0 }
+    fn set_owner(&self, fd: i32, from: u32, to: u32) -> i64 {
+        OWNERS.lock().unwrap().push((fd, from, to));
+        0
+    }
+}
+
+static OWNERS_OPS: Owners = Owners;
+
+/// A file descriptor the shell holds (a non-tree `Cap<File>`, `TRANSFER`).
+const FD: u32 = 33;
+
+/// **`sys_spawn_ex`'s undo at each point a spawn can fail after moving**: a
+/// file whose owner moved goes back with its owner, one whose owner did not
+/// goes back alone, a pipe's shared copy is dropped in the child (the shell
+/// kept its own), a handed endpoint is destroyed, an entry that did not move is
+/// left, and a second undo does nothing.
+///
+/// **Canaries.** Skip the owner's restore: the owner assertion goes red. Keep
+/// `moved` after the undo: the second undo restores the owner again. Skip the
+/// pipe copy's delete or the endpoint's `drop_handed`: the child still holds
+/// a capability.
+#[test]
+fn the_undo_puts_back_what_moved_at_each_failure_point() {
+    use azos_ipc::cap::targets::{File, Shm};
+    let _g = serial();
+    let s = scene(CapPerms::WRITE.union(CapPerms::TRANSFER));
+    crate::file_ops::set_file_ops(&OWNERS_OPS);
+    OWNERS.lock().unwrap().clear();
+    let file = cap_store::grant::<File>(SHELL, CapPerms::RW.union(CapPerms::TRANSFER), FD).unwrap().raw();
+    let shm = cap_store::grant::<Shm>(SHELL, CapPerms::RW.union(CapPerms::DELEGATE), 44).unwrap().raw();
+    let fd_entry = |fd: u32, h: CapHandle| Move { child_fd: fd, handle: h.as_raw(), perms: 0, kind: MOVE_KIND_FD };
+    let mut p = plan(SHELL, &[entry(0, s.lent, false), fd_entry(1, file), fd_entry(2, shm)]).unwrap();
+    assert_eq!(p.decide_rows(row(b"HOJOB.ELF")), Ok(()));
+    let (o, n) = p.order();
+    assert_eq!(n, 3);
+    // Every entry moved, the way `sys_spawn_ex` moves them: the file with its
+    // owner, the pipe's region shared (its reference was refused: not landed),
+    // the endpoint handed.
+    for &i in &o[..n] {
+        let m = p.moving[i];
+        let h = CapHandle::from_raw(m.handle);
+        let (moved, landed) = match m.kind {
+            ty::FILE => {
+                let c = cap_store::move_cap(SHELL, CHILD, h, Some(m.rights)).unwrap();
+                OWNERS.lock().unwrap().clear();
+                (c, true)
+            }
+            ty::SHM => {
+                let mut x = CapXfer::new(h, true);
+                x.rights = Some(m.rights);
+                let mut out = [CapHandle::from_raw(0); 1];
+                cap_store::move_caps(SHELL, CHILD, &[x], false, &mut out).unwrap();
+                (out[0], false)
+            }
+            _ => (hand(SHELL, CHILD, h).unwrap(), true),
+        };
+        p.moving[i].moved = moved.as_raw();
+        p.moving[i].landed = landed;
+    }
+    assert_eq!(cap_store::occupied(CHILD), 3);
+    p.undo(SHELL, CHILD);
+    assert_eq!(cap_store::occupied(CHILD), 0, "the child kept a capability of a spawn that failed");
+    assert_eq!(*OWNERS.lock().unwrap(), [(FD as i32, CHILD, SHELL)], "the file's owner did not come back");
+    let back = cap_store::read_table(SHELL, |t| t.lookup(ty::FILE, FD)).flatten();
+    assert!(back.is_some(), "the file did not come back to the shell");
+    assert!(held(SHELL, shm).is_some(), "the shell lost its own pipe region");
+    assert_eq!(held(SHELL, s.lent), None, "a handed endpoint came back unnamed");
+    p.undo(SHELL, CHILD);
+    assert_eq!(OWNERS.lock().unwrap().len(), 1, "a second undo moved the owner again");
+
+    // A file that moved and whose owner did not: back alone. An entry that did
+    // not move: left.
+    OWNERS.lock().unwrap().clear();
+    let file = back.unwrap();
+    let mut p = plan(SHELL, &[fd_entry(1, file)]).unwrap();
+    p.moving[0].moved = cap_store::move_cap(SHELL, CHILD, file, None).unwrap().as_raw();
+    p.undo(SHELL, CHILD);
+    assert!(OWNERS.lock().unwrap().is_empty(), "the owner of a file it never got was moved back");
+    assert_eq!(cap_store::occupied(CHILD), 0);
+    let file = cap_store::read_table(SHELL, |t| t.lookup(ty::FILE, FD)).flatten().unwrap();
+    let mut p = plan(SHELL, &[fd_entry(1, file)]).unwrap();
+    p.undo(SHELL, CHILD);
+    assert!(held(SHELL, file).is_some(), "an entry that never moved was touched");
+    crate::file_ops::__file_ops_clear_for_tests();
+    teardown();
+}

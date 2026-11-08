@@ -92,7 +92,7 @@ hart to another task). See [Cases](#cases-entry-counters-and-the-pledge).
 
 | Nr | Name | Family | Case | Summary |
 |---:|---|---|:-:|---|
-| 1 | `SYS_CAP_INFO` | handles | A | Query what the caller holds without using it: `CAP_INFO_LOOKUP` (find a handle by type and resource), `CAP_INFO_TREE` (the directory tree covering a path), `CAP_INFO_QUERY` (type, rights, badge, expiry of a handle). |
+| 1 | `SYS_CAP_INFO` | handles | A | Query what the caller holds without using it: `CAP_INFO_LOOKUP` (find a handle by type and resource), `CAP_INFO_TREE` (the directory tree covering a path), `CAP_INFO_QUERY` (type, rights, badge, expiry of a handle), `CAP_INFO_ENDPOINT` (the handle on the endpoint named `endpoint.<name>` holding the rights asked for and none of those refused; `-ENOENT` no such grant in the caller's row, `-ECAPSTALE` granted and not held). |
 | 2 | `SYS_CAP_CLOSE` | handles | A | Delete a handle and release what it names, by type. Only the caller's own slot goes: copies made from it stay alive (`SYS_CAP_REVOKE` takes them back). A second close is `-ECAPSTALE`. |
 | 3 | `SYS_CAP_DERIVE` | handles | A | From an endpoint handle with `DUP`: mint a child with a subset of the rights, a non-zero badge and an expiry. A kernel-hosted endpoint refuses. |
 | 4 | `SYS_CAP_REVOKE` | handles | A | Revoke everything derived from a handle and keep it; returns the replacement handle (the old value is stale). |

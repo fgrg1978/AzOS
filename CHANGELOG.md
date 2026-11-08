@@ -29,8 +29,13 @@ releases yet. The ABI crate keeps its own file,
   is skipped. A badge the kernel stamped at seeding (a warrant-tree root) is
   never handed on, the endpoints move after every other entry, and a spawn
   refused after the moves (the startup block included) undoes them, destroying
-  a handed endpoint copy. Lending console input on the owner's behalf takes an
-  unbadged call right (a job's badged copy is not one). Admission refuses a
+  a handed endpoint copy. A badge the kernel stamped at seeding
+  (`Warrant::STAMPED`, kept by every copy) is never handed on. Lending console
+  input on the owner's behalf takes an unbadged call right (a job's badged
+  copy is not one). The terminal server finds its rights by the endpoint they
+  name (`SYS_CAP_INFO` `CAP_INFO_ENDPOINT`), and a login right its row grants
+  and it does not hold keeps the console locked; admission refuses `transfer`
+  on a call right on `endpoint.login`. Admission refuses a
   received name no row serves or one the row also imports ([Documentation/abi.md](Documentation/abi.md)).
 
 - The native basic utilities (`userspace/lib/coreutils`, run by `COREUTIL.ELF`, an image whose row holds the root directory and the shell's write trees and nothing else):
