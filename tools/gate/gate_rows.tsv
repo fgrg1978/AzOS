@@ -318,7 +318,7 @@ coreutils: tr ranges canary	n1	tests/host/coreutils-tests/** userspace/lib/coreu
 coreutils: uniq -c canary	n1	tests/host/coreutils-tests/** userspace/lib/coreutils/**
 mm: pool funnel (model)	n1	crates/core/mm/** crates/core/percpu/** crates/core/mm/src/memobj.rs
 mm: pool sizing (model)	n1	crates/core/mm/** crates/core/percpu/** crates/core/mm/src/memobj.rs
-trap: expected kernel fault (model)	n1	
+trap: expected kernel fault (model)	n1	-
 mm: pt window (model)	n1	crates/core/mm/** crates/core/percpu/**
 mm: pt window lost race (model)	n1	crates/core/ipc/** crates/core/channel/** crates/core/rings/** crates/core/mm/** crates/core/percpu/**
 mm: pt window nesting (model)	n1	crates/core/mm/** crates/core/percpu/**
