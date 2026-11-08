@@ -12,9 +12,12 @@
 // asks of the child's row is `row_receives`; the move is `hand`.
 
 use super::harness::serial;
-use crate::spawn_handoff::{check_held, hand, row_decision, row_receives, take_back, HANDED_RIGHTS};
+use crate::spawn_handoff::{
+    check_held, drop_handed, hand, holds_client_right, plan, row_decision, row_receives, Moving, HANDED_RIGHTS,
+};
 use azos_abi::cap::{ty, CapHandle, CapPerms, CapType};
 use azos_abi::error::Errno;
+use azos_abi::ushell::{Move, StartupFd, FD_CLOSED, FD_CONSOLE, FD_HANDLE, MOVE_CONSOLE, MOVE_F_OFFER, MOVE_KIND_ENDPOINT, MOVE_KIND_FD, STARTUP_FDS};
 use azos_ipc::cap_store::{self, CapXfer};
 use azos_ipc::endpoint::{endpoint_named_cap, endpoint_release_all};
 
@@ -89,7 +92,7 @@ fn a_badged_call_right_moves_with_the_call_right_alone_and_its_badge() {
     let _g = serial();
     let s = scene(CapPerms::WRITE.union(CapPerms::TRANSFER));
     let (kind, perms, _, badge) = held(SHELL, s.lent).unwrap();
-    assert_eq!(check_held(kind, perms, badge), Ok(()));
+    assert_eq!(check_held(kind, perms, badge, false), Ok(()));
     let c = hand(SHELL, CHILD, s.lent).expect("the hand-off");
     assert_eq!(held(SHELL, s.lent), None, "the shell kept a copy");
     let (kind, perms, resource, badge) = held(CHILD, c).expect("the child's copy");
@@ -131,7 +134,7 @@ fn a_call_right_without_transfer_is_refused_and_stays() {
     let _g = serial();
     let s = scene(CapPerms::WRITE);
     let (kind, perms, _, badge) = held(SHELL, s.lent).unwrap();
-    assert_eq!(check_held(kind, perms, badge), Err(Errno::ECAPPERMS));
+    assert_eq!(check_held(kind, perms, badge, false), Err(Errno::ECAPPERMS));
     assert!(hand(SHELL, CHILD, s.lent).is_err());
     assert!(held(SHELL, s.lent).is_some(), "a refused move consumed the shell's copy");
     teardown();
@@ -149,13 +152,13 @@ fn only_a_badged_call_right_without_read_may_be_handed() {
     let _g = serial();
     let s = scene(CapPerms::WRITE.union(CapPerms::TRANSFER));
     let call = CapPerms::WRITE.union(CapPerms::TRANSFER);
-    assert_eq!(check_held(ty::FILE, call, BADGE), Err(Errno::ECAPKIND));
-    assert_eq!(check_held(ty::SHM, call, BADGE), Err(Errno::ECAPKIND));
+    assert_eq!(check_held(ty::FILE, call, BADGE, false), Err(Errno::ECAPKIND));
+    assert_eq!(check_held(ty::SHM, call, BADGE, false), Err(Errno::ECAPKIND));
     let (kind, perms, _, badge) = held(SERVER, s.root).unwrap();
     assert_eq!(badge, 0);
-    assert_eq!(check_held(kind, perms, BADGE), Err(Errno::ECAPPERMS), "the server's own right left its server");
-    assert_eq!(check_held(kind, call, badge), Err(Errno::ECAPPERMS), "an unbadged right is the spawner to its server");
-    assert_eq!(check_held(kind, CapPerms::TRANSFER, BADGE), Err(Errno::ECAPPERMS), "no call right");
+    assert_eq!(check_held(kind, perms, BADGE, false), Err(Errno::ECAPPERMS), "the server's own right left its server");
+    assert_eq!(check_held(kind, call, badge, false), Err(Errno::ECAPPERMS), "an unbadged right is the spawner to its server");
+    assert_eq!(check_held(kind, CapPerms::TRANSFER, BADGE, false), Err(Errno::ECAPPERMS), "no call right");
     teardown();
 }
 
@@ -185,18 +188,147 @@ fn a_row_that_does_not_receive_the_endpoint_refuses_it() {
     teardown();
 }
 
-/// **A spawn that does not go ahead gives the right back**: the child's copy
-/// is gone, and the shell holds a right again (under a fresh handle).
+/// **A spawn that does not go ahead destroys the right it handed**: the
+/// child's copy is gone and nothing comes back to the shell under a handle it
+/// was never told (it asks the server to lend another).
 ///
-/// **Canary.** Make `take_back` do nothing: the child's copy stays and the
+/// **Canary.** Make `drop_handed` do nothing: the child's copy stays and the
 /// first assertion goes red.
 #[test]
-fn a_hand_off_taken_back_leaves_the_child_nothing() {
+fn a_hand_off_undone_leaves_the_child_and_the_shell_nothing() {
     let _g = serial();
     let s = scene(CapPerms::WRITE.union(CapPerms::TRANSFER));
     let c = hand(SHELL, CHILD, s.lent).unwrap();
-    take_back(SHELL, CHILD, s.lent, c);
+    drop_handed(CHILD, c);
     assert_eq!(held(CHILD, c), None, "the child kept the right of a spawn that failed");
-    assert_eq!(cap_store::occupied(SHELL), 1, "the shell did not get it back");
+    assert_eq!(cap_store::occupied(CHILD), 0);
+    assert_eq!(cap_store::occupied(SHELL), 0, "an unnamed copy came back to the shell");
+    teardown();
+}
+
+/// An endpoint entry at `fd`.
+fn entry(fd: u32, handle: CapHandle, offered: bool) -> Move {
+    Move { child_fd: fd, handle: handle.as_raw(), perms: 0, kind: MOVE_KIND_ENDPOINT | if offered { MOVE_F_OFFER } else { 0 } }
+}
+
+/// **A badge the kernel stamped at seeding is never handed on**: it is a root
+/// of the warrant tree, and its server may read authority into it. Only a
+/// badge a server derived (a copy with a parent) goes.
+///
+/// **Canary.** Drop the `root` test from `check_held`: the seeded root is
+/// planned and this goes red.
+#[test]
+fn a_kernel_stamped_badged_root_is_refused() {
+    let _g = serial();
+    let s = scene(CapPerms::WRITE.union(CapPerms::TRANSFER));
+    let seeded = cap_store::grant_badged::<azos_ipc::cap::targets::Endpoint>(SHELL, CapPerms::WRITE.union(CapPerms::DELEGATE), s.resource, 5)
+        .expect("a seeded badged grant")
+        .raw();
+    assert_eq!(plan(SHELL, &[entry(0, seeded, false)]).err(), Some(Errno::ECAPPERMS), "a seeded badge was handed on");
+    assert!(plan(SHELL, &[entry(0, s.lent, false)]).is_ok(), "the server's derived badge is refused");
+    teardown();
+}
+
+/// **`sys_spawn_ex`'s plan of a move list**, as it runs it: the caller's
+/// table checked entry by entry (`check_held` on an endpoint entry, the kind
+/// an fd entry may carry), the rows asked once the child's is known, a skipped
+/// entry out of the moves and its fd closed, a moved one at its fd.
+///
+/// **Canaries.** Take the `check_held` call out of `plan`: the unbadged entry
+/// is planned. Let `decide_rows` keep going past a refusal (`.unwrap_or(true)`):
+/// the required entry is not refused. Let `order` keep a skipped entry: it is
+/// in the moves.
+#[test]
+fn the_spawn_plan_checks_entries_asks_the_row_and_closes_a_skipped_fd() {
+    let _g = serial();
+    let s = scene(CapPerms::WRITE.union(CapPerms::TRANSFER));
+    let (job, plainr) = (row(b"HOJOB.ELF"), row(b"PLAIN.ELF"));
+    // An endpoint given as a descriptor entry, and a stale handle.
+    let as_fd = Move { child_fd: 0, handle: s.lent.as_raw(), perms: 0, kind: MOVE_KIND_FD };
+    assert_eq!(plan(SHELL, &[as_fd]).err(), Some(Errno::ECAPKIND));
+    assert_eq!(plan(SHELL, &[entry(0, CapHandle::from_raw(0x7777), false)]).err(), Some(Errno::ECAPSTALE));
+    // An unbadged call right (the shell's own) is refused by the plan itself.
+    let own = azos_ipc::endpoint::endpoint_named_cap(SHELL, CapPerms::WRITE.union(CapPerms::DELEGATE), b"ho_term").unwrap().raw();
+    assert_eq!(plan(SHELL, &[entry(0, own, false)]).err(), Some(Errno::ECAPPERMS), "an unbadged right was planned");
+    // Required, into a row that does not receive it: refused.
+    let mut p = plan(SHELL, &[entry(0, s.lent, false)]).unwrap();
+    assert_eq!(p.decide_rows(plainr), Err(Errno::EACCES));
+    // Offered, into that row: skipped, out of the moves, fd 0 closed.
+    let console = Move { child_fd: 1, handle: MOVE_CONSOLE, perms: 0, kind: MOVE_KIND_FD };
+    let mut p = plan(SHELL, &[entry(0, s.lent, true), console]).unwrap();
+    assert_eq!(p.decide_rows(plainr), Ok(()));
+    assert_eq!(p.order().1, 0, "a skipped entry is moved");
+    let mut fds = [StartupFd::default(); STARTUP_FDS];
+    p.startup_fds(&mut fds);
+    assert_eq!((fds[0].kind, fds[1].kind), (FD_CLOSED, FD_CONSOLE));
+    // Into the row that receives it: moved, at its fd.
+    let mut p = plan(SHELL, &[entry(0, s.lent, true)]).unwrap();
+    assert_eq!(p.decide_rows(job), Ok(()));
+    let (o, n) = p.order();
+    assert_eq!(n, 1);
+    let c = hand(SHELL, CHILD, CapHandle::from_raw(p.moving[o[0]].handle)).unwrap();
+    p.moving[o[0]].moved = c.as_raw();
+    let mut fds = [StartupFd::default(); STARTUP_FDS];
+    p.startup_fds(&mut fds);
+    assert_eq!(fds[0], StartupFd { kind: FD_HANDLE, handle: c.as_raw() });
+    teardown();
+}
+
+/// **Endpoints move last**: whatever the list's order, every other entry moves
+/// first, so nothing after a handed endpoint can fail but another endpoint.
+///
+/// **Canary.** Make `order` one pass in list order: the endpoint comes first
+/// and this goes red.
+#[test]
+fn the_endpoints_move_after_every_other_entry() {
+    let _g = serial();
+    let mut p = plan(SHELL, &[]).unwrap();
+    let one = |kind: CapType| Moving { handle: 1, kind, rights: CapPerms::WRITE, resource: 0, moved: 0, ends: 0, offered: false, skipped: false, landed: false };
+    p.moving[0] = one(ty::ENDPOINT);
+    p.moving[1] = one(ty::FILE);
+    p.moving[2] = one(ty::SHM);
+    p.n = 3;
+    let (o, n) = p.order();
+    assert_eq!(&o[..n], &[1, 2, 0]);
+}
+
+/// **Console input is lent on behalf of the owner's own client only**: the
+/// shell's unbadged call right on the terminal makes it one, a job's badged
+/// copy does not, and a right on another server's endpoint does not.
+///
+/// **Canary.** Drop the `badge == 0` test of `holds_client_right`: the job is
+/// a client and this goes red.
+#[test]
+fn only_an_unbadged_call_right_makes_a_client_of_the_console_owner() {
+    let _g = serial();
+    let s = scene(CapPerms::WRITE.union(CapPerms::TRANSFER));
+    let c = hand(SHELL, CHILD, s.lent).unwrap();
+    assert!(held(CHILD, c).is_some());
+    assert!(!holds_client_right(CHILD, SERVER), "a job's badged copy made it the owner's client");
+    let _own = azos_ipc::endpoint::endpoint_named_cap(SHELL, CapPerms::WRITE, b"ho_term").unwrap();
+    assert!(holds_client_right(SHELL, SERVER));
+    assert!(!holds_client_right(SHELL, CHILD), "a right on one server is a client of another");
+    teardown();
+}
+
+/// **The row's name is the endpoint's, in the generation it had**: an
+/// endpoint destroyed and made again under the same name is another, and a
+/// capability on the old one is not received.
+///
+/// **Canary.** Drop the generation test of `ref_is_named`: the old reference
+/// is still received and this goes red.
+#[test]
+fn an_endpoint_made_again_under_the_name_is_another() {
+    let _g = serial();
+    let s = scene(CapPerms::WRITE.union(CapPerms::TRANSFER));
+    let job = row(b"HOJOB.ELF");
+    assert!(row_receives(job, s.resource));
+    azos_ipc::endpoint::destroy_ref(s.resource).expect("the endpoint goes");
+    cap_store::reset(SERVER);
+    let again = endpoint_named_cap(SERVER, CapPerms::RW_DELEGATE, b"ho_term").expect("made again").raw();
+    let fresh = held(SERVER, again).unwrap().2;
+    assert_ne!(fresh, s.resource);
+    assert!(row_receives(job, fresh));
+    assert!(!row_receives(job, s.resource), "a capability on the old endpoint was received");
     teardown();
 }

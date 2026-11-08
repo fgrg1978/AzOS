@@ -303,15 +303,18 @@ pub const CAP_INFO_QUERY: u64 = 2;
 /// `Cap<Shm>`, a POSIX pipe's region, is shared instead: the caller keeps its
 /// own), rights kept or lowered, never raised; an entry of kind
 /// `MOVE_KIND_ENDPOINT` MOVES a badged endpoint call capability the caller
-/// holds with `TRANSFER` (and without `READ`) into the child with the call
-/// right alone, the badge and the place in the warrant tree kept, into a row
+/// holds with `TRANSFER` (and without `READ`), its badge one a server derived
+/// (never one the kernel stamped at seeding), into the child with the call
+/// right alone, after every other entry, the badge and the place in the warrant tree kept, into a row
 /// whose `receives` list names the endpoint (otherwise `-EACCES`, or the entry
 /// is skipped when `MOVE_F_OFFER` is set); `SPAWN_F_DIE_WITH_PARENT`. Returns the
 /// child's TID, or `-EACCES` (no profile, no row, no launch grant, a required
 /// endpoint the row does not receive),
 /// `-ECAPKIND`, `-ECAPPERMS`, `-ECAPSTALE`, `-EMFILE`, `-EINVAL` (version,
 /// limits, unknown flag), `-EFAULT`, `-1` for an unreadable path. Nothing moves
-/// unless the child is released.
+/// unless the child is released: a spawn refused after the moves puts the
+/// descriptors back and destroys a handed endpoint copy (its server lends
+/// another).
 ///
 /// Foundational case 1 (authority: creates a protection domain).
 pub const SYS_SPAWN_EX: u64 = 5;

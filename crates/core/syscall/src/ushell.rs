@@ -19,12 +19,12 @@
 //! re-test never misses one; the ceiling bounds any wake that is lost.
 
 use azos_abi::cap::ty;
-use azos_abi::cap::{CapHandle, CapPerms, CapType};
+use azos_abi::cap::CapHandle;
 use azos_abi::error::Errno;
 use azos_abi::ushell::{
-    layout_startup, count_cstrs, SpawnReq, StartupFd, CONSOLE_WAIT_FOREVER, FD_CONSOLE, FD_HANDLE,
-    KILL_FORCE, KILL_REQUEST, KILL_SIGNO_MAX, KILL_SUBTREE, MOVE_CONSOLE,
-    SPAWN_ARGV_MAX, SPAWN_CWD_MAX, SPAWN_ENV_MAX, SPAWN_F_CONSOLE_IN, SPAWN_F_DIE_WITH_PARENT, SPAWN_MAX_MOVES,
+    layout_startup, count_cstrs, SpawnReq, StartupFd, CONSOLE_WAIT_FOREVER, FD_CONSOLE,
+    KILL_FORCE, KILL_REQUEST, KILL_SIGNO_MAX, KILL_SUBTREE,
+    SPAWN_ARGV_MAX, SPAWN_CWD_MAX, SPAWN_ENV_MAX, SPAWN_F_CONSOLE_IN, SPAWN_F_DIE_WITH_PARENT,
     SPAWN_F_USER, STARTUP_FDS,
 };
 use azos_drv_sys::timebase::{now, TIMER_FREQ};
@@ -161,33 +161,6 @@ pub fn sys_console_wait(buf: u64, len: u64, timeout_ns: u64, a3: u64) -> i64 {
 
 // ── SYS_SPAWN_EX ──────────────────────────────────────────────────────
 
-/// One distinct handle of a move list, validated.
-#[derive(Clone, Copy)]
-struct Moving {
-    handle: u32,
-    kind: CapType,
-    /// Rights the child gets.
-    rights: CapPerms,
-    /// The descriptor, for a `Cap<File>`.
-    resource: u32,
-    /// The handle it takes in the child's table, once moved.
-    moved: u32,
-    /// For a pipe's region: the ends the child holds, by the fds it takes it
-    /// at (fd 0 reads, any other fd writes; `azos_bytepipe`'s rule, the one
-    /// `libsys` adopts the region by).
-    ends: u8,
-    /// An endpoint entry the child may go without (`MOVE_F_OFFER`).
-    offered: bool,
-    /// An offered endpoint the child's row does not receive: it stays with
-    /// the caller and the child's fd is closed.
-    skipped: bool,
-}
-
-/// The end of a pipe region a child's `fd` names.
-fn pipe_end_of_fd(fd: usize) -> u8 {
-    if fd == 0 { azos_ipc::memobj::PIPE_END_READ } else { azos_ipc::memobj::PIPE_END_WRITE }
-}
-
 azos_common::ro_hook! {
     /// Called after every `SYS_SPAWN_EX` that started a task, with the path as
     /// typed and the new TID (installed by the kernel at boot; `crates/core/syscall`
@@ -307,81 +280,11 @@ pub fn sys_spawn_ex(path_ptr: u64, req_ptr: u64) -> i64 {
         hook.and_then(|f| f(&path_buf[..path_len], me))
     };
     let console_block = console_args.map(|a| azos_abi::ushell::console_argv(&path_buf[..path_len], a));
-    let mut moving = [Moving {
-        handle: 0, kind: CapType::NULL, rights: CapPerms::NONE, resource: 0, moved: 0, ends: 0, offered: false,
-        skipped: false,
-    }; SPAWN_MAX_MOVES];
-    let mut nmoving = 0usize;
     let mut fds = [StartupFd::default(); STARTUP_FDS];
-    let mut fd_slot = [usize::MAX; STARTUP_FDS];
-    for m in &req.moves[..req.nmoves as usize] {
-        let fd = m.child_fd as usize;
-        if m.handle == MOVE_CONSOLE {
-            fds[fd] = StartupFd { kind: FD_CONSOLE, handle: 0 };
-            continue;
-        }
-        if let Some(i) = moving[..nmoving].iter().position(|x| x.handle == m.handle) {
-            // A call capability is one child fd.
-            if m.is_endpoint() || moving[i].kind == ty::ENDPOINT {
-                return err(Errno::EINVAL);
-            }
-            // `> f 2>&1`: one handle, two child fds. Moved once; the rights
-            // asked for must agree.
-            let want = if m.perms == 0 {
-                moving[i].rights
-            } else {
-                CapPerms::from_bits_truncate(m.perms as u8).union(CapPerms::DELEGATE)
-            };
-            if want != moving[i].rights {
-                return err(Errno::EINVAL);
-            }
-            fd_slot[fd] = i;
-            moving[i].ends |= pipe_end_of_fd(fd);
-            continue;
-        }
-        let h = CapHandle::from_raw(m.handle);
-        let peek = azos_ipc::cap_store::with_table(me, |t| t.peek_raw(h)).flatten();
-        let Some((kind, held, resource)) = peek else { return err(Errno::ECAPSTALE) };
-        if m.is_endpoint() {
-            let badge = azos_ipc::cap_store::with_table(me, |t| t.ext_of(h)).flatten().map_or(0, |e| e.badge);
-            if let Err(e) = crate::spawn_handoff::check_held(kind, held, badge) {
-                return err(e);
-            }
-            moving[nmoving] = Moving {
-                handle: m.handle, kind, rights: crate::spawn_handoff::HANDED_RIGHTS, resource, moved: 0, ends: 0,
-                offered: m.offered(), skipped: false,
-            };
-            fd_slot[fd] = nmoving;
-            nmoving += 1;
-            continue;
-        }
-        match kind {
-            // A POSIX pipe's region (`azos_bytepipe`): shared with the child,
-            // not moved. The caller keeps its capability and its mapping.
-            ty::SHM => {}
-            ty::FILE if !azos_ipc::file_cap::is_tree_resource(resource) => {}
-            _ => return err(Errno::ECAPKIND),
-        }
-        let want = if m.perms == 0 {
-            held
-        } else {
-            CapPerms::from_bits_truncate(m.perms as u8).union(CapPerms::DELEGATE)
-        };
-        // A File moves (`TRANSFER`); a pipe's region is shared as a DUP entry
-        // (`DUP` and `TRANSFER`): either way the caller must hold the right to
-        // hand it over, and the child gets what it asked for within what the
-        // caller holds.
-        let needs = if kind == ty::SHM { CapPerms::DELEGATE } else { CapPerms::TRANSFER };
-        if !held.contains(needs) || !held.contains(want) {
-            return err(Errno::ECAPPERMS);
-        }
-        moving[nmoving] = Moving {
-            handle: m.handle, kind, rights: want, resource, moved: 0, ends: pipe_end_of_fd(fd), offered: false,
-            skipped: false,
-        };
-        fd_slot[fd] = nmoving;
-        nmoving += 1;
-    }
+    let mut plan = match crate::spawn_handoff::plan(me, &req.moves[..req.nmoves as usize]) {
+        Ok(p) => p,
+        Err(e) => return err(e),
+    };
 
     let flags = req.flags;
     // Console login: a session spawn spends the one-shot grant the `keys`
@@ -431,26 +334,15 @@ pub fn sys_spawn_ex(path_ptr: u64, req_ptr: u64) -> i64 {
             }
             // An endpoint goes only into a row that receives it: asked of
             // every entry before anything moves.
-            let row = crate::natfork::row_of(ctid);
-            for mv in moving[..nmoving].iter_mut().filter(|m| m.kind == ty::ENDPOINT) {
-                let received = crate::spawn_handoff::row_receives(row, mv.resource);
-                match crate::spawn_handoff::row_decision(received, mv.offered) {
-                    Ok(hand) => mv.skipped = !hand,
-                    Err(e) => {
-                        azos_drv_sys::kwarn!(
-                            "[SPAWN] REFUSED: tid={} hands tid={} an endpoint its row does not receive", me, ctid,
-                        );
-                        refusal.set(err(e));
-                        return false;
-                    }
-                }
+            if let Err(e) = plan.decide_rows(crate::natfork::row_of(ctid)) {
+                azos_drv_sys::kwarn!("[SPAWN] REFUSED: tid={} hands tid={} an endpoint its row does not receive", me, ctid);
+                refusal.set(err(e));
+                return false;
             }
-            // Moves, in list order. A failure moves back what already moved.
-            for i in 0..nmoving {
-                let mv = moving[i];
-                if mv.skipped {
-                    continue;
-                }
+            // Moves, the endpoints last. A failure undoes what already moved.
+            let (order, norder) = plan.order();
+            for &i in &order[..norder] {
+                let mv = plan.moving[i];
                 let res = if mv.kind == ty::ENDPOINT {
                     crate::spawn_handoff::hand(me, ctid, CapHandle::from_raw(mv.handle))
                 } else if mv.kind == ty::SHM {
@@ -468,7 +360,7 @@ pub fn sys_spawn_ex(path_ptr: u64, req_ptr: u64) -> i64 {
                 };
                 let ok = match res {
                     Ok(h) => {
-                        moving[i].moved = h.as_raw();
+                        plan.moving[i].moved = h.as_raw();
                         match mv.kind {
                             ty::FILE => crate::file_ops::file_ops()
                                 .is_some_and(|o| o.set_owner(mv.resource as i32, me, ctid) == 0),
@@ -489,44 +381,14 @@ pub fn sys_spawn_ex(path_ptr: u64, req_ptr: u64) -> i64 {
                     }
                     Err(_) => false,
                 };
+                plan.moving[i].landed = ok;
                 if !ok {
-                    // A moved handle goes back; a shared copy is revoked in
-                    // the child's table (the caller never lost its own).
-                    let undo = |m: &Moving| {
-                        let h = CapHandle::from_raw(m.moved);
-                        if m.skipped {
-                            return;
-                        }
-                        if m.kind == ty::ENDPOINT {
-                            crate::spawn_handoff::take_back(me, ctid, CapHandle::from_raw(m.handle), h);
-                        } else if m.kind == ty::SHM {
-                            let _ = azos_ipc::cap_store::with_table(ctid, |t| t.delete_raw(h));
-                            azos_ipc::memobj::memobj_pipe_drop_all_ref(ctid, m.resource);
-                            let _ = azos_ipc::memobj::memobj_release_ref(ctid, m.resource);
-                        } else {
-                            let _ = azos_ipc::cap_store::move_cap(ctid, me, h, None);
-                        }
-                    };
-                    if res.is_ok() {
-                        undo(&moving[i]);
-                    }
-                    for back in moving[..i].iter().rev() {
-                        if back.kind == ty::FILE {
-                            if let Some(o) = crate::file_ops::file_ops() {
-                                let _ = o.set_owner(back.resource as i32, ctid, me);
-                            }
-                        }
-                        undo(back);
-                    }
+                    undo_moves(me, ctid, &mut plan);
                     refusal.set(err(Errno::EMFILE));
                     return false;
                 }
             }
-            for fd in 0..STARTUP_FDS {
-                if fd_slot[fd] != usize::MAX && !moving[fd_slot[fd]].skipped {
-                    fds[fd] = StartupFd { kind: FD_HANDLE, handle: moving[fd_slot[fd]].moved };
-                }
-            }
+            plan.startup_fds(&mut fds);
             // The console program (see above): a Linux or hosted child, or a
             // native one with arguments.
             let console = console_block
@@ -575,6 +437,7 @@ pub fn sys_spawn_ex(path_ptr: u64, req_ptr: u64) -> i64 {
             #[cfg(not(feature = "linux-abi"))]
             let wrote = write_native(child);
             if !wrote {
+                undo_moves(me, ctid, &mut plan);
                 refusal.set(err(Errno::ENOMEM));
                 return false;
             }
@@ -619,6 +482,39 @@ pub fn sys_spawn_ex(path_ptr: u64, req_ptr: u64) -> i64 {
     }
 }
 
+/// Undo the moves of a spawn that does not go ahead, the last first: a moved
+/// file goes back to the caller (its owner too), a pipe's shared copy and
+/// its reference are dropped in the child (the caller never lost its own),
+/// and a handed endpoint is destroyed (`spawn_handoff::drop_handed`).
+fn undo_moves(me: u32, ctid: u32, plan: &mut crate::spawn_handoff::Plan) {
+    let (order, n) = plan.order();
+    for &i in order[..n].iter().rev() {
+        let m = plan.moving[i];
+        if m.moved == 0 {
+            continue;
+        }
+        let h = CapHandle::from_raw(m.moved);
+        match m.kind {
+            ty::ENDPOINT => crate::spawn_handoff::drop_handed(ctid, h),
+            ty::SHM => {
+                let _ = azos_ipc::cap_store::with_table(ctid, |t| t.delete_raw(h));
+                azos_ipc::memobj::memobj_pipe_drop_all_ref(ctid, m.resource);
+                let _ = azos_ipc::memobj::memobj_release_ref(ctid, m.resource);
+            }
+            _ => {
+                if m.landed {
+                    if let Some(o) = crate::file_ops::file_ops() {
+                        let _ = o.set_owner(m.resource as i32, ctid, me);
+                    }
+                }
+                let _ = azos_ipc::cap_store::move_cap(ctid, me, h, None);
+            }
+        }
+        plan.moving[i].moved = 0;
+        plan.moving[i].landed = false;
+    }
+}
+
 /// A child hosted by the ring-3 runtime (Kconfig LINUX_RUNTIME,
 /// `crate::foreign`): the startup block of a native child, with the
 /// descriptors and the working directory and no strings, then the Linux
@@ -646,8 +542,9 @@ fn write_hosted(
 }
 
 /// Who may lend console input on `me`'s behalf: the input owner itself, or a
-/// CLIENT of the owner, a task that holds a call capability (`WRITE`) on an
-/// endpoint the owner serves. The Terminal object's shape: the terminal
+/// CLIENT of the owner, a task that holds an unbadged call capability
+/// (`WRITE`) on an endpoint the owner serves (a badged one is a job's, lent by
+/// the owner: `spawn_handoff::holds_client_right`). The Terminal object's shape: the terminal
 /// server owns input, and the shell, its one client through `endpoint.term`,
 /// starts the foreground Linux job that the server's input is lent to. The
 /// authority is the capability (the `endpoint.term` call right the name
@@ -663,10 +560,9 @@ fn console_lender(me: u32) -> Option<u32> {
     if owner == me {
         return Some(owner);
     }
-    (0..azos_ipc::endpoint::MAX_ENDPOINTS as u32).find_map(|i| {
-        let h = azos_ipc::cap_store::with_table(me, |t| t.lookup(ty::ENDPOINT, i)).flatten()?;
-        (azos_ipc::endpoint::endpoint_dest_for(me, h.as_raw()) == Ok(owner)).then_some(owner)
-    })
+    // The owner's own client only: a job holding the badged copy the owner
+    // lent it is not one.
+    crate::spawn_handoff::holds_client_right(me, owner).then_some(owner)
 }
 
 // ── SYS_ALERT ─────────────────────────────────────────────────────

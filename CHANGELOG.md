@@ -26,8 +26,12 @@ releases yet. The ABI crate keeps its own file,
   it sits. Only into a row that names the endpoint in the new CAPS.TOML
   format-8 task key `receives = ["term"]` (which grants nothing); a required
   entry the row does not receive is `-EACCES`, an offered one (`MOVE_F_OFFER`)
-  is skipped. Admission refuses a received name no row serves or one the row
-  also imports ([Documentation/abi.md](Documentation/abi.md)).
+  is skipped. A badge the kernel stamped at seeding (a warrant-tree root) is
+  never handed on, the endpoints move after every other entry, and a spawn
+  refused after the moves (the startup block included) undoes them, destroying
+  a handed endpoint copy. Lending console input on the owner's behalf takes an
+  unbadged call right (a job's badged copy is not one). Admission refuses a
+  received name no row serves or one the row also imports ([Documentation/abi.md](Documentation/abi.md)).
 
 - The native basic utilities (`userspace/lib/coreutils`, run by `COREUTIL.ELF`, an image whose row holds the root directory and the shell's write trees and nothing else):
   `cp mv rm mkdir rmdir touch stat du df find head tail grep sort uniq tr cut tee
