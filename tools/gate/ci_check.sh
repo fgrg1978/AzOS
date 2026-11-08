@@ -5537,26 +5537,35 @@ records_logd_row() { # records_logd_row <riscv64|aarch64> <pass|stale>
 # forward-only boot honestly shows). `tamper` (the row's canary) rewrites one
 # digit of the first security event in the files: the verdict must be
 # evidence.
-seclog_row() { # seclog_row <aarch64> <pass|tamper>
+seclog_row() { # seclog_row <riscv64|aarch64> <pass|tamper>
     local isa="$1" mode="$2" label="$1: sealed security log verified"
     [ "$mode" = tamper ] && label="$isa: sealed security log tamper canary"
     printf "  %-26s" "${label}..."
     mkdir -p "$CI_LOG_DIR"
-    local work="$CI_LOG_DIR/seclog-$isa-$mode" kernel disk log cfg files out n feats="qemu,captest-row"
+    local work="$CI_LOG_DIR/seclog-$isa-$mode" kernel disk log cfg files out n feats="qemu,captest-row" short=a64
+    [ "$isa" = riscv64 ] && short=rv
     rm -rf "$work"; mkdir -p "$work"
     kernel="$work/kernel"; disk="$work/disk.img"; log="$work/boot.log"; cfg="$(cd "$work" && pwd)/seclog.config"
-    cp "${REPO_ROOT}/config/defconfigs/$(gate_defc a64 "$feats").config" "$cfg"
+    cp "${REPO_ROOT}/config/defconfigs/$(gate_defc "$short" "$feats").config" "$cfg"
     printf 'CONFIG_SEC_LOG=y\nCONFIG_SEC_LOG_SEAL_S=1\n' >>"$cfg"
     if ! (cd "$REPO_ROOT" && KCONFIG_CONFIG="$cfg" python3 -m olddefconfig >/dev/null 2>&1) \
         || ! grep -q '^CONFIG_SEC_LOG=y$' "$cfg" || ! grep -q '^CONFIG_SEC_LOG_SEAL_S=1$' "$cfg"; then
         bad; echo "      $cfg: olddefconfig lost SEC_LOG or the 1 s seal"; return
     fi
-    if ! AARCH64_CONFIG="$cfg" a64_kbuild "$feats"; then bad; echo "      aarch64 kernel ($feats, SEC_LOG) did not build"; return; fi
-    cp "$A64_IMG" "$kernel"
-    if ! make $AZOS_OUT/build/disk-aarch64-captest.img >/dev/null 2>&1; then
-        bad; echo "      disk image build failed: make $AZOS_OUT/build/disk-aarch64-captest.img"; return
+    if [ "$isa" = riscv64 ]; then
+        if ! KCONFIG_CONFIG="$cfg" kbuild "$feats"; then bad; echo "      riscv64 kernel ($feats, SEC_LOG) did not build"; return; fi
+        cp "$KERNEL" "$kernel"
+        rm -f $AZOS_OUT/build/disk-captest.img
+        make_disk $AZOS_OUT/build/disk-captest.img
+        cp $AZOS_OUT/build/disk-captest.img "$disk"
+    else
+        if ! AARCH64_CONFIG="$cfg" a64_kbuild "$feats"; then bad; echo "      aarch64 kernel ($feats, SEC_LOG) did not build"; return; fi
+        cp "$A64_IMG" "$kernel"
+        if ! make $AZOS_OUT/build/disk-aarch64-captest.img >/dev/null 2>&1; then
+            bad; echo "      disk image build failed: make $AZOS_OUT/build/disk-aarch64-captest.img"; return
+        fi
+        cp $AZOS_OUT/build/disk-aarch64-captest.img "$disk"
     fi
-    cp $AZOS_OUT/build/disk-aarch64-captest.img "$disk"
     par_ready
     if ! otae2e_qemu "$isa" "$kernel" "$disk" "$log"; then bad; echo "      QEMU did not start (log: $log)"; return; fi
     if ! otae2e_wait "$log" 'seclog: seal 2 through' 180 || ! otae2e_wait "$log" '\[logd\] two periods on the volume' 60; then
@@ -10895,6 +10904,8 @@ kbuild "qemu"
 par "riscv64: OTA bad update rolls back" ota_rollback_row riscv64
 par "riscv64: records read back from logd" records_logd_row riscv64 pass
 par "riscv64: records logd drops a stale sequence" records_logd_row riscv64 stale
+par "riscv64: sealed security log verified" seclog_row riscv64 pass
+par "riscv64: sealed security log tamper canary" seclog_row riscv64 tamper
 kbuild "qemu"
 par "riscv64: OTA bundle over the network, B confirmed" ota_bundle_row riscv64 good
 kbuild "qemu"
