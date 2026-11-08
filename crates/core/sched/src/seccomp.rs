@@ -1131,9 +1131,11 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     // `NODE_READ`, `SYS_CAP_CLOSE`), the output goes to the console or a
     // redirected stdout (`NODE_WRITE`). Both run worker threads (futexes and
     // `SYS_THREAD_CREATE`). The file layer (`stdrt/src/fs.rs`) can also create,
-    // remove and rename: its mutating class is in the row because std can reach
-    // it whatever the program says, and the tree the row holds is read-only, so
-    // the kernel refuses them. No spawn, no network, no device.
+    // remove and rename, and std can reach it whatever the program says; these
+    // read-only tools leave the mutating class out of the row (the test's
+    // `AUDITED_OPS` names the departure), so a call to one kills them at the call:
+    // the filter is a second layer beside the read-only root their topology row
+    // holds. No spawn, no network, no device.
     // `tests/host/seccomp-tests` derives these from the sources (`STDRT`,
     // `STDRT_FS`).
     ImageProfile {
@@ -1144,7 +1146,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             SYS_FUTEX_WAIT, SYS_FUTEX_WAKE, SYS_THREAD_CREATE, SYS_THREAD_EXIT,
         ],
         audit: false,
-        ops: inv_ops![LOG_CONSOLE_WRITE, NODE_OPENAT, NODE_READ, NODE_WRITE, NODE_MKDIRAT, DOMAIN_UPTIME],
+        ops: inv_ops![LOG_CONSOLE_WRITE, NODE_OPENAT, NODE_READ, NODE_WRITE, DOMAIN_UPTIME, MEMOBJ_ACQUIRE],
         ifaces: &[azos_devif::key::ENTROPY],
     },
     ImageProfile {
@@ -1155,7 +1157,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             SYS_FUTEX_WAIT, SYS_FUTEX_WAKE, SYS_THREAD_CREATE, SYS_THREAD_EXIT,
         ],
         audit: false,
-        ops: inv_ops![LOG_CONSOLE_WRITE, NODE_OPENAT, NODE_READ, NODE_WRITE, NODE_MKDIRAT, DOMAIN_UPTIME],
+        ops: inv_ops![LOG_CONSOLE_WRITE, NODE_OPENAT, NODE_READ, NODE_WRITE, DOMAIN_UPTIME, MEMOBJ_ACQUIRE],
         ifaces: &[azos_devif::key::ENTROPY],
     },
     // The package installer. Serves `endpoint.packages` (the v2 accept/reply),

@@ -1600,6 +1600,10 @@ mod image_profiles {
     /// records them.
     const AUDITED_OPS: &[(&str, u16, &str)] = &[
         ("ABITEST.ELF", azos_abi::invoke::LOG_CONSOLE_WAIT, "the console wait with w3 != 0"),
+        // Not audit rows: the std file layer names the mutators, which these read-only tools
+        // never call; their rows leave the class out, so a call to one is killed.
+        ("RG.ELF", azos_abi::invoke::NODE_MKDIRAT, "the std file layer's mutators, withheld from a read-only tool"),
+        ("FD.ELF", azos_abi::invoke::NODE_MKDIRAT, "the std file layer's mutators, withheld from a read-only tool"),
     ];
 
     /// Ops an image reaches only as io_ring entries, which the scanner (it
