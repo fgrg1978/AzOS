@@ -12261,7 +12261,9 @@ host_job host_canary_row "sensor: vdso bind canary" syscall-tests virtio-snd,lin
     a_vdso_bind_of_a_robot_sensor_follows_the_robot_domain --no-default-features
 # The native basic utilities (userspace/lib/coreutils): each canary puts one bug back, and the
 # named test of coreutils-tests must be the one that goes red.
-host_job host_canary_row "coreutils: the tool image holds the write trees canary" topology-tests toolbox-write-canary file_tools_have_write_trees_in_the_tool_row
+host_job host_canary_row "coreutils: the tool image holds no write tree canary" topology-tests toolbox-write-canary toolbox_holds_no_write_tree
+host_job host_canary_row "coreutils: the utilities' image holds only files canary" topology-tests coreutil-grant-canary coreutil_holds_files_and_nothing_else
+host_job host_canary_row "coreutils: the utilities' image holds the write trees canary" topology-tests coreutil-write-canary coreutil_holds_files_and_nothing_else
 host_job host_canary_row "coreutils: argument parser, bundled flags canary" coreutils-tests args-bundle-canary argp_bundles_flags
 host_job host_canary_row "coreutils: path, .. takes a part off canary" coreutils-tests path-dotdot-canary path_dotdot_pops_a_part
 host_job host_canary_row "coreutils: walks skip . and .. canary" coreutils-tests walk-dots-canary walks_skip_the_dot_entries_a_fat_directory_lists
@@ -14585,12 +14587,12 @@ else
     # deepest static call chain (tools/lint/stack_chain.py, plus 25% for what a static
     # chain does not see) and fails when the chain does not fit. The images that
     # carry no symbols (the relibc programs) are reported, not checked. The
-    # volume's TOOLBOX.ELF is stripped (its file limit), so the row reads the
+    # volume's TOOLBOX.ELF and COREUTIL.ELF are stripped (their file limit), so the row reads the
     # cargo output it was stripped from. The canary asks for 16 KiB of
     # everything: the two images that need more must be named, or the row only
     # ever said ok.
     user_stack_images() { # user_stack_images <rv|arm|x86>: the images, built; prints their paths
-        local dir n names="mlsrv toolbox logd tracectl vmmd sshd mcpd sh termd namesd compmgr power decisd rpcsrv zenohd ptpd audiod" t="" tb
+        local dir n names="mlsrv toolbox coreutil logd tracectl vmmd sshd mcpd sh termd namesd compmgr power decisd rpcsrv zenohd ptpd audiod" t="" tb
         case "$1" in
             rv)  dir="$AZOS_OUT/build"; tb="user-riscv64/riscv64imac-unknown-azos" ;;
             arm) dir="$AZOS_OUT/build/aarch64"; tb="user-aarch64/aarch64-unknown-azos" ;;
@@ -14598,7 +14600,7 @@ else
         esac
         for n in $names; do t="$t $dir/$n.elf"; done
         make -s $t >/dev/null 2>&1 || return 1
-        printf '%s\n' $t | sed "s|^$dir/toolbox\.elf\$|$AZOS_OUT/tgt/$tb/release/toolbox|"
+        printf '%s\n' $t | sed -e "s|^$dir/toolbox\.elf\$|$AZOS_OUT/tgt/$tb/release/toolbox|" -e "s|^$dir/coreutil\.elf\$|$AZOS_OUT/tgt/$tb/release/coreutil|"
     }
     user_stacks_row() { # user_stacks_row <label> <rv|arm|x86>
         printf "  %-26s" "${1}..."
@@ -26492,8 +26494,8 @@ rm -r /fat/Q1/A
 find /fat/Q1 | wc
 chmod 644 /fat/Q1/F.TXT" 300 \
             "3 3 30" "2 2 10" "PLUM" "2 2 22" "chmod: files have no mode bits"
-        # Without the write trees in the tool image's row the same lines make nothing.
-        USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "sh: basic utilities canary ($ush_isa)" "$ush_isa" "$ush_feat,toolbox-write-canary" FAIL \
+        # Without the write trees in COREUTIL.ELF's row the same lines make nothing.
+        USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "sh: basic utilities canary ($ush_isa)" "$ush_isa" "$ush_feat,coreutil-write-canary" FAIL \
             "mkdir -p /fat/Q1/A/B
 find /fat/Q1 -type d | wc
 echo pear > /fat/Q1/F.TXT

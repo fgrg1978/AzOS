@@ -38,7 +38,7 @@ import azos_tools  # noqa: E402
 REPO = azos_tools.ROOT
 BOARD_DEFAULT = {
     "GPIODRV", "BRAINCLI", "FLIGHT", "BEHAVIOR", "CONFIG", "OTA",
-    "MLSRV", "NAMESD", "POWER", "REFLEX", "SH", "TERMD", "TOOLBOX", "TRACECTL", "DECISD", "LOGD", "WHY", "PKGD", "PKG", "RPCSRV",
+    "MLSRV", "NAMESD", "POWER", "REFLEX", "SH", "TERMD", "TOOLBOX", "COREUTIL", "TRACECTL", "DECISD", "LOGD", "WHY", "PKGD", "PKG", "RPCSRV",
     "COMPMGR", "SSHD", "AUDIOD",
 }
 # BUZZDRV, INADRV: their hardware is board I/O (`depends = "BOARD_IO"`), which

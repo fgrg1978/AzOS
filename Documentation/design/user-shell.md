@@ -19,7 +19,8 @@ kernel, and each one's row is its whole authority.
 | `TERMD.ELF` | The terminal server. Owns console input, runs the line discipline (editing, echo, history, type-ahead) and serves the `Terminal` object. It is the *console program*. | Serves `endpoint.term`; claims console input; maps the kernel's input event ring (`input.events`, with a keyboard or mouse driver) and console screen (`console.screen`, with `FB_CONSOLE`); with the login service, the call right on `endpoint.login`. |
 | `NAMESD.ELF` | The name server. Lends the shell an attenuated capability on `endpoint.term`. | Serves `endpoint.names`; may lend `endpoint.term`. |
 | `SH.ELF` | The shell: parses a line, starts programs, owns the job table, builtins and environment. | The right to start a fixed list of images, the `/fat` and `/tmp` trees, a read-only root directory. No hardware. |
-| `TOOLBOX.ELF` | One multicall image for the file, text and device tools. | Read-only root directory, the shell's `/fat` and `/tmp` write trees (`cp`, `mv`, `rm`, `mkdir`, `touch`, `tee`; `/tmp` alone under the lockdown; never the USB stick), the task view, the introspection regions (Kconfig `INSPECT`), `READ` on `net` and `clock`, the audio server's endpoint or `sound.0`, the call rights on the input server and the compositor where their rows exist, and `imports = ["vmctl"]` where the monitor's row exists. |
+| `COREUTIL.ELF` | One multicall image for the basic utilities (section 8): the file and text tools. | The shell's `/fat` and `/tmp` write trees (`/tmp` alone under the lockdown; never the USB stick) and the read-only root directory they are opened beneath. No endpoint, no region, no task view. |
+| `TOOLBOX.ELF` | One multicall image for the system and device tools. | Read-only root directory (no write tree), the task view, the introspection regions (Kconfig `INSPECT`), `READ` on `net` and `clock`, the audio server's endpoint or `sound.0`, the call rights on the input server and the compositor where their rows exist, and `imports = ["vmctl"]` where the monitor's row exists. |
 | `POWER.ELF`, `FLIGHT.ELF`, `BEHAVIOR.ELF`, `CONFIG.ELF`, `OTA.ELF` | One image per privileged family. | Their own family endpoint with read and write rights (`POWER.ELF` also reads one sensor endpoint and calls the `DevicePower` endpoints of the devices it manages). |
 | `LOGIND.ELF` (Kconfig `CONSOLE_LOGIN`) | The login service (section 13). | Serves `endpoint.login`; the `login` op of `keys`; the right to start `SH.ELF`; the `inspect.logins` view. |
 | `TRACECTL.ELF`, `WHY.ELF`, optional `PKG.ELF` and `BUSYBOX.ELF` | Tracer reader, decision query, package tool, BusyBox. | Their own rows. |
@@ -381,14 +382,15 @@ image's row whatever `argv[0]` says.
 true false ls cat uptime type`.
 
 **Applets of `TOOLBOX.ELF`:** `args beep cat echo false fsck host input inspect log ls
-ntp ps sleep spin true vm wc window yes`, and the basic utilities below. `mkdir`
-and `rm` are applets, not builtins, so `-p` and `-r` work in a single command as
-in a pipeline.
+ntp ps sleep spin true vm wc window yes`. **Applets of `COREUTIL.ELF`:** the basic
+utilities below. The authority to change files is not the authority to look at the
+system, so they are two images with two rows. `mkdir` and `rm` are applets, not
+builtins, so `-p` and `-r` work in a single command as in a pipeline.
 
 ### Basic utilities
 
 The file and text tools of a Unix userland, written once in Rust over a
-`Host` trait (`userspace/lib/coreutils`; the toolbox implements it on handles
+`Host` trait (`userspace/lib/coreutils`; `COREUTIL.ELF` implements it on handles
 beneath its root `Cap<Dir>`, the host tests on an in-memory tree). Names are the
 familiar ones and only the common flags exist; any other flag is a usage error
 (status 2). One argument parser serves them all: bundled short flags (`-rf`),
@@ -430,10 +432,10 @@ has instead and the status 126, not a pretence:
 | `kill` | There are no signals. The shell's own `kill JOB` (a builtin) asks a job to stop. |
 | `mkfifo` | Pipes are made by `\|` in the shell; a device or service is an endpoint of the signed topology. |
 
-A tool changes the tree only where its row holds a write tree covering the path
+A tool changes the tree only where `COREUTIL.ELF`'s row holds a write tree covering the path
 (the shell's `/fat` and `/tmp`; `/tmp` alone under `CONSOLE_LOCKDOWN`), and answers
 `denied` otherwise. Status: 0 done, 1 failed, 2 wrong command line, 126 refused,
-130 stopped. Source: `userspace/lib/coreutils`, `userspace/services/toolbox/src/native.rs`,
+130 stopped. Source: `userspace/lib/coreutils`, `userspace/services/coreutil/src/native.rs`,
 host tests in `tests/host/coreutils-tests`.
 
 **Privileged tools**, each its own image and row: `power`, `flight`,
@@ -497,7 +499,7 @@ on it.
 
 **Lockdown.** With `CONSOLE_LOCKDOWN` the built-in rows shrink. The shell may
 start only `TOOLBOX.ELF`, may write `/tmp` and holds the read-only root
-directory (and so does `TOOLBOX.ELF`); neither can change `/fat`, has no task view, and holds no launch grant
+directory (and so does `TOOLBOX.ELF`); the shell and the utilities cannot change `/fat`, has no task view, and holds no launch grant
 on the privileged tools, so they are refused at `SYS_SPAWN_EX` and recorded.
 The kernel console task is not created at all (section 10). A privileged
 service shell exists only if the *signed topology* gives an image's row those

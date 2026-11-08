@@ -309,7 +309,7 @@ thread-objects-canary	pending
 thread-regs-canary	pending	
 thread-tls-zero-canary	pending	
 threads-late-start-canary	pending	
-toolbox-write-canary	pending	adds rows to the built-in topology (crates/core/topology/src/builder.rs): a runtime name needs the row gated at run time too (open)
+coreutil-write-canary	pending	adds rows to the built-in topology (crates/core/topology/src/builder.rs): a runtime name needs the row gated at run time too (open)
 threads-no-cleartid-canary	pending	
 threads-private-table-canary	pending	
 threads-tls-canary	pending	

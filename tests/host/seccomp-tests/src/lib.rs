@@ -1474,7 +1474,11 @@ mod image_profiles {
             src!("userspace/services/sh/src/req.rs"),
             src!("userspace/lib/ualloc/src/native.rs"),
         ]),
-        ("TOOLBOX.ELF", Lang::Rust, &[src!("userspace/services/toolbox/src/main.rs"), src!("userspace/services/toolbox/src/beep.rs"), src!("userspace/services/toolbox/src/fsck.rs"), src!("userspace/services/toolbox/src/host.rs"), src!("userspace/services/toolbox/src/log_view.rs"), src!("userspace/services/toolbox/src/metrics_view.rs"), src!("userspace/services/toolbox/src/ntp.rs"), src!("userspace/services/toolbox/src/ps_view.rs"), src!("userspace/services/toolbox/src/sound.rs"), src!("userspace/services/toolbox/src/vm.rs"), src!("crates/drivers/sys/src/klog/wire.rs"), src!("userspace/services/toolbox/src/input.rs"), src!("userspace/services/toolbox/src/window.rs"), src!("userspace/services/toolbox/src/native.rs")]),
+        ("TOOLBOX.ELF", Lang::Rust, &[src!("userspace/services/toolbox/src/main.rs"), src!("userspace/services/toolbox/src/beep.rs"), src!("userspace/services/toolbox/src/fsck.rs"), src!("userspace/services/toolbox/src/host.rs"), src!("userspace/services/toolbox/src/log_view.rs"), src!("userspace/services/toolbox/src/metrics_view.rs"), src!("userspace/services/toolbox/src/ntp.rs"), src!("userspace/services/toolbox/src/ps_view.rs"), src!("userspace/services/toolbox/src/sound.rs"), src!("userspace/services/toolbox/src/vm.rs"), src!("crates/drivers/sys/src/klog/wire.rs"), src!("userspace/services/toolbox/src/input.rs"), src!("userspace/services/toolbox/src/window.rs")]),
+        ("COREUTIL.ELF", Lang::Rust, &[
+            src!("userspace/services/coreutil/src/main.rs"),
+            src!("userspace/services/coreutil/src/native.rs"),
+        ]),
         ("POWER.ELF", Lang::Rust, &[
             src!("userspace/services/power/src/main.rs"),
             src!("userspace/services/power/src/policy.rs"),
@@ -2325,7 +2329,7 @@ mod image_profiles {
     #[test]
     fn the_pipe_stages_are_the_images_the_shell_can_start() {
         let stages = pipe_stages();
-        for tool in ["TOOLBOX.ELF", "POWER.ELF", "FLIGHT.ELF", "BEHAVIOR.ELF", "CONFIG.ELF", "OTA.ELF", "TRACECTL.ELF", "WHY.ELF", "PKG.ELF"] {
+        for tool in ["TOOLBOX.ELF", "COREUTIL.ELF", "POWER.ELF", "FLIGHT.ELF", "BEHAVIOR.ELF", "CONFIG.ELF", "OTA.ELF", "TRACECTL.ELF", "WHY.ELF", "PKG.ELF"] {
             assert!(stages.iter().any(|s| s == tool), "{tool} is started by the shell and is not a pipe stage: {stages:?}");
         }
         assert!(!stages.iter().any(|s| s == "SH.ELF"), "the shell is no stage of its own pipelines");
@@ -3484,10 +3488,12 @@ mod image_profiles {
         // +4 on x86_64 with SYSTEST.ELF, CAPTEST.ELF, LATBENCH.ELF and LXSRV.ELF.
         // +1 on each of aarch64 and x86_64 with the ring-3 virtio-rng driver
         // (RNGDRV.ELF; riscv64's is in `rust_images`).
+        // +1 on each of riscv64 (in `rust_images`), aarch64 and x86_64 with the
+        // basic utilities' image (COREUTIL.ELF).
         assert_eq!(
             recipes,
-            rust_images + 44 + 1 + 44 + 3,
-            "expected {rust_images} riscv64 + 44 aarch64 + 1 board + 44 x86_64 + 3 runtime $(USPACE_BUILD) recipes",
+            rust_images + 45 + 1 + 45 + 3,
+            "expected {rust_images} riscv64 + 45 aarch64 + 1 board + 45 x86_64 + 3 runtime $(USPACE_BUILD) recipes",
         );
         // The SDK's recipes: WHY.ELF on three ISAs and the SDK's own test, sdktest,
         // on three.

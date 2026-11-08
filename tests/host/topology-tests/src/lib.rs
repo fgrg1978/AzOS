@@ -1909,7 +1909,7 @@ mod builder_tests {
         // (PKGD.ELF, PKG.ELF).
         // +1 with transparent RPC: the RPC server (RPCSRV.ELF).
         // +1 with the structured kernel log: its sink (LOGD.ELF).
-        assert_eq!(t.tasks_len(), if cfg!(feature = "ipc-endpoint-canary") { 27 } else { 25 }
+        assert_eq!(t.tasks_len(), if cfg!(feature = "ipc-endpoint-canary") { 28 } else { 26 }
             - 2 * !azos_topology::builder::PKGD_ROW as usize
             - !azos_topology::builder::INADRV_ROW as usize
             - !azos_topology::builder::BUZZDRV_ROW as usize
@@ -2328,7 +2328,7 @@ mod state_tests {
         // (DECISD.ELF, WHY.ELF).
         // +1 with transparent RPC: the RPC server (RPCSRV.ELF).
         // +1 with the structured kernel log: its sink (LOGD.ELF).
-        assert_eq!(t.tasks_len(), if cfg!(feature = "ipc-endpoint-canary") { 27 } else { 25 }
+        assert_eq!(t.tasks_len(), if cfg!(feature = "ipc-endpoint-canary") { 28 } else { 26 }
             - 2 * !azos_topology::builder::PKGD_ROW as usize
             - !azos_topology::builder::INADRV_ROW as usize
             - !azos_topology::builder::BUZZDRV_ROW as usize
@@ -2376,7 +2376,7 @@ mod state_tests {
         // (DECISD.ELF, WHY.ELF).
         // +1 with transparent RPC: the RPC server (RPCSRV.ELF).
         // +1 with the structured kernel log: its sink (LOGD.ELF).
-        assert_eq!(t.tasks_len(), if cfg!(feature = "ipc-endpoint-canary") { 27 } else { 25 }
+        assert_eq!(t.tasks_len(), if cfg!(feature = "ipc-endpoint-canary") { 28 } else { 26 }
             - 2 * !azos_topology::builder::PKGD_ROW as usize
             - !azos_topology::builder::INADRV_ROW as usize
             - !azos_topology::builder::BUZZDRV_ROW as usize
@@ -4573,16 +4573,8 @@ mod launch_cap_tests {
                             "TOOLBOX.ELF holds an endpoint other than net, clock, sound.0 and the input server's");
                     assert_eq!((c.perms, c.transfer), (CapPerms::READ, false), "TOOLBOX.ELF observes, it does not act");
                 }
-                // The root directory, read-only: it names, it cannot write. The
-                // trees the file tools change are the shell's own and no others.
-                CapKind::Node if c.target == MaybeStr::from_bytes(b"/") => assert_eq!(c.perms, CapPerms::READ),
-                CapKind::Node => {
-                    let t = c.target.as_bytes();
-                    assert!(t == b"/tmp" || t == b"/fat", "TOOLBOX.ELF holds a tree other than /fat and /tmp (the stick is the shell's alone)");
-                    assert_eq!((c.perms, c.transfer), (CapPerms::RW, false));
-                    assert!(topo.caps_of(sh).iter().any(|s| s.kind == CapKind::Node && s.target == c.target && s.perms == c.perms),
-                            "a tool changes only what the shell that starts it may change");
-                }
+                // The root directory, read-only: it names, it cannot write.
+                CapKind::Node => assert_eq!((c.perms, c.target), (CapPerms::READ, MaybeStr::from_bytes(b"/"))),
                 CapKind::MemObj => assert!(
                     c.target == MaybeStr::from_bytes(b"inspect.public") || c.target == MaybeStr::from_bytes(b"inspect.admin"),
                     "TOOLBOX.ELF holds a memory object other than the introspection regions"),
@@ -4599,17 +4591,47 @@ mod launch_cap_tests {
         assert!(!tb.start);
     }
 
-    /// **The tool image writes the shell's trees, so `cp`, `mv`, `rm`, `mkdir`
-    /// and `touch` work; under the lockdown only `/tmp`.**
+    /// **The tool image looks and does not write.** `TOOLBOX.ELF` holds no
+    /// write tree: the tools that change files are `COREUTIL.ELF`'s.
     ///
-    /// **Canary.** `toolbox-write-canary` drops the trees from the row: red.
+    /// **Canary.** `toolbox-write-canary` gives it `/fat` read-write: red.
     #[test]
-    fn file_tools_have_write_trees_in_the_tool_row() {
+    fn toolbox_holds_no_write_tree() {
         let topo = default_minimal();
         let tb = topo.find_task(&MaybeStr::from_bytes(b"TOOLBOX.ELF")).expect("TOOLBOX.ELF row");
-        let rw = |t: &[u8]| topo.caps_of(tb).iter().any(|c| c.kind == CapKind::Node && c.perms == CapPerms::RW && c.target.as_bytes() == t);
+        for c in topo.caps_of(tb) {
+            assert!(!(c.kind == CapKind::Node && c.perms.contains(CapPerms::WRITE)),
+                    "TOOLBOX.ELF holds a write tree: {:?}", c.target.as_str());
+        }
+    }
+
+    /// **The file tools' image holds files and nothing else**: the root
+    /// directory read-only and the shell's `/fat` and `/tmp` read-write (`/tmp`
+    /// alone under the lockdown); no endpoint, no region, no task view, no
+    /// launch right; never the USB stick.
+    ///
+    /// **Canaries.** `coreutil-grant-canary` adds the `net` endpoint to the row:
+    /// red on the first assertion. `coreutil-write-canary` takes the trees out:
+    /// red on the second.
+    #[test]
+    fn coreutil_holds_files_and_nothing_else() {
+        let topo = default_minimal();
+        let cu = topo.find_task(&MaybeStr::from_bytes(b"COREUTIL.ELF")).expect("COREUTIL.ELF row");
+        for c in topo.caps_of(cu) {
+            assert_eq!(c.kind, CapKind::Node, "COREUTIL.ELF holds {:?} {:?}: files only", c.kind, c.target.as_str());
+            assert!(!c.transfer && !c.perms.contains(CapPerms::EXEC));
+            let t = c.target.as_bytes();
+            if t == b"/" {
+                assert_eq!(c.perms, CapPerms::READ);
+            } else {
+                assert!(t == b"/tmp" || t == b"/fat", "COREUTIL.ELF holds the tree {:?}", c.target.as_str());
+                assert_eq!(c.perms, CapPerms::RW);
+            }
+        }
+        let rw = |t: &[u8]| topo.caps_of(cu).iter().any(|c| c.perms == CapPerms::RW && c.target.as_bytes() == t);
         assert!(rw(b"/tmp"), "the file tools write /tmp");
         assert_eq!(rw(b"/fat"), !azos_limits::CONSOLE_LOCKDOWN, "/fat unless the lockdown withholds it, as for the shell");
+        assert!(topo.imports_of(cu).is_empty());
     }
 
     /// The Terminal object's endpoint has exactly one server and one holder
@@ -6935,7 +6957,7 @@ mod mcp_row_tests {
         assert_eq!(row.is_some(), azos_topology::builder::SSHD_ROW, "a row exactly when Kconfig SSHD");
         let Some(row) = row else { return };
         let caps = t.caps_of(row);
-        assert_eq!(caps.len(), 6, "entropy, the keystore, the volume, the tool launch, the root directory, the logins view");
+        assert_eq!(caps.len(), 7, "entropy, the keystore, the volume, the two tool launches, the root directory, the logins view");
         assert_eq!((caps[0].kind, caps[0].perms, caps[0].target.as_bytes()), (CapKind::Endpoint, CapPerms::READ, &b"entropy"[..]));
         assert_eq!(
             (caps[1].kind, caps[1].perms, caps[1].target.as_bytes(), caps[1].transfer, caps[1].ops),
@@ -6948,13 +6970,14 @@ mod mcp_row_tests {
         );
         assert_eq!((caps[2].kind, caps[2].perms, caps[2].target.as_bytes()), (CapKind::Node, CapPerms::RW, &b"/fat"[..]));
         assert_eq!((caps[3].kind, caps[3].perms, caps[3].target.as_bytes()), (CapKind::Node, CapPerms::EXEC, &b"TOOLBOX.ELF"[..]));
-        assert_eq!((caps[4].kind, caps[4].perms, caps[4].target.as_bytes()), (CapKind::Node, CapPerms::READ, &b"/"[..]));
+        assert_eq!((caps[4].kind, caps[4].perms, caps[4].target.as_bytes()), (CapKind::Node, CapPerms::EXEC, &b"COREUTIL.ELF"[..]));
+        assert_eq!((caps[5].kind, caps[5].perms, caps[5].target.as_bytes()), (CapKind::Node, CapPerms::READ, &b"/"[..]));
         assert_eq!(
-            (caps[5].kind, caps[5].perms, caps[5].target.as_bytes()),
+            (caps[6].kind, caps[6].perms, caps[6].target.as_bytes()),
             (CapKind::MemObj, CapPerms::READ.union(CapPerms::MAP), &b"inspect.logins"[..])
         );
         let launches: Vec<_> = caps.iter().filter(|c| c.kind == CapKind::Node && c.perms == CapPerms::EXEC).collect();
-        assert_eq!(launches.len(), 1, "a login starts the tool image and no privileged one");
+        assert_eq!(launches.len(), 2, "a login starts the two tool images and no privileged one");
         assert!(caps.iter().all(|c| !c.transfer), "nothing it holds can be passed on");
         assert!(row.start, "the kernel starts it with the row");
         assert!(t.exports_of(row).is_empty());

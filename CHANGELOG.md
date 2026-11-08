@@ -9,7 +9,7 @@ releases yet. The ABI crate keeps its own file,
 
 ### Added
 
-- The native basic utilities (`userspace/lib/coreutils`, run by `TOOLBOX.ELF`):
+- The native basic utilities (`userspace/lib/coreutils`, run by `COREUTIL.ELF`, an image whose row holds the root directory and the shell's write trees and nothing else):
   `cp mv rm mkdir rmdir touch stat du df find head tail grep sort uniq tr cut tee
   date env pwd basename dirname seq printf` with the common flags, over a `Host`
   trait so they are tested on the host; `chmod chown chgrp umask ln kill mkfifo`

@@ -87,8 +87,11 @@ restart-smoke = ["azos_topology/restart-smoke"]
 # User shell canary: POWER.ELF without the power endpoint. It must turn its
 # host test red.
 power-cap-canary = ["azos_topology/power-cap-canary"]
-# `TOOLBOX.ELF` without its write trees. It must turn its host test red.
+# The file tools' image: `TOOLBOX.ELF` with a write tree, `COREUTIL.ELF` with an
+# endpoint or without its trees. Each must turn its host test red.
 toolbox-write-canary = ["azos_topology/toolbox-write-canary"]
+coreutil-grant-canary = ["azos_topology/coreutil-grant-canary"]
+coreutil-write-canary = ["azos_topology/coreutil-write-canary"]
 # Wave 12: the family tools without capabilities, and the drivetrain moved to
 # FLIGHT.ELF (gate rows).
 family-cap-canary = ["azos_topology/family-cap-canary"]
