@@ -4868,6 +4868,37 @@ mod launch_cap_tests {
         ));
     }
 
+    /// Kconfig USERSPACE_RG / USERSPACE_FD: the ported tools have a row exactly when
+    /// the symbol is on, hold the read-only root directory and the `entropy`
+    /// interface and nothing else (no write tree, no endpoint, no task view), and
+    /// the shell may start them either way.
+    ///
+    /// **Canary.** Add `TMP_RW` to `PORT_TOOL_CAPS`: red on "holds a write tree".
+    /// Run under a desktop-preset `.config` for the rows to exist.
+    #[test]
+    fn the_ported_tools_hold_the_read_only_root_and_entropy_only() {
+        use azos_abi::cap::CapPerms;
+        let topo = default_minimal();
+        for (image, on) in [(&b"RG.ELF"[..], azos_limits::USERSPACE_RG), (&b"FD.ELF"[..], azos_limits::USERSPACE_FD)] {
+            let name = MaybeStr::from_bytes(image);
+            let row = topo.tasks().iter().find(|t| t.name == name);
+            assert_eq!(row.is_some(), on, "{} has a row exactly when its symbol is on", String::from_utf8_lossy(image));
+            let Some(t) = row else { continue };
+            let caps = topo.caps_of(t);
+            assert_eq!(caps.len(), 2, "{} holds more than the root and entropy", String::from_utf8_lossy(image));
+            assert!(
+                caps.iter().any(|c| c.kind == CapKind::Node && c.target == MaybeStr::from_bytes(b"/") && c.perms == CapPerms::READ),
+                "no read-only root directory",
+            );
+            assert!(
+                caps.iter().all(|c| !(c.kind == CapKind::Node && c.perms.contains(CapPerms::WRITE))),
+                "{} holds a write tree",
+                String::from_utf8_lossy(image),
+            );
+            assert!(caps.iter().any(|c| c.kind == CapKind::Endpoint && c.perms == CapPerms::READ), "no entropy endpoint");
+        }
+    }
+
     /// Kconfig INSPECT: the tool image (`inspect`) holds the public region and,
     /// with an admin region configured, the admin one AFTER the task view (the
     /// grant of `inspect.admin` asks the table for it: the admin warrant); both

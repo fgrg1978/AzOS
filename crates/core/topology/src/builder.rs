@@ -1829,6 +1829,19 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
             .expect("default_minimal_topology: WHY.ELF push failed");
         topo.set_last_task_mem_pages(WHY_MEM_PAGES);
     }
+    // The ported search and find tools (`third_party/ports`, Kconfig USERSPACE_RG
+    // and USERSPACE_FD): std programs that read the volume beneath the read-only
+    // root directory and print.
+    if azos_limits::USERSPACE_RG {
+        topo.push_task(MaybeStr::from_bytes(TASK_RG_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), TOOL_PRIORITY, PORT_TOOL_CAPS)
+            .expect("default_minimal_topology: RG.ELF push failed");
+        topo.set_last_task_mem_pages(RG_MEM_PAGES);
+    }
+    if azos_limits::USERSPACE_FD {
+        topo.push_task(MaybeStr::from_bytes(TASK_FD_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), TOOL_PRIORITY, PORT_TOOL_CAPS)
+            .expect("default_minimal_topology: FD.ELF push failed");
+        topo.set_last_task_mem_pages(FD_MEM_PAGES);
+    }
     // The package installer (`userspace/services/pkgd`, the Packages object)
     // and its client tool (`PKG.ELF`). The installer serves `endpoint.packages`
     // and holds a read-write tree on `/fat/PKG`, where it stages packages and
@@ -2942,6 +2955,17 @@ const SH_CAPS_BASE: &[CapSpec] = &[
         perms: CapPerms::EXEC,
         target: MaybeStr::from_bytes(TASK_WHY_IMAGE), transfer: false, ops: 0,
     },
+    // The ported search and find tools.
+    CapSpec {
+        kind: CapKind::Node,
+        perms: CapPerms::EXEC,
+        target: MaybeStr::from_bytes(TASK_RG_IMAGE), transfer: false, ops: 0,
+    },
+    CapSpec {
+        kind: CapKind::Node,
+        perms: CapPerms::EXEC,
+        target: MaybeStr::from_bytes(TASK_FD_IMAGE), transfer: false, ops: 0,
+    },
     FAT_RW,
     TMP_RW,
     TASK_VIEW_CAP,
@@ -3577,6 +3601,20 @@ const WHY_ENTROPY: CapSpec = CapSpec {
     perms: CapPerms::READ,
     target: MaybeStr::from_bytes(RESOURCE_ENTROPY), transfer: false, ops: 0,
 };
+
+/// The ported search tool's image (`third_party/ports/ripgrep`).
+pub const TASK_RG_IMAGE: &[u8] = b"RG.ELF";
+/// The ported finder's image (`third_party/ports/fd-find`).
+pub const TASK_FD_IMAGE: &[u8] = b"FD.ELF";
+/// Frame budgets of `RG.ELF` and `FD.ELF`: the image itself (a `std` program of
+/// 3.3 to 3.8 and 2.4 to 2.9 MB, about 900 and 700 frames), the stack and the hardened
+/// allocator's blocks, which the kernel charges whole when they are mapped; a
+/// search keeps its regex automata and a few read buffers per thread.
+const RG_MEM_PAGES: u32 = 2048;
+const FD_MEM_PAGES: u32 = 1536;
+/// What the ported tools hold: the read-only root directory they read beneath,
+/// and the `entropy` interface that keys and randomizes the allocator `std` brings.
+const PORT_TOOL_CAPS: &[CapSpec] = &[ROOT_RO, WHY_ENTROPY];
 
 /// The package installer's endpoint: `PKGD.ELF` serves the `Packages` object
 /// on it (`READ`), `PKG.ELF` calls it (`WRITE`).
