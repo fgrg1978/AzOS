@@ -506,8 +506,9 @@ mod tests {
         assert!(!decode(0x0000_1000_1021_1120, 0, 0).rng);
     }
 
-    /// FEAT_S1POE is ID_AA64MMFR3_EL1 [19:16] and FEAT_GCS ID_AA64PFR1_EL1 [47:44],
-    /// each alone. Canary: read either at the other's shift and the pair fails.
+    /// FEAT_S1POE is ID_AA64MMFR3_EL1 [19:16] and FEAT_GCS ID_AA64PFR1_EL1 [47:44]
+    /// (Linux arch/arm64/tools/sysreg), each alone. Canary: read either at the
+    /// other's shift and the pair fails.
     #[test]
     fn the_overlay_and_guarded_stack_bits_come_from_their_own_fields() {
         let z = IdRegs::default();
