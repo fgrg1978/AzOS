@@ -1,0 +1,11 @@
+# Pin stable for the host-test crates. The workspace `rust-toolchain.toml`
+# pins nightly with `[unstable] build-std = ["core", "alloc"]` in
+# `.cargo/config.toml`, which child `build-std = []` overrides fail to
+# undo on this nightly — they get re-merged and the host build double-
+# links `core` → E0152. Stable doesn't accept `-Z` so it skips build-std
+# entirely, side-stepping the bug.
+#
+# These tests intentionally use no nightly features; if you need one,
+# move the test out of this crate first.
+[toolchain]
+channel = "stable"

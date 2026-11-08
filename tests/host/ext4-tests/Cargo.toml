@@ -1,0 +1,29 @@
+[package]
+name = "azos_ext4_tests"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "Host-side tests for the read-only ext4 parser (userspace/lib/ext4) and the ring-3 server that serves it (userspace/services/ext4d): images made by the host's mke2fs at test time, feature sets and block sizes, refusals, byte flips over real images, the file protocol's round trip. Excluded from workspace."
+
+# Run with:  cd tests/host/ext4-tests && cargo test --release
+# Needs e2fsprogs (`mke2fs`, `e2fsck`) on PATH or as a Homebrew keg; without
+# it this suite fails, loudly.
+
+[features]
+# Gate canaries (tools/gate/ci_check.sh `host_canary_row`), never in a real
+# build; each must turn the named test red.
+#   dirent-bound-canary: a directory entry's name length is not checked
+#     against NAME_MAX (`corrupt::mangled_images_never_panic`)
+#   csum-skip-canary: an inode's checksum is not verified
+#     (`refuse::a_flipped_inode_is_refused`)
+dirent-bound-canary = ["azos_ext4/dirent-bound-canary"]
+csum-skip-canary = ["azos_ext4/csum-skip-canary"]
+
+[dependencies]
+azos_ext4 = { path = "../../../userspace/lib/ext4" }
+
+[profile.release]
+overflow-checks = true
+
+[workspace]

@@ -12222,7 +12222,7 @@ HOST_SUITES="flight-sim regression-tests ota-tests sched-policy-tests scsi-tests
          percpu-tests trace-tests iommu-tests pci-tests dma-tests
          nvme-tests x86-platform-tests fb-tests rings-tests bytepipe-tests idl-tests decisions-tests micro-tests hwbus-tests
          logind-tests stdrt-tests pkg-tests zenoh-tests mcp-tests inspect-tests actuation-tests
-         usb-tests usb-hid-tests relibc-azos-tests rpc-tests tpm-tests soc-tests compmgr-tests compose-tests compositor-tests cfi-tests zenohd-tests tls-tests ptpd-tests quic-tests mcpd-tests sshd-tests ethercat-tests infsrv-tests usb-cdc-tests usb-uvc-tests srv-tests"
+         usb-tests usb-hid-tests relibc-azos-tests rpc-tests tpm-tests soc-tests compmgr-tests compose-tests compositor-tests cfi-tests zenohd-tests tls-tests ptpd-tests quic-tests mcpd-tests sshd-tests ethercat-tests infsrv-tests usb-cdc-tests usb-uvc-tests srv-tests ext4-tests"
 # The same hole, one suite at a time: percpu-tests (wave 15) and four suites
 # from b6d74c00 were never in the list above. Every tracked suite is now either
 # in it or run by a row of its own (lx-loader-tests, below, needs its modules).
@@ -12305,6 +12305,8 @@ host_job host_canary_row "coreutils: find -type canary" coreutils-tests find-typ
 host_job host_canary_row "coreutils: du rounds to the block canary" coreutils-tests du-block-canary du_rounds_files_to_the_block
 host_job host_canary_row "coreutils: cut ranges canary" coreutils-tests cut-range-canary cut_ranges_include_the_end
 host_job host_canary_row "coreutils: tr ranges canary" coreutils-tests tr-range-canary tr_range_includes_the_last_letter
+host_job host_canary_row "ext4: a name past NAME_MAX canary" ext4-tests dirent-bound-canary mangled_images_never_panic
+host_job host_canary_row "ext4: inode checksum canary" ext4-tests csum-skip-canary a_flipped_inode_is_refused
 host_job host_canary_row "coreutils: uniq -c canary" coreutils-tests uniq-count-canary uniq_c_counts_the_run
 # The kernel half's page-table pool and its funnel (mm-tests, feature hyp-monitor,
 # which the default run of the suite does not build): words of the armed pool go

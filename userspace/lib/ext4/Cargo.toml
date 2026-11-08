@@ -1,0 +1,21 @@
+[package]
+name = "azos_ext4"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR GPL-2.0-only"
+publish = false
+description = "A read-only ext4 parser: superblock, group descriptors, inodes, extents and the legacy block map, directories (htree read as linear), symlinks; 64bit and metadata_csum checked, every other incompatible feature refused at mount with its reason. no_std, no alloc, no unsafe; it reads untrusted images, so it runs only in ring 3 (userspace/services/ext4d). Tested on the host (tests/host/ext4-tests). Standalone, not a member of the root workspace."
+
+[features]
+# Gate canaries (tests/host/ext4-tests), never in a real build:
+#   dirent-bound-canary: a directory entry's name length is not checked
+#     against NAME_MAX
+#   csum-skip-canary: an inode's checksum is not verified
+dirent-bound-canary = []
+csum-skip-canary = []
+
+[dependencies]
+azos_common = { path = "../../../crates/core/common" }
+
+# Standalone, like the userspace images (see Cargo.toml's exclude list).
+[workspace]
