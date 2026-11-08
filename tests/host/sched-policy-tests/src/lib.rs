@@ -975,19 +975,24 @@ mod rt_exemption {
         const BOOT_SCHED: &str = include_str!("../../../../kernel/src/boot/sched.rs");
         const KILL_SWITCH: &str = include_str!("../../../../crates/drivers/kill-switch/src/lib.rs");
         const ROBOT_LOOPS: &str = include_str!("../../../../crates/domains/robot/safety-core/src/actuation.rs");
+        const ROBOT_SENSORS: &str = include_str!("../../../../crates/domains/robot/safety-core/src/sensor_tasks.rs");
         let calls = |src: &str| src.matches("rt::exempt_from_band_cap(").count();
-        assert_eq!(calls(TASKS), 1, "imu");
-        let at = TASKS.find("\"imu\"").expect("imu not created in tasks/create.rs");
-        assert!(TASKS[at..(at + 400).min(TASKS.len())].contains("rt::exempt_from_band_cap("),
-                "imu is not exempted right after creation");
-        // sys-wdt, and every effect loop a driver registers (rt-motor and
-        // flight-ctrl come from the robot manifest), exempted in the one
-        // spawn path; the kill switch (gpio-edge-irq: the e-stop's GPIO edge
-        // task) is a base provider whose task hook runs beside sys-wdt's.
-        assert_eq!(calls(BOOT_SCHED), 2, "sys-wdt and spawn_effect_loop");
-        let at = BOOT_SCHED.find("fn spawn_effect_loop(").expect("the kernel spawns registered effect loops");
-        assert!(BOOT_SCHED[at..(at + 400).min(BOOT_SCHED.len())].contains("rt::exempt_from_band_cap("),
-                "a registered effect loop is not exempted right after creation");
+        let exempted_after = |src: &str, created: &str, what: &str| {
+            let at = src.find(created).unwrap_or_else(|| panic!("{what} is not created where expected"));
+            assert!(src[at..(at + 400).min(src.len())].contains("rt::exempt_from_band_cap("),
+                    "{what} is not exempted right after creation");
+        };
+        assert_eq!(calls(TASKS), 0, "the kernel's own task list exempts nothing");
+        // imu, the robot's RT sensor producer, created by its manifest's task hook.
+        assert_eq!(calls(ROBOT_SENSORS), 1, "imu");
+        exempted_after(ROBOT_SENSORS, "\"imu\", imu_task", "imu");
+        // sys-wdt, every effect loop a driver registers (rt-motor and
+        // flight-ctrl come from the robot manifest) in the one spawn path, and
+        // the enforcement task; the kill switch (gpio-edge-irq: the e-stop's
+        // GPIO edge task) is a base provider whose task hook runs beside sys-wdt's.
+        assert_eq!(calls(BOOT_SCHED), 3, "sys-wdt, spawn_effect_loop and enforce");
+        exempted_after(BOOT_SCHED, "fn spawn_effect_loop(", "a registered effect loop");
+        exempted_after(BOOT_SCHED, "\"enforce\", azos_actuation::enforce::enforce_task", "the enforcement task");
         for name in ["RT_MOTOR", "FLIGHT_CTRL"] {
             assert!(ROBOT_LOOPS.contains(&format!("pub static {name}: azos_ext_api::EffectLoop")),
                     "{name} is not a registered effect loop");
