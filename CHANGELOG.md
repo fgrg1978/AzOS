@@ -49,6 +49,28 @@ releases yet. The ABI crate keeps its own file,
   and `flight-ctrl`; the kernel's task list no longer names them
   ([Documentation/effects.md](Documentation/effects.md)).
 
+- Extension contract level 5: `ext_api::Enforcer` checks (name, period,
+  tick), run by one kernel enforcement task (`enforce`, a safety task on the
+  watchdog's CPU). The robot's enforcer judges the sensor bus with the safety
+  layer (L0) and the drivetrain loop applies the verdict as a cap on every
+  command whoever chose it; it also retires the payload pulse, latches the
+  e-stop on an RC link loss or kill switch, and arms and latches the geofence.
+  The behaviour loop keeps only the RC sticks.
+
+- The robot's sensor producers (imu, odom, sensor-slow, sensor-ahrs) are
+  created by the robot manifest's task hook with the priorities it declares;
+  `azos_sched` keeps the generic `HARD_RT_PRIORITY` band in place of the
+  robot-named control and sensing priorities.
+
+- The `Authority` interface (`endpoint.authority`): a ring-3 engine stages a
+  protocol frame (`put`, 48 bytes a piece) and submits it (`frame`); the
+  extension that owns the protocol answers it in the kernel. The robot answers
+  the brain protocol's authority frames there (e-stop, degraded mode,
+  semantic level, the operator's e-stop and device-hold release, payload and
+  configuration effects, an actuator command's confidence, unknown types
+  recorded): one handler, which the kernel's own brain link and its UART
+  bridge now call instead of two copies of the dispatch.
+
 - `Motor::command(left, right)`: the drivetrain's command published to its
   effect loop, both wheels' effects through the gate, `(0, 0)` always carried
   out, motion refused while halted, and a dead commander's command stopped. No

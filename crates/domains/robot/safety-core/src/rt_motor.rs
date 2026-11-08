@@ -173,6 +173,11 @@ pub fn rt_motor_task(_: usize) {
             }
             let mut cmd = azos_robot::motor_cmd_read();
             if azos_robot::motor_cmd_is_valid() {
+                // The safety layer's verdict (the enforcer's L0) bounds every
+                // command, whoever chose it.
+                let cap = crate::enforce::l0_cap();
+                cmd.speed_l = cmd.speed_l.clamp(-cap, cap);
+                cmd.speed_r = cmd.speed_r.clamp(-cap, cap);
                 // Bounded runtime safety monitor — the LAST line of
                 // defence at the single MotorCmd→PWM chokepoint. Enforces hard
                 // ESTOP + per-robot-type speed cap on the command MAGNITUDE

@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! The robot's enforcer (`azos_ext_api::Enforcer`), run by the base's
-//! enforcement task: the payload pulse's deadline, the RC receiver's link loss
+//! enforcement task: the safety layer's verdict on the sensor bus (L0: a fall,
+//! a spin, a flat battery, a latched e-stop), which the drivetrain loop applies
+//! as a cap on every command whoever chose it ([`l0_cap`]), the payload
+//! pulse's deadline, the RC receiver's link loss
 //! and kill switch (Kconfig `RC_INPUT`), and the geofence's home arm and
 //! breach latch (Kconfig `GEOFENCE`). Each latches the e-stop and records
 //! why; none chooses a motion.
 
-use core::sync::atomic::{AtomicU32, Ordering};
-#[cfg(any(feature = "rc-input", feature = "geofence"))]
+use core::sync::atomic::{AtomicI32, AtomicU32, Ordering};
+use azos_behavior::safety::SafetyAction;
 use azos_behavior::types::SensorState;
 
 /// Its period: the rate the sensor bus and the RC link are judged at.
@@ -19,6 +22,28 @@ pub static ROBOT_ENFORCER: azos_ext_api::Enforcer = azos_ext_api::Enforcer {
     tick,
 };
 
+/// No cap: the safety layer found nothing.
+const NO_CAP: i32 = i32::MAX;
+
+/// The safety layer's latest cap on a wheel's command, in percent: 0 stops,
+/// [`NO_CAP`] leaves the command alone.
+static L0_CAP: AtomicI32 = AtomicI32::new(NO_CAP);
+
+/// The cap the drivetrain loop applies to each wheel's command magnitude.
+pub fn l0_cap() -> i32 {
+    L0_CAP.load(Ordering::Acquire)
+}
+
+/// `action` as a cap: a stop, a landing and a return all stop the wheels, a
+/// speed limit bounds them.
+pub fn cap_of(action: SafetyAction) -> i32 {
+    match action {
+        SafetyAction::None => NO_CAP,
+        SafetyAction::EmergencyStop | SafetyAction::LandNow | SafetyAction::ReturnToLaunch => 0,
+        SafetyAction::SpeedLimit(n) => n.clamp(0, 100),
+    }
+}
+
 /// Completed checks, for the smokes that wait for some to pass.
 static PASSES: AtomicU32 = AtomicU32::new(0);
 
@@ -29,17 +54,14 @@ pub fn passes() -> u32 {
 
 fn tick(now: u64) {
     azos_behavior::payload::payload_tick();
+    let mut state = SensorState::new();
+    azos_behavior::sensor_bus::SENSOR_BUS.snapshot(&mut state);
+    state.timestamp = now;
+    L0_CAP.store(cap_of(azos_behavior::safety::safety_check(&state).action), Ordering::Release);
     #[cfg(feature = "rc-input")]
     rc_enforce(now);
     #[cfg(feature = "geofence")]
-    {
-        let mut state = SensorState::new();
-        azos_behavior::sensor_bus::SENSOR_BUS.snapshot(&mut state);
-        state.timestamp = now;
-        fence_tick(&state);
-    }
-    #[cfg(not(any(feature = "rc-input", feature = "geofence")))]
-    let _ = now;
+    fence_tick(&state);
     let _ = PASSES.fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| Some(n.saturating_add(1)));
 }
 

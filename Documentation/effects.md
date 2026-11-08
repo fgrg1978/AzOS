@@ -130,6 +130,24 @@ shared by every domain with an actuator.
   feature turns on): its manifest has no effect of its own, a hook that
   reports the configured pin and a hook that creates its task, whose press
   ends in `gate::latch_and_stop`.
+- Periodic enforcement is an extension's `ext_api::Enforcer` (a name, a
+  period, a tick), run by the base's one enforcement task (`enforce`,
+  `azos_actuation::enforce`). The robot's enforcer runs the safety layer's
+  check on the sensor bus (L0: a latched e-stop, a fall or spin, a flat
+  battery) and publishes it as a cap the drivetrain loop applies to every
+  command before the envelope (`enforce::l0_cap`: 0 stops, a speed limit
+  bounds); it retires the payload pulse, latches the e-stop on an RC link
+  loss or kill switch (Kconfig `RC_INPUT`) and arms and latches the geofence
+  (Kconfig `GEOFENCE`).
+- A frame of the brain protocol that asks for authority is answered in the
+  kernel (`azos_safety_core::frames`): the behaviour engine hands it over (in
+  ring 3 through the `Authority` interface: `put` the payload in 48-byte
+  pieces, then `frame`; `WRITE` without the containment step, because an
+  e-stop, a degrade and the operator's release are what a contained system
+  must still take). The kernel decides the e-stop, degraded mode, the
+  semantic level, the operator's signed e-stop and device-hold release, the
+  payload and configuration effects and the confidence of an actuator
+  command, and records every unknown frame type.
 - Releasing the latch needs the operator's signed release proof
   (`estop::verify_operator_release`): an Ed25519 signature over a message that
   includes a nonce, which must be strictly newer than the last accepted one. The
