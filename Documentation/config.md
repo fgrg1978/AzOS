@@ -1363,6 +1363,7 @@ The index lists every declared option: 1307.
 | `USERSPACE_COREUTIL` | `tools/build/gen_userspace_kconfig.py` | COREUTIL.ELF (userspace/services/coreutil) |
 | `USERSPACE_DECISD` | `tools/build/gen_userspace_kconfig.py` | DECISD.ELF (userspace/services/decisd) |
 | `USERSPACE_EPSRV` | `tools/build/gen_userspace_kconfig.py` | EPSRV.ELF (userspace/tests/epsrv) |
+| `USERSPACE_FD` | `config/subsys/Kconfig.ports` | FD.ELF: fd 10.5.2 (third_party/ports/fd-find) |
 | `USERSPACE_FLIGHT` | `tools/build/gen_userspace_kconfig.py` | FLIGHT.ELF (userspace/services/famtools) |
 | `USERSPACE_GPIODRV` | `tools/build/gen_userspace_kconfig.py` | GPIODRV.ELF (userspace/drivers/gpio_drv) |
 | `USERSPACE_GPL` | `config/axes/Kconfig.personality` | Allow third-party GPL userspace programs (e.g. BusyBox) |
@@ -1386,6 +1387,7 @@ The index lists every declared option: 1307.
 | `USERSPACE_POWER` | `tools/build/gen_userspace_kconfig.py` | POWER.ELF (userspace/services/power) |
 | `USERSPACE_PTPD` | `tools/build/gen_userspace_kconfig.py` | PTPD.ELF (userspace/services/ptpd) |
 | `USERSPACE_REFLEX` | `tools/build/gen_userspace_kconfig.py` | REFLEX.ELF (userspace/services/reflex) |
+| `USERSPACE_RG` | `config/subsys/Kconfig.ports` | RG.ELF: ripgrep 15.2.0 (third_party/ports/ripgrep) |
 | `USERSPACE_RNGDRV` | `tools/build/gen_userspace_kconfig.py` | RNGDRV.ELF (userspace/drivers/rng_drv) |
 | `USERSPACE_RPCQUIC` | `tools/build/gen_userspace_kconfig.py` | RPCQUIC.ELF (userspace/services/rpcquic) |
 | `USERSPACE_RPCSRV` | `tools/build/gen_userspace_kconfig.py` | RPCSRV.ELF (userspace/services/rpcsrv) |
