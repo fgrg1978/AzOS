@@ -4,7 +4,10 @@
 //! rollback floor. Every command runs over every transport.
 
 use crate::*;
-use azos_tpm::tpm::{StartupType, FLOOR_ATTRS, FLOOR_INDEX, FLOOR_MAX, ORDINARY_ATTRS, SECRET_ATTRS, SECRET_BYTES, SECRET_INDEX};
+use azos_tpm::tpm::{
+    StartupType, CHAIN_ATTRS, CHAIN_BYTES, CHAIN_INDEX, FLOOR_ATTRS, FLOOR_INDEX, FLOOR_MAX, ORDINARY_ATTRS, SECRET_ATTRS, SECRET_BYTES,
+    SECRET_INDEX,
+};
 use azos_tpm::Error;
 use crate::fake::Dyn;
 
@@ -456,6 +459,7 @@ fn floor_raise_from_unwritten_index_and_above_the_field() {
 
 const NT_ORDINARY: u32 = 0;
 const NT_BITS: u32 = 2;
+const NT_EXTEND: u32 = 4;
 
 /// An NV index as the TPM 2.0 spec describes its type rules: `NV_SetBits`
 /// ORs into a bit field and is refused on any other type, `NV_Write` is
@@ -467,6 +471,7 @@ const NT_BITS: u32 = 2;
 struct NvIndex {
     nt: u32,
     value: u64,
+    digest: [u8; 32],
     written: bool,
 }
 
@@ -497,7 +502,15 @@ impl NvIndex {
                 self.written = true;
                 ok(&[])
             }
-            0x135 | 0x137 if self.nt != NT_ORDINARY || cc == 0x135 => rc(0x82),
+            0x136 if self.nt == NT_EXTEND => {
+                let data = &p[2..2 + u16::from_be_bytes([p[0], p[1]]) as usize];
+                let mut m = self.digest.to_vec();
+                m.extend_from_slice(data);
+                self.digest = azos_crypto::sha256::sha256(&m);
+                self.written = true;
+                ok(&[])
+            }
+            0x135 | 0x136 | 0x137 if self.nt != NT_ORDINARY || cc != 0x137 => rc(0x82),
             0x137 => {
                 let data = &p[2..2 + u16::from_be_bytes([p[0], p[1]]) as usize];
                 let mut b = [0u8; 8];
@@ -507,6 +520,11 @@ impl NvIndex {
                 ok(&[])
             }
             0x14E if !self.written => rc(0x14A),
+            0x14E if self.nt == NT_EXTEND => {
+                let mut params = vec![0, 32];
+                params.extend_from_slice(&self.digest);
+                ok(&params)
+            }
             0x14E => {
                 let mut params = vec![0, 8];
                 params.extend_from_slice(&self.value.to_be_bytes());
@@ -519,7 +537,7 @@ impl NvIndex {
 
 fn model_rig(nt: u32) -> (azos_tpm::tpm::Tpm<azos_tpm::tis::Tis<Dyn, FakeClock>>, Rig, std::rc::Rc<std::cell::RefCell<NvIndex>>) {
     let (t, r) = rig(Kind::Direct, 0);
-    let nv = std::rc::Rc::new(std::cell::RefCell::new(NvIndex { nt, value: 0, written: false }));
+    let nv = std::rc::Rc::new(std::cell::RefCell::new(NvIndex { nt, value: 0, digest: [0; 32], written: false }));
     let m = nv.clone();
     r.dev.borrow_mut().responder = Some(Box::new(move |c| m.borrow_mut().answer(c)));
     (t, r, nv)
@@ -690,5 +708,40 @@ fn a_secret_that_cannot_be_written_or_read_back_is_an_error() {
     let (mut t, r) = rig(Kind::Direct, 0);
     r.dev.borrow_mut().expect(NV_READ32, "80 01 00 00 00 0A 00 00 01 4B");
     assert_eq!(t.secret_load_or_create(SECRET_INDEX, AUTH, &secret_bytes(0x10)), Err(Error::Tpm(0x14B)));
+    r.assert_clean();
+}
+
+#[test]
+fn nv_extend_vector() {
+    for k in ALL {
+        let (mut t, r) = rig(k, 0);
+        let d = [0x5Au8; 32];
+        let hex: String = d.iter().map(|b| format!(" {b:02X}")).collect();
+        r.dev.borrow_mut().expect(
+            &format!("80 02 00 00 00 43 00 00 01 36 01 50 00 03 01 50 00 03 00 00 00 0B 40 00 00 09 00 00 01 00 02 AA BB 00 20{hex}"),
+            &format!("80 02 00 00 00 13 00 00 00 00 {SESSION_RSP_TAIL}"),
+        );
+        t.nv_extend(CHAIN_INDEX, &[0xAA, 0xBB], &d).unwrap();
+        r.assert_clean();
+    }
+    assert_eq!((CHAIN_ATTRS & 0xF0, CHAIN_BYTES), (0x40, 32), "TPM_NT_EXTEND, one SHA-256 digest");
+}
+
+/// The security log's anchor: zeros before the first seal, then the fold
+/// `azos_seclog::chain::extend` computes, and nothing but an extend moves it.
+#[test]
+fn the_tpm_only_extends_the_chain_index_as_the_verifier_folds_it() {
+    let (mut t, r, nv) = model_rig(NT_EXTEND);
+    let a = &[0xAA, 0xBB];
+    assert_eq!(t.chain_read(CHAIN_INDEX, a), Ok([0; 32]));
+    let (h1, h2) = ([1u8; 32], [2u8; 32]);
+    t.nv_extend(CHAIN_INDEX, a, &h1).unwrap();
+    t.nv_extend(CHAIN_INDEX, a, &h2).unwrap();
+    let want = azos_seclog::chain::extend(&azos_seclog::chain::extend(&[0; 32], &h1), &h2);
+    assert_eq!(t.chain_read(CHAIN_INDEX, a), Ok(want));
+    // The attacker's moves: overwrite it, or set bits in it.
+    assert_eq!(t.nv_write(CHAIN_INDEX, a, 0, &[0; 32]), Err(Error::Tpm(0x82)));
+    assert_eq!(t.nv_set_bits(CHAIN_INDEX, a, 1), Err(Error::Tpm(0x82)));
+    assert_eq!(nv.borrow().digest, want);
     r.assert_clean();
 }

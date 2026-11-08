@@ -18,6 +18,8 @@ azos_devif = { path = "../../../crates/core/devif" }
 # backend module (it hashes the NV password) and the device-tree walk.
 azos_crypto = { path = "../../../crates/core/crypto" }
 azos_dtb = { path = "../../../crates/drivers/dtb" }
+# The sealed security log's anchor fold, against the TPM model's NV_Extend.
+azos_seclog = { path = "../../../crates/core/seclog" }
 
 [features]
 canary-rspsize = ["azos_tpm/canary-rspsize"]

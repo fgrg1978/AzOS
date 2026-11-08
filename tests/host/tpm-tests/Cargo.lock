@@ -100,6 +100,14 @@ name = "azos_rings"
 version = "0.1.0"
 
 [[package]]
+name = "azos_seclog"
+version = "0.1.0"
+dependencies = [
+ "azos_crypto",
+ "azos_rings",
+]
+
+[[package]]
 name = "azos_tpm"
 version = "0.1.0"
 dependencies = [
@@ -114,6 +122,7 @@ dependencies = [
  "azos_crypto",
  "azos_devif",
  "azos_dtb",
+ "azos_seclog",
  "azos_tpm",
 ]
 
