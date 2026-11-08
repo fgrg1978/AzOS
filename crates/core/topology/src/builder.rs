@@ -2991,11 +2991,14 @@ const SH_IMPORTS: &[MaybeStr<'static>] = &[MaybeStr::from_bytes(b"term")];
 /// its row imports `vmctl` (with the monitor's row present) and the name
 /// server lends the call right.
 const TOOLBOX_IMPORTS: &[MaybeStr<'static>] = &[MaybeStr::from_bytes(b"vmctl")];
-/// The server half: `READ` claims the endpoint for `TERMD.ELF`.
+/// The server half: `READ` claims the endpoint for `TERMD.ELF`; `WRITE` with
+/// `transfer` is the source of the call right badged with a job's id it lends
+/// the shell for that job (`Terminal::lend_job`), the compositor's way with
+/// its windows. It calls nothing through it.
 const TERM_SERVE: CapSpec = CapSpec {
     kind: CapKind::Endpoint,
-    perms: CapPerms::READ,
-    target: MaybeStr::from_bytes(RESOURCE_ENDPOINT_TERM), transfer: false, ops: 0,
+    perms: CapPerms::READ.union(CapPerms::WRITE),
+    target: MaybeStr::from_bytes(RESOURCE_ENDPOINT_TERM), transfer: true, ops: 0,
 };
 
 /// The terminal server's image: the console program of the native shell

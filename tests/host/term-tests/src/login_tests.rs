@@ -155,6 +155,10 @@ impl Console for Con {
         0
     }
     fn refresh(&mut self) {}
+    fn mint_job(&mut self, _: u32) -> Option<u32> {
+        None
+    }
+    fn revoke_job(&mut self, _: u32) {}
 }
 
 /// A login service that answers from a script and writes down the questions.

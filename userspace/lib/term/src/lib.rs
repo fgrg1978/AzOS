@@ -21,8 +21,18 @@
 //!   job; an editor could ignore it).
 //! * **Focus** is [`Terminal::set_foreground`]: `0` is the client itself (line
 //!   editing, echo); a non-zero job id means a job runs. While one does the
-//!   terminal delivers no line and no bytes, only interrupts tagged with that
-//!   id, and holds what is typed (type-ahead) for the next line.
+//!   terminal delivers the client no line and no bytes, only interrupts tagged
+//!   with that id, and holds what is typed (type-ahead) for the next line.
+//! * **A job's own terminal** is [`Terminal::lend_job`]: the server mints a
+//!   call capability badged with the job's id, the client hands it to the job
+//!   at spawn (`SYS_SPAWN_EX`, `MOVE_KIND_ENDPOINT`, into a row that
+//!   `receives = ["term"]`), and while that job has the focus it reads the
+//!   input itself (lines, or bytes in raw mode) and sets its mode and echo
+//!   ([`JOB_OPS`]); the interrupt key stays the client's. The badge is
+//!   answered only while its job has the focus. When the focus moves the
+//!   server revokes the capability wherever it sits and puts back the mode and
+//!   echo the client had: an editor that dies in raw mode leaves a cooked
+//!   terminal behind.
 //!
 //! # The two byte streams
 //!
@@ -64,7 +74,8 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
-pub use azos_idl::{Cap, IdlError, MsgDesc, Transport};
+use azos_abi::cap::CapPerms;
+pub use azos_idl::{Cap, IdlError, Lent, MsgDesc, Transport};
 use azos_idl::azos_interface;
 
 /// The interface id (ASCII "TERM").
@@ -86,8 +97,26 @@ pub const DEFAULT_COLS: u16 = 80;
 /// Window size a fresh terminal reports.
 pub const DEFAULT_ROWS: u16 = 24;
 
+/// What [`Terminal::lend_job`] lends: a call capability on the terminal,
+/// badged with a job's id.
+pub struct JobTerminal;
+
+/// The ops a job may call through the capability lent to it, while it has the
+/// focus: what a program reads its input and sets its mode with.
+pub const JOB_OPS: [u16; 5] = [
+    TerminalIdl::OP_SIZE,
+    TerminalIdl::OP_SET_MODE,
+    TerminalIdl::OP_SET_ECHO,
+    TerminalIdl::OP_READ_EVENT,
+    TerminalIdl::OP_LINE_CHUNK,
+];
+
+/// The rights a lent job terminal carries to the client: the call right, and
+/// `TRANSFER` so the client can move it into the job (`CapPerms` bits).
+pub const LENT_JOB_RIGHTS: u16 = CapPerms::WRITE.union(CapPerms::TRANSFER).bits() as u16;
+
 /// The Terminal interface. One client, one server; see the module doc.
-#[azos_interface(id = 0x5445_524D, level = 1, words = 8)]
+#[azos_interface(id = 0x5445_524D, level = 2, words = 8)]
 pub trait Terminal {
     /// The window size, columns in the high half: `cols << 16 | rows`.
     #[idempotent]
@@ -131,6 +160,12 @@ pub trait Terminal {
     /// recovery shell; a non-zero one is a failed session, which the
     /// supervisor answers by restarting the server (and the shell).
     fn hangup(&mut self, status: i32);
+    /// Lend job `job` (non-zero) a terminal of its own: a call capability
+    /// badged `job`, with [`LENT_JOB_RIGHTS`], answered only while `job` has
+    /// the focus and only for [`JOB_OPS`]. One job at a time: a new lend, or
+    /// the focus leaving `job`, revokes the last one. Nothing is lent for job
+    /// 0 or when the server cannot mint one.
+    fn lend_job(&mut self, job: u32) -> Lent<JobTerminal>;
 }
 
 /// What an event is.

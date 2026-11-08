@@ -87,6 +87,7 @@ version = "0.1.0"
 name = "azos_term"
 version = "0.1.0"
 dependencies = [
+ "azos_abi",
  "azos_idl",
 ]
 
@@ -94,6 +95,7 @@ dependencies = [
 name = "azos_term_tests"
 version = "0.1.0"
 dependencies = [
+ "azos_abi",
  "azos_idl",
  "azos_input_wire",
  "azos_login",

@@ -840,14 +840,20 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     // row grants, found by `SYS_CAP_INFO`): the secure-attention prompt's
     // credential goes to it, and the end of the session is asked of it. It
     // starts and stops nothing itself.
+    //
+    // A job's terminal (`Terminal::lend_job`): it derives a call right badged
+    // with the job from its own (`ENDPOINT_DERIVE`), lends it in a reply, and
+    // when the job loses the focus revokes it wherever it sits
+    // (`SYS_CAP_REVOKE`) and drops the handles (`SYS_CAP_CLOSE`).
     ImageProfile {
         image: "TERMD.ELF",
         syscalls: sys_nrs![
             SYS_EXIT, SYS_INVOKE, SYS_CAP_INFO, SYS_YIELD,
             SYS_IPC_ACCEPT, SYS_IPC_REPLY, SYS_IPC_CALL, SYS_MO_MAP,
+            SYS_CAP_REVOKE, SYS_CAP_CLOSE,
         ],
         audit: false,
-        ops: inv_ops![LOG_CONSOLE_WRITE, LOG_CONSOLE_WAIT, DOMAIN_UPTIME, MEMOBJ_ACQUIRE],
+        ops: inv_ops![LOG_CONSOLE_WRITE, LOG_CONSOLE_WAIT, DOMAIN_UPTIME, MEMOBJ_ACQUIRE, ENDPOINT_DERIVE],
         ifaces: NO_IFACES,
     },
     // The Names object's server. Serves `endpoint.names` (accept, reply) and

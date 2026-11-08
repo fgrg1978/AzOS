@@ -18,9 +18,11 @@
 //!   carrying the foreground job. The line being edited is cleared and `^C`
 //!   shown (if echo is on). Nothing is signalled.
 //! * **Focus** ([`Discipline::set_foreground`]): job 0 is the client. While a
-//!   job has the focus the discipline delivers only interrupts; every other
-//!   byte is held (type-ahead, [`HELD_MAX`] bytes) and replayed through the
-//!   mode in force when the focus comes back.
+//!   job has the focus the discipline delivers the client only interrupts;
+//!   every other byte is held (type-ahead, [`HELD_MAX`] bytes) and replayed
+//!   through the mode in force when the focus comes back, unless the job reads
+//!   the terminal itself ([`Discipline::step_job`]): then the bytes are its,
+//!   through the mode in force, and its lines stay out of the history.
 //! * **End of input** (0x04 on an empty line) is [`Event::Eof`], in cooked
 //!   mode only; raw mode passes the byte.
 
@@ -122,7 +124,6 @@ impl Discipline {
         self.rows = rows;
     }
 
-    #[cfg(test)]
     pub fn is_raw(&self) -> bool {
         self.raw_mode
     }
@@ -131,7 +132,6 @@ impl Discipline {
         self.raw_mode = raw;
     }
 
-    #[cfg(test)]
     pub fn echo(&self) -> bool {
         self.echo
     }
@@ -243,6 +243,30 @@ impl Discipline {
         if self.fg != 0 {
             return None;
         }
+        self.step_input(true)
+    }
+
+    /// Interrupt keys typed for the job with the focus, not yet delivered to
+    /// the client.
+    pub fn interrupt_pending(&self) -> bool {
+        self.intr > 0
+    }
+
+    /// The next event for the job with the focus, which reads the terminal
+    /// itself: what the held bytes make through the mode in force, as the
+    /// client's would. The interrupt key is not the job's (it is counted for
+    /// the client, [`Discipline::push`]), and a job's line is not kept in the
+    /// client's history. `None` with no job in focus.
+    pub fn step_job(&mut self) -> Option<Event> {
+        if self.fg == 0 {
+            return None;
+        }
+        self.step_input(false)
+    }
+
+    /// Raw bytes or the editor's next event; `record`: a line goes into the
+    /// history.
+    fn step_input(&mut self, record: bool) -> Option<Event> {
         if self.raw_mode {
             return self.step_raw();
         }
@@ -259,8 +283,10 @@ impl Discipline {
                     let l = self.ed.line();
                     self.line_len = l.len();
                     self.line[..l.len()].copy_from_slice(l);
-                    let (copy, n) = (self.line, self.line_len);
-                    self.hist.push(&copy[..n]);
+                    if record {
+                        let (copy, n) = (self.line, self.line_len);
+                        self.hist.push(&copy[..n]);
+                    }
                     // The editor is ready for the next line, which may
                     // already be held.
                     self.clear_line();

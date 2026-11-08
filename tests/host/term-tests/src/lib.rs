@@ -248,13 +248,18 @@ mod codec {
         assert_eq!(
             names,
             ["size", "set_size", "set_mode", "set_echo", "set_foreground", "set_prompt", "begin_line", "redraw", "read_event",
-             "line_chunk", "history", "hangup"]
+             "line_chunk", "history", "hangup", "lend_job"]
         );
         let ev = ops.iter().find(|o| o.name == "read_event").unwrap();
         assert_eq!((ev.req_words, ev.rep_words), (2, 8), "header + timeout; status + 7 words");
         assert!(!ev.idempotent(), "reading consumes input");
         assert!(ops.iter().find(|o| o.name == "line_chunk").unwrap().idempotent());
-        assert!(ops.iter().all(|o| o.req_caps == 0 && o.rep_caps == 0), "no capability crosses the terminal");
+        assert!(ops.iter().all(|o| o.req_caps == 0), "no capability goes to the terminal");
+        assert!(
+            ops.iter().all(|o| o.rep_caps == u8::from(o.name == "lend_job")),
+            "one capability comes back, the job's terminal"
+        );
+        assert_eq!(TerminalIdl::LEVEL, 2);
     }
 }
 
@@ -519,6 +524,9 @@ mod served {
         timeouts: Vec<Option<u64>>,
         /// Virtual time: a wait that finds nothing lasts its whole timeout.
         clock: u64,
+        /// The jobs a capability was minted for, and the handles revoked.
+        minted: Vec<u32>,
+        revoked: Vec<u32>,
     }
 
     impl Console for Fake {
@@ -541,16 +549,35 @@ mod served {
             self.clock
         }
         fn refresh(&mut self) {}
+        fn mint_job(&mut self, job: u32) -> Option<u32> {
+            self.minted.push(job);
+            Some(1000 + job)
+        }
+        fn revoke_job(&mut self, handle: u32) {
+            self.revoked.push(handle);
+        }
     }
 
     /// The loopback: the request goes through the wire form to the server's
-    /// dispatcher, as the kernel would carry it.
+    /// front door (`service::serve`), as the kernel would carry a v2 call
+    /// through the client's unbadged capability.
     struct Loop<'a>(&'a RefCell<Service<Fake>>);
 
     impl Transport for Loop<'_> {
         fn call(&self, msg: &mut MsgDesc) -> azos_idl::Result {
-            let req = *msg;
-            let _ = TerminalIdl::dispatch(&mut *self.0.borrow_mut(), &req, msg);
+            Badged(self.0, 0).call(msg)
+        }
+    }
+
+    /// The same, through a capability badged `.1` (a job's).
+    struct Badged<'a>(&'a RefCell<Service<Fake>>, u32);
+
+    impl Transport for Badged<'_> {
+        fn call(&self, msg: &mut MsgDesc) -> azos_idl::Result {
+            let mut req = *msg;
+            req.flags |= azos_abi::ipc_msg::MSG_BADGED;
+            req.badge = self.1 as u64;
+            crate::service::serve(&mut *self.0.borrow_mut(), &req, msg);
             Ok(())
         }
     }
@@ -671,5 +698,118 @@ mod served {
         m.words[0] = azos_idl::header(0x1234_5678, 1, 1);
         let mut rep = MsgDesc::default();
         assert_eq!(TerminalIdl::dispatch(&mut *s.borrow_mut(), &m, &mut rep), Err(IdlError::BadInterface));
+    }
+    /// **A lent job reads its own terminal only while it has the focus**, and
+    /// only through the ops a program needs; when the focus comes back the
+    /// capability is revoked and the client's mode is back (cooked).
+    ///
+    /// **Canaries.** Make `Service::admits` let any badge through: the
+    /// refusals before the focus and after it go red. Drop the
+    /// `set_raw(l.raw)` of `end_lend` ("mode not restored"): the cooked
+    /// assertion goes red. Drop the `revoke_job` call: the revoked assertion
+    /// goes red.
+    #[test]
+    fn a_lent_job_reads_its_terminal_only_while_it_has_the_focus() {
+        let s = server(&[b"ab"]);
+        let mut c = TerminalClient::new(Loop(&s));
+        let mut j = TerminalClient::new(Badged(&s, 9));
+        let lent = c.lend_job(9).unwrap();
+        assert_eq!(lent.get().map(|h| h.raw()), Some(1009));
+        assert_eq!(LENT_JOB_RIGHTS, 0x02 | 0x10, "the client gets the call right and TRANSFER, no DUP");
+        assert_eq!(s.borrow().con.minted, [9]);
+        assert_eq!(j.size(), Err(IdlError::Refused), "answered before the job had the focus");
+
+        c.set_foreground(9).unwrap();
+        assert_eq!(unpack_size(j.size().unwrap()), (80, 24));
+        j.set_mode(true).unwrap();
+        j.set_echo(false).unwrap();
+        let e = unpack_event(&j.read_event(0).unwrap()).unwrap();
+        assert_eq!((e.kind, e.inline()), (Kind::Bytes, &b"ab"[..]), "the job reads what is typed");
+        // Not the client's ops, and not another job's badge.
+        assert_eq!(j.history(0, 0), Err(IdlError::Refused));
+        assert_eq!(j.set_foreground(0), Err(IdlError::Refused));
+        assert_eq!(j.set_prompt(0, [0; PROMPT_WORDS]), Err(IdlError::Refused));
+        assert_eq!(j.lend_job(10).map(|l| l.get().is_some()), Err(IdlError::Refused));
+        assert_eq!(j.hangup(0), Err(IdlError::Refused));
+        assert_eq!(TerminalClient::new(Badged(&s, 8)).size(), Err(IdlError::Refused), "another badge");
+
+        c.set_foreground(0).unwrap();
+        assert_eq!(s.borrow().con.revoked, [1009], "the job's capability outlived its focus");
+        assert!(!s.borrow().d.is_raw(), "the terminal was left raw");
+        assert!(s.borrow().d.echo(), "the terminal was left without echo");
+        assert_eq!(s.borrow().lent, None);
+        assert_eq!(j.size(), Err(IdlError::Refused), "answered after the focus came back");
+    }
+
+    /// **The interrupt key is the client's**: a job reading in raw mode gets a
+    /// timeout (its read gives way), and the client's read gets the interrupt
+    /// tagged with the job.
+    ///
+    /// **Canary.** Drop the give-way test in `read_event`: the job's read
+    /// returns the interrupt and the first assertion goes red.
+    #[test]
+    fn the_interrupt_key_stays_the_clients_and_the_job_gives_way() {
+        let s = server(&[b"\x03", b"x"]);
+        let mut c = TerminalClient::new(Loop(&s));
+        let mut j = TerminalClient::new(Badged(&s, 9));
+        assert!(c.lend_job(9).unwrap().get().is_some());
+        c.set_foreground(9).unwrap();
+        j.set_mode(true).unwrap();
+        let e = unpack_event(&j.read_event(WAIT_FOREVER).unwrap()).unwrap();
+        assert_eq!(e.kind, Kind::Timeout, "the job read on past an interrupt key the client has not heard");
+        let e = unpack_event(&j.read_event(WAIT_FOREVER).unwrap()).unwrap();
+        assert_eq!(e.kind, Kind::Timeout, "the interrupt is still the client's");
+        let e = event(&mut c, 0);
+        assert_eq!((e.kind, e.job), (Kind::Interrupt, 9));
+        let e = unpack_event(&j.read_event(WAIT_FOREVER).unwrap()).unwrap();
+        assert_eq!((e.kind, e.inline()), (Kind::Bytes, &b"x"[..]), "what came after it is the job's");
+    }
+
+    /// **A job's line is the job's**: in cooked mode it reads the line, and
+    /// the line is not in the client's history.
+    ///
+    /// **Canary.** Record the job's line (`step_input(true)` in `step_job`):
+    /// the history assertion goes red.
+    #[test]
+    fn a_jobs_line_is_read_by_the_job_and_kept_out_of_the_history() {
+        let s = server(&[b"secret\r"]);
+        let mut c = TerminalClient::new(Loop(&s));
+        let mut j = TerminalClient::new(Badged(&s, 9));
+        assert!(c.lend_job(9).unwrap().get().is_some());
+        c.set_foreground(9).unwrap();
+        let e = unpack_event(&j.read_event(0).unwrap()).unwrap();
+        assert_eq!((e.kind, e.inline()), (Kind::Line, &b"secret"[..]));
+        let ch = unpack_chunk(&j.line_chunk(0).unwrap());
+        assert_eq!(&ch.data[..ch.total as usize], b"secret");
+        c.set_foreground(0).unwrap();
+        assert!(!unpack_chunk(&c.history(0, 0).unwrap()).valid, "the job's line is in the client's history");
+    }
+
+    /// **One lend at a time**: a second lend, or the focus moving to another
+    /// job, revokes the last; the focus on the lent job revokes nothing; job 0
+    /// is lent nothing. A call with no badge word (the register form) is
+    /// refused whoever made it.
+    ///
+    /// **Canary.** Skip the `end_lend` of `lend_job`: the first revoked
+    /// assertion goes red. Let `serve` through an unbadged-form call: the
+    /// last assertion goes red.
+    #[test]
+    fn a_new_lend_or_another_focus_revokes_the_last_and_a_register_call_is_refused() {
+        let s = server(&[]);
+        let mut c = TerminalClient::new(Loop(&s));
+        assert!(c.lend_job(9).unwrap().get().is_some());
+        assert!(c.lend_job(10).unwrap().get().is_some());
+        assert_eq!(s.borrow().con.revoked, [1009], "the first lend outlived the second");
+        c.set_foreground(10).unwrap();
+        assert_eq!(s.borrow().con.revoked, [1009]);
+        c.set_foreground(11).unwrap();
+        assert_eq!(s.borrow().con.revoked, [1009, 1010]);
+        assert!(c.lend_job(0).unwrap().get().is_none());
+
+        let mut m = MsgDesc { version: azos_idl::MSG_VERSION, n_words: 1, ..MsgDesc::default() };
+        m.words[0] = azos_idl::header(TERMINAL_ID, 2, TerminalIdl::OP_SIZE);
+        let mut rep = MsgDesc::default();
+        crate::service::serve(&mut *s.borrow_mut(), &m, &mut rep);
+        assert_eq!(IdlError::from_status(rep.words[0]), Some(IdlError::Refused));
     }
 }

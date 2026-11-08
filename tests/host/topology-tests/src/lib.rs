@@ -4656,10 +4656,11 @@ mod launch_cap_tests {
         assert!(topo.imports_of(cu).is_empty());
     }
 
-    /// The Terminal object's endpoint has exactly one server and one holder
-    /// of the call right: `TERMD.ELF` holds `READ` on `endpoint.term` (it
-    /// serves), `NAMESD.ELF` `WRITE` with `transfer` (it lends), and the
-    /// shell, which imports `term`, holds no grant on it. The three images
+    /// The Terminal object's endpoint has exactly one server and two holders
+    /// of the call right, both lenders: `TERMD.ELF` holds `READ` on
+    /// `endpoint.term` (it serves) with `WRITE` and `transfer` (it mints a
+    /// job's badged right), `NAMESD.ELF` `WRITE` with `transfer` (it lends),
+    /// and the shell, which imports `term`, holds no grant on it. The three images
     /// start together when the native shell session is the console program.
     ///
     /// **Canaries.** Give `SH.ELF` `READ` too (a second server): red on the
@@ -4682,7 +4683,10 @@ mod launch_cap_tests {
             }
         }
         assert_eq!(servers, ["TERMD.ELF"], "one server, the terminal server");
-        assert_eq!(callers, ["NAMESD.ELF"], "one holder of the call right, the name server");
+        assert_eq!(callers, ["TERMD.ELF", "NAMESD.ELF"], "the call right: the server's lending source and the name server");
+        let td = topo.find_task(&MaybeStr::from_bytes(b"TERMD.ELF")).unwrap();
+        assert!(topo.caps_of(td).iter().any(|c| c.target.as_bytes() == b"endpoint.term" && c.transfer),
+                "the terminal server mints a job's badged right (DUP)");
         let nd = topo.find_task(&MaybeStr::from_bytes(b"NAMESD.ELF")).unwrap();
         assert!(topo.caps_of(nd).iter().any(|c| c.target.as_bytes() == b"endpoint.term" && c.transfer),
                 "the name server can lend it (DUP)");
@@ -7223,7 +7227,7 @@ mod mcp_row_tests {
             t.caps_of(r).iter().filter(|c| c.kind == CapKind::Endpoint && c.target.as_bytes().starts_with(b"endpoint.")).map(|c| (c.perms, c.target.as_str().to_string())).collect()
         };
         let termd = eps(b"TERMD.ELF");
-        assert_eq!(termd[0], (CapPerms::READ, "endpoint.term".to_string()), "it serves the terminal first");
+        assert_eq!(termd[0], (CapPerms::RW, "endpoint.term".to_string()), "it serves the terminal first");
         let logind = row(azos_topology::builder::TASK_LOGIND_IMAGE);
         assert_eq!(logind.is_some(), azos_topology::builder::LOGIND_ROW, "a row exactly when Kconfig CONSOLE_LOGIN");
         let Some(l) = logind else {

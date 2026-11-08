@@ -9,6 +9,7 @@ description = "Host-side tests for the Terminal object: the interface and its co
 # Run with:  cd tests/host/term-tests && cargo test --release
 
 [dependencies]
+azos_abi = { path = "../../../crates/core/abi" }
 azos_idl = { path = "../../../crates/core/idl" }
 azos_term = { path = "../../../userspace/lib/term" }
 azos_rings = { path = "../../../crates/core/rings" }

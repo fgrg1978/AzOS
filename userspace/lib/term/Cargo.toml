@@ -7,6 +7,7 @@ publish = false
 description = "The Terminal object: the typed interface (L13 IDL) between a terminal server (userspace/services/termd) and its one client (the shell), and the codec of its events. no_std; tested on the host (tests/host/term-tests). Standalone, not a member of the root workspace."
 
 [dependencies]
+azos_abi = { path = "../../../crates/core/abi" }
 azos_idl = { path = "../../../crates/core/idl" }
 
 # Standalone, like the userspace images (see Cargo.toml's exclude list).

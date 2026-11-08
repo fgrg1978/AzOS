@@ -827,6 +827,10 @@ mod served {
         fn refresh(&mut self) {
             self.refreshes += 1;
         }
+        fn mint_job(&mut self, _: u32) -> Option<u32> {
+            None
+        }
+        fn revoke_job(&mut self, _: u32) {}
     }
 
     fn raw_service(rig: &Rig, v: Option<Viewer>) -> Service<Fake> {

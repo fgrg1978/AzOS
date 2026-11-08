@@ -188,6 +188,14 @@ impl IdlError {
 /// The result of a call through a stub.
 pub type Result<T = ()> = core::result::Result<T, IdlError>;
 
+/// Write into `reply` the answer to a call the server will not serve: status
+/// [`IdlError::Refused`] and nothing else, so the stub returns that error. For
+/// a server that decides who may call an op before it dispatches (by the
+/// caller's badge).
+pub fn refuse(reply: &mut MsgDesc) {
+    __private::error_reply(reply, IdlError::Refused);
+}
+
 // ── transport ───────────────────────────────────────────────────────────
 
 /// What a client stub calls through: send the request in `*msg`, block until

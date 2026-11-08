@@ -6,7 +6,9 @@
 //! which it claims at start (it is the console program, `CONSOLE_PATH`). It
 //! serves the `Terminal` object (`userspace/lib/term`) to ONE client, the
 //! shell, over the `endpoint.term` endpoint the topology grants: this row
-//! holds `READ` (it serves), the shell's row `WRITE` (it calls). The line
+//! holds `READ` (it serves) with `WRITE` and `transfer` (it mints the badged
+//! call right a job is lent, `Terminal::lend_job`), the shell's lent copy
+//! `WRITE` (it calls). The line
 //! discipline (`disc.rs`, over the editor `edit.rs`) and the interface's
 //! implementation (`service.rs`) are pure and tested on the host
 //! (`tests/host/term-tests`); this file is the loop around them.
@@ -69,18 +71,25 @@ mod mouse;
 mod secure;
 mod service;
 
-use azos_abi::cap::{SHM_CONSOLE_SCREEN, SHM_INPUT_EVENTS};
+use azos_abi::cap::{CapPerms, SHM_CONSOLE_SCREEN, SHM_INPUT_EVENTS};
 use azos_input_wire::event::{REGION_BYTES, RING_CAP};
 use azos_input_wire::screen::Viewer;
 use azos_libsys as sys;
 use azos_rings::region::SpscRing;
 use azos_login::{ended, state, status, LoginClient, LoginCall};
-use azos_term::{MsgDesc, TerminalIdl};
+use azos_term::MsgDesc;
 use input::Input;
 use service::{Console, Gate, Service};
 
-/// The console as the kernel gives it to its input owner.
-struct Uart;
+/// The console as the kernel gives it to its input owner, and the server's
+/// own capability on `endpoint.term` (the source of a job's badged right).
+struct Uart {
+    term: u32,
+}
+
+/// The rights of the badged copy a job's terminal is lent from: the call
+/// right, and `DUP` and `TRANSFER` so it can be lent.
+const JOB_SOURCE_RIGHTS: u8 = CapPerms::WRITE.union(CapPerms::DELEGATE).bits();
 
 impl Console for Uart {
     fn read(&mut self, buf: &mut [u8], timeout_ns: Option<u64>) -> isize {
@@ -99,6 +108,18 @@ impl Console for Uart {
         // NUL: the serial line and the text grid take it for nothing; the
         // console's mirror draws the overlay on the write.
         let _ = sys::console_write(sys::STDOUT, &[0]);
+    }
+
+    fn mint_job(&mut self, job: u32) -> Option<u32> {
+        let h = sys::endpoint_derive(self.term, JOB_SOURCE_RIGHTS, job, 0, &[]);
+        (h > 0).then_some(h as u32)
+    }
+
+    fn revoke_job(&mut self, handle: u32) {
+        // Everything derived from it goes (the job's copy, wherever the shell
+        // moved it); the replacement handle is not wanted either.
+        let r = sys::cap_revoke(handle);
+        let _ = sys::close_typed(if r > 0 { r as u32 } else { handle });
     }
 }
 
@@ -183,17 +204,18 @@ impl Gate for LoginGate {
     }
 }
 
-/// The call right on `endpoint.login`: the `Cap<Endpoint>` of the row that is
-/// not the one it serves (`READ`, `endpoint.term`). The two are told apart by
-/// their rights, without calling either (a call on the endpoint it serves
-/// would wait for itself). 0: the row grants none.
-fn find_login_endpoint() -> u32 {
+/// The `Cap<Endpoint>` of the row whose `READ` right is `serves`: the one it
+/// serves (`endpoint.term`) or, with `false`, the call right on
+/// `endpoint.login`. The two are told apart by their rights, without calling
+/// either (a call on the endpoint it serves would wait for itself). 0: the
+/// row grants none.
+fn find_endpoint(serves: bool) -> u32 {
     (0..16u32)
         .filter_map(|i| {
             let h = sys::cap_lookup(sys::ty::ENDPOINT.raw(), i);
             (h > 0).then_some(h as u32)
         })
-        .find(|&h| sys::cap_info(h).is_ok_and(|i| i.rights & azos_abi::cap::CapPerms::READ.bits() == 0))
+        .find(|&h| sys::cap_info(h).is_ok_and(|i| (i.rights & CapPerms::READ.bits() != 0) == serves))
         .unwrap_or(0)
 }
 
@@ -201,7 +223,8 @@ struct ServiceCell(core::cell::UnsafeCell<Service<Uart, LoginGate>>);
 // SAFETY: one thread.
 unsafe impl Sync for ServiceCell {}
 
-static SERVICE: ServiceCell = ServiceCell(core::cell::UnsafeCell::new(Service::with_gate(Uart, LoginGate { ep: 0 })));
+static SERVICE: ServiceCell =
+    ServiceCell(core::cell::UnsafeCell::new(Service::with_gate(Uart { term: 0 }, LoginGate { ep: 0 })));
 
 /// `-EBUSY`: another task owns console input.
 const E_BUSY: isize = -16;
@@ -224,7 +247,8 @@ fn main() -> ! {
         svc.d.push(&one[..n as usize]);
     }
     svc.inp = open_input();
-    svc.gate.ep = find_login_endpoint();
+    svc.gate.ep = find_endpoint(false);
+    svc.con.term = find_endpoint(true);
     svc.sak_serial = azos_limits::LOGIN_SAK_SERIAL_BYTE as u8;
     svc.gate_up();
     let _ = sys::console_write(sys::STDOUT, b"[termd] AzOS terminal server (Terminal on endpoint.term)\n");
@@ -250,7 +274,7 @@ fn main() -> ! {
             continue;
         }
         let mut rep = MsgDesc::default();
-        let _ = TerminalIdl::dispatch(svc, &req, &mut rep);
+        service::serve(svc, &req, &mut rep);
         let _ = sys::ipc_reply_v2(call as u64, &rep);
         if let Some(status) = svc.hung_up {
             if svc.guarded() {

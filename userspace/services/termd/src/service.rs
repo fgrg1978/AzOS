@@ -37,6 +37,19 @@
 //! the passphrase is wiped when the credential is made. Without a gate every
 //! path below is skipped and the server is what it was.
 //!
+//! # A job's own terminal
+//!
+//! [`Terminal::lend_job`] mints a call capability badged with the job's id
+//! ([`Console::mint_job`]); the client hands it to the job at spawn. Every
+//! request is served through [`serve`], which takes the caller from the badge
+//! the kernel stamped: 0 is the client (it may call everything), the lent job
+//! may call [`JOB_OPS`] while it has the focus, anyone else nothing. While the
+//! job reads, the input is its ([`Discipline::step_job`]); an interrupt key is
+//! the client's, and the job's read gives way to the client's (it returns a
+//! timeout) so the client hears it at once. When the focus leaves the job the
+//! lend ends: the capability is revoked wherever it sits
+//! ([`Console::revoke_job`]) and the mode and echo the client had come back.
+//!
 //! Pure given a [`Console`] and a [`Gate`]: `tests/host/term-tests` pulls this
 //! file in with `#[path]` and drives it through the generated client stub over
 //! a loopback.
@@ -48,8 +61,8 @@ use crate::secure::{wipe, wipe_words, Echo, Prompt, Step};
 use azos_login::{pack_credential, pack_name, state, status, CREDENTIAL_WORDS, NAME_WORDS};
 use azos_rings::region::SpscRing;
 use azos_term::{
-    pack_chunk, pack_event, pack_size, unpack_bytes, Event, EventWords, Kind, Terminal, CHUNK_BYTES, PROMPT_MAX,
-    PROMPT_WORDS, WAIT_FOREVER,
+    pack_chunk, pack_event, pack_size, unpack_bytes, Event, EventWords, JobTerminal, Kind, Lent, MsgDesc, Terminal,
+    TerminalIdl, CHUNK_BYTES, JOB_OPS, LENT_JOB_RIGHTS, PROMPT_MAX, PROMPT_WORDS, WAIT_FOREVER,
 };
 
 /// The console as the server sees it: the kernel's RX owner side.
@@ -66,6 +79,12 @@ pub trait Console {
     /// Ask the renderer to draw the overlay the screen region now holds (a
     /// byte the console draws nothing for).
     fn refresh(&mut self);
+    /// Mint a call capability on the terminal's endpoint badged `job`, from
+    /// the server's own: its handle, or `None`.
+    fn mint_job(&mut self, job: u32) -> Option<u32>;
+    /// Revoke the capability [`Console::mint_job`] made, and what was
+    /// derived or lent from it, wherever it sits.
+    fn revoke_job(&mut self, handle: u32);
 }
 
 /// What the terminal server asks of the login service.
@@ -163,6 +182,33 @@ impl Sink for Nothing {
     fn push(&mut self, _: &[u8]) {}
 }
 
+/// A job's terminal, lent ([`Terminal::lend_job`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct JobLend {
+    /// The job, and the badge of the capability.
+    pub job: u32,
+    /// The server's badged copy: the root of what was lent.
+    handle: u32,
+    /// The client's mode and echo when it lent the terminal.
+    raw: bool,
+    echo: bool,
+}
+
+/// Serve one request: decode, admit, dispatch, into `rep`. The caller is the
+/// badge the kernel stamped on the call ([`Service::caller`]); a call with no
+/// badge word (the register form) and a call [`Service::admits`] refuses get
+/// an `IdlError::Refused` reply and change nothing.
+pub fn serve<C: Console, G: Gate>(svc: &mut Service<C, G>, req: &MsgDesc, rep: &mut MsgDesc) {
+    let op = azos_idl::header_op(req.words[0]);
+    let badged = req.flags & azos_abi::ipc_msg::MSG_BADGED != 0;
+    svc.caller = req.badge as u32;
+    if !badged || !svc.admits(op) {
+        azos_idl::refuse(rep);
+        return;
+    }
+    let _ = TerminalIdl::dispatch(svc, req, rep);
+}
+
 /// The Terminal served over a console.
 pub struct Service<C: Console, G: Gate = NoGate> {
     pub d: Discipline,
@@ -183,6 +229,10 @@ pub struct Service<C: Console, G: Gate = NoGate> {
     attention: bool,
     carry: [u8; CARRY_MAX],
     carry_len: usize,
+    /// The badge of the call being served: 0 for the client.
+    pub caller: u32,
+    /// The job's terminal, while one is lent.
+    pub lent: Option<JobLend>,
 }
 
 #[cfg(test)]
@@ -207,6 +257,30 @@ impl<C: Console, G: Gate> Service<C, G> {
             attention: false,
             carry: [0; CARRY_MAX],
             carry_len: 0,
+            caller: 0,
+            lent: None,
+        }
+    }
+
+    /// May the caller ([`Service::caller`]) call op `op`? The client
+    /// everything; the job whose terminal is lent the [`JOB_OPS`] while it
+    /// has the focus; any other badge nothing.
+    pub fn admits(&self, op: u16) -> bool {
+        if self.caller == 0 {
+            return true;
+        }
+        self.lent.is_some_and(|l| l.job == self.caller)
+            && self.d.foreground() == self.caller
+            && JOB_OPS.contains(&op)
+    }
+
+    /// End the lend, if any: revoke the job's capability and put back the
+    /// client's mode and echo.
+    fn end_lend(&mut self) {
+        if let Some(l) = self.lent.take() {
+            self.con.revoke_job(l.handle);
+            self.d.set_raw(l.raw);
+            self.d.set_echo(l.echo);
         }
     }
 
@@ -284,6 +358,7 @@ impl<C: Console, G: Gate> Service<C, G> {
     /// with the person told.
     fn end_session(&mut self) -> bool {
         if self.gate.end() {
+            self.end_lend();
             self.mode = Mode::Locked;
             return true;
         }
@@ -556,6 +631,9 @@ impl<C: Console, G: Gate> Terminal for Service<C, G> {
     }
 
     fn set_foreground(&mut self, job: u32) {
+        if self.lent.is_some_and(|l| l.job != job) {
+            self.end_lend();
+        }
         self.d.set_foreground(job);
         if job == 0 {
             if let Some(inp) = self.inp.as_mut() {
@@ -590,7 +668,12 @@ impl<C: Console, G: Gate> Terminal for Service<C, G> {
                 self.take_over();
                 return pack_event(&Event::new(Kind::Timeout));
             }
-            let ev = self.d.step();
+            // The job reading its own terminal gives way to an interrupt key:
+            // the client, whose call waits behind this one, hears it at once.
+            if self.caller != 0 && self.d.interrupt_pending() {
+                return pack_event(&Event::new(Kind::Timeout));
+            }
+            let ev = if self.caller != 0 { self.d.step_job() } else { self.d.step() };
             self.flush();
             if let Some(ev) = ev {
                 return pack_event(&self.event_of(ev));
@@ -643,5 +726,15 @@ impl<C: Console, G: Gate> Terminal for Service<C, G> {
 
     fn hangup(&mut self, status: i32) {
         self.hung_up = Some(status);
+    }
+
+    fn lend_job(&mut self, job: u32) -> Lent<JobTerminal> {
+        if job == 0 {
+            return Lent::none();
+        }
+        self.end_lend();
+        let Some(handle) = self.con.mint_job(job) else { return Lent::none() };
+        self.lent = Some(JobLend { job, handle, raw: self.d.is_raw(), echo: self.d.echo() });
+        Lent::dup(handle, LENT_JOB_RIGHTS)
     }
 }
