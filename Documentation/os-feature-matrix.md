@@ -82,7 +82,7 @@ Options and choices: 875. Defconfigs: 27.
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | `USERSPACE_AUDIOD` | AUDIOD.ELF (userspace/services/audiod) | n | n | y | y | y | y | y | y | y | y | y | y | n | n | n | n | n | y | n | n | n | y | n | y | n | n | n |
 | `USERSPACE_BEHAVIOR` | BEHAVIOR.ELF (userspace/services/famtools) | n | n | y | y | y | y | y | y | y | y | y | y | y | y | y | n | y | y | y | y | y | y | y | y | y | y | y |
-| `USERSPACE_BRAINCLI` | BRAINCLI.ELF (userspace/services/brain_client) | n | n | y | y | y | y | y | y | y | y | y | y | y | y | y | n | y | y | y | y | y | y | y | y | y | y | y |
+| `USERSPACE_BRAINCLI` | BRAINCLI.ELF (userspace/services/brain_client) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | y | y | y | y | y | y | y | y | y | y | y |
 | `USERSPACE_COMPMGR` | COMPMGR.ELF (userspace/services/compmgr) | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y |
 | `USERSPACE_COMPSRV` | COMPSRV.ELF (userspace/services/compositor) | n | n | n | n | n | n | y | n | n | n | n | n | n | n | n | n | n | n | n | n | n | y | n | n | n | n | n |
 | `USERSPACE_CONFIG` | CONFIG.ELF (userspace/services/famtools) | n | n | y | y | y | y | y | y | y | y | y | y | y | y | y | n | y | y | y | y | y | y | y | y | y | y | y |

@@ -37,7 +37,7 @@ import azos_tools  # noqa: E402
 
 REPO = azos_tools.ROOT
 BOARD_DEFAULT = {
-    "GPIODRV", "BRAINCLI", "FLIGHT", "BEHAVIOR", "CONFIG", "OTA",
+    "GPIODRV", "FLIGHT", "BEHAVIOR", "CONFIG", "OTA",
     "MLSRV", "NAMESD", "POWER", "REFLEX", "SH", "TERMD", "TOOLBOX", "COREUTIL", "TRACECTL", "DECISD", "LOGD", "WHY", "PKGD", "PKG", "RPCSRV",
     "COMPMGR", "SSHD", "AUDIOD",
 }

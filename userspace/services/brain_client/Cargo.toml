@@ -29,4 +29,7 @@ panic = "abort"
 # The FAT32 image(s) this crate builds and their board-volume defaults
 # (tools/build/gen_userspace_kconfig.py -> make config, "Userspace programs").
 [package.metadata.azos]
-topology = true
+# The robot extension's client of the brain: the topology has its row, and the
+# volume its image, whenever USE_ROBOT is on and nowhere else (a gate
+# configuration that asks for every program turns it on too).
+default = "USE_ROBOT"
