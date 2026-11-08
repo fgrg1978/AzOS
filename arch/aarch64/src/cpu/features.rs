@@ -163,6 +163,12 @@ impl IdRegs {
         field(self.mmfr3, 16) >= 1
     }
 
+    /// FEAT_S1PIE: ID_AA64MMFR3_EL1.S1PIE [11:8] >= 1 (stage-1 indirect
+    /// permissions, `PIR_EL1` / `PIRE0_EL1`).
+    pub const fn s1pie(&self) -> bool {
+        field(self.mmfr3, 8) >= 1
+    }
+
     /// FEAT_GCS: ID_AA64PFR1_EL1.GCS [47:44] >= 1 (the guarded control stack).
     pub const fn gcs(&self) -> bool {
         field(self.pfr1, 44) >= 1
@@ -521,6 +527,20 @@ mod tests {
         assert!(IdRegs { mmfr3: 1, ..z }.tcr2() && !IdRegs { mmfr3: 1, ..z }.s1poe(), "TCRX is [3:0]");
         assert!(!IdRegs { mmfr3: 0xFFFF_FFF0, ..z }.tcr2(), "a neighbour leaked into TCRX");
         assert!(!IdRegs { pfr1: 0xF << 40, ..z }.gcs() && !IdRegs { pfr1: 0xF << 48, ..z }.gcs());
+    }
+
+    /// FEAT_S1PIE is ID_AA64MMFR3_EL1 [11:8] (Linux arch/arm64/tools/sysreg,
+    /// `UnsignedEnum 11:8 S1PIE`), between SCTLRX [7:4] and S2PIE [15:12].
+    /// Canary: read it at shift 12 (S2PIE) and the first pair fails.
+    #[test]
+    fn the_indirect_permission_bit_comes_from_its_own_field() {
+        let z = IdRegs::default();
+        assert!(!z.s1pie());
+        assert!(IdRegs { mmfr3: 1 << 8, ..z }.s1pie() && !IdRegs { mmfr3: 1 << 8, ..z }.s1poe());
+        assert!(!IdRegs { mmfr3: 0xF << 12, ..z }.s1pie(), "S2PIE leaked into S1PIE");
+        assert!(!IdRegs { mmfr3: 0xF << 4, ..z }.s1pie(), "SCTLRX leaked into S1PIE");
+        assert!(!IdRegs { mmfr3: 1 << 16, ..z }.s1pie(), "S1POE is not S1PIE");
+        assert!(IdRegs { mmfr3: 3 << 8, ..z }.s1pie(), "a larger value still counts");
     }
 
     /// FEAT_E0PD comes from ID_AA64MMFR2_EL1 [63:60] alone: QEMU `max` reports

@@ -67,6 +67,8 @@ pub mod kaslr;
 pub mod kaslr_boot;
 // PT_PROTECTION (Kconfig `A64_POE`): the pool's overlay index and the write window.
 pub mod ptwin;
+// Stage-1 indirect permissions (Kconfig `A64_S1PIE`): PIR_EL1, PIRE0_EL1, TCR2_EL1.
+pub mod pie;
 
 /// Page size in bytes: the translation granule this build selected
 /// (`azos_arch_api::PAGE_SIZE`; Kconfig `AARCH64_PAGE_*`).
@@ -356,7 +358,7 @@ const _: () = assert!(vpn(0x7F_FFFF_F000, 2) == GRANULE.vpn(0x7F_FFFF_F000, 2));
 pub mod pte_fmt;
 #[allow(unused_imports)] // reason: the crate's public surface; a #[path] host include uses few of them
 pub use pte_fmt::{empty, is_leaf, is_table, is_valid, make_table, phys_addr, AF};
-use pte_fmt::{AP_EL0, AP_RO, CONT, OA_MASK, PXN, TYPE_TABLE_OR_PAGE, UXN, VALID};
+use pte_fmt::{AP_EL0, AP_RO, CONT, DBM, OA_MASK, PXN, TYPE_TABLE_OR_PAGE, UXN, VALID};
 const ATTRIDX_SHIFT: u32 = 2;
 /// `AttrIdx` values as `mmu/setup.rs` actually programs `MAIR_EL1`
 /// (`MAIR_VALUE = (0xFF << 8) | 0x04`): idx 0 = Device-nGnRE (`0x04`),
@@ -412,6 +414,14 @@ const SW_COW: u64 = 1 << 55;
 /// Software bit: mm's software-tracked dirty marker (see module doc).
 const SW_DIRTY: u64 = 1 << 56;
 
+/// What a writable leaf carries besides AP\[2\] clear: DBM in an `A64_S1PIE`
+/// build, where it is the write bit of the indirect-permission index
+/// ([`pie`]), as Linux's `PTE_WRITE`; nothing otherwise, so the split
+/// monitor's no-DBM rule holds (Kconfig keeps the two apart). A read-only or
+/// copy-on-write leaf never has it. `TCR_EL1.HD` is never set, so the direct
+/// permissions ignore the bit.
+pub const WRITE_DBM: u64 = if azos_limits::A64_S1PIE_PROBE || azos_limits::A64_S1PIE_REQUIRE { DBM } else { 0 };
+
 /// Encode the level-independent attribute bits `perms` implies (AttrIdx,
 /// AP, PXN/UXN, nG — everything except `VALID`/the type bit/the physical
 /// address), for [`make_leaf`].
@@ -423,6 +433,12 @@ const SW_DIRTY: u64 = 1 << 56;
 /// output — see the `Mmu` trait doc in `arch/api` for the general
 /// rule this follows.
 fn attr_bits(perms: PagePerms) -> Result<u64, MmuError> {
+    attr_bits_with(perms, WRITE_DBM)
+}
+
+/// [`attr_bits`] with the write bit `write_dbm` ([`WRITE_DBM`] or 0): the host
+/// rows build both encodings whatever the Kconfig.
+pub fn attr_bits_with(perms: PagePerms, write_dbm: u64) -> Result<u64, MmuError> {
     if !perms.read {
         // No EL0/EL1-reachable "no read" encoding on VMSAv8 stage 1.
         return Err(MmuError::UnrepresentablePerms);
@@ -454,6 +470,8 @@ fn attr_bits(perms: PagePerms) -> Result<u64, MmuError> {
     }
     if !perms.write {
         attrs |= AP_RO;
+    } else {
+        attrs |= write_dbm;
     }
     if !perms.exec {
         attrs |= PXN;
@@ -597,19 +615,31 @@ pub fn perms_of(word: u64) -> PagePerms {
 #[inline]
 pub const fn is_cow(word: u64) -> bool { is_valid(word) && word & SW_COW != 0 }
 
-/// Mark a writable leaf as COW-shared: clear the write permission (AP_RO),
-/// set the software COW marker.
+/// Mark a writable leaf as COW-shared: clear the write permission (AP_RO
+/// set, [`WRITE_DBM`] cleared), set the software COW marker.
 #[inline]
 pub const fn share_cow(word: u64) -> u64 {
-    word | AP_RO | SW_COW
+    share_cow_with(word, WRITE_DBM)
 }
 
-/// Break a COW-shared leaf: clear the COW marker, clear AP_RO (restore
-/// write), set the software dirty marker (the page was just written by
-/// the copy that precedes this call).
+/// [`share_cow`] for the write bit `write_dbm`.
+#[inline]
+pub const fn share_cow_with(word: u64, write_dbm: u64) -> u64 {
+    (word | AP_RO | SW_COW) & !write_dbm
+}
+
+/// Break a COW-shared leaf: clear the COW marker, clear AP_RO and set
+/// [`WRITE_DBM`] (restore write), set the software dirty marker (the page was
+/// just written by the copy that precedes this call).
 #[inline]
 pub const fn break_cow(word: u64) -> u64 {
-    (word & !SW_COW & !AP_RO) | SW_DIRTY
+    break_cow_with(word, WRITE_DBM)
+}
+
+/// [`break_cow`] for the write bit `write_dbm`.
+#[inline]
+pub const fn break_cow_with(word: u64, write_dbm: u64) -> u64 {
+    (word & !SW_COW & !AP_RO) | SW_DIRTY | write_dbm
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -698,11 +728,12 @@ pub const fn tcr_e0pd1(tcr: u64) -> bool {
 /// translates through a descriptor that has it clear, instead of taking an
 /// Access Flag fault (Kconfig `A64_HAFDBS`). RES0 without FEAT_HAFDBS.
 ///
-/// `TCR_EL1.HD` (bit 40, hardware dirty state) is left off: it only acts on a
-/// descriptor with the DBM bit (51) set, which no leaf of this tree carries,
-/// and a leaf that did would have the hardware clear AP[2] on the first write,
-/// which is the write-protect `pte_share_cow` puts on a COW page. When a user
-/// of dirty-state tracking appears, it brings its own switch.
+/// `TCR_EL1.HD` (bit 40, hardware dirty state) is never set: it acts on a
+/// descriptor with the DBM bit (51), which an `A64_S1PIE` build puts on every
+/// writable leaf ([`WRITE_DBM`]) as the write bit of the indirect index, and
+/// the direct permissions rely on it being inert there. When a user of
+/// dirty-state tracking appears, it brings its own switch and its own write
+/// bit.
 pub const TCR_HA: u64 = 1 << 39;
 
 /// `tcr` with `HA` set, every other bit as it was. Pure: the boot's decision

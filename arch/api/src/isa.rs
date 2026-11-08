@@ -238,6 +238,7 @@ pub mod aarch64 {
     pub const BTI: ExtPolicy = ext_policy!(A64_BTI_NEVER, A64_BTI_REQUIRE);
     pub const GCS: ExtPolicy = ext_policy!(A64_GCS_NEVER, A64_GCS_REQUIRE);
     pub const POE: ExtPolicy = ext_policy!(A64_POE_NEVER, A64_POE_REQUIRE);
+    pub const S1PIE: ExtPolicy = ext_policy!(A64_S1PIE_NEVER, A64_S1PIE_REQUIRE);
     pub const MTE: ExtPolicy = ext_policy!(A64_MTE_NEVER, A64_MTE_REQUIRE);
     pub const SVE: ExtPolicy = ext_policy!(A64_SVE_NEVER, A64_SVE_REQUIRE);
     pub const AES: ExtPolicy = ext_policy!(A64_AES_NEVER, A64_AES_REQUIRE);

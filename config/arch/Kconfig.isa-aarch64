@@ -219,8 +219,8 @@ choice
       Detected and reported only. A GCS lives in GCS pages, and stage 1 has
       no GCS memory type under the direct AP/XN permissions the kernel maps
       with: a GCS page is a stage-1 indirect permission (FEAT_S1PIE,
-      TCR2_EL1.PIE and PIR_EL1), which the kernel does not use yet. The
-      per-task stack, the context switch and the resume stubs come with it
+      TCR2_EL1.PIE and PIR_EL1; Kconfig A64_S1PIE, which this needs). The
+      per-task stack, the context switch and the resume stubs come next
       (arch/aarch64/src/cpu/cfi.rs, "GCS"). The EL2 trampoline keeps
       HCRX_EL2.GCSEn at 0 on every policy, so EL1 and EL0 run without a GCS
       whatever GCSCR_EL1 held out of reset. n: no difference. probe: the
@@ -265,6 +265,42 @@ choice
     config A64_POE_REQUIRE
         bool "require: baseline; refuse to boot without it"
         depends on !HV
+endchoice
+
+choice
+    prompt "S1PIE (stage-1 indirect permissions, FEAT_S1PIE)"
+    default A64_S1PIE_NEVER
+    help
+      ID_AA64MMFR3_EL1.S1PIE (and FEAT_TCR2): with TCR2_EL1.PIE set, a leaf's
+      UXN, PXN, DBM and AP[1] bits are a 4-bit index into PIR_EL1 (EL1's
+      permissions) and PIRE0_EL1 (EL0's). It is the only way a stage-1 page
+      can be a guarded control stack page (A64_GCS). Any policy but n changes
+      the encoding of every leaf: a writable page also carries DBM (Linux's
+      PTE_WRITE), a read-only or copy-on-write one does not, so the index alone
+      says whether a page is writable; TCR_EL1.HD stays off, so DBM is ignored
+      where PIE is off. PIR_EL1 and PIRE0_EL1 give the eight indices the
+      page-table code produces the permissions the direct AP/XN bits give them,
+      with the overlay (A64_POE) applied; the other indices grant nothing but
+      one, the kernel GCS page (EL1 read and GCS access, no plain store),
+      which nothing maps yet but a ktest. Every CPU turns it on once its real
+      tables are installed (the boot CPU after the low half is device-only,
+      the others and a resumed CPU before they run anything else), in the same
+      TCR2_EL1 write as POE; EL2 grants TCR2_EL1 and the two PIR registers
+      (HCRX_EL2.TCR2En, nPIR_EL1, nPIRE0_EL1). Not selectable with the
+      hypervisor (HV) or the split monitor (HYP_MONITOR): the stub's world
+      switch does not save TCR2_EL1 and the PIR registers, and the monitor
+      zeroes TCR2_EL1 and refuses DBM in the descriptors it checks.
+      Default n: it has never run on a core; the arm-phase rows boot it.
+      n: the leaf encoding is unchanged and PIE stays off. probe: use it where
+      the CPU has it. require: the boot refuses a CPU without it.
+    config A64_S1PIE_NEVER
+        bool "n: never use it"
+    config A64_S1PIE_PROBE
+        bool "probe: use it when the boot finds it, fall back otherwise"
+        depends on !HV && !HYP_MONITOR
+    config A64_S1PIE_REQUIRE
+        bool "require: baseline; refuse to boot without it"
+        depends on !HV && !HYP_MONITOR
 endchoice
 
 choice
