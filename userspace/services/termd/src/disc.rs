@@ -28,6 +28,10 @@
 
 use crate::edit::{Editor, Event as EdEvent, History, LINE_MAX, OUT_MAX};
 
+/// What a job's line editor recalls: nothing. The client's history is the
+/// client's (the `history` op is refused to a job for the same reason).
+static NO_HISTORY: History = History::new();
+
 /// Type-ahead kept, in bytes. A byte that does not fit is dropped.
 pub const HELD_MAX: usize = 256;
 /// Most bytes one [`Event::Bytes`] carries.
@@ -271,7 +275,7 @@ impl Discipline {
             return self.step_raw();
         }
         while let Some(b) = self.pop() {
-            let ev = self.ed.feed(b, &self.hist);
+            let ev = self.ed.feed(b, if record { &self.hist } else { &NO_HISTORY });
             let mut tmp = [0u8; OUT_MAX];
             let o = self.ed.take_output();
             let n = o.len();
@@ -339,6 +343,14 @@ impl Discipline {
     }
 
     // ── what the last event holds ───────────────────────────────────────────
+
+    /// Forget the last line and raw bytes delivered: a job that is lent the
+    /// terminal reads none of what was read before it.
+    pub fn forget_delivered(&mut self) {
+        self.line.fill(0);
+        self.line_len = 0;
+        self.raw.fill(0);
+    }
 
     /// The line of the last [`Event::Line`].
     pub fn line(&self) -> &[u8] {

@@ -132,6 +132,8 @@ struct Con {
     script: VecDeque<Beat>,
     shown: Vec<u8>,
     ring: Option<SpscRing>,
+    /// The job capabilities revoked.
+    revoked: Vec<u32>,
 }
 
 impl Console for Con {
@@ -155,10 +157,12 @@ impl Console for Con {
         0
     }
     fn refresh(&mut self) {}
-    fn mint_job(&mut self, _: u32) -> Option<u32> {
-        None
+    fn mint_job(&mut self, job: u32) -> Option<u32> {
+        Some(1000 + job)
     }
-    fn revoke_job(&mut self, _: u32) {}
+    fn revoke_job(&mut self, handle: u32) {
+        self.revoked.push(handle);
+    }
 }
 
 /// A login service that answers from a script and writes down the questions.
@@ -462,4 +466,21 @@ fn the_chord_restarts_the_prompt_and_other_keys_are_ignored() {
     s.secure_prompt();
     assert_eq!(s.gate.logins, vec![asked(b"bob", b"pw")], "the \"al\" typed before the chord is forgotten, the arrow key typed nothing");
     assert_eq!(shown(&s).matches("login: ").count(), 2, "the prompt was drawn again");
+}
+
+/// **The session's end ends the job's terminal**: when the user's shell is
+/// gone (it hung up, or the key took the console back), the badge lent to its
+/// job is revoked and the next user's shell finds no lend.
+///
+/// **Canary.** Drop the `end_lend` of `end_session`: the revoked assertion is
+/// red.
+#[test]
+fn the_end_of_a_session_revokes_the_terminal_lent_to_its_job() {
+    use azos_term::Terminal;
+    let mut s = gated(Con::default(), state::SESSION, &[]);
+    assert!(s.lend_job(9).get().is_some());
+    s.set_foreground(9);
+    assert!(s.session_ended());
+    assert_eq!(s.con.revoked, [1009], "the job's terminal outlived the session");
+    assert_eq!(s.lent, None);
 }

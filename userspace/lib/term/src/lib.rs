@@ -111,6 +111,11 @@ pub const JOB_OPS: [u16; 5] = [
     TerminalIdl::OP_LINE_CHUNK,
 ];
 
+/// The longest a job's `read_event` waits in the server, whatever it asks: the
+/// server has one accept loop, and the client's calls wait behind a job's. A
+/// job reads again when it wants to wait longer.
+pub const JOB_WAIT_MAX_MS: u32 = 50;
+
 /// The rights a lent job terminal carries to the client: the call right, and
 /// `TRANSFER` so the client can move it into the job (`CapPerms` bits).
 pub const LENT_JOB_RIGHTS: u16 = CapPerms::WRITE.union(CapPerms::TRANSFER).bits() as u16;

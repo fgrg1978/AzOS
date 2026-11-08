@@ -25,9 +25,6 @@ pub const E_BADF: isize = -9;
 /// The terminal is not this program's any more (`-EIO`): the shell took the
 /// focus back and the terminal server revoked it.
 pub const E_IO: isize = -5;
-/// The longest a terminal read waits in one call: the terminal server serves
-/// one call at a time, and the shell's poll for the job's end waits behind it.
-const TERMINAL_WAIT_MS: u32 = 50;
 static CONSOLE: AtomicU32 = AtomicU32::new(0);
 
 /// This task's console handle, looked up once (`<= 0` when it holds none).
@@ -106,7 +103,7 @@ fn read_terminal(h: u32, buf: &mut [u8]) -> isize {
     // SAFETY: `busy` is held.
     let r = unsafe { &mut *STREAM.reader.get() };
     let n = loop {
-        match r.read(&mut |m| crate::sys::ipc_call(h, m), buf, TERMINAL_WAIT_MS) {
+        match r.read(&mut |m| crate::sys::ipc_call(h, m), buf, crate::terminal::JOB_WAIT_MS) {
             Read::Bytes(n) => break n as isize,
             Read::End => break 0,
             Read::Again => continue,

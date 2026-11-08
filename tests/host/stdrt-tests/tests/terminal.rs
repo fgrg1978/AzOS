@@ -100,6 +100,7 @@ fn ids_are_the_generated_ones() {
     assert_eq!(terminal::OP_LINE_CHUNK, u64::from(TerminalIdl::OP_LINE_CHUNK));
     assert_eq!((terminal::KIND_LINE, terminal::KIND_BYTES, terminal::KIND_EOF), (Kind::Line as u8, Kind::Bytes as u8, Kind::Eof as u8));
     assert_eq!((terminal::CHUNK_BYTES, terminal::LINE_MAX), (CHUNK_BYTES, azos_term::LINE_MAX));
+    assert_eq!(terminal::JOB_WAIT_MS, azos_term::JOB_WAIT_MAX_MS, "a read asks for the server's cap");
 }
 
 /// **Mode, echo and size cross the wire** as the generated client sends them.

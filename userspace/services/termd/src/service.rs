@@ -62,7 +62,7 @@ use azos_login::{pack_credential, pack_name, state, status, CREDENTIAL_WORDS, NA
 use azos_rings::region::SpscRing;
 use azos_term::{
     pack_chunk, pack_event, pack_size, unpack_bytes, Event, EventWords, JobTerminal, Kind, Lent, MsgDesc, Terminal,
-    TerminalIdl, CHUNK_BYTES, JOB_OPS, LENT_JOB_RIGHTS, PROMPT_MAX, PROMPT_WORDS, WAIT_FOREVER,
+    TerminalIdl, CHUNK_BYTES, JOB_OPS, JOB_WAIT_MAX_MS, LENT_JOB_RIGHTS, PROMPT_MAX, PROMPT_WORDS, WAIT_FOREVER,
 };
 
 /// The console as the server sees it: the kernel's RX owner side.
@@ -279,6 +279,7 @@ impl<C: Console, G: Gate> Service<C, G> {
     fn end_lend(&mut self) {
         if let Some(l) = self.lent.take() {
             self.con.revoke_job(l.handle);
+            self.d.forget_delivered();
             #[cfg(not(feature = "canary-keep-mode"))]
             {
                 self.d.set_raw(l.raw);
@@ -662,6 +663,10 @@ impl<C: Console, G: Gate> Terminal for Service<C, G> {
     }
 
     fn read_event(&mut self, timeout_ms: u32) -> EventWords {
+        // A job waits at most JOB_WAIT_MAX_MS in one call: the server has one
+        // accept loop, and the client's calls (its poll, the focus coming back)
+        // wait behind a job's.
+        let timeout_ms = if self.caller != 0 { timeout_ms.min(JOB_WAIT_MAX_MS) } else { timeout_ms };
         let deadline = (timeout_ms != WAIT_FOREVER).then(|| self.con.now_ns().saturating_add(timeout_ms as u64 * 1_000_000));
         loop {
             self.pump_input();
@@ -736,6 +741,7 @@ impl<C: Console, G: Gate> Terminal for Service<C, G> {
             return Lent::none();
         }
         self.end_lend();
+        self.d.forget_delivered();
         let Some(handle) = self.con.mint_job(job) else { return Lent::none() };
         self.lent = Some(JobLend { job, handle, raw: self.d.is_raw(), echo: self.d.echo() });
         Lent::dup(handle, LENT_JOB_RIGHTS)

@@ -745,8 +745,9 @@ mod served {
     /// timeout (its read gives way), and the client's read gets the interrupt
     /// tagged with the job.
     ///
-    /// **Canary.** Drop the give-way test in `read_event`: the job's read
-    /// returns the interrupt and the first assertion goes red.
+    /// **Canary.** Drop the give-way test in `read_event`: the job's read goes
+    /// on past the interrupt key and returns the `x` typed after it, and the
+    /// first assertion goes red.
     #[test]
     fn the_interrupt_key_stays_the_clients_and_the_job_gives_way() {
         let s = server(&[b"\x03", b"x"]);
@@ -783,6 +784,63 @@ mod served {
         assert_eq!(&ch.data[..ch.total as usize], b"secret");
         c.set_foreground(0).unwrap();
         assert!(!unpack_chunk(&c.history(0, 0).unwrap()).valid, "the job's line is in the client's history");
+    }
+
+    /// **A job waits at most `JOB_WAIT_MAX_MS` in one call**, whatever it asks:
+    /// a job's wait for ever would hold the one accept loop, and the client's
+    /// calls behind it. The client's own wait is its own.
+    ///
+    /// **Canary.** Drop the clamp in `read_event`: the job's wait is `None`
+    /// (for ever) and this goes red.
+    #[test]
+    fn a_jobs_wait_is_capped_and_the_clients_is_not() {
+        let s = server(&[]);
+        let mut c = TerminalClient::new(Loop(&s));
+        let mut j = TerminalClient::new(Badged(&s, 9));
+        assert!(c.lend_job(9).unwrap().get().is_some());
+        c.set_foreground(9).unwrap();
+        let e = unpack_event(&j.read_event(WAIT_FOREVER).unwrap()).unwrap();
+        assert_eq!(e.kind, Kind::Timeout);
+        assert_eq!(s.borrow().con.timeouts, [Some(JOB_WAIT_MAX_MS as u64 * 1_000_000)], "the job waited past the cap");
+        let _ = event(&mut c, WAIT_FOREVER);
+        assert_eq!(s.borrow().con.timeouts[1], None, "the client's wait was cut");
+    }
+
+    /// **A job's line editing recalls nothing of the client's**: Up in a job's
+    /// cooked read brings back no line the shell typed.
+    ///
+    /// **Canary.** Feed the job's editor the client's history: the job reads
+    /// `secret-cmd` and this goes red.
+    #[test]
+    fn a_jobs_line_editor_does_not_recall_the_clients_history() {
+        let s = server(&[b"secret-cmd\r", b"\x1b[A\r"]);
+        let mut c = TerminalClient::new(Loop(&s));
+        let mut j = TerminalClient::new(Badged(&s, 9));
+        c.begin_line().unwrap();
+        assert_eq!(event(&mut c, 0).inline(), b"secret-cmd");
+        assert!(c.lend_job(9).unwrap().get().is_some());
+        c.set_foreground(9).unwrap();
+        let e = unpack_event(&j.read_event(0).unwrap()).unwrap();
+        assert_eq!(e.kind, Kind::Line);
+        assert_eq!(e.inline(), b"", "the job's Up recalled the client's line");
+    }
+
+    /// **A job lent the terminal reads nothing read before it**: the last line
+    /// the client got is not the new job's `line_chunk`.
+    ///
+    /// **Canary.** Drop the `forget_delivered` of `lend_job`: the job reads the
+    /// client's command line and this goes red.
+    #[test]
+    fn a_new_job_does_not_get_the_line_read_before_it() {
+        let s = server(&[b"rm -rf /secret\r"]);
+        let mut c = TerminalClient::new(Loop(&s));
+        let j = TerminalClient::new(Badged(&s, 9));
+        c.begin_line().unwrap();
+        assert_eq!(event(&mut c, 0).kind, Kind::Line);
+        assert!(c.lend_job(9).unwrap().get().is_some());
+        c.set_foreground(9).unwrap();
+        let ch = unpack_chunk(&j.line_chunk(0).unwrap());
+        assert_eq!(ch.total, 0, "the job read the client's last line");
     }
 
     /// **One lend at a time**: a second lend, or the focus moving to another

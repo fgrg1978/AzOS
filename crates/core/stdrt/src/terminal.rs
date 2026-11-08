@@ -32,6 +32,9 @@ pub const KIND_BYTES: u8 = 2;
 pub const KIND_EOF: u8 = 4;
 /// Payload bytes of one event or chunk, `azos_term::CHUNK_BYTES`.
 pub const CHUNK_BYTES: usize = 48;
+/// The longest the server waits in one job's `read_event`,
+/// `azos_term::JOB_WAIT_MAX_MS`: what a read asks for, and loops on.
+pub const JOB_WAIT_MS: u32 = 50;
 /// The longest line, `azos_term::LINE_MAX`.
 pub const LINE_MAX: usize = 255;
 /// Bit 16 of a chunk's word 0: the line exists (`azos_term::pack_chunk`).
