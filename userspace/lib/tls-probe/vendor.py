@@ -10,14 +10,17 @@ userspace std programs build from.
     python3 userspace/lib/tls-probe/vendor.py test    # offline: the probe's host tests (a TLS handshake over memory), on the stable host toolchain
 
 What is vendored: everything in tls-probe's lockfile (rustls, the
-rustls-rustcrypto provider, quinn-proto and their dependencies) plus the
-dependencies of the toolchain's own std workspace (`cargo vendor --sync`),
+rustls-rustcrypto provider, quinn-proto and their dependencies), everything in
+the lockfiles of the ported programs (third_party/ports: ripgrep, fd, kibi),
+plus the dependencies of the toolchain's own std workspace (`cargo vendor --sync`),
 because -Zbuild-std resolves them through the same source replacement
 (tools/build/sdk_cargo.py --vendored). That second half moves with rust-toolchain.toml:
 a toolchain bump is a `regen`.
 
-Pruning: cargo vendors every platform, and the windows-* crates are most of the
-bytes. They are never built for an azos or a unix host target, so the tree keeps
+Pruning: cargo vendors every platform, and the crates of other platforms are most of the
+bytes: windows-*, winapi*, the Apple ones (objc2*, block2, dispatch2), linux-raw-sys (the
+raw-syscall backend of rustix) and pcre2-sys (the C library behind ripgrep's optional
+pcre2 feature, which is off). None is built for an azos target or the host tests, so the tree keeps
 their manifest and licences and replaces the sources with a stub whose library
 is a `compile_error!`: a build that does reach one fails loudly instead of
 silently using a hollow crate. The `package` checksum in each
@@ -38,8 +41,10 @@ ROOT = os.path.realpath(os.path.join(os.path.dirname(__file__), "..", "..", ".."
 VENDOR = os.path.join(ROOT, "third_party", "vendor")
 PIN = os.path.join(ROOT, "third_party", "VENDOR_PIN")
 PROBE = os.path.join(ROOT, "userspace", "lib", "tls-probe")
+PORTS = os.path.join(ROOT, "third_party", "ports")
+MANIFESTS = [os.path.join(PROBE, "Cargo.toml")] + [os.path.join(PORTS, p, "Cargo.toml") for p in ("ripgrep", "fd-find", "kibi")]
 VENDOR_CONFIG = ["--config", 'source.crates-io.replace-with="azos-vendor"', "--config", f'source.azos-vendor.directory="{VENDOR}"']
-PRUNE = re.compile(r"^windows[-_]")
+PRUNE = re.compile(r"^(windows[-_]|winapi|objc2|block2$|dispatch2$|linux-raw-sys$|pcre2-sys$)")
 KEEP = re.compile(r"^(Cargo\.toml|Cargo\.toml\.orig|LICEN[CS]E.*|license.*|COPYING.*)$")
 
 HEADER = """# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
@@ -48,7 +53,9 @@ HEADER = """# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 # The crates.io tree third_party/vendor holds, fixed on 2026-10-16 (owner-approved
 # download): rustls 0.23 with the rustls-rustcrypto provider (no aws-lc-rs, no
 # ring in any build for an azos or a unix host target), quinn-proto 0.11 (no
-# crypto feature) and their dependencies, plus the dependencies of the pinned
+# crypto feature) and their dependencies, the dependencies of the ported
+# programs ripgrep, fd-find and kibi (third_party/ports; extended 2026-11-08,
+# owner-approved download), plus the dependencies of the pinned
 # toolchain's std workspace (build-std resolves them through the same source
 # replacement). One line per package: name, version, sha256 of the .crate file as
 # crates.io publishes it (the Cargo.lock checksum), and `pruned` when the sources
@@ -106,7 +113,7 @@ def prune():
         os.makedirs(os.path.join(p, "src"))
         with open(os.path.join(p, "src", "lib.rs"), "w") as f:
             f.write(f'compile_error!("{name} {version} is pruned from third_party/vendor '
-                    f'(windows crates are never built here; userspace/lib/tls-probe/vendor.py)");\n')
+                    f'(crates of other platforms are never built here; userspace/lib/tls-probe/vendor.py)");\n')
         if had_build:
             with open(os.path.join(p, "build.rs"), "w") as f:
                 f.write("fn main() {}\n")
@@ -138,8 +145,9 @@ def regen():
     sysroot = subprocess.run(["rustc", "--print", "sysroot"], check=True, capture_output=True, text=True).stdout.strip()
     std_ws = os.path.join(sysroot, "lib", "rustlib", "src", "rust", "library", "Cargo.toml")
     subprocess.run(["rm", "-rf", VENDOR], check=True)
-    subprocess.run(["cargo", "vendor", "--locked", "--manifest-path", os.path.join(PROBE, "Cargo.toml"),
-                    "--sync", std_ws, VENDOR], check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
+    syncs = [a for m in MANIFESTS[1:] + [std_ws] for a in ("--sync", m)]
+    subprocess.run(["cargo", "vendor", "--locked", "--manifest-path", MANIFESTS[0]] + syncs + [VENDOR],
+                   check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
     print(f"vendor: pruned {prune()} windows crates")
     with open(PIN, "w") as f:
         f.write(pin_text())
@@ -170,18 +178,18 @@ def deny(have_deny=None, have_db=None):
     checks = ["licenses", "bans", "sources"] + (["advisories"] if have_db else [])
     notes = [] if have_db else [f"advisories NOT checked: no RustSec database at {ADVISORY_DB} (cargo deny fetch, once, with a network)"]
     with tempfile.TemporaryDirectory() as tmp:
-        md = os.path.join(tmp, "metadata.json")
-        manifest = os.path.join(PROBE, "Cargo.toml")
-        with open(md, "w") as f:
-            r = subprocess.run(["cargo", "metadata", "--offline", "--locked", "--format-version", "1", "--manifest-path", manifest]
-                               + VENDOR_CONFIG, cwd=ROOT, stdout=f, stderr=subprocess.PIPE, text=True)
-        if r.returncode:
-            return ["cargo metadata: " + r.stderr.strip()], notes
-        r = subprocess.run(["cargo", "deny", "--manifest-path", manifest, "check", "--config", os.path.join(ROOT, "deny.toml"),
-                            "--metadata-path", md, "--disable-fetch"] + checks,
-                           cwd=ROOT, capture_output=True, text=True)
-        if r.returncode:
-            return ["cargo deny: " + "\n".join(l for l in r.stderr.splitlines() if not l.startswith("warning"))[-1500:]], notes
+        for manifest in MANIFESTS:
+            md = os.path.join(tmp, "metadata.json")
+            with open(md, "w") as f:
+                r = subprocess.run(["cargo", "metadata", "--offline", "--locked", "--format-version", "1", "--manifest-path", manifest]
+                                   + VENDOR_CONFIG, cwd=ROOT, stdout=f, stderr=subprocess.PIPE, text=True)
+            if r.returncode:
+                return [f"cargo metadata {os.path.relpath(manifest, ROOT)}: " + r.stderr.strip()], notes
+            r = subprocess.run(["cargo", "deny", "--manifest-path", manifest, "check", "--config", os.path.join(ROOT, "deny.toml"),
+                                "--metadata-path", md, "--disable-fetch"] + checks,
+                               cwd=ROOT, capture_output=True, text=True)
+            if r.returncode:
+                return [f"cargo deny {os.path.relpath(manifest, ROOT)}: " + "\n".join(l for l in r.stderr.splitlines() if not l.startswith("warning"))[-1500:]], notes
     return [], notes
 
 
