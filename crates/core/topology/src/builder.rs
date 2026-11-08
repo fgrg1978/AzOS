@@ -2880,9 +2880,9 @@ const SH_MEM_PAGES: u32 = 64;
 /// headroom for a longer period).
 const TOOLBOX_MEM_PAGES: u32 = 64;
 /// Does the topology declare the ring-3 ext4 server's row (and its
-/// `[volume.ext4]`)? Kconfig `FS_EXT4_RING3`, and the volume carries the
-/// image.
-pub const EXT4D_ROW: bool = azos_limits::FS_EXT4_RING3 && azos_limits::USERSPACE_EXT4D;
+/// `[volume.ext4]`)? Kconfig `FS_EXT4_RING3`, which puts the image on the
+/// volume (`USERSPACE_EXT4D`'s default).
+pub const EXT4D_ROW: bool = azos_limits::FS_EXT4_RING3;
 /// The ring-3 ext4 server's image (`userspace/services/ext4d`).
 pub const TASK_EXT4D_IMAGE: &[u8] = b"EXT4D.ELF";
 /// Frame budget of `EXT4D.ELF`: Kconfig `FS_EXT4_RING3_MEM_PAGES`.
