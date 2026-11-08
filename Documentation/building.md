@@ -280,6 +280,7 @@ Source: `mk/lints.mk`, `tools/gate/gate_tier.sh`, `tools/gate/ci_check.sh`, `too
 | Tier | Command | What it runs |
 |---|---|---|
 | N0, the edit loop | `make check0` | `make ARCH=<isa> check` for the three ISAs, the lints below, `cargo deny`, and the host suites the diff reaches |
+| N0 without the brain | `make check0-nobrain` | N0 with the optional brain repo hidden (`AZOS_BRAIN_DIR` names a missing path), after `tools/gate/nobrain_check.sh` shows that nothing else asks for it; `tools/lint/brain_dep_lint.py` (in N0) keeps the repo's path out of the tools |
 | N1, the change check | `make check1` | N0's suites, then the per-ISA smoke boots and the QEMU gate rows that the diff maps to |
 | Fronts' check | `make check-fast` | Per ISA: one ktest boot, one boot of the same kernel with every composable runtime canary armed, and one userspace boot (the ABI conformance checks) |
 | Full | `make ci` | `tools/gate/ci_check.sh`: every feature combination built with zero warnings, every host suite, every lint, and every QEMU scenario |

@@ -21,7 +21,7 @@ review records that nothing sends one:
 
 This is the sender for that.
 
-Not a stand-in for `../AzOSRobotBrain`. It speaks the wire format and nothing
+Not a stand-in for the brain repo. It speaks the wire format and nothing
 else — no perception, no planning — because the point is to be a peer the
 kernel cannot distinguish from a real one at the frame level. That includes the
 link: the kernel's brain link is always a Noise session, so every mode below

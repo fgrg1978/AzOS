@@ -153,6 +153,19 @@ if [ "$lints" = 1 ]; then
     fi
 fi
 
+# The OS does not depend on the brain repo (tools/lint/brain_dep_lint.py): its canary first, then the tree.
+# `make check0-nobrain` runs this whole tier with the repo hidden.
+if [ "$lints" = 1 ]; then
+    printf "  %-26s" "brain dependency lint..."
+    if out="$(python3 tools/lint/brain_dep_lint.py --self-test 2>&1)" \
+       && out="$(python3 tools/lint/brain_dep_lint.py 2>&1)"; then
+        echo ok
+    else
+        echo FAIL; fail=1
+        printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'
+    fi
+fi
+
 # The MMIO accessor lint (tools/lint/mmio_accessors.py), as the gate's row does.
 if [ "$lints" = 1 ]; then
     printf "  %-26s" "mmio accessors lint..."

@@ -19,7 +19,7 @@ Run after a Kconfig change, when the client's mirror should follow:
 
     cd azos
     make defconfig-generic-sbc-riscv64-dev          # or any defconfig
-    python3 tools/build/export_kernel_consts.py --out ../AzOSRobotBrain/protocol_consts.py
+    python3 tools/build/export_kernel_consts.py --out <brain repo>/protocol_consts.py
 
 The output file is regenerated; manual edits are lost.  Brain code that
 needs a value imports it:

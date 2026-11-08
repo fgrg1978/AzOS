@@ -85,6 +85,11 @@ ci:
 check0:
 	@env -u CARGO_TARGET_DIR bash tools/gate/gate_tier.sh n0
 
+# N0 with the brain repo hidden (AZOS_BRAIN_DIR names a path that does not exist),
+# after the checks that nothing else asks for it (tools/gate/nobrain_check.sh).
+check0-nobrain:
+	@bash tools/gate/nobrain_check.sh --n0
+
 # The fastest check of a front: `cargo check` (no codegen, `validate` profile) of the
 # kernel cells the diff reaches (ISAs and presets from the paths,
 # tools/gate/compile_plan.py) and of the host suites it reaches; no lints, no
