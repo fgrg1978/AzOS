@@ -5,7 +5,7 @@
 //! The calls are covered from ring 3 by the boot rows of the ported programs.
 
 use azos_abi::syscall_nr::{STAT_BYTES, STAT_OFF_MODE, STAT_OFF_MTIME, STAT_OFF_SIZE, STAT_S_IFDIR, STAT_S_IFREG};
-use azos_stdrt::fspure::{normalize, open_flags, OpenError, PathError, Stat, O_APPEND, O_CREAT, O_RDWR, O_TRUNC, O_WRONLY, PATH_MAX};
+use azos_stdrt::fspure::{normalize, open_flags, parent_of, OpenError, PathError, Stat, O_APPEND, O_CREAT, O_RDWR, O_TRUNC, O_WRONLY, PATH_MAX};
 
 fn norm(base: &str, path: &str) -> Result<String, PathError> {
     normalize(base.as_bytes(), path.as_bytes()).map(|p| String::from_utf8(p.bytes().to_vec()).unwrap())
@@ -57,7 +57,7 @@ fn bad_paths_are_refused() {
 }
 
 /// The flags `File::open`, `File::create` and `OpenOptions` map to.
-/// **Canary:** swapping `O_WRONLY` and `O_RDWR` fails the first two.
+/// **Canary:** swapping `O_WRONLY` and `O_RDWR` fails the second and third.
 #[test]
 fn open_options_become_native_flags() {
     assert_eq!(open_flags(true, false, false, false, false, false), Ok(0));
@@ -103,4 +103,21 @@ fn the_stat_record_decodes() {
 fn readonly_means_no_write_bit() {
     assert!(Stat::decode(&record(1, STAT_S_IFREG | 0o444, 0)).readonly());
     assert!(!Stat::decode(&record(1, STAT_S_IFREG | 0o464, 0)).readonly());
+}
+
+/// The parent of a created name is the directory a missing-parent refusal is told apart in.
+/// **Canary:** a `parent_of` that kept the last component answers `/a/b` for `/a/b`.
+#[test]
+fn the_parent_drops_the_last_component() {
+    let p = |s: &str| String::from_utf8(parent_of(&normalize(b"/", s.as_bytes()).unwrap()).bytes().to_vec()).unwrap();
+    assert_eq!(p("/a/b"), "/a");
+    assert_eq!(p("/a/b/c"), "/a/b");
+    assert_eq!(p("/a"), "/");
+    assert_eq!(p("/"), "/");
+}
+
+/// A path as long as the kernel reads (`SYS_PATH_MAX`, NUL included) passes, one more byte does not.
+#[test]
+fn the_limit_is_the_kernels() {
+    assert_eq!(PATH_MAX, azos_abi::syscall_nr::SYS_PATH_MAX);
 }

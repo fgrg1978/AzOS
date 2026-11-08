@@ -49,7 +49,8 @@ pub struct FileAttr {
 
 pub struct ReadDir {
     dir: Arc<PathBuf>,
-    entries: crate::vec::IntoIter<(OsString, bool)>,
+    /// The listing as it was when the directory was opened; an entry the kernel could not name is an error of its own.
+    entries: crate::vec::IntoIter<Result<(OsString, bool), isize>>,
 }
 
 pub struct DirEntry {
@@ -97,18 +98,23 @@ impl FileAttr {
         FileType { dir: self.stat.is_dir() }
     }
 
+    /// A time of 0 is "not kept" (the stat record's own words), not 1970.
     pub fn modified(&self) -> io::Result<SystemTime> {
-        Ok(SystemTime::from_unix_secs(self.stat.mtime))
+        kept(self.stat.mtime)
     }
 
     pub fn accessed(&self) -> io::Result<SystemTime> {
-        Ok(SystemTime::from_unix_secs(self.stat.atime))
+        kept(self.stat.atime)
     }
 
     /// The volumes keep no creation time.
     pub fn created(&self) -> io::Result<SystemTime> {
         unsupported()
     }
+}
+
+fn kept(secs: u64) -> io::Result<SystemTime> {
+    if secs == 0 { unsupported() } else { Ok(SystemTime::from_unix_secs(secs)) }
 }
 
 impl FilePermissions {
@@ -151,8 +157,10 @@ impl Iterator for ReadDir {
     type Item = io::Result<DirEntry>;
 
     fn next(&mut self) -> Option<io::Result<DirEntry>> {
-        let (name, is_dir) = self.entries.next()?;
-        Some(Ok(DirEntry { dir: Arc::clone(&self.dir), name, is_dir }))
+        Some(match self.entries.next()? {
+            Ok((name, is_dir)) => Ok(DirEntry { dir: Arc::clone(&self.dir), name, is_dir }),
+            Err(code) => Err(map_native_error(code)),
+        })
     }
 }
 
@@ -336,10 +344,18 @@ pub fn readdir(p: &Path) -> io::Result<ReadDir> {
     let mut entries = crate::vec::Vec::new();
     let mut name = [0u8; azos_stdrt::fs::NAME_BYTES];
     let mut index = 0u32;
-    while let Some(is_dir) = native(nfs::readdir(bytes(p), index, &mut name))? {
-        let len = name.iter().position(|&b| b == 0).unwrap_or(name.len());
-        // SAFETY: names are bytes of the volume's choosing; the encoding of an `OsString` here is bytes.
-        entries.push((unsafe { OsString::from_encoded_bytes_unchecked(name[..len].to_vec()) }, is_dir));
+    loop {
+        match nfs::readdir(bytes(p), index, &mut name) {
+            Ok(Some(is_dir)) => {
+                let len = name.iter().position(|&b| b == 0).unwrap_or(name.len());
+                // SAFETY: names are bytes of the volume's choosing; the encoding of an `OsString` here is bytes.
+                entries.push(Ok((unsafe { OsString::from_encoded_bytes_unchecked(name[..len].to_vec()) }, is_dir)));
+            }
+            Ok(None) => break,
+            // One name the kernel could not give whole fails that entry only.
+            Err(code) if code == nfs::ENAMETOOLONG => entries.push(Err(code)),
+            Err(code) => return Err(map_native_error(code)),
+        }
         index += 1;
     }
     Ok(ReadDir { dir: Arc::new(p.to_path_buf()), entries: entries.into_iter() })

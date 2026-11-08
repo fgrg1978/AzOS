@@ -3614,7 +3614,7 @@ const RG_MEM_PAGES: u32 = 2048;
 const FD_MEM_PAGES: u32 = 1536;
 /// What the ported tools hold: the read-only root directory they read beneath,
 /// and the `entropy` interface that keys and randomizes the allocator `std` brings.
-const PORT_TOOL_CAPS: &[CapSpec] = &[ROOT_RO, WHY_ENTROPY];
+pub const PORT_TOOL_CAPS: &[CapSpec] = &[ROOT_RO, WHY_ENTROPY];
 
 /// The package installer's endpoint: `PKGD.ELF` serves the `Packages` object
 /// on it (`READ`), `PKG.ELF` calls it (`WRITE`).

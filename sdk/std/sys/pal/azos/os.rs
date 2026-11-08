@@ -11,7 +11,7 @@ use crate::path::{self, PathBuf};
 use crate::{fmt, io};
 
 pub fn getcwd() -> io::Result<PathBuf> {
-    let cwd = azos_stdrt::fs::getcwd().bytes().to_vec();
+    let cwd = azos_stdrt::fs::getcwd().map_err(super::map_native_error)?.bytes().to_vec();
     // SAFETY: bytes of the spawner's choosing are a valid OsString on this
     // platform (the encoding is bytes).
     Ok(PathBuf::from(unsafe { OsString::from_encoded_bytes_unchecked(cwd) }))

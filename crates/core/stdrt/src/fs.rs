@@ -22,7 +22,7 @@
 
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-use crate::fspure::{normalize, AbsPath, PathError, Stat, PATH_MAX};
+use crate::fspure::{normalize, parent_of, AbsPath, PathError, Stat, PATH_MAX};
 use crate::start::{cap_lookup, cwd as startup_cwd};
 use crate::sys::{invoke, syscall6};
 use azos_abi::cap::ty;
@@ -37,7 +37,7 @@ pub const NAME_BYTES: usize = READDIR_NAME_BYTES;
 const ENOENT: isize = -2;
 const EACCES: isize = -13;
 const EINVAL: isize = -22;
-const ENAMETOOLONG: isize = -36;
+pub const ENAMETOOLONG: isize = -36;
 const ENOTDIR: isize = -20;
 
 static ROOT: AtomicU32 = AtomicU32::new(0);
@@ -53,16 +53,27 @@ fn root() -> Result<u32, isize> {
         ROOT.store(r as u32, Ordering::Relaxed);
         Ok(r as u32)
     } else {
-        Err(if r < 0 { r } else { ENOENT })
+        // A row with no root directory grants no file access: a refusal, not a missing file.
+        Err(if r < 0 { r } else { EACCES })
     }
 }
 
 // ── the working directory ────────────────────────────────────────────────────
 
 static CWD_LOCK: AtomicBool = AtomicBool::new(false);
-static mut CWD: Option<AbsPath> = None;
 
-fn with_cwd<T>(f: impl FnOnce(&mut Option<AbsPath>) -> T) -> T {
+/// The working directory, once read from the startup block.
+#[derive(Clone, Copy)]
+enum Cwd {
+    Unset,
+    Set(AbsPath),
+    /// The spawner's directory does not fit a path: relative names fail instead of meaning `/`.
+    TooLong,
+}
+
+static mut CWD: Cwd = Cwd::Unset;
+
+fn with_cwd<T>(f: impl FnOnce(&mut Cwd) -> T) -> T {
     while CWD_LOCK.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
         core::hint::spin_loop();
     }
@@ -72,9 +83,18 @@ fn with_cwd<T>(f: impl FnOnce(&mut Option<AbsPath>) -> T) -> T {
     r
 }
 
-/// The working directory: the spawner's, or what a program changed it to.
-pub fn getcwd() -> AbsPath {
-    with_cwd(|c| *c.get_or_insert_with(|| normalize(b"/", startup_cwd()).unwrap_or(AbsPath::ROOT)))
+/// The working directory: the spawner's, or what a program changed it to;
+/// `ENAMETOOLONG` when the spawner's does not fit a path.
+pub fn getcwd() -> Result<AbsPath, isize> {
+    with_cwd(|c| {
+        if let Cwd::Unset = *c {
+            *c = normalize(b"/", startup_cwd()).map_or(Cwd::TooLong, Cwd::Set);
+        }
+        match *c {
+            Cwd::Set(p) => Ok(p),
+            _ => Err(ENAMETOOLONG),
+        }
+    })
 }
 
 fn path_err(e: PathError) -> isize {
@@ -87,7 +107,11 @@ fn path_err(e: PathError) -> isize {
 
 /// `path` made absolute against the working directory.
 pub fn resolve(path: &[u8]) -> Result<AbsPath, isize> {
-    let base = getcwd();
+    // An absolute name needs no working directory, so a poisoned one still opens those.
+    if path.first() == Some(&b'/') {
+        return normalize(b"/", path).map_err(path_err);
+    }
+    let base = getcwd()?;
     normalize(base.bytes(), path).map_err(path_err)
 }
 
@@ -97,7 +121,7 @@ pub fn chdir(path: &[u8]) -> Result<(), isize> {
     if !stat_abs(&abs)?.is_dir() {
         return Err(ENOTDIR);
     }
-    with_cwd(|c| *c = Some(abs));
+    with_cwd(|c| *c = Cwd::Set(abs));
     Ok(())
 }
 
@@ -130,13 +154,16 @@ pub fn open(path: &[u8], flags: u64) -> Result<u32, isize> {
     let abs = resolve(path)?;
     let (dir, name) = beneath(&abs)?;
     let h = invoke(dir, inv::NODE_OPENAT, [name.as_ptr() as u64, flags, 0, 0]).0;
-    // "-1 if the open fails": the call gives no reason, so the stat names one.
+    // "-1 if the open fails": the call gives no reason, so a stat names one. A name that is
+    // not there is `ENOENT` (for a create, the missing parent: make it, then retry);
+    // otherwise the open was refused for want of authority.
     if h == -1 {
-        return Err(match stat_abs(&abs) {
-            Err(ENOENT) if flags & crate::fspure::O_CREAT == 0 => ENOENT,
-            // Present but refused, or absent and not creatable here (no such parent, no write tree).
-            Ok(_) | Err(ENOENT) => EACCES,
+        let creating = flags & crate::fspure::O_CREAT != 0;
+        let probe = if creating { parent_of(&abs) } else { abs };
+        return Err(match stat_abs(&probe) {
+            Err(ENOENT) => ENOENT,
             Err(e) => e,
+            Ok(_) => EACCES,
         });
     }
     if h < 0 { Err(h) } else { Ok(h as u32) }
@@ -191,13 +218,6 @@ pub fn rename(from: &[u8], to: &[u8]) -> Result<(), isize> {
     let (dir, from) = beneath(&from)?;
     let (_, to) = beneath(&to)?;
     done(invoke(dir, inv::NODE_RENAMEAT, [from.as_ptr() as u64, to.as_ptr() as u64, 0, 0]).0)
-}
-
-/// Set the size of the file `path`.
-pub fn truncate(path: &[u8], len: u64) -> Result<(), isize> {
-    let abs = resolve(path)?;
-    let (dir, name) = beneath(&abs)?;
-    done(invoke(dir, inv::NODE_TRUNCATEAT, [name.as_ptr() as u64, len, 0, 0]).0)
 }
 
 // ── open files ───────────────────────────────────────────────────────────────

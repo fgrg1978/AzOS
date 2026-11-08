@@ -13,7 +13,7 @@
 //! naming one op of the `net` invoke class (`DOMAIN_SOCKET`, `NODE_SEND`, ...)
 //! grants the class, and without it the first `socket` is refused by the
 //! seccomp filter. It tests what the port provides: the
-//! file system edges that are refused before any kernel call (`fs_edges_are_refused_before_the_kernel`); sockets over the native
+//! files as far as its row goes (`fs_reaches_the_kernel_and_holds_its_edges`); sockets over the native
 //! ops, up to what the kernel offers (`net_edges_and_udp_timeouts`).
 
 use azos_libsys as azos;
@@ -301,15 +301,14 @@ fn standard_streams_write() -> Result<(), &'static str> {
     Ok(())
 }
 
-/// The edges of `std::fs` that are refused before any kernel call, held so that
-/// growing past them is a decision: `create_new` cannot be honoured (the native
-/// open cannot refuse an existing file), a handle has no stat, and the options
-/// `std` refuses everywhere are refused here. The reads and writes themselves
-/// are the boot rows of the ported programs (`rg`, `fd`), which need a root
-/// directory in their row.
+/// `std::fs` as far as this program's row goes, through the real calls: the stat, the
+/// directory listing and the open that `std` makes of the kernel. With a root directory in the
+/// row the file is read and listed and a handle answers no stat; without one every call is
+/// refused for want of authority (`PermissionDenied`, never `NotFound`). The edges refused
+/// before any kernel call (`create_new`, no access mode, truncate without write) are held too.
 #[azos::test]
-fn fs_edges_are_refused_before_the_kernel() -> Result<(), &'static str> {
-    use std::io::ErrorKind::{InvalidInput, Unsupported};
+fn fs_reaches_the_kernel_and_holds_its_edges() -> Result<(), &'static str> {
+    use std::io::{ErrorKind::{InvalidInput, PermissionDenied, Unsupported}, Read};
     match std::fs::OpenOptions::new().write(true).create_new(true).open("/fat/X") {
         Err(e) if e.kind() == Unsupported => {}
         _ => return Err("create_new is not Unsupported"),
@@ -322,6 +321,35 @@ fn fs_edges_are_refused_before_the_kernel() -> Result<(), &'static str> {
         Err(e) if e.kind() == InvalidInput => {}
         _ => return Err("truncate without write is not InvalidInput"),
     }
+    match std::fs::File::open("/fat/SDKTEST.ELF") {
+        Ok(mut f) => {
+            let mut magic = [0u8; 4];
+            f.read_exact(&mut magic).map_err(|_| "read")?;
+            if &magic != b"\x7fELF" {
+                return Err("the first bytes are not an ELF header");
+            }
+            match f.metadata() {
+                Err(e) if e.kind() == Unsupported => {}
+                _ => return Err("a handle answers a stat"),
+            }
+            let listed = std::fs::read_dir("/fat").map_err(|_| "read_dir")?.filter_map(Result::ok).any(|e| e.file_name() == "SDKTEST.ELF");
+            if !listed {
+                return Err("SDKTEST.ELF is not in /fat");
+            }
+            if std::fs::metadata("/fat/SDKTEST.ELF").map_err(|_| "stat")?.len() == 0 {
+                return Err("an empty image");
+            }
+        }
+        Err(e) if e.kind() == PermissionDenied => {
+            if std::fs::metadata("/fat/SDKTEST.ELF").map(|_| ()).err().map(|e| e.kind()) != Some(PermissionDenied) {
+                return Err("a stat without a root directory is not PermissionDenied");
+            }
+            if std::fs::read_dir("/fat").map(|_| ()).err().map(|e| e.kind()) != Some(PermissionDenied) {
+                return Err("a listing without a root directory is not PermissionDenied");
+            }
+        }
+        _ => return Err("an open is neither served nor refused for want of authority"),
+    }
     Ok(())
 }
 
@@ -332,7 +360,7 @@ fn fs_edges_are_refused_before_the_kernel() -> Result<(), &'static str> {
 /// answers a nonblocking `accept` with nobody waiting `WouldBlock` and holds
 /// its port against a second listener, and what the ops lack answers
 /// `Unsupported` (a name, IPv6 datagrams, an IPv6 listener). Held like
-/// `fs_edges_are_refused_before_the_kernel`: the day the resolver interface exists, these
+/// `fs_reaches_the_kernel_and_holds_its_edges`: the day the resolver interface exists, these
 /// assertions fail and are replaced by tests of the real thing. The row that
 /// boots this needs the `net` class (see the file header).
 #[azos::test]

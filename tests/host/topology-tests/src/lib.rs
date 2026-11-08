@@ -4868,34 +4868,38 @@ mod launch_cap_tests {
         ));
     }
 
-    /// Kconfig USERSPACE_RG / USERSPACE_FD: the ported tools have a row exactly when
-    /// the symbol is on, hold the read-only root directory and the `entropy`
-    /// interface and nothing else (no write tree, no endpoint, no task view), and
-    /// the shell may start them either way.
+    /// The ported tools' authority (`PORT_TOOL_CAPS`, the grant of `RG.ELF` and `FD.ELF`):
+    /// exactly the read-only root directory and the `entropy` interface, no write tree,
+    /// no other endpoint. Asserted on the constant, so it does not depend on the
+    /// `.config` turning the tools on; and the rows, when a config does, hold exactly it.
     ///
-    /// **Canary.** Add `TMP_RW` to `PORT_TOOL_CAPS`: red on "holds a write tree".
-    /// Run under a desktop-preset `.config` for the rows to exist.
+    /// **Canary.** Swap `WHY_ENTROPY` for `TMP_RW` in `PORT_TOOL_CAPS`: red on
+    /// "holds a write tree".
     #[test]
     fn the_ported_tools_hold_the_read_only_root_and_entropy_only() {
         use azos_abi::cap::CapPerms;
+        use azos_topology::builder::PORT_TOOL_CAPS;
+        assert_eq!(PORT_TOOL_CAPS.len(), 2, "more than the root and entropy");
+        assert!(
+            PORT_TOOL_CAPS.iter().all(|c| !(c.kind == CapKind::Node && c.perms.contains(CapPerms::WRITE))),
+            "a ported tool holds a write tree",
+        );
+        assert!(
+            PORT_TOOL_CAPS.iter().any(|c| c.kind == CapKind::Node && c.target == MaybeStr::from_bytes(b"/") && c.perms == CapPerms::READ),
+            "no read-only root directory",
+        );
+        assert!(PORT_TOOL_CAPS.iter().any(|c| c.kind == CapKind::Endpoint && c.perms == CapPerms::READ), "no entropy endpoint");
+
         let topo = default_minimal();
         for (image, on) in [(&b"RG.ELF"[..], azos_limits::USERSPACE_RG), (&b"FD.ELF"[..], azos_limits::USERSPACE_FD)] {
             let name = MaybeStr::from_bytes(image);
             let row = topo.tasks().iter().find(|t| t.name == name);
             assert_eq!(row.is_some(), on, "{} has a row exactly when its symbol is on", String::from_utf8_lossy(image));
-            let Some(t) = row else { continue };
-            let caps = topo.caps_of(t);
-            assert_eq!(caps.len(), 2, "{} holds more than the root and entropy", String::from_utf8_lossy(image));
-            assert!(
-                caps.iter().any(|c| c.kind == CapKind::Node && c.target == MaybeStr::from_bytes(b"/") && c.perms == CapPerms::READ),
-                "no read-only root directory",
-            );
-            assert!(
-                caps.iter().all(|c| !(c.kind == CapKind::Node && c.perms.contains(CapPerms::WRITE))),
-                "{} holds a write tree",
-                String::from_utf8_lossy(image),
-            );
-            assert!(caps.iter().any(|c| c.kind == CapKind::Endpoint && c.perms == CapPerms::READ), "no entropy endpoint");
+            if let Some(t) = row {
+                let held: Vec<_> = topo.caps_of(t).iter().map(|c| (c.kind, c.perms, c.target)).collect();
+                let want: Vec<_> = PORT_TOOL_CAPS.iter().map(|c| (c.kind, c.perms, c.target)).collect();
+                assert_eq!(held, want, "{} holds other than PORT_TOOL_CAPS", String::from_utf8_lossy(image));
+            }
         }
     }
 

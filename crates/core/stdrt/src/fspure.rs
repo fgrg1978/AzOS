@@ -7,8 +7,8 @@
 use azos_abi::syscall_nr::{STAT_BYTES, STAT_OFF_ATIME, STAT_OFF_CTIME, STAT_OFF_MODE, STAT_OFF_MTIME, STAT_OFF_SIZE};
 use azos_abi::syscall_nr::{STAT_S_IFDIR, STAT_S_IFMT};
 
-/// Bytes the kernel reads for a path (`SYS_PATH_MAX`), its NUL included.
-pub const PATH_MAX: usize = 256;
+/// Bytes the kernel reads for a path, its NUL included.
+pub const PATH_MAX: usize = azos_abi::syscall_nr::SYS_PATH_MAX;
 
 /// An absolute path, lexically normal, NUL-terminated.
 #[derive(Clone, Copy)]
@@ -91,6 +91,18 @@ pub fn normalize(base: &[u8], path: &[u8]) -> Result<AbsPath, PathError> {
     out.buf[n] = 0;
     out.len = n;
     Ok(out)
+}
+
+/// The directory that holds `abs` (`/` for a name directly beneath the root, and for the root).
+pub fn parent_of(abs: &AbsPath) -> AbsPath {
+    let mut p = *abs;
+    let mut n = p.len;
+    while n > 1 && p.buf[n - 1] != b'/' {
+        n -= 1;
+    }
+    p.len = if n > 1 { n - 1 } else { 1 };
+    p.buf[p.len] = 0;
+    p
 }
 
 /// The native open flags (Linux's numbers: the access mode, `O_CREAT`,
