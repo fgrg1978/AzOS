@@ -92,13 +92,57 @@
 //! point is the instruction after a `bl`. Loaded text (modules, ring 3) is
 //! guarded per ELF (`.note.gnu.property` BTI), not wholesale.
 //!
-//! # GCS (FEAT_GCS, Armv9.4)
+//! # GCS (FEAT_GCS, Armv9.4; Kconfig `A64_GCS`, probed only)
 //!
-//! Reserved: the hardware return stack twin of x86 CET shadow stacks.
-//! `GCSCR_EL1` / `GCSPR_EL1` would be set here, with a per-task stack
-//! switched in `context_switch`. No Kconfig symbol until a core has it. A
-//! kernel GCS checks every `ret` against that stack, and `context_switch`
-//! resumes a task through `ret x9`: the switch must change with it.
+//! The hardware return stack, twin of the x86 CET shadow stack: with
+//! `GCSCR_EL1.PCRSEL` set, `bl` pushes the return address at `GCSPR_EL1` and
+//! `ret` pops it and raises a GCS exception on a mismatch. Mainline Linux
+//! runs it for EL0 only; there is no kernel GCS to copy.
+//!
+//! **Not enabled, and what it waits for.** `GCSPR_EL1` must point at GCS
+//! pages, and stage 1 has no GCS memory type under the direct AP/XN scheme
+//! every kernel leaf uses: a GCS page is an indirect permission (FEAT_S1PIE:
+//! `TCR2_EL1.PIE`, a `PIR_EL1` nibble with the GCS encoding). With
+//! `PCRSEL` on and no GCS page, the first `bl` faults. So the order is: the
+//! kernel's mappings on S1PIE (`PIR_EL1`/`PIRE0_EL1` giving each of the 16
+//! indices, UXN/PXN/DBM/AP[1], the meaning the AP/XN bits have now, and
+//! `TCR2_EL1` composed once with `ptwin`'s POE bit, not written whole twice),
+//! which rules out the hypervisor stub and the split monitor until they save
+//! or allow `TCR2_EL1`; then the GCS. Until then the EL2 trampoline keeps
+//! `HCRX_EL2.GCSEn` at 0 (`mmu/boot.rs`), so a `GCSCR_EL1` left set by reset
+//! never takes effect.
+//!
+//! **What the GCS itself needs**, path by path (every transfer in the
+//! kernel's assembly that is not a matched `bl`/`ret`):
+//!
+//! | path | under a kernel GCS |
+//! |---|---|
+//! | `context_switch` `ret x9` | save `GCSPR_EL1` in `TaskContext` before the `context_saving` release, load new's after; `x9 = CTX_PC = CTX_RA` is what new's own `bl context_switch` pushed, so the `ret` checks the saved PC |
+//! | a new task's first switch (`lifecycle.rs`, `pc = ra = entry`) | its GCS is seeded with `entry` (`GCSSTR` with `GCSCR_EL1.STREn`, or the frame's linear alias before it is mapped as GCS) |
+//! | `aarch64_ipc_resume_stub`, `ipc_ktest_resume_tramp` (IPC_FASTPATH_RESUME: `ipc_fast_start_at` rewrites `CTX_PC`, the frames it blocked in are abandoned) | the same rewrite resets the task's GCS to empty plus the stub's address, else the `ret x9` meets the abandoned `bl context_switch` entry |
+//! | trap entry, `trap_return`, `_svc_native_return` `eret` | no GCS push or pop on an exception or an `eret`; the handlers' `bl`/`ret` pair up. The IRQ stack shares the task's GCS, so it is sized for task depth plus nesting |
+//! | expected-fault fixup (`trap::fault::expected`) | `eret` to a label in the faulting function: no frame unwound, no change |
+//! | `azos_cpu_save_run` / `azos_cpu_resume_restore` (`resume.rs`) | `GCSPR_EL1` in the `SaveArea`; the resume enables `GCSCR_EL1` and restores it before its `ret` |
+//! | `_azos_cfi_enable` and its twin for GCS | `PCRSEL` cannot flip inside a function that later `ret`s on an empty GCS: inline in boot.S before `bl kernel_main`/`secondary_main` (which never return), or on each CPU's first `context_switch(NULL, ..)` |
+//! | boot.S `br x9` (×2), `_azos_drop_to_el1` `bl`→`eret` | GCS still off there |
+//! | lx-emul `switch` (`crates/drivers/lx/emul/src/switch/aarch64.rs`, `ret` onto another stack) | a GCS per lx stack, switched with `GCSSS1`/`GCSSS2` |
+//! | EL2 (hypervisor stub, monitor) | `GCSEn` stays 0 for guests; a guest GCS needs `GCSCR_EL1`/`GCSPR_EL1` in the world switch and `VTCR_EL2.GCSH` |
+//!
+//! Encodings (Linux arch/arm64/tools/sysreg; instructions as LLVM 22 and
+//! Apple clang assemble them): `GCSCR_EL1` S3_0_C2_C5_0 (PCRSEL 0, RVCHKEN 5,
+//! EXLOCKEN 6, PUSHMEn 8, STREn 9), `GCSPR_EL1` S3_0_C2_C5_1 (PTR 63:3),
+//! `GCSCRE0_EL1` S3_0_C2_C5_2 (nTR 10, no EXLOCKEN), `GCSPR_EL0`
+//! S3_3_C2_C5_1, `ID_AA64PFR1_EL1.GCS` 47:44, `HCRX_EL2.GCSEn` 22,
+//! `HFGRTR/HFGWTR_EL2` nGCS_EL1 53 and nGCS_EL0 52, `HFGITR_EL2` nGCSEPP 59,
+//! nGCSSTR_EL1 58, nGCSPUSHM_EL1 57, `VTCR_EL2.GCSH` 40, `TCR2_EL1.PIE` 1;
+//! `GCSPUSHM` = `sys #3, c7, c7, #0`, `GCSPOPM` = `sysl #3, c7, c7, #1`,
+//! `GCSSS1` = `sys #3, c7, c7, #2`, `GCSSS2` = `sysl #3, c7, c7, #3`,
+//! `GCSSTR x1, [x0]` = 0xd91f0c01, `GCSB DSYNC` = `hint #19`. Not in that
+//! file, so still to check against the Arm ARM before use: the `PIR_EL1`
+//! GCS nibble and the GCS exception class.
+//!
+//! BTI and GCS are independent: `ret x9` is not BTI-checked and is
+//! GCS-checked, a `br` is the reverse.
 
 use core::sync::atomic::{AtomicU64, Ordering};
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]

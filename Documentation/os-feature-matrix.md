@@ -171,8 +171,8 @@ Options and choices: 878. Defconfigs: 27.
 | `A64_E0PD_NEVER` | n: never use it | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
 | `A64_E0PD_PROBE` | probe: use it when the boot finds it, fall back otherwise | n | n | y | y | y | n | n | n | n | n | n | n | y | n | n | n | y | y | y | n | n | n | n | n | n | n | n |
 | `A64_E0PD_REQUIRE` | require: baseline; refuse to boot without it | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| `A64_GCS_NEVER` | n: never use it | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
-| `A64_GCS_PROBE` | probe: use it when the boot finds it, fall back otherwise | n | n | y | y | y | n | n | n | n | n | n | n | y | n | n | n | y | y | y | n | n | n | n | n | n | n | n |
+| `A64_GCS_NEVER` | n: never use it | n | n | y | y | y | n | n | n | n | n | n | n | y | n | n | n | y | y | y | n | n | n | n | n | n | n | n |
+| `A64_GCS_PROBE` | probe: use it when the boot finds it, fall back otherwise | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
 | `A64_GCS_REQUIRE` | require: baseline; refuse to boot without it | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
 | `A64_HAFDBS_NEVER` | n: never use it | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
 | `A64_HAFDBS_PROBE` | probe: use it when the boot finds it, fall back otherwise | n | n | y | y | y | n | n | n | n | n | n | n | y | n | n | n | y | y | y | n | n | n | n | n | n | n | n |
@@ -225,7 +225,7 @@ Options and choices: 878. Defconfigs: 27.
 | choice | Branch target identification (FEAT_BTI) | n | n | PROBE | PROBE | PROBE | n | n | n | n | n | n | n | PROBE | n | n | n | NEVER | PROBE | PROBE | n | n | n | n | n | n | n | n |
 | choice | CRC32 instructions (FEAT_CRC32) | n | n | PROBE | PROBE | PROBE | n | n | n | n | n | n | n | PROBE | n | n | n | REQUIRE | PROBE | PROBE | n | n | n | n | n | n | n | n |
 | choice | EL0 kernel-half access disable (FEAT_E0PD) | n | n | PROBE | PROBE | PROBE | n | n | n | n | n | n | n | PROBE | n | n | n | PROBE | PROBE | PROBE | n | n | n | n | n | n | n | n |
-| choice | Guarded control stack (FEAT_GCS) | n | n | PROBE | PROBE | PROBE | n | n | n | n | n | n | n | PROBE | n | n | n | PROBE | PROBE | PROBE | n | n | n | n | n | n | n | n |
+| choice | Guarded control stack (FEAT_GCS) | n | n | NEVER | NEVER | NEVER | n | n | n | n | n | n | n | NEVER | n | n | n | NEVER | NEVER | NEVER | n | n | n | n | n | n | n | n |
 | choice | Hardware Access flag update (FEAT_HAFDBS) | n | n | PROBE | PROBE | PROBE | n | n | n | n | n | n | n | PROBE | n | n | n | PROBE | PROBE | PROBE | n | n | n | n | n | n | n | n |
 | choice | LSE atomics (FEAT_LSE) | n | n | PROBE | PROBE | PROBE | n | n | n | n | n | n | n | PROBE | n | n | n | REQUIRE | PROBE | PROBE | n | n | n | n | n | n | n | n |
 | choice | Memory tagging (FEAT_MTE) | n | n | PROBE | PROBE | PROBE | n | n | n | n | n | n | n | PROBE | n | n | n | NEVER | PROBE | PROBE | n | n | n | n | n | n | n | n |

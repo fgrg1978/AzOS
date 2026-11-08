@@ -210,15 +210,21 @@ config A64_BTI_ENFORCE
 
 choice
     prompt "Guarded control stack (FEAT_GCS)"
-    default A64_GCS_PROBE
+    default A64_GCS_NEVER
     help
       ID_AA64PFR1_EL1.GCS: a hardware return-address stack (the aarch64 twin
-      of the x86 shadow stack): BL pushes, RET pops and compares. Detected
-      and reported only: the kernel does not enable it (GCSCR_EL1,
-      GCSPR_EL1, a stack per task and the EL2 grants), and the pinned
-      compiler takes no `branch-protection=gcs`. n: no difference. probe: no
-      difference (the boot line only). require: the boot refuses a CPU
-      without it.
+      of the x86 shadow stack): with GCSCR_EL1.PCRSEL set, BL pushes the
+      return address onto the stack GCSPR_EL1 points at and RET pops it and
+      faults on a mismatch; no compiler support is needed for the kernel.
+      Detected and reported only. A GCS lives in GCS pages, and stage 1 has
+      no GCS memory type under the direct AP/XN permissions the kernel maps
+      with: a GCS page is a stage-1 indirect permission (FEAT_S1PIE,
+      TCR2_EL1.PIE and PIR_EL1), which the kernel does not use yet. The
+      per-task stack, the context switch and the resume stubs come with it
+      (arch/aarch64/src/cpu/cfi.rs, "GCS"). The EL2 trampoline keeps
+      HCRX_EL2.GCSEn at 0 on every policy, so EL1 and EL0 run without a GCS
+      whatever GCSCR_EL1 held out of reset. n: no difference. probe: the
+      boot line only. require: the boot refuses a CPU without it.
     config A64_GCS_NEVER
         bool "n: never use it"
     config A64_GCS_PROBE

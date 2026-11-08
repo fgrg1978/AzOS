@@ -268,11 +268,20 @@ extension when the CPU has it (`probe`) or refuses the CPU (`require`).
 | riscv64 | None: no landing-pad or shadow-stack code is generated or enabled (Zicfilp and Zicfiss are not used). | None |
 
 Also not implemented, per the Kconfig notes: aarch64 GCS, and kCFI (the
-compiler does not support it for riscv64). `A64_GCS`, `RV_ZICFISS` and
-`RV_ZICFILP` are `n` / `probe` / `require` choices whose probe and `[ISA]` row
-exist (a `require` refuses a CPU without the extension), but the kernel enables
-none of them: they need EL2/M-mode grants, a stack or pad per task and a
-compiler mode the pinned toolchain lacks.
+compiler does not support it for riscv64). `A64_GCS` (default `n`),
+`RV_ZICFISS` and `RV_ZICFILP` are `n` / `probe` / `require` choices whose probe
+and `[ISA]` row exist (a `require` refuses a CPU without the extension), but the
+kernel enables none of them. Zicfiss and Zicfilp need M-mode grants and a
+compiler mode the pinned toolchain lacks. GCS needs no compiler mode for the
+kernel, but its stack lives in GCS pages, which stage 1 expresses only as an
+indirect permission (FEAT_S1PIE), and the kernel maps with the direct AP/XN
+bits: the move to S1PIE comes first, then the per-task GCS, `GCSPR_EL1` in the
+context switch and the resume paths that are not a matched `bl`/`ret`
+(`arch/aarch64/src/cpu/cfi.rs`, "GCS", lists each). Until then the EL2
+trampoline writes `HCRX_EL2` whole with `GCSEn` 0 on every core with FEAT_HCX,
+so no `GCSCR_EL1` left by reset or firmware turns a GCS on at EL1 or EL0.
+Mainline Linux runs GCS for EL0 only and has no kernel shadow stack on any
+ISA.
 
 ## Kernel page tables (PT_PROTECTION)
 

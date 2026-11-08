@@ -141,6 +141,13 @@ releases yet. The ABI crate keeps its own file,
   `.data.ro_after_init` sealed read-only after boot, a holder-table reference
   count for memory objects, nospec on io_ring ids, and stricter ARP, IGMP,
   DHCP, DNS, NTP and Neighbour Discovery parsers.
+- aarch64: the EL2 trampoline writes `HCRX_EL2` whole on every core with
+  FEAT_HCX (0, plus `TCR2En` with `A64_POE` on a core with S1POE), not only in
+  `A64_POE` builds, so `GCSEn` is 0 and no guarded control stack is on at EL1
+  or EL0. `A64_GCS` now defaults to `n`; it is still probed and reported only,
+  because a kernel GCS needs the kernel's mappings on FEAT_S1PIE first
+  ([Documentation/security.md](Documentation/security.md), "Control-flow
+  integrity").
 - Initial import of the tree.
   - **Kernel:** `kernel/` (boot sequence, trap entry and boot hooks for
     riscv64, aarch64 and x86_64, kernel tasks, panic handler) over the core
