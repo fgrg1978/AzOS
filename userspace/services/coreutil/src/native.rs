@@ -10,6 +10,9 @@ use azos_coreutils::host::{Entry, Error, FsInfo, FsKind, Host, Kind, Open, Stat,
 use azos_coreutils::path::PATH_MAX;
 use azos_libsys as sys;
 
+// The tools' name buffer is the record the kernel writes.
+const _: () = assert!(NAME_MAX == sys::READDIR_NAME_BYTES);
+
 const O_WRONLY: u64 = 1;
 const O_CREAT: u64 = 0x40;
 const O_TRUNC: u64 = 0x200;

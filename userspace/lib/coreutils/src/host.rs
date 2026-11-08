@@ -63,7 +63,7 @@ pub struct Stat {
 }
 
 /// Longest entry name `readdir` returns.
-pub const NAME_MAX: usize = 64;
+pub const NAME_MAX: usize = 256;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Entry {
