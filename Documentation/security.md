@@ -274,10 +274,10 @@ and `[ISA]` row exist (a `require` refuses a CPU without the extension), but the
 kernel enables none of them. Zicfiss and Zicfilp need M-mode grants and a
 compiler mode the pinned toolchain lacks. GCS needs no compiler mode for the
 kernel, but its stack lives in GCS pages, which stage 1 expresses only as an
-indirect permission (FEAT_S1PIE), and the kernel maps with the direct AP/XN
-bits: the move to S1PIE comes first, then the per-task GCS, `GCSPR_EL1` in the
+indirect permission (FEAT_S1PIE). The kernel's mappings can run on S1PIE
+(Kconfig `A64_S1PIE`, default `n`, below); the per-task GCS, `GCSPR_EL1` in the
 context switch and the resume paths that are not a matched `bl`/`ret`
-(`arch/aarch64/src/cpu/cfi.rs`, "GCS", lists each). Until then the EL2
+(`arch/aarch64/src/cpu/cfi.rs`, "GCS", lists each) come next. Until then the EL2
 trampoline writes `HCRX_EL2` whole with `GCSEn` 0 on every core with FEAT_HCX,
 so no `GCSCR_EL1` left by reset or firmware turns a GCS on at EL1 or EL0.
 Mainline Linux runs GCS for EL0 only and has no kernel shadow stack on any
@@ -289,6 +289,30 @@ plain names are unknown), the assembler takes `lpad`, `sspush`, `sspopchk` and
 `ssrdp` once the feature is on, and QEMU's `-cpu rv64,zicfilp=true,zicfiss=true`
 also needs `zimop=true`. What is missing is kernel work (the `menvcfg` and
 `senvcfg` enables, the landing-pad state, a shadow stack per task).
+
+**Stage-1 indirect permissions** (`A64_S1PIE`, `arch/aarch64/src/mmu/pie.rs`).
+With `TCR2_EL1.PIE` a leaf's UXN, PXN, DBM and AP[1] bits index `PIR_EL1`
+(EL1) and `PIRE0_EL1` (EL0). An `A64_S1PIE` build sets DBM on every writable
+leaf and on no read-only or copy-on-write one (as Linux's `PTE_WRITE`), so the
+index says by itself whether a page is writable; `TCR_EL1.HD` stays off, so the
+bit is inert where PIE is off. The page-table code produces eight indices, and
+the two registers give each exactly the permissions the direct bits give it
+(derived from one model of the direct permissions, and proved for every leaf
+the code builds by `tests/host/arch-tests/src/a64_pie.rs`), with the overlay
+applied so `A64_POE` keeps its pool locked. The other indices grant nothing,
+but one: the kernel GCS page (index 4: EL1 reads, GCS instructions read and
+write, a plain store faults; `vmm::map_gcs`, used only by a ktest so far). The
+boot CPU turns PIE on once only the kernel's tables are live (the low half
+device-only) and before any other CPU runs; each secondary, and a CPU back from
+a power-down, follows before anything else in one `TCR2_EL1` write with POE, or
+halts. EL2 grants `TCR2_EL1` and both registers (`HCRX_EL2.TCR2En`,
+`nPIR_EL1`, `nPIRE0_EL1`) and zeroes `TCR2_EL1` before the first MMU-on. Not
+with the hypervisor or the split monitor, which do not save or allow
+`TCR2_EL1` and the PIR registers. Premises taken from the encodings rather than
+the Arm ARM (not reachable): PAN applies to a page `PIRE0_EL1` lets EL0 read
+(a ktest checks it on the S1PIE row), and no table descriptor carries
+hierarchical permissions. Default `n`: never run on a core; the arm-phase rows
+boot it.
 
 ## Kernel page tables (PT_PROTECTION)
 

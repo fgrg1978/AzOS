@@ -148,6 +148,16 @@ releases yet. The ABI crate keeps its own file,
   because a kernel GCS needs the kernel's mappings on FEAT_S1PIE first
   ([Documentation/security.md](Documentation/security.md), "Control-flow
   integrity").
+- aarch64 stage-1 indirect permissions (Kconfig `A64_S1PIE` n/probe/require,
+  default `n`, not with `HV` or `HYP_MONITOR`): a writable leaf also carries
+  DBM, so its UXN/PXN/DBM/AP[1] index alone says what it grants; `PIR_EL1` and
+  `PIRE0_EL1` give the eight indices the page-table code produces their direct
+  meaning (overlays applied) and nothing to the rest but the kernel GCS page
+  (`vmm::map_gcs`, `Mmu::pte_make_gcs_leaf`), the step a kernel guarded control
+  stack waits for. `TCR2_EL1` is one composed value (POE and PIE) on every CPU
+  path, and the EL2 trampoline grants it and both registers and zeroes it
+  before the MMU comes up ([Documentation/security.md](Documentation/security.md),
+  "Control-flow integrity").
 - Initial import of the tree.
   - **Kernel:** `kernel/` (boot sequence, trap entry and boot hooks for
     riscv64, aarch64 and x86_64, kernel tasks, panic handler) over the core

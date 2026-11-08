@@ -148,11 +148,12 @@ config USER_ALLOC_GUARD_PAGES
 #   * aarch64 GCS (FEAT_GCS, Armv9.4): probed (A64_GCS, default n). The
 #     return-address stack is the aarch64 twin of the shadow stack and needs
 #     no compiler mode for the kernel (BL and RET do the work). It needs GCS
-#     pages, which stage 1 expresses only as an indirect permission, so the
-#     kernel's mappings move to FEAT_S1PIE first (TCR2_EL1.PIE, PIR_EL1 and
-#     PIRE0_EL1 giving every index the meaning the AP/XN bits have today);
-#     that excludes the hypervisor stub and the split monitor until they save
-#     or allow TCR2_EL1. Then a GCS per task next to its stack, GCSPR_EL1 in
+#     pages, which stage 1 expresses only as an indirect permission: the
+#     kernel's mappings run on FEAT_S1PIE with A64_S1PIE (PIR_EL1 and
+#     PIRE0_EL1 give every produced index the meaning the AP/XN bits have,
+#     and one index is the kernel GCS page); that excludes the hypervisor
+#     stub and the split monitor until they save or allow TCR2_EL1. Next, a
+#     GCS per task next to its stack, GCSPR_EL1 in
 #     `context_switch`, and every resume that is not a matched BL/RET:
 #     arch/aarch64/src/cpu/cfi.rs, "GCS", lists them.
 #   * riscv64 Zicfilp (`lpad` at every function entry): RV_ZICFILP probes the

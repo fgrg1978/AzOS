@@ -100,15 +100,16 @@
 //! runs it for EL0 only; there is no kernel GCS to copy.
 //!
 //! **Not enabled, and what it waits for.** `GCSPR_EL1` must point at GCS
-//! pages, and stage 1 has no GCS memory type under the direct AP/XN scheme
-//! every kernel leaf uses: a GCS page is an indirect permission (FEAT_S1PIE:
-//! `TCR2_EL1.PIE`, a `PIR_EL1` nibble with the GCS encoding). With
-//! `PCRSEL` on and no GCS page, the first `bl` faults. So the order is: the
-//! kernel's mappings on S1PIE (`PIR_EL1`/`PIRE0_EL1` giving each of the 16
-//! indices, UXN/PXN/DBM/AP[1], the meaning the AP/XN bits have now, and
-//! `TCR2_EL1` composed once with `ptwin`'s POE bit, not written whole twice),
-//! which rules out the hypervisor stub and the split monitor until they save
-//! or allow `TCR2_EL1`; then the GCS. Until then the EL2 trampoline keeps
+//! pages, and a GCS page is a stage-1 indirect permission (a `PIR_EL1`
+//! nibble with the GCS encoding, 0x9, Linux sysreg.h `PIE_GCS`); Linux's
+//! headers define no GCS page under the direct AP/XN bits. With `PCRSEL` on
+//! and no GCS page, the first `bl` faults. The kernel's mappings can run on
+//! S1PIE (Kconfig `A64_S1PIE`, `mmu::pie`): every produced index keeps its
+//! direct meaning, index 4 is the kernel GCS page (`vmm::map_gcs`), and
+//! `TCR2_EL1` is one composed value with `ptwin`'s POE on every CPU path. That
+//! rules out the hypervisor stub and the split monitor until they save or
+//! allow `TCR2_EL1`. A GCS therefore needs `A64_S1PIE` and a CPU that runs it
+//! (`mmu::pie::on`). Until it is enabled the EL2 trampoline keeps
 //! `HCRX_EL2.GCSEn` at 0 (`mmu/boot.rs`), so a `GCSCR_EL1` left set by reset
 //! never takes effect.
 //!
@@ -117,6 +118,8 @@
 //!
 //! | path | under a kernel GCS |
 //! |---|---|
+//! | the GCS pages themselves | kernel GCS leaves (`vmm::map_gcs`, index 4) outside the linear map, and the frames' linear-map alias unmapped or read-only: through the alias a plain store still lands |
+//! | a secondary or resumed CPU before `aarch64_secondary_stage1` | runs the direct permissions (a GCS page reads as kernel RW there), so `PCRSEL` flips only after that call |
 //! | `context_switch` `ret x9` | save `GCSPR_EL1` in `TaskContext` before the `context_saving` release, load new's after; `x9 = CTX_PC = CTX_RA` is what new's own `bl context_switch` pushed, so the `ret` checks the saved PC |
 //! | a new task's first switch (`lifecycle.rs`, `pc = ra = entry`) | its GCS is seeded with `entry` (`GCSSTR` with `GCSCR_EL1.STREn`, or the frame's linear alias before it is mapped as GCS) |
 //! | `aarch64_ipc_resume_stub`, `ipc_ktest_resume_tramp` (IPC_FASTPATH_RESUME: `ipc_fast_start_at` rewrites `CTX_PC`, the frames it blocked in are abandoned) | the same rewrite resets the task's GCS to empty plus the stub's address, else the `ret x9` meets the abandoned `bl context_switch` entry |
@@ -137,12 +140,13 @@
 //! nGCSSTR_EL1 58, nGCSPUSHM_EL1 57, `VTCR_EL2.GCSH` 40, `TCR2_EL1.PIE` 1;
 //! `GCSPUSHM` = `sys #3, c7, c7, #0`, `GCSPOPM` = `sysl #3, c7, c7, #1`,
 //! `GCSSS1` = `sys #3, c7, c7, #2`, `GCSSS2` = `sysl #3, c7, c7, #3`,
-//! `GCSSTR x1, [x0]` = 0xd91f0c01, `GCSB DSYNC` = `hint #19`. Not in that
-//! file, so still to check against the Arm ARM before the S1PIE work starts:
-//! that stage 1 has no GCS memory under the direct permissions (the premise
-//! above), that `HCRX_EL2.GCSEn` 0 turns GCS off at EL1 and EL0 rather than
-//! only trapping its registers, the `PIR_EL1` GCS nibble and the GCS
-//! exception class.
+//! `GCSSTR x1, [x0]` = 0xd91f0c01, `GCSB DSYNC` = `hint #19`; the GCS
+//! exception class is 0x2D and a data abort's ISS2.GCS bit 8 (Linux esr.h
+//! `ESR_ELx_EC_GCS`, `ESR_ELx_GCS`), the `PIR_EL1` GCS nibble 0x9 (sysreg.h
+//! `PIE_GCS`). Still to check against the Arm ARM (not reachable from here;
+//! Linux names the field only): that `HCRX_EL2.GCSEn` 0 turns GCS off at EL1
+//! and EL0 rather than only trapping its registers. The S1PIE row checks
+//! that a plain store to a GCS page faults (`cfi_gcs_page_refuses_a_plain_store`).
 //!
 //! BTI and GCS are independent: `ret x9` is not BTI-checked and is
 //! GCS-checked, a `br` is the reverse.
