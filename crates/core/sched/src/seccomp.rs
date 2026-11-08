@@ -1452,7 +1452,8 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     // hardened allocator, `azos_ualloc`, keys and randomizes itself from it):
     // `SYS_CAP_INFO` finds the handle in the task's own table,
     // `SYS_IPC_CALL` draws from the kernel-hosted `entropy` interface, and
-    // the allocator frees its large allocations with `SYS_MO_UNMAP`. In
+    // the allocator frees its large allocations with `SYS_MO_UNMAP`, which
+    // also cuts the guard page below each cooperative task stack. In
     // particular no actuator. The two module ops exist only in a kernel built
     // with `lx-loader`; elsewhere they are -ENOSYS and the row is simply never
     // started (no topology row without `lx-server`).

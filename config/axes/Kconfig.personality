@@ -48,10 +48,14 @@ config LX_SERVER_SKELETON
       Builds the module loader's two syscalls (DOMAIN_MODULE_VERIFY,
       DOMAIN_MODULE_MAP_X, with the module digest table built into the
       kernel) and starts the empty Linux driver server LXSRV.ELF from its
-      topology row (no capability). The server loads only the test
-      module LXTEST.KO, compiled from this project's own C, and idles. No
-      Linux object is built or linked: the image stays
-      "Apache-2.0 OR GPL-2.0-only". Kernel feature `lx-server`.
+      topology row (no capability). The server runs the cooperative loop
+      of crates/drivers/lx/emul (stackful kernel threads and the workqueue
+      worker on four 16 KiB guard-paged stacks, timed by the vDSO clock)
+      through its blocking primitives, loads only the test module
+      LXTEST.KO, compiled from this project's own C, and idles. No Linux
+      object is built or linked: the image stays
+      "Apache-2.0 OR GPL-2.0-only". Kernel feature `lx-server`; the row's
+      frame budget covers the loop's stacks.
 
 endif # LINUX_DRIVERS
 

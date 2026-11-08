@@ -299,12 +299,15 @@ KCONFIG_FILES := Kconfig $(shell find config -name 'Kconfig*' -not -name '* [0-9
 UALLOC_SRC    := $(wildcard userspace/lib/ualloc/src/*.rs) userspace/lib/ualloc/Cargo.toml \
                  $(or $(KCONFIG_CONFIG),.config)
 # The Linux driver server skeleton. Links the module loader
-# (crates/core/lx-loader, no Linux code) and nothing from crates/drivers/lx/.
+# (crates/core/lx-loader, no Linux code) and, of crates/drivers/lx/, only
+# lx_emul (the project's own Rust: the cooperative loop and its tasks).
 LXSRV_DIR     := userspace/services/lxsrv
 LXSRV_BUILT   := $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release/lxsrv
 LXSRV_ELF     := $(OUT_BUILD)/lxsrv.elf
-LXSRV_SRC     := $(LXSRV_DIR)/src/main.rs $(LXSRV_DIR)/Cargo.toml \
+LXSRV_SRC     := $(wildcard $(LXSRV_DIR)/src/*.rs) $(LXSRV_DIR)/Cargo.toml \
                  $(wildcard crates/core/lx-loader/src/*.rs) crates/core/lx-loader/Cargo.toml \
+                 $(wildcard crates/drivers/lx/emul/src/*.rs crates/drivers/lx/emul/src/switch/*.rs) \
+                 crates/drivers/lx/emul/Cargo.toml \
                  $(UALLOC_SRC)
 # Three more standalone Rust ring-3 ELFs. They compiled and were never once
 # executed: nothing built them (they are absent from the `userspace:` target

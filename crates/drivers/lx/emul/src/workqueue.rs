@@ -3,9 +3,9 @@
 
 //! Work items: deferred functions run by the loop in FIFO order.
 //!
-//! Linux runs work on worker kernel threads; lxsrv has one thread, so a work
-//! item is a run-to-completion item of the loop. All
-//! workqueues collapse into one FIFO: with a single executor, separate
+//! Linux runs work on worker kernel threads; lxsrv has one thread, so every
+//! work item runs in one worker task of the loop (see [`crate::sched`]), where
+//! it may sleep. All workqueues collapse into one FIFO: with a single executor, separate
 //! queues would only change ordering between unrelated drivers, and one
 //! global order is easier to reason about and to replay.
 //!

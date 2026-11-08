@@ -3,10 +3,11 @@
 //! `LXSRV.ELF`: the Linux driver server skeleton.
 //!
 //! In the finished layer one such process runs per driver class, hosting
-//! unmodified Linux modules over the `crates/drivers/lx/` base. At this stage it links **no
-//! Linux object and no `crates/drivers/lx/` code** (the first Linux object is stage L1,
-//! after the owner's sign-off), so this image stays
-//! "Apache-2.0 OR GPL-2.0-only". What it does run is the whole module path:
+//! unmodified Linux modules over the `crates/drivers/lx/` base. It links **no
+//! Linux object**; of `crates/drivers/lx/` it links only `lx_emul`, the
+//! project's own Rust, so this image stays "Apache-2.0 OR GPL-2.0-only".
+//! First it runs `lx_emul`'s cooperative loop on its own stacks and clock
+//! ([`tasks`]), then the whole module path:
 //!
 //! 1. read `/fat/LXTEST.KO` (a relocatable object compiled from this
 //!    project's own C, `userspace/tests/lxmod/lxtest.c`);
@@ -53,6 +54,8 @@ compile_error!("lxsrv: no counter or module ISA for this ISA (riscv64, aarch64, 
 
 use core::cell::UnsafeCell;
 use azos_libsys as sys;
+
+mod tasks;
 use azos_lx_loader::{admit, Error, Isa, Layout, Module, Window};
 use azos_ualloc::UserAlloc;
 
@@ -774,6 +777,7 @@ fn run() {
 #[no_mangle]
 pub extern "C" fn _start(_a0: usize, a1: usize) -> ! {
     sys::startup_init(a1);
+    tasks::run_scene();
     run();
     run_linux();
     line(&[b"[LXSRV] idle"]);

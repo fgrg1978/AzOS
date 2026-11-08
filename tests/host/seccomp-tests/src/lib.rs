@@ -1524,6 +1524,7 @@ mod image_profiles {
         // The Linux driver server skeleton.
         ("LXSRV.ELF", Lang::Rust, &[
             src!("userspace/services/lxsrv/src/main.rs"),
+            src!("userspace/services/lxsrv/src/tasks.rs"),
             // The allocator it links: the calls it issues are the image's.
             src!("userspace/lib/ualloc/src/native.rs"),
         ]),

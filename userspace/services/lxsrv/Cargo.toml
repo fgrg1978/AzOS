@@ -4,13 +4,19 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
-description = "The Linux driver server skeleton: starts from its topology row, loads the test module LXTEST.KO through DOMAIN_MODULE_VERIFY and the token-gated DOMAIN_MODULE_MAP_X, runs its init, and idles. Links no Linux object and no crates/drivers/lx/ code. Excluded from workspace; built standalone."
+description = "The Linux driver server skeleton: starts from its topology row, runs the lx_emul cooperative loop (stackful tasks on guard-paged stacks, the vDSO clock) through its blocking primitives, loads the test module LXTEST.KO through DOMAIN_MODULE_VERIFY and the token-gated DOMAIN_MODULE_MAP_X, runs its init, and idles. Links no Linux object; of crates/drivers/lx/ only lx_emul, the project's own Rust. Excluded from workspace; built standalone."
 
 [dependencies]
 azos_libsys = { path = "../../../crates/core/libsys" }
 azos_limits = { path = "../../../crates/core/limits" }
 azos_lx_loader = { path = "../../../crates/core/lx-loader" }
 azos_ualloc = { path = "../../lib/ualloc" }
+lx_emul = { path = "../../../crates/drivers/lx/emul" }
+
+[features]
+# Gate canary only: the cooperative loop runs on a clock that jumps a second
+# per pass and never sleeps, so the `tasks` row must see msleep end early.
+tasks-clock-canary = []
 
 [profile.release]
 opt-level = "s"

@@ -2408,9 +2408,11 @@ pub const TASK_LXSRV_IMAGE: &[u8] = b"LXSRV.ELF";
 /// `.bss`, and the two module regions it maps (a few pages for the test
 /// module); since stage L1 also the Kbuild modules (LXBASE.KO, XZ_DEC.KO:
 /// file copies and regions, about 14 pages), the 96 KiB host-allocator arena
-/// and the xz fixture with its 48 KiB output (about 18 pages).
+/// and the xz fixture with its 48 KiB output (about 18 pages); the
+/// cooperative loop's environment in `.bss` (about 34 KiB) and its four
+/// 16 KiB task stacks (the guard page below each is unmapped, so not charged).
 #[cfg(feature = "lx-server")]
-const LXSRV_MEM_PAGES: u32 = 128;
+const LXSRV_MEM_PAGES: u32 = 160;
 /// `LXSRV.ELF`'s authority: READ on the kernel-hosted `entropy` endpoint,
 /// which keys and randomizes the hardened allocator it links (`azos_ualloc`,
 /// Kconfig `USER_ALLOC_*`). Like every interface grant the kernel withholds it
