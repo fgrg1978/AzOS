@@ -913,7 +913,8 @@ pub const RULES: &[RuleInfo] = &[
         // The subject is the task whose Domain tried to start talking to a destination off the node (the effect
         // gate's `net_egress`, `azos_actuation::effect_gate`). `dest` is the destination (IPv4 as a 32-bit word;
         // IPv6 its last four bytes), `class` its distance (1 local link, 2 private network, 3 anywhere) and
-        // `level` the envelope level that held it (1 cautious, 2 slow, 3 contained).
+        // `level` the envelope level that held it (1 cautious, 2 slow, 3 contained). An admit (Kconfig SEC_LOG:
+        // a security record each time a socket starts talking to a destination) has level 0.
         name: "envelope-egress",
         subject: "tid",
         fields: ["dest", "class", "level"],
@@ -1876,7 +1877,7 @@ fn record_full(rule: Rule, verdict: Verdict, subject: u32, bucket: u32, n: [u64;
     // A paced rule's record the bucket held back is not copied either: the
     // bucket's own `RefusalLimited` report is, so a flood of denials cannot
     // push a microphone's record out of the security ring unseen.
-    if azos_records::SECURITY && !held {
+    if azos_records::SECURITY && !held && !cfg!(feature = "canary-no-security-copy") {
         if let Some(class) = rule.security_class(n[0]) {
             security(class, rule, verdict, subject, n, seq, origin);
         }
@@ -1910,10 +1911,93 @@ fn durable(rule: Rule, verdict: Verdict, subject: u32, n: [u64; 3], seq: u64, or
     }
 }
 
-/// Copy a record to the security ring (`azos_seclog`'s event).
+/// Security records copied, and held back by the rate cap, by class
+/// (`azos_seclog::CLASSES`): the sealer's account of what a loss was.
+static SEC_COPIED: [core::sync::atomic::AtomicU32; azos_seclog::CLASSES] =
+    [const { core::sync::atomic::AtomicU32::new(0) }; azos_seclog::CLASSES];
+static SEC_HELD: [core::sync::atomic::AtomicU32; azos_seclog::CLASSES] =
+    [const { core::sync::atomic::AtomicU32::new(0) }; azos_seclog::CLASSES];
+
+/// The security records copied so far and those the rate cap held back,
+/// by class; a copy is counted once its record is in the ring.
+pub fn security_tally() -> ([u32; azos_seclog::CLASSES], [u32; azos_seclog::CLASSES]) {
+    let mut t = ([0u32; azos_seclog::CLASSES], [0u32; azos_seclog::CLASSES]);
+    for i in 0..azos_seclog::CLASSES {
+        t.0[i] = SEC_COPIED[i].load(Ordering::Acquire);
+        t.1[i] = SEC_HELD[i].load(Ordering::Relaxed);
+    }
+    t
+}
+
+/// The security records' rate cap (Kconfig `SEC_LOG_PER_S`): a bucket for
+/// them all, and one per class for the classes a task can raise in a loop
+/// (capability denials, the bucket's own reports, egress), each a quarter
+/// of the whole, so a flood of one cannot push a microphone's record out of
+/// the ring. Tokens in thousandths.
+struct SecCap {
+    busy: AtomicBool,
+    s: core::cell::UnsafeCell<SecTokens>,
+}
+
+struct SecTokens {
+    at: u64,
+    all: u64,
+    class: [u64; azos_seclog::CLASSES],
+    started: bool,
+}
+
+// SAFETY: `s` is touched only with `busy` held.
+unsafe impl Sync for SecCap {}
+
+static SEC_CAP: SecCap = SecCap {
+    busy: AtomicBool::new(false),
+    s: core::cell::UnsafeCell::new(SecTokens { at: 0, all: 0, class: [0; azos_seclog::CLASSES], started: false }),
+};
+
+const fn sec_paced(class: SecClass) -> bool {
+    matches!(class, SecClass::CapDenial | SecClass::Limited | SecClass::Egress)
+}
+
+/// May a security record of `class` be copied now?
+fn sec_admit(class: SecClass) -> bool {
+    let rate = azos_limits::SEC_LOG_PER_S as u64 * 1000;
+    let (all_max, class_max) = (rate, rate / 4);
+    let (now, hz) = (clock_now(), CLOCK_HZ.load(Ordering::Relaxed));
+    while SEC_CAP.busy.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+        core::hint::spin_loop();
+    }
+    // SAFETY: `busy` is held.
+    let t = unsafe { &mut *SEC_CAP.s.get() };
+    if !t.started {
+        (t.at, t.all, t.class, t.started) = (now, all_max, [class_max; azos_seclog::CLASSES], true);
+    }
+    let gained = (now.saturating_sub(t.at) as u128 * rate as u128 / hz.max(1) as u128).min(u64::MAX as u128) as u64;
+    t.at = now;
+    t.all = (t.all + gained).min(all_max);
+    let c = class as usize;
+    t.class[c] = (t.class[c] + gained / 4).min(class_max);
+    let paced = sec_paced(class);
+    let ok = t.all >= 1000 && (!paced || t.class[c] >= 1000);
+    if ok {
+        t.all -= 1000;
+        if paced {
+            t.class[c] -= 1000;
+        }
+    }
+    SEC_CAP.busy.store(false, Ordering::Release);
+    ok
+}
+
+/// Copy a record to the security ring (`azos_seclog`'s event), within the
+/// rate cap; what the cap holds back is counted by class, and the sealer
+/// declares it in the chain.
 #[inline(never)]
 fn security(class: SecClass, rule: Rule, verdict: Verdict, subject: u32, n: [u64; 3], seq: u64, origin: Origin) {
     let Some(w) = azos_records::writer(azos_records::SOURCE_SECURITY) else { return };
+    if !sec_admit(class) {
+        SEC_HELD[class as usize].fetch_add(1, Ordering::Relaxed);
+        return;
+    }
     let e = azos_seclog::Event {
         id: seq,
         subject,
@@ -1933,6 +2017,7 @@ fn security(class: SecClass, rule: Rule, verdict: Verdict, subject: u32, n: [u64
         flags: CLOCK_FLAGS.get().map_or(0, |f| f()),
     };
     w.publish(&h, |p| p.bytes(0, &e.encode()));
+    SEC_COPIED[class as usize].fetch_add(1, Ordering::Release);
 }
 
 /// Claim the next id without the ring; 0 under the gate canary `decision-skip`.

@@ -21,3 +21,6 @@ on = []
 durable = []
 # Host canary (decisions-tests), never in a real build: a memory kill writes no record.
 mem-kill-unrecorded-canary = []
+# Host canary (decisions-tests `seclog`), never in a real build: no record is
+# copied to the security ring.
+canary-no-security-copy = []
