@@ -1501,6 +1501,13 @@ mod image_profiles {
             src!("userspace/services/coreutil/src/main.rs"),
             src!("userspace/services/coreutil/src/native.rs"),
         ]),
+        ("EXT4D.ELF", Lang::Rust, &[
+            src!("userspace/services/ext4d/src/main.rs"),
+            src!("userspace/services/ext4d/src/service.rs"),
+            src!("userspace/lib/srv/src/lib.rs"),
+            src!("userspace/lib/srv/src/sys/mod.rs"),
+            src!("userspace/lib/srv/src/sys/calls.rs"),
+        ]),
         ("POWER.ELF", Lang::Rust, &[
             src!("userspace/services/power/src/main.rs"),
             src!("userspace/services/power/src/policy.rs"),
@@ -3641,11 +3648,12 @@ mod image_profiles {
         // +1 on each of aarch64 and x86_64 with the ring-3 virtio-rng driver
         // (RNGDRV.ELF; riscv64's is in `rust_images`).
         // +1 on each of riscv64 (in `rust_images`), aarch64 and x86_64 with the
-        // basic utilities' image (COREUTIL.ELF).
+        // basic utilities' image (COREUTIL.ELF), and again with the ring-3 ext4
+        // server (EXT4D.ELF).
         assert_eq!(
             recipes,
-            rust_images + 45 + 1 + 45 + 3,
-            "expected {rust_images} riscv64 + 45 aarch64 + 1 board + 45 x86_64 + 3 runtime $(USPACE_BUILD) recipes",
+            rust_images + 46 + 1 + 46 + 3,
+            "expected {rust_images} riscv64 + 46 aarch64 + 1 board + 46 x86_64 + 3 runtime $(USPACE_BUILD) recipes",
         );
         // The SDK's recipes: WHY.ELF on three ISAs and the SDK's own test, sdktest,
         // on three.

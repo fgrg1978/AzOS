@@ -856,27 +856,6 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         ops: inv_ops![LOG_CONSOLE_WRITE, LOG_CONSOLE_WAIT, DOMAIN_UPTIME, MEMOBJ_ACQUIRE, ENDPOINT_DERIVE],
         ifaces: NO_IFACES,
     },
-    // The ring-3 ext4 server (Kconfig FS_EXT4_RING3): it parses an untrusted
-    // image, so it may do little. It reads its one partition through the
-    // io_ring's block entries (`SYS_RING_SETUP`, `SYS_RING_ENTER`, the
-    // partition's length by a `block` interface call), waits for a
-    // completion (`SYS_SLEEP_UNTIL`), maps the region it shares with the
-    // kernel (`SYS_CAP_INFO`, `MEMOBJ_ACQUIRE`, `SYS_MO_MAP`), serves
-    // `endpoint.ext4` (accept, reply) and lends each open file a right it
-    // derives (`ENDPOINT_DERIVE`) and revokes when the slot is reused
-    // (`SYS_CAP_REVOKE`, `SYS_CAP_CLOSE`), and writes its start-up line. No
-    // spawn, no file, no network, no other device.
-    ImageProfile {
-        image: "EXT4D.ELF",
-        syscalls: sys_nrs![
-            SYS_EXIT, SYS_INVOKE, SYS_CAP_INFO, SYS_CAP_CLOSE, SYS_CAP_REVOKE, SYS_YIELD,
-            SYS_IPC_ACCEPT, SYS_IPC_REPLY, SYS_IPC_CALL, SYS_MO_MAP, SYS_RING_SETUP, SYS_RING_ENTER,
-            SYS_SLEEP_UNTIL,
-        ],
-        audit: false,
-        ops: inv_ops![LOG_CONSOLE_WRITE, MEMOBJ_ACQUIRE, ENDPOINT_DERIVE, DOMAIN_UPTIME],
-        ifaces: &[azos_devif::key::BLOCK],
-    },
     // The Names object's server. Serves `endpoint.names` (accept, reply) and
     // looks up the handles of the endpoints its row lends (`SYS_CAP_INFO`);
     // it reads the signed topology's view from its view region (found by
@@ -955,6 +934,27 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             NODE_STATAT, NODE_READDIR, NODE_STATFS, NODE_MKDIRAT, NODE_UNLINKAT, NODE_RENAMEAT,
         ],
         ifaces: NO_IFACES,
+    },
+    // The ring-3 ext4 server (Kconfig FS_EXT4_RING3): it parses an untrusted
+    // image, so it may do little. It reads its one partition through the
+    // io_ring's block entries (`SYS_RING_SETUP`, `SYS_RING_ENTER`, the
+    // partition's length by a `block` interface call), waits for a
+    // completion (`SYS_SLEEP_UNTIL`), maps the region it shares with the
+    // kernel (`SYS_CAP_INFO`, `MEMOBJ_ACQUIRE`, `SYS_MO_MAP`), serves
+    // `endpoint.ext4` (accept, reply) and lends each open file a right it
+    // derives (`ENDPOINT_DERIVE`) and revokes when the slot is reused
+    // (`SYS_CAP_REVOKE`, `SYS_CAP_CLOSE`), and writes its start-up line. No
+    // spawn, no file, no network, no other device.
+    ImageProfile {
+        image: "EXT4D.ELF",
+        syscalls: sys_nrs![
+            SYS_EXIT, SYS_INVOKE, SYS_CAP_INFO, SYS_CAP_CLOSE, SYS_CAP_REVOKE, SYS_YIELD,
+            SYS_IPC_ACCEPT, SYS_IPC_REPLY, SYS_IPC_CALL, SYS_MO_MAP, SYS_RING_SETUP, SYS_RING_ENTER,
+            SYS_SLEEP_UNTIL,
+        ],
+        audit: false,
+        ops: inv_ops![LOG_CONSOLE_WRITE, MEMOBJ_ACQUIRE, ENDPOINT_DERIVE],
+        ifaces: &[azos_devif::key::BLOCK],
     },
     // The shell's power tool, the first privileged family with a
     // ring-3 form. The ONLY profile whose interfaces list `power`;

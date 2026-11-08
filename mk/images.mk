@@ -294,7 +294,7 @@ $(OUT_BUILD)/disk-drv.img: $(OUT_BUILD)/disk-drvbase.img $(BUZZ_DRV_ELF) $(INA_D
 # SH.ELF, TOOLBOX.ELF and POWER.ELF. The only gate image that carries them: on every
 # other volume `/fat/SH.ELF` is absent, so the kernel console is the recovery
 # console at once, as before, and no scenario gains a task.
-$(OUT_BUILD)/disk-sh.img: $(OUT_BUILD)/disk-drvbase.img $(SH_ELF) $(TERMD_ELF) $(NAMESD_ELF) $(COMPMGR_ELF) $(TOOLBOX_ELF) $(COREUTIL_ELF) $(POWER_ELF) $(FAM_ELFS) $(TRACECTL_ELF) $(DECISD_ELF) $(INPUTD_ELF) $(COMPSRV_ELF) $(LOGD_ELF) $(WHY_ELF) $(call image_if,RG,$(RG_ELF)) $(call image_if,FD,$(FD_ELF)) $(call image_if,KIBI,$(KIBI_ELF)) $(PKGD_ELF) $(PKG_ELF) $(RPCSRV_ELF) $(ZENOHD_ELF) $(VMMD_ELF) $(PTPD_ELF) $(AUDIOD_ELF) $(RPCQUIC_ELF) $(MCPD_ELF) $(SSHD_ELF) $(LOGIND_ELF)
+$(OUT_BUILD)/disk-sh.img: $(OUT_BUILD)/disk-drvbase.img $(SH_ELF) $(TERMD_ELF) $(NAMESD_ELF) $(COMPMGR_ELF) $(TOOLBOX_ELF) $(COREUTIL_ELF) $(EXT4D_ELF) $(POWER_ELF) $(FAM_ELFS) $(TRACECTL_ELF) $(DECISD_ELF) $(INPUTD_ELF) $(COMPSRV_ELF) $(LOGD_ELF) $(WHY_ELF) $(call image_if,RG,$(RG_ELF)) $(call image_if,FD,$(FD_ELF)) $(call image_if,KIBI,$(KIBI_ELF)) $(PKGD_ELF) $(PKG_ELF) $(RPCSRV_ELF) $(ZENOHD_ELF) $(VMMD_ELF) $(PTPD_ELF) $(AUDIOD_ELF) $(RPCQUIC_ELF) $(MCPD_ELF) $(SSHD_ELF) $(LOGIND_ELF)
 	cp $(OUT_BUILD)/disk-drvbase.img $@
 	mmd -i $@ ::PKG
 	mcopy -i $@ $(SH_ELF) ::SH.ELF
@@ -303,6 +303,7 @@ $(OUT_BUILD)/disk-sh.img: $(OUT_BUILD)/disk-drvbase.img $(SH_ELF) $(TERMD_ELF) $
 	mcopy -i $@ $(COMPMGR_ELF) ::COMPMGR.ELF
 	mcopy -i $@ $(TOOLBOX_ELF) ::TOOLBOX.ELF
 	mcopy -i $@ $(COREUTIL_ELF) ::COREUTIL.ELF
+	mcopy -i $@ $(EXT4D_ELF) ::EXT4D.ELF
 	mcopy -i $@ $(POWER_ELF) ::POWER.ELF
 	mcopy -i $@ $(FLIGHT_ELF) ::FLIGHT.ELF
 	mcopy -i $@ $(BEHAVIOR_ELF) ::BEHAVIOR.ELF
@@ -592,7 +593,7 @@ $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-drv.img: $(OUT_BUILD)/disk-aarch64
 	@echo "[DISK] aarch64 FAT32 image: $@ (ring-3 drivers BUZZDRV.ELF, INADRV.ELF, RNGDRV.ELF, and COMPMGR.ELF, which starts them)"
 
 # See `build/disk-sh.img`.
-$(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-sh.img: $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-drvbase.img $(SH_ELF_AARCH64) $(TERMD_ELF_AARCH64) $(NAMESD_ELF_AARCH64) $(COMPMGR_ELF_AARCH64) $(TOOLBOX_ELF_AARCH64) $(COREUTIL_ELF_AARCH64) $(POWER_ELF_AARCH64) $(FAM_ELFS_AARCH64) $(TRACECTL_ELF_AARCH64) $(DECISD_ELF_AARCH64) $(INPUTD_ELF_AARCH64) $(COMPSRV_ELF_AARCH64) $(LOGD_ELF_AARCH64) $(WHY_ELF_AARCH64) $(call image_if,RG,$(RG_ELF_AARCH64)) $(call image_if,FD,$(FD_ELF_AARCH64)) $(call image_if,KIBI,$(KIBI_ELF_AARCH64)) $(PKGD_ELF_AARCH64) $(PKG_ELF_AARCH64) $(RPCSRV_ELF_AARCH64) $(ZENOHD_ELF_AARCH64) $(VMMD_ELF_AARCH64) $(PTPD_ELF_AARCH64) $(AUDIOD_ELF_AARCH64) $(RPCQUIC_ELF_AARCH64) $(MCPD_ELF_AARCH64) $(SSHD_ELF_AARCH64) $(LOGIND_ELF_AARCH64)
+$(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-sh.img: $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-drvbase.img $(SH_ELF_AARCH64) $(TERMD_ELF_AARCH64) $(NAMESD_ELF_AARCH64) $(COMPMGR_ELF_AARCH64) $(TOOLBOX_ELF_AARCH64) $(COREUTIL_ELF_AARCH64) $(EXT4D_ELF_AARCH64) $(POWER_ELF_AARCH64) $(FAM_ELFS_AARCH64) $(TRACECTL_ELF_AARCH64) $(DECISD_ELF_AARCH64) $(INPUTD_ELF_AARCH64) $(COMPSRV_ELF_AARCH64) $(LOGD_ELF_AARCH64) $(WHY_ELF_AARCH64) $(call image_if,RG,$(RG_ELF_AARCH64)) $(call image_if,FD,$(FD_ELF_AARCH64)) $(call image_if,KIBI,$(KIBI_ELF_AARCH64)) $(PKGD_ELF_AARCH64) $(PKG_ELF_AARCH64) $(RPCSRV_ELF_AARCH64) $(ZENOHD_ELF_AARCH64) $(VMMD_ELF_AARCH64) $(PTPD_ELF_AARCH64) $(AUDIOD_ELF_AARCH64) $(RPCQUIC_ELF_AARCH64) $(MCPD_ELF_AARCH64) $(SSHD_ELF_AARCH64) $(LOGIND_ELF_AARCH64)
 	cp $< $@
 	mmd -i $@ ::PKG
 	mcopy -i $@ $(SH_ELF_AARCH64) ::SH.ELF
@@ -601,6 +602,7 @@ $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-sh.img: $(OUT_BUILD)/disk-aarch64$
 	mcopy -i $@ $(COMPMGR_ELF_AARCH64) ::COMPMGR.ELF
 	mcopy -i $@ $(TOOLBOX_ELF_AARCH64) ::TOOLBOX.ELF
 	mcopy -i $@ $(COREUTIL_ELF_AARCH64) ::COREUTIL.ELF
+	mcopy -i $@ $(EXT4D_ELF_AARCH64) ::EXT4D.ELF
 	mcopy -i $@ $(POWER_ELF_AARCH64) ::POWER.ELF
 	mcopy -i $@ $(FLIGHT_ELF_AARCH64) ::FLIGHT.ELF
 	mcopy -i $@ $(BEHAVIOR_ELF_AARCH64) ::BEHAVIOR.ELF
@@ -631,7 +633,7 @@ $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-sh.img: $(OUT_BUILD)/disk-aarch64$
 # The ring-3 ext4 rows (Kconfig FS_EXT4_RING3, tools/gate/ci_check.sh
 # `ext4_ring3_rows`): the ext4 volume they read, made by the host's mke2fs
 # (tools/image/make_ext4_fixture.py for its tree), and the shell volume with
-# EXT4D.ELF on it as partition 1 of an MBR medium whose partition 2 is that
+# EXT4D.ELF on it (every shell volume carries it) as partition 1 of an MBR medium whose partition 2 is that
 # volume (`FS_EXT4_RING3_PARTITION`'s default).
 EXT4_FIXTURE := $(OUT_BUILD)/ext4-fixture.img
 $(EXT4_FIXTURE): tools/image/make_ext4_fixture.py
@@ -641,7 +643,6 @@ $(EXT4_FIXTURE): tools/image/make_ext4_fixture.py
 $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-ext4.img: $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-sh.img $(EXT4D_ELF_AARCH64) \
 		$(EXT4_FIXTURE) tools/image/make_parted_disk.py
 	cp $< $@.vol
-	mcopy -o -i $@.vol $(EXT4D_ELF_AARCH64) ::EXT4D.ELF
 	python3 tools/image/make_parted_disk.py --part1 $(EXT4_FIXTURE) $@.vol $@
 	@rm -f $@.vol
 	@echo "[DISK] aarch64 ext4 medium: $@ (the shell volume with EXT4D.ELF, and partition 2 ext4)"
@@ -1035,6 +1036,7 @@ $(OUT_BUILD)/disk-x86_64-systest.img $(OUT_BUILD)/disk-x86_64-captest.img $(OUT_
 	mcopy -i $@ $(COMPMGR_ELF_X86_64) ::COMPMGR.ELF
 	mcopy -i $@ $(TOOLBOX_ELF_X86_64) ::TOOLBOX.ELF
 	mcopy -i $@ $(COREUTIL_ELF_X86_64) ::COREUTIL.ELF
+	mcopy -i $@ $(EXT4D_ELF_X86_64) ::EXT4D.ELF
 	mcopy -i $@ $(POWER_ELF_X86_64) ::POWER.ELF
 	mcopy -i $@ $(TRACECTL_ELF_X86_64) ::TRACECTL.ELF
 	mcopy -i $@ $(DECISD_ELF_X86_64) ::DECISD.ELF

@@ -183,7 +183,7 @@ impl Host for Kernel {
 
 /// The partition this row was granted: the first `block.part.<n>` it holds.
 fn partition() -> Option<(u32, u32)> {
-    (1..=azos_devif::block::PARTS).find_map(|b| sys::dev::lookup(azos_devif::key::BLOCK, b).map(|h| (h, b)))
+    (1..=azos_devif::block::PARTS).find_map(|b| sys::dev::lookup(sys::dev::key::BLOCK, b).map(|h| (h, b)))
 }
 
 fn map_share() -> Option<&'static mut [u8]> {
