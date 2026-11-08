@@ -221,7 +221,7 @@ advisories-update:
 check-fast:
 	@env -u CARGO_TARGET_DIR bash tools/gate/check_fast.sh
 
-# Full CI: azos builds + AzOSRobotBrain tests + protocol sync.
+# Full CI: azos builds, then the optional brain repo's tests and protocol sync (skipped when it is absent).
 ci-full:
 	@bash tools/gate/ci_full.sh
 

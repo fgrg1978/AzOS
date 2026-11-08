@@ -93,14 +93,18 @@ ACT_FLAG_EMERGENCY = 0x01
 
 # The link: brain_client and the kernel's own brain link both run the
 # Noise session. The crypto is AzOSRobotBrain's `secure_channel.py`, imported
-# from the sibling repo the way `tools/gate/link_peer.py` imports it (and honouring
-# the same `AZOS_BRAIN_DIR`), so nothing here restates it. Imported only when a
+# from the optional brain repo the way `tools/gate/link_peer.py` imports it (found by
+# tools/lib/azos_tools.py), so nothing here restates it. Imported only when a
 # mode needs a session: `--selftest` and `--reconnect` stay free of the sibling
 # repo.
 def load_secure_channel():
     import os
-    brain_dir = os.path.realpath(
-        os.environ.get("AZOS_BRAIN_DIR") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../../AzOSRobotBrain"))
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "../lib"))
+    import azos_tools
+    brain_dir = azos_tools.brain_dir()
+    if brain_dir is None:
+        print("[fake-brain] FAIL import — no AzOSRobotBrain (set AZOS_BRAIN_DIR)", flush=True)
+        sys.exit(4)
     if brain_dir not in sys.path:
         sys.path.insert(0, brain_dir)
     try:

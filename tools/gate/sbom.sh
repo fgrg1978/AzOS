@@ -5,8 +5,8 @@
 #
 # Generates a Software Bill of Materials for the AzOS Rust workspace
 # (every workspace member plus every resolved third-party crate) and,
-# when the sibling ../AzOSRobotBrain repo is present, for its Python
-# dependencies too. Fully offline: `cargo metadata --offline --locked`
+# when the optional brain repo is found (tools/lib/brain_dir.sh) and BRAIN is
+# not 0, for its Python dependencies too. Without it the document is the OS's alone. Fully offline: `cargo metadata --offline --locked`
 # reads Cargo.lock without touching the network, and no crate is built.
 #
 # The full gate runs it (tools/gate/ci_check.sh, "supply chain: SBOM") and
@@ -27,7 +27,14 @@ set -euo pipefail
 AZOS_OUT="${AZOS_OUT:-$(python3 "$(dirname "$0")/../lib/out_dir.py")}"; export AZOS_OUT
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-BRAIN_DIR="$REPO_ROOT/../AzOSRobotBrain"
+. "$REPO_ROOT/tools/lib/brain_dir.sh"
+brain_resolve "$REPO_ROOT" || exit 1
+if [ "$BRAIN_STATE" = required ]; then
+    echo "[sbom] ERROR: BRAIN=1 but no AzOSRobotBrain at ${BRAIN_PATH:-the sibling of the checkout}" >&2
+    exit 1
+fi
+BRAIN_DIR=""
+[ "$BRAIN_STATE" = found ] && BRAIN_DIR="$BRAIN_PATH"
 OUT_PATH="${1:-$AZOS_OUT/build/sbom.cdx.json}"
 
 # Resolve OUT_PATH relative to the repo root when it isn't absolute, so
@@ -136,7 +143,7 @@ LOCKFILE_CANDIDATES = [
 ]
 
 brain_lockfile = None
-for candidate in LOCKFILE_CANDIDATES:
+for candidate in (LOCKFILE_CANDIDATES if brain_dir else []):
     candidate_path = os.path.join(brain_dir, candidate)
     if os.path.isfile(candidate_path):
         brain_lockfile = candidate_path
@@ -170,7 +177,7 @@ if brain_lockfile is not None:
                 "library",
                 description=f"AzOSRobotBrain dependency, pinned in {os.path.basename(brain_lockfile)}",
             )
-elif os.path.isfile(os.path.join(brain_dir, "requirements.txt")):
+elif brain_dir and os.path.isfile(os.path.join(brain_dir, "requirements.txt")):
     req_path = os.path.join(brain_dir, "requirements.txt")
     with open(req_path, "r", encoding="utf-8") as f:
         for line in f:

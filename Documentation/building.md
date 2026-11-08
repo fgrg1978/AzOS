@@ -283,7 +283,7 @@ Source: `mk/lints.mk`, `tools/gate/gate_tier.sh`, `tools/gate/ci_check.sh`, `too
 | N1, the change check | `make check1` | N0's suites, then the per-ISA smoke boots and the QEMU gate rows that the diff maps to |
 | Fronts' check | `make check-fast` | Per ISA: one ktest boot, one boot of the same kernel with every composable runtime canary armed, and one userspace boot (the ABI conformance checks) |
 | Full | `make ci` | `tools/gate/ci_check.sh`: every feature combination built with zero warnings, every host suite, every lint, and every QEMU scenario |
-| Full, with the brain | `make ci-full` | `make ci`, then the AzOSRobotBrain tests and the protocol sync check (`tools/gate/ci_full.sh`) |
+| Full, with the brain | `make ci-full` | The kernel builds, then the AzOSRobotBrain tests and the protocol sync check (`tools/gate/ci_full.sh`). The brain repo is an optional client: those two steps run when it is found (`AZOS_BRAIN_DIR`, else the sibling of the checkout) and print one skip line otherwise; `BRAIN=1` makes its absence a failure, `BRAIN=0` leaves it out. `make ci` skips the rows that boot against a brain peer the same way |
 | Presets | `make check-presets` | Every preset expands on every ISA ([config.md](config.md)) |
 | Topology rules | `make check-neverallow` | No preset's, defconfig's or the MCU kernel's topology breaks a `neverallow` rule |
 

@@ -64,10 +64,11 @@ import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "../lib"))
 import azos_tools  # noqa: E402
-# The sibling repo, located the way tools/gate/ci_full.sh does ($OS_DIR/../AzOSRobotBrain).
-BRAIN_DIR = os.path.realpath(
-    os.environ.get("AZOS_BRAIN_DIR") or os.path.join(azos_tools.ROOT, "..", "AzOSRobotBrain")
-)
+# The optional brain repo, found by tools/lib/azos_tools.py (AZOS_BRAIN_DIR, then the siblings).
+BRAIN_DIR = azos_tools.brain_dir()
+if BRAIN_DIR is None:
+    print("[link-peer] FAIL import — no AzOSRobotBrain (set AZOS_BRAIN_DIR)", flush=True)
+    sys.exit(4)
 
 sys.path.insert(1, BRAIN_DIR)
 

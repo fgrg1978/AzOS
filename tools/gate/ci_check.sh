@@ -58,6 +58,7 @@ CARGO="$CI_CHECK_DIR/gate/ci_cargo.py"
 QEMU="${QEMU:-qemu-system-riscv64}"
 REPO_ROOT="$(cd "$CI_CHECK_DIR/.." && pwd)"
 . "$REPO_ROOT/tools/lib/qemu_count.sh"
+. "$REPO_ROOT/tools/lib/brain_dir.sh"
 . "$REPO_ROOT/tools/lib/volume_stale.sh"
 # The recovery console's prompt is `<preset>> ` (azos_limits::PRESET_PROMPT), and
 # the cell a row boots decides the preset: any preset's prompt matches.
@@ -1726,17 +1727,18 @@ CI_TIMING="$CI_LOG_DIR/timing.tsv"
 # start of the row's job) and run_s the rest of the row's wall time: its boots.
 CI_LOG_ABS="$(cd "$CI_LOG_DIR" && pwd)"
 CI_ROWS_TSV="$CI_LOG_ABS/rows.tsv"
-# The brain peers (tools/gate/fake_brain.py, tools/gate/link_peer.py) import
-# AzOSRobotBrain from `../AzOSRobotBrain`, the sibling of the MAIN checkout. A
-# worktree elsewhere (~/azos-wt/*) has no such sibling: the peer then fails its
-# import, the robot never connects, and the row reports a symptom instead
-# (`ring-3 drives motors` once said it saw no refusal). Resolve
-# it once from git's common dir, which is the main checkout's `.git`.
-if [ -z "${AZOS_BRAIN_DIR:-}" ] && [ ! -d ../AzOSRobotBrain ]; then
-    ci_git_common="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
-    if [ -n "$ci_git_common" ] && [ -d "$(dirname "$(dirname "$ci_git_common")")/AzOSRobotBrain" ]; then
-        export AZOS_BRAIN_DIR="$(dirname "$(dirname "$ci_git_common")")/AzOSRobotBrain"
-    fi
+# The brain peers (tools/gate/fake_brain.py, tools/gate/link_peer.py) import the
+# crypto of the optional AzOSRobotBrain repo. tools/lib/brain_dir.sh finds it
+# (AZOS_BRAIN_DIR, the sibling of the checkout, the sibling of the main checkout
+# for a worktree); the rows that need a peer skip when it is absent
+# (`brain_peer_required`), and BRAIN=1 makes its absence a failure.
+brain_resolve "$REPO_ROOT" || { echo "  FATAL: cannot resolve the brain repo"; exit 1; }
+if [ "$BRAIN_STATE" = required ]; then
+    echo "  FATAL: BRAIN=1 but no AzOSRobotBrain at ${BRAIN_PATH:-the sibling of the checkout} (set AZOS_BRAIN_DIR)"
+    exit 1
+fi
+if [ "$BRAIN_STATE" != found ]; then
+    echo "  brain rows skipped: $(brain_skip_reason)"
 fi
 builtin printf 'row\tstage\tbuild_s\trun_s\tverdict\tprep_s\n' >"$CI_ROWS_TSV"
 export CI_BUILD_ACC="$CI_LOG_ABS/build-acc.main"
@@ -2070,6 +2072,15 @@ ci_tier_skips() {
     SKIP=$((SKIP + 1))
     builtin printf "  %-26s%s\n" "${1}..." "skipped (CI_TIER=rows)"
     return 0
+}
+# brain_peer_required: a row that boots against a brain peer needs the brain
+# repo's crypto (tools/lib/brain_dir.sh). Absent, it prints its skip line and
+# the caller returns; nothing else about the gate depends on that repo.
+brain_peer_required() {
+    [ "$BRAIN_STATE" = found ] && return 0
+    SKIP=$((SKIP + 1))
+    builtin printf "  %-26s%s\n" "${PAR_KEY}..." "skipped ($(brain_skip_reason))"
+    return 1
 }
 PAR_SEEN="${PAR_SEEN:-}"   # keys of `par` calls and labels of printed rows
 fast_unseen() { # FAST_ROWS keys no `par` call used: a renamed row the list missed
@@ -21396,12 +21407,12 @@ PY
         local peer_args="${*:---wait 90}"
         # The kernel's brain link is always a Noise session, so every peer but
         # `--reconnect` (which only resets connections) runs the brain side of
-        # it with AzOSRobotBrain's secure_channel (see AZOS_BRAIN_DIR above)
+        # it with AzOSRobotBrain's secure_channel (see tools/lib/brain_dir.sh)
         # and needs the link key the image carries. Without the sibling repo
         # the peer exits at import after it has already printed its port, so
         # the boot would run against nobody: fail here, by name.
         case " $peer_args " in *" --reconnect "*) ;; *)
-            local brain_dir="${AZOS_BRAIN_DIR:-../AzOSRobotBrain}"
+            local brain_dir="${AZOS_BRAIN_DIR:-${BRAIN_PATH:-none}}"
             if [ ! -f "$brain_dir/secure_channel.py" ]; then
                 echo "[fake-brain] FAIL no-robot — AzOSRobotBrain not found at $brain_dir (set AZOS_BRAIN_DIR)" >>"$blog"
                 echo "      AzOSRobotBrain not found at $brain_dir: the peer cannot start (set AZOS_BRAIN_DIR)"
@@ -21488,6 +21499,7 @@ PY
     }
 
     brain_lies_scenario() {
+        brain_peer_required || return 0
         local label="userspace: the brain lies"
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
@@ -21590,6 +21602,7 @@ PY
     # record is on disk, so the settle waits for the probe's own verdict line
     # and 70 s is only the ceiling.
     brain_lies_record_scenario() {
+        brain_peer_required || return 0
         local label="userspace: unknown packet RECORDED"
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
@@ -21674,6 +21687,7 @@ PY
     # cannot be produced by the kernel's own brain link, which also connects to
     # this peer and drives motors through a channel instead.
     ring3_actuation_scenario() {
+        brain_peer_required || return 0
         local label="userspace: ring-3 drives motors"
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
@@ -21817,6 +21831,7 @@ PY
     # The durability of that mechanism is pinned by the `[ENVSMOKE] ESTOP
     # DURABLE` self-check; this scenario pins the wiring to it.
     ring3_estop_scenario() {
+        brain_peer_required || return 0
         local label="userspace: ring-3 e-stop"
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
@@ -21992,6 +22007,7 @@ PY
     # from the image's CONFIG.INI (default hour): RED, "brain_client's own
     # REKEY did not complete", no REKEY line on either side.
     ring3_encrypted_link_scenario() {
+        brain_peer_required || return 0
         local label="userspace: ring-3 link encrypted"
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
@@ -22070,6 +22086,7 @@ PY
     # Canary, 2026-09-28 (wave 9): the handler's `!got` branch disabled, so an
     # unseeded pool hands out its zero buffer as "entropy". See the ENT report.
     ring3_entropy_refused_scenario() {
+        brain_peer_required || return 0
         local label="userspace: ring-3 entropy refused"
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
@@ -22141,6 +22158,7 @@ PY
     # green: measured on the ring-3 path, a handler that skipped the latch
     # still printed "envelope latched" and the robot drove 20 more times.
     brain_estop_tcp_scenario() {
+        brain_peer_required || return 0
         local label="safety: brain e-stop (tcp)"
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
@@ -22325,6 +22343,7 @@ PYEOF
     # needs the image's key and whose UART bridge is down, and must change
     # nothing about the release authority.
     estop_release_authority_run() {
+        brain_peer_required || return 0
         local label="$1" features="$2" tag="$3"
         # The kernel's handshake needs a seeded entropy pool (the enforced
         # build refuses it otherwise, `refuse_unseeded`), and QEMU's pool is
@@ -22512,6 +22531,7 @@ PYEOF
     # the released switch, which on a board is a pull-up — and only then arms
     # the config. See `estop_gpio_smoke_task`.
     killswitch_gpio_scenario() {
+        brain_peer_required || return 0
         local label="safety: kill switch (gpio)"
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
@@ -22684,6 +22704,7 @@ PYEOF
     # ran, no duty it applied was ever positive, the last one is 0, and the peer
     # kept asking the whole time.
     latch_survives_reboot_scenario() {
+        brain_peer_required || return 0
         local label="safety: latch survives reboot"
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
@@ -23357,6 +23378,7 @@ PYEOF
     # connections there; every assertion below still holds,
     # and the camera connection adds its own.
     link_peer_scenario() {
+        brain_peer_required || return 0
         local label="$1" camera_port="$2" tag="link-peer"
         if [ "$camera_port" != 0 ]; then tag="link-camera"; fi
         printf "  %-26s" "${label}..."

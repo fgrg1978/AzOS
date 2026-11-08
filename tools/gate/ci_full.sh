@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-# AzOS + Brain — Full cross-repo CI check.
+# AzOS, with its optional brain client — Full CI check.
 #
 # Validates:
-#   1. azos: all 5 feature combos build clean
+#   1. azos: the feature combos build clean (needs nothing outside this repo)
 #   2. AzOSRobotBrain: pytest suite passes
 #   3. Protocol sync: brain_protocol.rs matches protocol.py, and the brain's
 #      protocol_consts.py holds the values this .config gives
 #      (tools/build/export_kernel_consts.py --check)
+#
+# Steps 2 and 3 run when the brain repo is found (tools/lib/brain_dir.sh:
+# AZOS_BRAIN_DIR, then the siblings of the checkout) and BRAIN is not 0; absent,
+# they print one skip line and the run is not red. BRAIN=1 requires the repo.
 #
 # Usage: bash tools/gate/ci_full.sh
 
@@ -17,7 +21,9 @@ set -euo pipefail
 qgrep() { local rc; grep "$@"; rc=$?; cat >/dev/null; return "$rc"; }
 
 OS_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
-BRAIN_DIR="$OS_DIR/../AzOSRobotBrain"
+. "$OS_DIR/tools/lib/brain_dir.sh"
+brain_resolve "$OS_DIR" || exit 1
+BRAIN_DIR="$BRAIN_PATH"
 CARGO="${CARGO:-cargo}"
 # Outputs live under $AZOS_OUT (tools/lib/out_dir.py), never in the checkout.
 AZOS_OUT="${AZOS_OUT:-$(python3 "$(dirname "$0")/../lib/out_dir.py")}"; export AZOS_OUT
@@ -68,7 +74,7 @@ check_build() {
 }
 
 echo "========================================="
-echo " AzOS + Brain — Full CI"
+echo " AzOS — Full CI"
 echo "========================================="
 echo ""
 
@@ -90,7 +96,10 @@ echo ""
 
 # ── 2. AzOS Robot Brain tests ────────────────────────────────────────────
 echo "[2/3] AzOS Robot Brain tests"
-if [ -d "$BRAIN_DIR" ]; then
+if [ "$BRAIN_STATE" = required ]; then
+    echo "  FAIL — BRAIN=1 but no AzOSRobotBrain at ${BRAIN_PATH:-the sibling of the checkout}"
+    FAIL=$((FAIL + 1))
+elif [ "$BRAIN_STATE" = found ]; then
     cd "$BRAIN_DIR"
     # Syntax check
     check "syntax (server.py)"   python3 -m py_compile server.py
@@ -114,8 +123,7 @@ if [ -d "$BRAIN_DIR" ]; then
         FAIL=$((FAIL + 1))
     fi
 else
-    echo "  SKIP — $BRAIN_DIR not found"
-    WARN=$((WARN + 1))
+    echo "  SKIP — $(brain_skip_reason)"
 fi
 echo ""
 
@@ -124,7 +132,9 @@ echo "[3/3] Protocol sync"
 RUST_PROTO="$OS_DIR/crates/domains/robot/behavior/src/brain_protocol.rs"
 PY_PROTO="$BRAIN_DIR/protocol.py"
 
-if [ -f "$RUST_PROTO" ] && [ -f "$PY_PROTO" ]; then
+if [ "$BRAIN_STATE" != found ]; then
+    echo "  SKIP — $(brain_skip_reason)"
+elif [ -f "$RUST_PROTO" ] && [ -f "$PY_PROTO" ]; then
     SYNC_OK=true
 
     # Check key packet types exist in both.
@@ -162,7 +172,9 @@ fi
 # .config. A drift warns, as the packet check above does: the mirror follows
 # one chosen .config, and the brain's own pytest asserts what it relies on.
 PY_CONSTS="$BRAIN_DIR/protocol_consts.py"
-if [ -d "$BRAIN_DIR" ] && [ -f "$OS_DIR/.config" ]; then
+if [ "$BRAIN_STATE" != found ]; then
+    echo "  SKIP — $(brain_skip_reason)"
+elif [ -f "$OS_DIR/.config" ]; then
     if CONSTS_OUT="$(python3 "$OS_DIR/tools/build/export_kernel_consts.py" --config "$OS_DIR/.config" --out "$PY_CONSTS" --check 2>&1)"; then
         echo "  Kernel constants:             PASS"
         PASS=$((PASS + 1))
@@ -172,7 +184,7 @@ if [ -d "$BRAIN_DIR" ] && [ -f "$OS_DIR/.config" ]; then
         WARN=$((WARN + 1))
     fi
 else
-    echo "  SKIP — no $BRAIN_DIR or no .config"
+    echo "  SKIP — no .config"
     WARN=$((WARN + 1))
 fi
 

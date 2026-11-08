@@ -52,8 +52,8 @@ What it covers and what it does not:
   kernel's. Crates the root `Cargo.toml` excludes (the ring-3 programs, each
   with its own lockfile) and the vendored tree are separate graphs and do not
   appear.
-- If a sibling checkout that holds the Python brain exists (the script's
-  `BRAIN_DIR`, one level above the repository root), its Python dependencies are
+- If the optional checkout that holds the Python brain is found
+  (`AZOS_BRAIN_DIR`, else the sibling of the checkout; `BRAIN=0` leaves it out), its Python dependencies are
   added as `pkg:pypi/<name>@<version>` components. A pinned lock file
   (`requirements.lock`, `requirements-lock.txt`, `poetry.lock`, `Pipfile.lock`,
   `uv.lock`) is read for `name==version` lines only, so in practice a

@@ -1,23 +1,25 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-"""Export kernel-side Kconfig constants to a Python file the brain consumes.
+"""Export kernel-side Kconfig constants to a Python file an external client consumes.
 
-The brain repo (`AzOSRobotBrain/`) is Python; it doesn't see the Rust
-`crates/core/limits/src/generated.rs` directly.  Without coordination the two
-sides drift (TCP_MAX_CONNS, MAX_SOCKETS, MTU, etc.) and bugs only surface
-at deployment.
+The OS does not depend on that client. This tool only runs when asked, and
+writes or compares the one file named by `--out` (nothing is written into any
+other repository by default). The optional brain repo (`AzOSRobotBrain/`) is
+Python; it doesn't see the Rust `crates/core/limits/src/generated.rs`
+directly. Without coordination the two sides drift (TCP_MAX_CONNS,
+MAX_SOCKETS, MTU, etc.) and bugs only surface at deployment.
 
 This script reads the kernel's active `.config` and writes a Python
-companion module `AzOSRobotBrain/protocol_consts.py` with the subset of
-options the brain side cares about — TCP/network sizing, AEAD wire
+companion module (the brain's is `AzOSRobotBrain/protocol_consts.py`) with the
+subset of options the client cares about — TCP/network sizing, AEAD wire
 constants, profile flags, architecture flags.
 
-Run after every Kconfig change:
+Run after a Kconfig change, when the client's mirror should follow:
 
     cd azos
     make defconfig-generic-sbc-riscv64-dev          # or any defconfig
-    python3 tools/build/export_kernel_consts.py
+    python3 tools/build/export_kernel_consts.py --out ../AzOSRobotBrain/protocol_consts.py
 
 The output file is regenerated; manual edits are lost.  Brain code that
 needs a value imports it:
@@ -25,8 +27,9 @@ needs a value imports it:
     from protocol_consts import KERNEL_TCP_MAX_CONNS
 
 Drift detection, both sides:
-  * `--check` (the protocol-sync step of tools/gate/ci_full.sh, `make ci-full`)
-    exits 1 when the brain's file holds other values than this `.config`
+  * `--check` (the protocol-sync step of tools/gate/ci_full.sh, `make ci-full`,
+    which runs it only when the brain repo is found) exits 1 when the file
+    holds other values than this `.config`
     gives (its header, which names the source, is not compared), or when an
     EXPORTED symbol is not declared in the Kconfig tree any more;
   * the brain's pytest loads `protocol_consts.py` and checks the invariants
@@ -277,8 +280,8 @@ def main() -> int:
     )
     p.add_argument(
         "--out",
-        default="../AzOSRobotBrain/protocol_consts.py",
-        help="Destination Python file (default: ../AzOSRobotBrain/protocol_consts.py)",
+        required=True,
+        help="The Python file to write, or with --check to compare against",
     )
     p.add_argument(
         "--check",

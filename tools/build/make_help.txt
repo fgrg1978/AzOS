@@ -89,7 +89,7 @@ Test & gate
   check1                 Change check: check0, then smoke boots and the QEMU scenarios the diff maps to.
   check-fast             Fronts' check: per ISA one ktest boot, one runtime-canary boot, one abitest boot.
   ci                     The full gate (long; run before pushing).
-  ci-full                The full gate plus the AzOSRobotBrain tests and protocol sync.
+  ci-full                The kernel builds plus, when the brain repo is found, its tests and protocol sync.
   qemu-systest           Run the system-call test program in ring 3.
   qemu-dhcp-smoke        Check that DHCP reaches Bound against QEMU's server.
   qemu-net-pair          Boot two kernels and exchange a TCP payload.
