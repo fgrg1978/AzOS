@@ -329,6 +329,7 @@ fn interrupt_remapping() -> azos_dma::InterruptRemapping {
 /// did not route (x86_64: remapping on). riscv64 delivers an MSI through the
 /// hart's IMSIC page, which no ring-3 domain maps, so a translated function
 /// cannot deliver one: allowed only with no IOMMU up.
+// arch-only: aarch64's `msi_supported` hook is a constant false and does not call it.
 #[cfg(any(target_arch = "x86_64", target_arch = "riscv64"))]
 pub(crate) fn ring3_msi_allowed() -> bool {
     if RING3_UNCONFINED.load(core::sync::atomic::Ordering::Acquire) {
@@ -339,6 +340,7 @@ pub(crate) fn ring3_msi_allowed() -> bool {
 }
 
 /// Is an IOMMU being driven.
+// arch-only: its one caller is `ring3_msi_allowed`.
 #[cfg(any(target_arch = "x86_64", target_arch = "riscv64"))]
 fn iommu_running() -> bool {
     #[cfg(any(feature = "iommu-riscv", feature = "iommu-smmuv3", feature = "iommu-vtd", feature = "iommu-amdvi"))]

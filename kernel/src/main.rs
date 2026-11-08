@@ -529,6 +529,7 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
         crate::entry::aarch64::ext::hyp_monitor::lock_ro_data();
     }
     // Gate and bench only: the cost lanes' second reading, after every lock.
+    // arch-only: the resident monitor, and its cost lanes, exist on aarch64 alone.
     #[cfg(all(target_arch = "aarch64", feature = "hyp-cost-probe"))]
     crate::entry::aarch64::ext::hyp_cost::after_lock();
 

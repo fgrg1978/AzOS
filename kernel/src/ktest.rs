@@ -527,6 +527,8 @@ fn store_expecting_fault(p: *mut u64, v: u64) -> Option<u32> {
         #[cfg(target_arch = "riscv64")]
         core::arch::asm!("la {t}, 2f", "sd {t}, 0({s})", "sd {v}, 0({p})", "2:",
             t = out(reg) _, s = in(reg) slot, v = in(reg) v, p = in(reg) p, options(nostack));
+        #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64", target_arch = "riscv64")))]
+        compile_error!("a store that is expected to fault has no asm for this ISA");
     }
     expected::disarm()
 }
@@ -536,6 +538,7 @@ fn store_expecting_fault(p: *mut u64, v: u64) -> Option<u32> {
 // Runtime canary `canary=bti-guard-skip` (the text stays unguarded): the first
 // check fails.
 azos_ktest::ktest! {
+    // arch-only: FEAT_BTI guarded kernel text exists on aarch64 alone.
     #[cfg(target_arch = "aarch64")]
     fn cfi_kernel_text_is_branch_target_guarded() {
         if !azos_limits::A64_BTI_ENFORCE || !azos_arch_api::isa::aarch64::BTI.gate(azos_arch::cpu::features::detect().bti) {
@@ -557,6 +560,7 @@ azos_ktest::ktest! {
 // bit the `nop` just runs: no exception, and the test fails (canary
 // `canary=bti-guard-skip`).
 azos_ktest::ktest! {
+    // arch-only: a Branch Target Exception exists on aarch64 alone.
     #[cfg(target_arch = "aarch64")]
     fn cfi_branch_to_a_non_pad_raises_a_branch_target_exception() {
         use crate::trap::fault::expected;
@@ -581,11 +585,14 @@ azos_ktest::ktest! {
 
 // A64_BTI_ENFORCE: SCTLR_EL1.BT1 (paciasp strict) on every CPU: a task pinned to
 // each reads its own. Not the enforcement (that is the GP bit, above).
+// arch-only: SCTLR_EL1.BT1 exists on aarch64 alone.
 #[cfg(target_arch = "aarch64")]
 static BTI_CPUS: AtomicUsize = AtomicUsize::new(0);
+// arch-only: SCTLR_EL1.BT1 exists on aarch64 alone.
 #[cfg(target_arch = "aarch64")]
 static BTI_READBACKS: AtomicUsize = AtomicUsize::new(0);
 
+// arch-only: SCTLR_EL1.BT1 exists on aarch64 alone.
 #[cfg(target_arch = "aarch64")]
 fn bti_readback(_: usize) {
     if azos_arch::cpu::cfi::pac_bt_strict_this_cpu() {
@@ -595,6 +602,7 @@ fn bti_readback(_: usize) {
 }
 
 azos_ktest::ktest_late! {
+    // arch-only: SCTLR_EL1.BT1 exists on aarch64 alone.
     #[cfg(target_arch = "aarch64")]
     fn cfi_paciasp_is_strict_on_every_cpu() {
         if !azos_limits::A64_BTI_ENFORCE || !azos_arch_api::isa::aarch64::BTI.gate(azos_arch::cpu::features::detect().bti) {
