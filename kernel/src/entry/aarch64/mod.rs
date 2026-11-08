@@ -387,21 +387,41 @@ pub extern "C" fn aarch64_secondary_ttbr1_attach() -> u64 {
     1
 }
 
-/// Called from `boot.S` on every secondary right after the CFI steps: with the
-/// pool locked by an overlay (Kconfig `A64_POE`, PT_PROTECTION) this CPU denies
-/// writes to it too, before it does any other work. A CPU that cannot would
-/// leave the pool open for the whole system: it stops.
+/// Called from `boot.S` on every secondary, and on a CPU back from a power-down,
+/// right after the CFI steps, on the kernel's own tables: the stage-1 controls
+/// the boot CPU turned on, in one `TCR2_EL1` write, before this CPU does any
+/// other work: the page-table pool's overlay (Kconfig `A64_POE`,
+/// PT_PROTECTION; `pt_lock_this_cpu` keeps PIE in its write) and the indirect
+/// permissions (Kconfig `A64_S1PIE`). A CPU that cannot follow would leave the
+/// pool open, or a GCS page writable, for the whole system: it stops.
 #[unsafe(no_mangle)]
-pub extern "C" fn aarch64_secondary_pt_lock() {
+pub extern "C" fn aarch64_secondary_stage1() {
+    use azos_arch::mmu::pie;
     #[cfg(feature = "pt-protection")]
-    if azos_mm::ptprot::keyed() {
+    let poe = azos_mm::ptprot::keyed();
+    #[cfg(not(feature = "pt-protection"))]
+    let poe = false;
+    let pie_on = !azos_limits::A64_S1PIE_NEVER && pie::on();
+    let why = if pie_on && !pie::wanted() {
+        Some("the boot CPU runs indirect permissions and this one has no FEAT_S1PIE")
+    } else if poe {
         use azos_arch::ArchPlatform;
-        if !azos_arch::ARCH.pt_lock_this_cpu() {
-            azos_drv_sys::kerr!("[SMP] FAILED: a CPU cannot deny writes to the page-table pool (TCR2_EL1.POE / POR_EL1 did not take); halting it");
-            loop {
-                // SAFETY: parks this CPU.
-                unsafe { core::arch::asm!("wfe", options(nomem, nostack)) };
-            }
+        (!azos_arch::ARCH.pt_lock_this_cpu()).then_some("TCR2_EL1.POE / POR_EL1 did not take: the page-table pool stays writable")
+    } else {
+        if pie_on {
+            // SAFETY: EL1, FEAT_S1PIE and FEAT_TCR2 present (`wanted`), the
+            // trampoline granted the registers, and TTBR0/TTBR1 hold the
+            // kernel's tables (`aarch64_secondary_mmu_init` ran).
+            unsafe { pie::write_tcr2(false, true) };
+        }
+        None
+    };
+    let why = why.or_else(|| (pie_on && !pie::active_this_cpu()).then_some("TCR2_EL1.PIE / PIR_EL1 did not take"));
+    if let Some(why) = why {
+        azos_drv_sys::kerr!("[SMP] FAILED: a CPU cannot follow the boot CPU's stage-1 controls ({}); halting it", why);
+        loop {
+            // SAFETY: parks this CPU.
+            unsafe { core::arch::asm!("wfe", options(nomem, nostack)) };
         }
     }
 }

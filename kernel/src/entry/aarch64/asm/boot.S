@@ -627,7 +627,7 @@ _aarch64_secondary_entry:
     bl      _azos_cfi_enable
 1:
     bl      azos_bti_enable          // BT1: the boot CPU has guarded the text by now
-    bl      aarch64_secondary_pt_lock // PT_PROTECTION (A64_POE): deny writes to the pool, before any other work
+    bl      aarch64_secondary_stage1 // A64_POE pool lock and A64_S1PIE, as the boot CPU: before any other work
 
     // ── A PE that left through the saved-context path ────────────────────
     // A power-down CPU_SUSPEND or a hotplug stop (kernel/src/entry/aarch64/
@@ -707,7 +707,7 @@ boot_entry_el:
 .extern azos_cfi_prepare
 .extern _azos_cfi_enable
 .extern azos_bti_enable
-.extern aarch64_secondary_pt_lock
+.extern aarch64_secondary_stage1
 .extern aarch64_early_ttbr1_alias
 .if {kaslr}
 .extern aarch64_early_kaslr

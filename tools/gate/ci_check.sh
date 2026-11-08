@@ -17484,6 +17484,22 @@ CPU 5 lacks hwcap bits"
     ktest_row_poe() { KCFG_TAG=poe KCFG_LINE="CONFIG_A64_POE_PROBE=y" KCFG_GREP="CONFIG_A64_POE_PROBE=y" ktest_row_cfgline "$@"; }
     par "ktest pt-protection poe (arm phase) (arm)" ktest_row_poe "ktest pt-protection poe (arm phase) (arm)" arm "" "" "" "$KTEST_POE_RE"
     par "ktest pt-protection poe lock skipped canary (arm phase) (arm)" ktest_row_poe "ktest pt-protection poe lock skipped canary (arm phase) (arm)" arm "" "+mm_pt_pool_is_write_protected mm_pt_pool_refuses_a_store_outside_a_window" "canary=pt-lock-skip"
+    # Kconfig A64_S1PIE (arm phase): every CPU runs stage-1 indirect permissions (TCR2_EL1.PIE, PIR_EL1,
+    # PIRE0_EL1) and the boot line reads the registers back; a kernel GCS page (`vmm::map_gcs`) carries the
+    # GCS index, reads, and refuses a plain store; PAN still refuses an EL1 read of a user page under
+    # PIRE0_EL1 (a premise of the scheme, `mmu::pie`). QEMU `-cpu max` has FEAT_S1PIE; where the kernel enters
+    # at EL2, a missing grant (HCRX_EL2.TCR2En, nPIR_EL1) traps at the first PIR_EL1 write and the row never
+    # reaches the line. With A64_POE as well, the pool rows must pass too: the overlay applies through
+    # PIR_EL1's `_O` encodings. Canaries: `s1pie-skip` (PIE stays off), `s1pie-gcs-rw` (the GCS index
+    # grants a plain store); `pan-read-kernel-page` (the PAN test reads a kernel page) on the gate's cell.
+    KTEST_PIE_RE=$'^\\[MM\\] aarch64 S1PIE=true \\(stage-1 indirect permissions; PIR_EL1 0x5511070350190000, PIRE0_EL1 0x5010000070300000, GCS index 4\\)$\n^ok [0-9]+ - cfi_gcs_page_refuses_a_plain_store$\n^ok [0-9]+ - mm_pan_refuses_an_el1_read_of_a_user_page$'
+    ktest_row_pie() { KCFG_TAG=pie KCFG_LINE="CONFIG_A64_S1PIE_PROBE=y" KCFG_GREP="CONFIG_A64_S1PIE_PROBE=y" ktest_row_cfgline "$@"; }
+    ktest_row_pie_poe() { KCFG_TAG=pie-poe KCFG_LINE=$'CONFIG_A64_S1PIE_PROBE=y\nCONFIG_A64_POE_PROBE=y' KCFG_GREP="CONFIG_A64_POE_PROBE=y" ktest_row_cfgline "$@"; }
+    par "ktest s1pie (arm phase) (arm)" ktest_row_pie "ktest s1pie (arm phase) (arm)" arm "" "" "" "$KTEST_PIE_RE"
+    par "ktest s1pie with poe (arm phase) (arm)" ktest_row_pie_poe "ktest s1pie with poe (arm phase) (arm)" arm "" "" "" "$KTEST_PIE_RE"$'\n'"$KTEST_POE_RE"
+    par "ktest s1pie skipped canary (arm phase) (arm)" ktest_row_pie "ktest s1pie skipped canary (arm phase) (arm)" arm "" "cfi_gcs_page_refuses_a_plain_store" "canary=s1pie-skip"
+    par "ktest s1pie gcs rw canary (arm phase) (arm)" ktest_row_pie "ktest s1pie gcs rw canary (arm phase) (arm)" arm "" "cfi_gcs_page_refuses_a_plain_store" "canary=s1pie-gcs-rw"
+    par "ktest pan kernel page canary (arm)" ktest_row "ktest pan kernel page canary (arm)" arm "" "mm_pan_refuses_an_el1_read_of_a_user_page" "canary=pan-read-kernel-page"
     # Kconfig PT_PROTECTION_SOFT: no supervisor key on rv and arm, so the pool is read-only in the direct
     # map and the funnel writes through a software window. The boot line says so, the ktest writes a word
     # through the funnel and reads the pool back read-only; the canary (`canary=pt-soft-leak`) leaves a

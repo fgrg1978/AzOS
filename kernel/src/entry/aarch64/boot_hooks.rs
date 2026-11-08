@@ -377,6 +377,7 @@ pub fn cpu_features(_fw: &Firmware) {
         e("mte", "A64_MTE", policy::MTE, f.mte),
         e("gcs", "A64_GCS", policy::GCS, regs.gcs()),
         e("poe", "A64_POE", policy::POE, regs.s1poe()),
+        e("s1pie", "A64_S1PIE", policy::S1PIE, regs.s1pie()),
         e("sve", "A64_SVE", policy::SVE, regs.sve()),
         e("aes", "A64_AES", policy::AES, f.aes),
         e("pmull", "A64_PMULL", policy::PMULL, f.pmull),
@@ -642,6 +643,29 @@ pub fn restrict_low_half() {
             crate::entry::aarch64::AARCH64_KERNEL_TTBR0.store(kpt as u64, Ordering::Release);
         }
     }
+    enable_s1pie();
+}
+
+/// Kconfig A64_S1PIE: indirect permissions on the boot CPU, now that only the
+/// kernel's own tables are live (TTBR1 the kernel root, TTBR0 device-only:
+/// the boot identity map's hand-built words are not in the scheme), and
+/// before any other CPU runs; they follow (`aarch64_secondary_stage1`). The
+/// line prints the readback. Runtime gate canaries: `canary=s1pie-skip`
+/// leaves PIE off, `canary=s1pie-gcs-rw` gives the GCS index plain read-write.
+fn enable_s1pie() {
+    use azos_arch::mmu::pie;
+    if azos_limits::A64_S1PIE_NEVER {
+        return;
+    }
+    let pir = if canary!("s1pie-gcs-rw") {
+        pie::with_nibble(pie::PIR_EL1_VALUE, pie::GCS_INDEX, pie::PIE_RW_O)
+    } else {
+        pie::PIR_EL1_VALUE
+    };
+    let on = !canary!("s1pie-skip") && pie::enable_boot_cpu(pir);
+    // MARKER, asserted by the gate's `s1pie` rows.
+    kprintln!("[MM] aarch64 S1PIE={} (stage-1 indirect permissions; PIR_EL1 {:#018x}, PIRE0_EL1 {:#018x}, GCS index {})",
+        on, pie::pir_live(), pie::PIRE0_EL1_VALUE, pie::GCS_INDEX);
 }
 
 /// The null and stack guards read back from the page table, and the opt-in

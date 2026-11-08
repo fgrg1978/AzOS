@@ -68,23 +68,19 @@ pub const fn denies_writes(tcr2: u64, por: u64) -> bool {
     tcr2 & TCR2_EL1_POE != 0 && por & 0xFFFF_FFFF == POR_LOCKED
 }
 
-/// `TCR2_EL1.POE` on and `POR_EL1` denying writes to the pool, on this CPU.
-/// Only after `ArchPlatform::pt_key_present` said yes, and with EL2's grants in
-/// place. Whether it took is read back.
+/// `TCR2_EL1.POE` on and `POR_EL1` denying writes to the pool, on this CPU,
+/// with PIE kept on where the boot runs with it (`pie::on`): `POR_EL1` first,
+/// then the one composed `TCR2_EL1` write (`pie::write_tcr2`). Only after
+/// `ArchPlatform::pt_key_present` said yes, and with EL2's grants in place.
+/// Whether it took is read back.
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
 pub fn lock_this_cpu() -> bool {
     // SAFETY: EL1; FEAT_S1POE and FEAT_TCR2 are present (the caller's probe) and
-    // EL2 let EL1 at the registers, so these accesses do not trap.
+    // EL2 let EL1 at the registers, so these accesses do not trap; PIE is asked
+    // only when the boot CPU found FEAT_S1PIE, on the kernel's tables.
     unsafe {
-        core::arch::asm!(
-            // Absolute: TCR2_EL1's other fields (PnCH, PIE, E0POE, D128, ...) are
-            // UNKNOWN out of reset and change what a descriptor means.
-            "msr S3_0_C2_C0_3, {poe}",
-            "msr S3_0_C10_C2_4, {por}",
-            "isb",
-            poe = in(reg) TCR2_EL1_POE, por = in(reg) POR_LOCKED,
-            options(nostack),
-        );
+        core::arch::asm!("msr S3_0_C10_C2_4, {por}", por = in(reg) POR_LOCKED, options(nomem, nostack, preserves_flags));
+        super::pie::write_tcr2(true, super::pie::on());
     }
     locked_this_cpu()
 }

@@ -595,6 +595,14 @@ pub(crate) const NAMES: &[&str] = &[
     // entry/aarch64/boot_hooks.rs `guard_kernel_text`: the kernel text stays
     // unguarded (ktest `cfi_kernel_text_is_branch_target_guarded`, A64_BTI_ENFORCE).
     "bti-guard-skip",
+    // entry/aarch64/boot_hooks.rs `enable_s1pie`: the boot leaves stage-1
+    // indirect permissions off, or gives the kernel GCS index plain read-write
+    // (ktest `cfi_gcs_page_refuses_a_plain_store`, A64_S1PIE).
+    "s1pie-skip",
+    "s1pie-gcs-rw",
+    // ktest.rs `mm_pan_refuses_an_el1_read_of_a_user_page`: the scratch page is
+    // a kernel one, so the read the test expects to fault goes through.
+    "pan-read-kernel-page",
     // vmm: a closed software page-table window leaves its page writable (ktest
     // `mm_pt_pool_stays_read_only_between_writes`, PT_PROTECTION_SOFT).
     "pt-soft-leak",

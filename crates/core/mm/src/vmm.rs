@@ -973,6 +973,20 @@ pub fn for_each_leaf_in(root: usize, s: usize, e: usize, mut f: impl FnMut(usize
 
 /// Map a virtual address to a physical address with the given permissions.
 pub fn map(pt_phys: usize, vaddr: usize, paddr: usize, flags: PagePerms) -> KResult<()> {
+    map_with(pt_phys, vaddr, paddr, || ARCH.pte_make_leaf(paddr, flags, 0))
+}
+
+/// Map `vaddr` in the kernel's table to the frame `paddr` as a kernel
+/// guarded-control-stack page (`Mmu::pte_make_gcs_leaf`: EL1 reads it, the GCS
+/// instructions write it, a plain store faults). `InvalidArg` where the
+/// ISA or this boot has no such page (aarch64 without `A64_S1PIE` or without
+/// FEAT_S1PIE).
+pub fn map_gcs(vaddr: usize, paddr: usize) -> KResult<()> {
+    map_with(kernel_pagetable(), vaddr, paddr, || ARCH.pte_make_gcs_leaf(paddr))
+}
+
+#[inline(always)]
+fn map_with(pt_phys: usize, vaddr: usize, paddr: usize, leaf: impl FnOnce() -> Result<u64, MmuError>) -> KResult<()> {
     // Placed here, at the mapper, and not in each syscall that calls it. Seven
     // paths reach a user page table this way -- `sys_mmap`, `sys_brk` (both
     // when committed at once), the shm and mmio window mappers, the ELF loader
@@ -993,8 +1007,7 @@ pub fn map(pt_phys: usize, vaddr: usize, paddr: usize, flags: PagePerms) -> KRes
         return Err(KernelError::AlreadyMapped);
     }
 
-    let pte = ARCH.pte_make_leaf(paddr, flags, 0).map_err(mmu_error_to_kernel_error)?
-        | kernel_global_bit(pt_phys, vaddr);
+    let pte = leaf().map_err(mmu_error_to_kernel_error)? | kernel_global_bit(pt_phys, vaddr);
     // By CAS from the word read above (N12i), as `map_mega` and the merge do:
     // in a level-0 table the root shares with the kernel-half merge, the
     // push (`fill_empty`) or another thread may have installed a leaf here
@@ -1292,13 +1305,18 @@ fn unmap_inner(pt_phys: usize, vaddr: usize, shoot: bool) {
 /// nothing maps it. A plain walk, for the exec-time evidence that a locked
 /// region really is mapped with level-1 leaves (Kconfig `LOCKED_HUGE_LEAVES`).
 pub fn leaf_level(pt_phys: usize, vaddr: usize) -> Option<usize> {
+    leaf(pt_phys, vaddr).map(|(level, _)| level)
+}
+
+/// The leaf that maps `vaddr` under `pt_phys`: its trait level and its word.
+pub fn leaf(pt_phys: usize, vaddr: usize) -> Option<(usize, u64)> {
     let mut pt = pt_phys;
     for level in (0..root_level() + 1).rev() {
         let slot = crate::addr::phys_to_virt(pt + ARCH.vpn(vaddr, level) * 8) as *const u64;
         // SAFETY: an aligned entry of a live table page.
         let pte: u64 = if level == 1 { l1_read(slot) } else { unsafe { core::ptr::read_volatile(slot) } };
         if !ARCH.pte_is_valid(pte) { return None; }
-        if ARCH.pte_is_leaf(pte, level) { return Some(level); }
+        if ARCH.pte_is_leaf(pte, level) { return Some((level, pte)); }
         pt = ARCH.pte_phys(pte);
     }
     None

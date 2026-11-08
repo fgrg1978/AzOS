@@ -55,7 +55,7 @@ DEFINES = ("arch/api/src/lib.rs", "arch/aarch64/src/api_impl.rs", "arch/riscv*/s
 SCAN_ROOTS = ("crates", "kernel", "arch", "userspace")
 SKIP_DIRS = {"target", "build", ".git", "third_party", "tests"}
 MIN_SCANNED = 3
-BUILDER = re.compile(r"\b(?:pte_make_leaf|pte_make_table|pte_make_contig_leaf|pte_share_cow|pte_break_cow|pte_contig_member|PTE_BBM_PARK)\b")
+BUILDER = re.compile(r"\b(?:pte_make_leaf|pte_make_table|pte_make_contig_leaf|pte_make_gcs_leaf|pte_share_cow|pte_break_cow|pte_contig_member|PTE_BBM_PARK)\b")
 RAW = re.compile(r"\b(?:write_volatile|write_unaligned|write_bytes|copy_nonoverlapping|copy_from|copy_to)\b|\bptr::write\b")
 METHOD = re.compile(r"\.\s*(?:store|swap|fetch_(?:add|sub|or|and|xor|nand|max|min|update)|compare_exchange(?:_weak)?)\s*\(")
 DEREF = re.compile(r"(?:^|[;{}])[ \t]*\*[ \t]*(?![A-Z][A-Z0-9_]*\b)[A-Za-z_(][^;{}\n]*?[ \t][+\-*/%&|^]?=[ \t]", re.M)

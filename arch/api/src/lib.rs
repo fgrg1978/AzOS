@@ -459,6 +459,16 @@ pub trait Mmu: Send + Sync {
     /// extension: the bit is reserved without it.
     fn pte_guarded(&self, word: u64) -> u64 { word }
 
+    /// A level-0 leaf for `pa` as a kernel guarded-control-stack page: EL1
+    /// reads it and the GCS instructions read and write it, a plain store
+    /// faults, EL0 has no access (aarch64 FEAT_GCS, a stage-1 indirect
+    /// permission, Kconfig `A64_S1PIE`). `UnrepresentablePerms` on an ISA or
+    /// a boot without such a page type.
+    fn pte_make_gcs_leaf(&self, pa: usize) -> Result<u64, MmuError> {
+        let _ = pa;
+        Err(MmuError::UnrepresentablePerms)
+    }
+
     /// Decode a leaf word's permissions. Level-independent: the
     /// attribute bits (R/W/X/U/mem/A/D) live in the same positions
     /// regardless of which level the leaf was found at.

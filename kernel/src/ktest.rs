@@ -510,7 +510,7 @@ azos_ktest::ktest! {
 // (`trap::fault::expected`) and its cause is returned; `None` when the store
 // went through. The resume label is stored from inside the asm, so it is armed
 // before the store can fault.
-#[cfg(feature = "pt-protection")]
+#[cfg(any(feature = "pt-protection", target_arch = "aarch64"))]
 fn store_expecting_fault(p: *mut u64, v: u64) -> Option<u32> {
     use crate::trap::fault::expected;
     let slot = expected::resume_slot();
@@ -580,6 +580,131 @@ azos_ktest::ktest! {
             Some(_) => Err("the branch to a non-pad raised an exception, but not a Branch Target Exception"),
             None => Err("a branch to a non-pad in the guarded kernel text did not fault"),
         }
+    }
+}
+
+// A load at `p` that may fault, as `store_expecting_fault`: the value read, or
+// the fault's cause.
+#[cfg(target_arch = "aarch64")]
+fn load_expecting_fault(p: *const u64) -> Result<u64, u32> {
+    use crate::trap::fault::expected;
+    let slot = expected::resume_slot();
+    expected::arm(0);
+    let mut v: u64 = 0;
+    // SAFETY: the asm stores the address of its own label, then loads from `p`;
+    // a fault resumes at the label, right after the load, with `v` still 0.
+    unsafe {
+        core::arch::asm!("adr {t}, 2f", "str {t}, [{s}]", "ldr {v}, [{p}]", "2:",
+            t = out(reg) _, s = in(reg) slot, v = inout(reg) v, p = in(reg) p, options(nostack));
+    }
+    match expected::disarm() {
+        Some(cause) => Err(cause),
+        None => Ok(v),
+    }
+}
+
+// A kernel VA nothing maps, above the RAM map past `text_poke`'s alias slots,
+// for a ktest's own page.
+#[cfg(target_arch = "aarch64")]
+fn ktest_scratch_va() -> Option<usize> {
+    const SLOT: usize = 2 << 20;
+    let kpt = azos_mm::vmm::kernel_pagetable();
+    let base = (azos_mm::addr::phys_to_virt(azos_mm::vmm::ram_end()) + SLOT - 1) & !(SLOT - 1);
+    (16..32).map(|i| base + i * SLOT)
+        .find(|&va| azos_mm::vmm::translate(kpt, va).is_none() && !azos_mm::vmm::va_is_kernel_mapped(va))
+}
+
+// `body(va, frame)` on a zeroed frame mapped at a scratch kernel VA by `map`;
+// the page is unmapped and freed afterwards whatever `body` said.
+#[cfg(target_arch = "aarch64")]
+fn with_scratch_page(
+    map: impl FnOnce(usize, usize) -> bool,
+    body: impl FnOnce(usize, usize) -> Result<(), &'static str>,
+) -> Result<(), &'static str> {
+    use azos_arch::Mmu;
+    let va = ktest_scratch_va().ok_or("no unmapped kernel VA for the scratch page")?;
+    let frame = azos_mm::pmm::alloc_page().map_err(|_| "no free page")?;
+    let pa = frame.as_usize();
+    // SAFETY: a frame of ours, through the direct map.
+    unsafe { core::ptr::write_bytes(azos_mm::addr::phys_to_virt(pa) as *mut u8, 0, azos_arch::PAGE_SIZE) };
+    let r = if map(va, pa) { body(va, pa) } else { Err("the scratch page could not be mapped") };
+    azos_mm::vmm::unmap_kernel(azos_mm::vmm::kernel_pagetable(), va);
+    azos_arch::ARCH.flush_tlb_page(va);
+    let _ = azos_mm::pmm::free_page(frame);
+    r
+}
+
+// PAN: with PSTATE.PAN set, an EL1 read of a page EL0 may read faults (EC 0x25),
+// under the direct permissions and under A64_S1PIE's indirect ones (the
+// premise `mmu::pie` states, checked here on the S1PIE row). Where the CPU has
+// no PAN, or PSTATE.PAN reads 0 here, there is nothing to check. Runtime
+// canary `canary=pan-read-kernel-page` (the page is a kernel one): the read
+// goes through and the test fails.
+azos_ktest::ktest! {
+    #[cfg(target_arch = "aarch64")]
+    fn mm_pan_refuses_an_el1_read_of_a_user_page() {
+        if !azos_arch_api::isa::aarch64::PAN.gate(azos_arch::cpu::features::read_id_regs().pan()) {
+            return Ok(());
+        }
+        let pstate: u64;
+        // SAFETY: a read of PSTATE.PAN (FEAT_PAN, probed above).
+        unsafe { core::arch::asm!("mrs {0}, S3_0_C4_C2_3", out(reg) pstate, options(nomem, nostack, preserves_flags)) };
+        if pstate & (1 << 22) == 0 {
+            return Ok(());
+        }
+        let perms = if canary!("pan-read-kernel-page") { azos_arch::PagePerms::KERNEL_RW } else { azos_arch::PagePerms::USER_RW };
+        with_scratch_page(
+            |va, pa| azos_mm::vmm::map(azos_mm::vmm::kernel_pagetable(), va, pa, perms).is_ok(),
+            |va, _| match load_expecting_fault(va as *const u64) {
+                Err(0x25) => Ok(()),
+                Err(_) => Err("an EL1 read of a user page faulted, but not with a data abort"),
+                Ok(_) => Err("with PSTATE.PAN set, an EL1 read of a user page went through"),
+            },
+        )
+    }
+}
+
+// Kconfig A64_S1PIE: a kernel GCS page (`vmm::map_gcs`) carries the GCS index,
+// PIR_EL1 holds the GCS permission there, a plain load reads it, and a plain
+// store faults (EC 0x25) and lands nothing. Run on QEMU `-cpu max` (FEAT_S1PIE)
+// in the arm phase; a core without it skips, so the gate row requires the boot
+// line too. Runtime canaries: `canary=s1pie-skip` (PIE stays off: the first
+// check fails) and `canary=s1pie-gcs-rw` (the GCS index grants a plain store:
+// the PIR check and the store check fail).
+azos_ktest::ktest! {
+    #[cfg(target_arch = "aarch64")]
+    fn cfi_gcs_page_refuses_a_plain_store() {
+        use azos_arch::mmu::pie;
+        if azos_limits::A64_S1PIE_NEVER || !pie::wanted() {
+            return Ok(());
+        }
+        if !pie::on() || !pie::active_this_cpu() {
+            return Err("the CPU has FEAT_S1PIE, but the boot did not turn indirect permissions on");
+        }
+        with_scratch_page(
+            |va, pa| azos_mm::vmm::map_gcs(va, pa).is_ok(),
+            |va, pa| {
+                let Some((0, word)) = azos_mm::vmm::leaf(azos_mm::vmm::kernel_pagetable(), va) else {
+                    return Err("the GCS page is not a 4 KiB leaf");
+                };
+                if pie::pi_index(word) != pie::GCS_INDEX {
+                    return Err("the GCS page's leaf does not carry the GCS index");
+                }
+                if pie::nibble(pie::read_this_cpu().1, pie::GCS_INDEX) != pie::PIE_GCS {
+                    return Err("PIR_EL1 does not hold the GCS permission at the GCS index");
+                }
+                if load_expecting_fault(va as *const u64) != Ok(0) {
+                    return Err("a plain load of a GCS page did not read it");
+                }
+                let cause = store_expecting_fault(va as *mut u64, 0xA5A5);
+                // SAFETY: the frame of ours, through the direct map.
+                let landed = unsafe { core::ptr::read_volatile(azos_mm::addr::phys_to_virt(pa) as *const u64) };
+                if cause != Some(0x25) || landed != 0 {
+                    return Err("a plain store to a GCS page was not refused");
+                }
+                Ok(())
+            },
+        )
     }
 }
 
