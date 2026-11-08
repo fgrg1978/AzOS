@@ -1780,6 +1780,35 @@ mod tests {
     }
 
     #[test]
+    fn an_unlocked_mutex_is_handed_to_the_waiter_not_taken_back() {
+        // The releaser locks again before the waiter has run: the waiter
+        // already owns it, so the releaser is the one that waits.
+        fn releaser(e: &mut Env, _: usize) -> i32 {
+            let m = &objs().m;
+            e.mutex_lock(m).unwrap();
+            e.msleep(5).unwrap();
+            e.mutex_unlock(m).unwrap();
+            e.mutex_lock(m).unwrap();
+            log(1);
+            e.mutex_unlock(m).unwrap();
+            0
+        }
+        fn waiter(e: &mut Env, _: usize) -> i32 {
+            let m = &objs().m;
+            e.mutex_lock(m).unwrap();
+            log(2);
+            e.mutex_unlock(m).unwrap();
+            0
+        }
+        let mut e = env();
+        e.kthread_run(releaser, 0).unwrap();
+        e.kthread_run(waiter, 0).unwrap();
+        drain(&mut e, 0);
+        assert_eq!(take_log(), vec![2, 1], "the releaser took the mutex back from its waiter");
+        assert!(!objs().m.is_locked());
+    }
+
+    #[test]
     fn a_semaphore_unit_is_handed_to_the_waiter_not_stolen() {
         fn downer(e: &mut Env, d: usize) -> i32 {
             e.down(&objs().s).unwrap();
