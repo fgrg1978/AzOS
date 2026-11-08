@@ -40,10 +40,19 @@ ring-reserve-canary = []
 # Gate canaries only (host suites `actuation-tests`, `behavior-tests`): the
 # flusher writes the per-CPU queues one after another instead of in push
 # order; a full queue answers as if it took the record and drops it; a batch
-# leaves RAM before the medium took it.
+# leaves RAM before the medium took it; a safety record waits two rounds for
+# a busy writer handle; a safety record or a stop does not spill into another
+# queue; no push past the watermark wakes the flusher; a rotation calls the
+# staged records durable whatever the old file's fsync said; the flusher steps
+# over an in-flight number without waiting.
 durable-merge-canary = []
 durable-full-canary = []
 durable-staging-canary = []
+durable-busy-canary = []
+durable-spill-canary = []
+durable-nowake-canary = []
+durable-rotate-sync-canary = []
+durable-gap-skip-canary = []
 # Gate canary only (host suite `behavior-tests`): the telemetry encoders push
 # into the flight recorder's queues instead of the record region's, so a flood of
 # telemetry takes the queues' room and the telemetry tests must go red.

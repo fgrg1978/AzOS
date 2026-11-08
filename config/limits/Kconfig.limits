@@ -1539,20 +1539,23 @@ config LOG_QUEUES
     int "Flight-recorder durable queues (one per CPU, up to this many)"
     range 1 64
     default 4 if HWCLASS_EMBEDDED
-    default 8
+    default 16
     help
       crates/core/actuation/src/logger.rs: the flight recorder keeps its
       records (the e-stop latch and release, the release nonce floor and
       key pin, the write-ahead effect and stop records, every other safety
       record) in one single-producer queue per CPU, and the log flusher
-      merges them into the file in the order they were pushed. A CPU past
-      this many (NR_CPUS is the other bound) shares the queue of its number
-      modulo it; a producer that finds a queue's single writer handle
-      taken takes the next one.
+      merges them into the file in the order they were pushed. The build
+      has the smaller of this and NR_CPUS queues: one per CPU up to 16 by
+      default, so a machine of that size never shares one. A CPU past them
+      shares the queue of its number modulo the count; a producer that finds
+      a queue's single writer handle taken by another CPU tries the other
+      queues and, for a safety, stop or effect record, keeps trying for a
+      bounded time before the record is refused as busy.
 
       Cost: LOG_QUEUE_ENTRIES x 40 bytes plus 256 bytes of RAM per queue
-      (40 KiB at 8 x 128); the flusher looks at every queue per record it
-      stages.
+      the build has (about 5.3 KiB at 128 entries: 85 KiB for 16 queues,
+      21 KiB for 4); the flusher looks at every queue per record it stages.
 
 config LOG_QUEUE_ENTRIES
     int "Flight-recorder durable queue entries per CPU (power of two)"

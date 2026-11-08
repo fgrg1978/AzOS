@@ -786,8 +786,10 @@ pub const RULES: &[RuleInfo] = &[
     RuleInfo {
         // The subject is the task that asked. `effect` is `kind << 8 | class`
         // (`azos_actuation::effect_gate`: kind 1 a motor; class 1 reversible),
-        // `reason` 1 the recorder's ring is at its effect limit, 4 the deadline
-        // watch table is full; `ring_len` the records queued.
+        // `reason` 1 the recorder's queue is at its effect limit, 4 the deadline
+        // watch table is full, 7 every recorder queue's writer stayed taken;
+        // `ring_len` for reason 1 the refusing queue (bits 32..) and its
+        // records (bits 0..31), for reason 4 the records the recorder holds.
         name: "effect-record",
         subject: "tid",
         fields: ["effect", "reason", "ring_len"],

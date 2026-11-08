@@ -154,11 +154,13 @@
 //!
 //! # Cost on the issue path
 //!
-//! A reversible effect adds to the device op: one clock read, an
-//! interrupts-off section around its CPU queue's writer handle (two atomic
-//! read-modify-writes), the number (one `fetch_add`), a 40-byte slot store and
-//! the head's release, and, past the flush watermark only, a wake of the log
-//! flusher. No lock, no I/O, no
+//! A reversible effect adds to the device op: one clock read and an
+//! interrupts-off section with four atomic read-modify-writes (its CPU
+//! queue's writer handle taken and given back, the number, the held count),
+//! two sequentially consistent stores of the queue's writing flag, a 40-byte
+//! slot store and the head's release, and, past the flush watermark only, a
+//! wake of the log flusher. The number and the held count are two cache lines
+//! every CPU's pushes share. No lock, no I/O, no
 //! allocation. Kconfig `EFFECT_WRITE_AHEAD` off: the gate is not installed and
 //! the op pays none of it.
 //!
@@ -377,6 +379,9 @@ pub enum Why {
     /// it (`Rule::EnvelopeDelete`, `Rule::EnvelopeEgress`, `Rule::EnvelopeConfig`,
     /// `Rule::EnvelopeOta`, `Rule::EnvelopeRtTime`).
     Envelope = 6,
+    /// Every recorder queue's writer handle stayed held by other CPUs: the
+    /// record could not be committed, though a queue may have had room.
+    RecorderBusy = 7,
 }
 
 /// A refused effect's receipt.
@@ -440,10 +445,22 @@ fn refuse(e: &Effect, t: &Timing, why: Why) -> Refusal {
                 _ => record_receipt(Rule::EnvelopeEgress, Verdict::Refuse, e.tid, [e.a0 as u64, e.a1 as u64, level]),
             }
         }
-        Why::RingFull | Why::NoWatch => record_receipt(
+        Why::NoWatch => record_receipt(
+            Rule::EffectRecord, Verdict::Refuse, e.tid, [effect, why as u64, logger::logger_ring_len() as u64]),
+        Why::RingFull | Why::RecorderBusy => record_receipt(
             Rule::EffectRecord, Verdict::Refuse, e.tid, [effect, why as u64, logger::logger_ring_len() as u64]),
     };
     Refusal { receipt, why }
+}
+
+/// [`refuse`] for an effect its recorder queue did not take: the receipt's
+/// third number is the refusing queue's index (bits 32..) and its length
+/// (bits 0..31) for `RingFull`, 0 for `RecorderBusy`.
+#[cfg(not(feature = "effect-issue-before-commit-canary"))]
+fn refuse_unqueued(e: &Effect, why: Why, at: u64) -> Refusal {
+    use azos_decision::{record_receipt, Rule, Verdict};
+    let effect = (e.kind as u64) << 8 | e.class as u64;
+    Refusal { receipt: record_receipt(Rule::EffectRecord, Verdict::Refuse, e.tid, [effect, why as u64, at]), why }
 }
 
 /// The label of the data behind `e` and the meet of its envelopes; `(0, 0)`
@@ -548,11 +565,17 @@ pub fn issue<R>(e: &Effect, t: &Timing, op: impl FnOnce() -> (R, bool)) -> Resul
                 };
                 match logger::commit_effect_record(payload, true) {
                     EffectCommit::Committed(_) => {}
-                    EffectCommit::Full => {
+                    EffectCommit::Full { queue, queued } => {
                         if let Some(k) = ticket {
                             safe_state::cancel(k);
                         }
-                        return Err(refuse(e, t, Why::RingFull));
+                        return Err(refuse_unqueued(e, Why::RingFull, (queue as u64) << 32 | queued as u64));
+                    }
+                    EffectCommit::Busy => {
+                        if let Some(k) = ticket {
+                            safe_state::cancel(k);
+                        }
+                        return Err(refuse_unqueued(e, Why::RecorderBusy, 0));
                     }
                     EffectCommit::Inactive => unrecorded(e),
                 }

@@ -946,13 +946,14 @@ type DurableQueue = azos_rings::Queue<Queued, LOG_QUEUE_CAPACITY>;
 static QUEUES: [DurableQueue; LOG_QUEUES] =
     [const { azos_rings::Queue::new(azos_rings::Full::Backpressure) }; LOG_QUEUES];
 
-/// The number the next push takes; every number below it was pushed or is
-/// being published.
-static NEXT_SEQ: AtomicU64 = AtomicU64::new(0);
+/// The number the next push takes; every number below it was pushed, is
+/// being published, or is a hole. A line of its own: every push on every CPU
+/// takes it.
+static NEXT_SEQ: azos_rings::Pad<AtomicU64> = azos_rings::Pad(AtomicU64::new(0));
 
-/// Records the recorder holds in RAM: pushed, and not yet taken by the medium
-/// (queued, or with the flusher).
-static HELD: AtomicU64 = AtomicU64::new(0);
+/// Records the recorder holds in RAM: pushed, and not yet covered by an `Ok`
+/// fsync of a file that holds them (queued, or with the flusher).
+static HELD: azos_rings::Pad<AtomicU64> = azos_rings::Pad(AtomicU64::new(0));
 
 /// What a record may do in its queue.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1010,9 +1011,11 @@ impl Admit {
 /// Why a push took no slot.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Refused {
-    /// The queue holds the record's limit ([`Admit::limit`]).
-    Full,
-    /// Every queue's writer handle was out, twice round.
+    /// Queue `queue` holds `queued` records, the record's limit
+    /// ([`Admit::limit`]); for a record that spills, every queue was full.
+    Full { queue: usize, queued: usize },
+    /// The writer handles were held by other CPUs for as long as the record's
+    /// class waits ([`BUSY_ROUNDS`]).
     Busy,
 }
 
@@ -1023,6 +1026,19 @@ struct Pushed {
     /// Records in that queue after it.
     queued: usize,
 }
+
+/// What one queue did with a push.
+enum Into {
+    Pushed(Pushed),
+    Full(usize),
+    Busy,
+}
+
+/// Rounds over every queue a safety, stop or effect record waits for a writer
+/// handle another CPU holds (an ordinary record: two). A holder has interrupts
+/// off for a few stores, so a handle frees in well under a round; the bound
+/// is for a holder that never lets go.
+const BUSY_ROUNDS: usize = 1 << 12;
 
 /// The CPU whose queue a push tries first.
 fn home_queue() -> usize {
@@ -1047,54 +1063,105 @@ pub fn logger_canary_full_drops() {
 
 /// Set by a queue's producer from before it takes its number until the record
 /// is published: the flusher waits for a number it cannot find only while a
-/// producer is between the two.
-static WRITING: [AtomicBool; LOG_QUEUES] = [const { AtomicBool::new(false) }; LOG_QUEUES];
+/// producer is between the two. One line each: every CPU stores its own.
+static WRITING: [azos_rings::Pad<AtomicBool>; LOG_QUEUES] =
+    [const { azos_rings::Pad(AtomicBool::new(false)) }; LOG_QUEUES];
+
+/// Records lost because every writer handle stayed taken (counted in
+/// `events_dropped` too), and rounds a push waited for one.
+static LOG_BUSY: AtomicU32 = AtomicU32::new(0);
+static LOG_BUSY_WAITS: AtomicU64 = AtomicU64::new(0);
 
 /// Push one record into this CPU's queue. Never blocks, takes no lock and
 /// evicts nothing.
+///
+/// A safety record or a stop whose own queue is full goes to the next queue
+/// that has room (its number keeps its place in the order). A busy writer
+/// handle is never a full queue: the push tries the other queues, and a
+/// safety, stop or effect record keeps going round them for [`BUSY_ROUNDS`].
 fn queue_push(rec: &LogRecord, admit: Admit) -> Result<Pushed, Refused> {
     // Interrupts off: a handler on this CPU cannot become a second writer of
     // the queue in the middle of the push, and the producer is not moved to
     // another CPU between the two.
     let _irq = azos_sync::scope::IrqOff::new();
     let home = home_queue();
-    for i in 0..2 * LOG_QUEUES {
-        let at = (home + i) % LOG_QUEUES;
-        let q = &QUEUES[at];
-        let Some(mut w) = q.producer() else {
-            core::hint::spin_loop();
-            continue;
-        };
-        // The consumer only takes records out, so the room this sees stays.
-        let queued = q.len();
-        if queued >= admit.limit() {
-            if !cfg!(feature = "durable-full-canary") && !LOG_CANARY_FULL_DROPS.load(Ordering::Relaxed) {
-                return Err(Refused::Full);
+    let spill = matches!(admit, Admit::Safety | Admit::Stop) && !cfg!(feature = "durable-spill-canary");
+    let rounds = if admit == Admit::Ordinary || cfg!(feature = "durable-busy-canary") { 2 } else { BUSY_ROUNDS };
+    for _ in 0..rounds {
+        let mut busy = false;
+        let mut home_queued = 0;
+        for i in 0..LOG_QUEUES {
+            let at = (home + i) % LOG_QUEUES;
+            match push_into(at, rec, admit) {
+                Into::Pushed(p) => return Ok(p),
+                Into::Busy => busy = true,
+                Into::Full(queued) if !spill => return Err(Refused::Full { queue: at, queued }),
+                Into::Full(queued) => {
+                    if i == 0 {
+                        home_queued = queued;
+                    }
+                }
             }
-            // Canary: the full queue takes a number and keeps nothing, and
-            // answers as if it had the record.
-            return Ok(Pushed { seq: NEXT_SEQ.fetch_add(1, Ordering::SeqCst), queued });
         }
-        WRITING[at].store(true, Ordering::SeqCst);
-        let seq = NEXT_SEQ.fetch_add(1, Ordering::SeqCst);
-        HELD.fetch_add(1, Ordering::AcqRel);
-        let pushed = matches!(w.push(Queued { seq, rec: *rec }), azos_rings::Push::Pushed);
-        WRITING[at].store(false, Ordering::SeqCst);
-        if pushed {
-            return Ok(Pushed { seq, queued: queued + 1 });
+        if !busy {
+            return Err(Refused::Full { queue: home, queued: home_queued });
         }
-        // Not reached: the room was checked with the one writer handle held.
-        // The number is a hole the flusher steps over.
-        HELD.fetch_sub(1, Ordering::AcqRel);
-        return Err(Refused::Full);
+        LOG_BUSY_WAITS.fetch_add(1, Ordering::Relaxed);
+        core::hint::spin_loop();
     }
     Err(Refused::Busy)
+}
+
+/// Push into queue `at`, if its writer handle is free and it has room.
+fn push_into(at: usize, rec: &LogRecord, admit: Admit) -> Into {
+    let q = &QUEUES[at];
+    let Some(mut w) = q.producer() else { return Into::Busy };
+    // The consumer only takes records out, so the room this sees stays.
+    let queued = q.len();
+    if queued >= admit.limit() {
+        if !cfg!(feature = "durable-full-canary") && !LOG_CANARY_FULL_DROPS.load(Ordering::Relaxed) {
+            return Into::Full(queued);
+        }
+        // Canary: the full queue takes a number and keeps nothing, and
+        // answers as if it had the record.
+        return Into::Pushed(Pushed { seq: NEXT_SEQ.0.fetch_add(1, Ordering::SeqCst), queued });
+    }
+    WRITING[at].0.store(true, Ordering::SeqCst);
+    let seq = NEXT_SEQ.0.fetch_add(1, Ordering::SeqCst);
+    #[cfg(test)]
+    if let Some(f) = PUSH_GAP_HOOK.take() {
+        f();
+    }
+    HELD.0.fetch_add(1, Ordering::AcqRel);
+    let pushed = matches!(w.push(Queued { seq, rec: *rec }), azos_rings::Push::Pushed);
+    WRITING[at].0.store(false, Ordering::SeqCst);
+    if pushed {
+        return Into::Pushed(Pushed { seq, queued: queued + 1 });
+    }
+    // Not reached: the room was checked with the one writer handle held.
+    // The number is a hole the flusher steps over.
+    HELD.0.fetch_sub(1, Ordering::AcqRel);
+    Into::Full(queued)
+}
+
+/// A pushed record filled its queue to the flush watermark: wake the flusher,
+/// or, in a context that may not block (the wake takes the scheduler's
+/// locks), leave the request for its next pass.
+fn nudge_flusher(queued: usize) {
+    if queued < LOG_FLUSH_WATERMARK || cfg!(feature = "durable-nowake-canary") {
+        return;
+    }
+    if azos_sync::preempt::may_block() {
+        logger_request_flush();
+    } else {
+        FLUSH_REQ.fetch_add(1, Ordering::SeqCst);
+    }
 }
 
 /// Records the recorder holds in RAM (queued, or taken by the flusher and not
 /// yet by the medium).
 fn ring_len() -> usize {
-    HELD.load(Ordering::Acquire) as usize
+    HELD.0.load(Ordering::Acquire) as usize
 }
 
 // ---------------------------------------------------------------------------
@@ -1162,13 +1229,13 @@ struct Flush {
     fronts: [Option<Queued>; LOG_QUEUES],
     /// The number of the next record to stage.
     next: u64,
-    /// Records taken off the queues, in their order, that the medium has not
-    /// taken: they leave only once a write took them, so a failed write, a
-    /// short one or a cut in the middle of one keeps them.
+    /// Records taken off the queues, in their order, that no `Ok` fsync of a
+    /// file holding them has covered: a failed or short write, a failed sync
+    /// or a cut anywhere keeps them, and they are written again.
     staged: [Queued; LOG_FLUSH_BATCH_MAX],
     staged_n: usize,
-    /// Number + 1 of the newest record the medium took.
-    written: u64,
+    /// The first this many staged records are whole in the open file.
+    taken: usize,
 }
 
 impl Flush {
@@ -1178,7 +1245,7 @@ impl Flush {
         next: 0,
         staged: [Queued::EMPTY; LOG_FLUSH_BATCH_MAX],
         staged_n: 0,
-        written: 0,
+        taken: 0,
     };
 }
 
@@ -1468,13 +1535,18 @@ pub fn logger_flusher_task(_: usize) {
 /// is served). The task body, and what a host test drives in its place.
 pub fn logger_flusher_pass() -> u32 {
     let seen = FLUSH_REQ.load(Ordering::SeqCst);
+    let pass = FLUSHER_PASSES.fetch_add(1, Ordering::Relaxed);
     azos_decision::flush_limited();
     if LOG_ACTIVE.load(Ordering::Acquire)
-        && (ring_len() > 0 || durable_record_pending())
+        && ring_len() > 0
         && !LOG_FLUSHER_HELD.load(Ordering::Acquire)
+        && sync_retry_due(pass)
     {
         let _ = logger_flush_now();
     }
+    // A pass that ran before a durable call marked its latch record pending
+    // may have written and synced it: say so now, not at an unrelated flush.
+    announce_latch_durable();
     for slot in DEFERRED_IO.iter() {
         if let Some(job) = slot.take() {
             job();
@@ -1489,6 +1561,20 @@ pub fn logger_flusher_pass() -> u32 {
     }
     FLUSH_DONE.store(seen, Ordering::Release);
     seen
+}
+
+/// Passes the flusher began.
+static FLUSHER_PASSES: AtomicU32 = AtomicU32::new(0);
+/// Fsyncs that failed in a row (0 after an `Ok` one).
+static LOG_SYNC_FAILS: AtomicU32 = AtomicU32::new(0);
+
+/// After the medium's fsync failed four times in a row, the flusher retries
+/// the staged batch on every 2nd, 4th, ... 64th pass, not on each: a medium
+/// that has failed for good is not asked again twice a second in the block
+/// layer's real-time class. A durable call still flushes itself every time.
+fn sync_retry_due(pass: u32) -> bool {
+    let fails = LOG_SYNC_FAILS.load(Ordering::Relaxed);
+    fails < 4 || pass % (1u32 << (fails - 3).min(6)) == 0
 }
 
 /// Flush passes the flusher completed (diagnostic: the request count it had
@@ -1768,17 +1854,27 @@ fn logger_flush_locked() -> Result<usize, LogStorageError> {
 
     if rotate {
         if let Some(open) = st.file.take() {
-            let _ = storage.fsync(open.handle);
+            // The old file's last word on the records it took: those of the
+            // staged batch are durable only if this sync succeeds; otherwise
+            // they stay staged and go into the new file again.
+            let synced = storage.fsync(open.handle);
+            if synced.is_ok() || cfg!(feature = "durable-rotate-sync-canary") {
+                total += staged_durable(st, st.taken);
+            } else {
+                LOG_FLUSH_ERRORS.fetch_add(1, Ordering::Relaxed);
+            }
+            st.taken = 0;
             let _ = storage.close(open.handle);
         }
-        drop(guard);
         // Evaluate the bump on its own line: `debug_assert_eq!` does NOT
         // evaluate its arguments in a release build, and the gate builds
         // everything `--release` — putting the `fetch_add` inside it would
         // silently stop the serial from ever advancing.
         let advanced = LOG_SERIAL.fetch_add(1, Ordering::Relaxed);
         debug_assert_eq!(advanced, next_serial);
-        let _ = open_log_file_inner(next_serial, wrapping);
+        // Opened under the claim: no other flusher finds the recorder without
+        // a file in between.
+        st.file = open_file(next_serial, wrapping).ok();
     }
 
     match failure {
@@ -1799,10 +1895,21 @@ struct BatchOutcome {
     stop: bool,
 }
 
+/// Spins the flusher waits for a number whose producer is publishing it before
+/// it gives up on the producer and steps over the number. A producer has
+/// interrupts off for a few stores; this is for one that never finishes.
+const GAP_SPINS: u32 = 1 << 22;
+
+/// Numbers the flusher stepped over: taken and never published (or published
+/// after [`GAP_SPINS`], then written late). Not a lost record, a defect.
+static LOG_HOLES: AtomicU32 = AtomicU32::new(0);
+
 /// The next record in push order: off a queue's front, or `None` once every
-/// number taken so far is staged or written. Consumer only (flush claim held).
+/// number taken so far is staged, written or stepped over. Consumer only
+/// (flush claim held).
 fn next_record(st: &mut Flush) -> Option<Queued> {
     let mut rescanned = false;
+    let mut spins = 0u32;
     loop {
         let mut lowest: Option<(usize, u64)> = None;
         for (i, front) in st.fronts.iter_mut().enumerate() {
@@ -1822,35 +1929,67 @@ fn next_record(st: &mut Flush) -> Option<Queued> {
         }
         if let Some((i, seq)) = lowest {
             if seq <= st.next || cfg!(feature = "durable-merge-canary") {
+                if seq < st.next {
+                    // A number stepped over after the wait, published late.
+                    azos_drv_sys::kwarn!("[LOG] record {} written after its successors", seq);
+                }
                 st.next = st.next.max(seq + 1);
                 return st.fronts[i].take();
             }
         }
         // The next number is at no front.
-        if NEXT_SEQ.load(Ordering::SeqCst) <= st.next {
+        if NEXT_SEQ.0.load(Ordering::SeqCst) <= st.next {
             return None;
         }
-        if WRITING.iter().any(|w| w.load(Ordering::SeqCst)) {
+        let writing = WRITING.iter().any(|w| w.0.load(Ordering::SeqCst))
+            && !cfg!(feature = "durable-gap-skip-canary");
+        if writing && spins < GAP_SPINS {
             // Its producer is publishing it (interrupts off, a few stores).
+            #[cfg(test)]
+            GAP_WAITS.fetch_add(1, Ordering::Relaxed);
+            spins += 1;
             rescanned = false;
             core::hint::spin_loop();
             continue;
         }
-        if !rescanned {
+        if !writing && !rescanned {
             // No producer is between taking a number and publishing it, so
             // a record published since the scan is at a front now.
             rescanned = true;
             continue;
         }
-        // Taken and never pushed: a hole, counted as a lost record.
-        LOG_DROPPED.fetch_add(1, Ordering::Relaxed);
+        if LOG_HOLES.fetch_add(1, Ordering::Relaxed) == 0 {
+            azos_drv_sys::kwarn!(
+                "[LOG] record {} was never published ({}): stepped over",
+                st.next, if writing { "its producer did not finish" } else { "not pushed" });
+        }
         st.next += 1;
         rescanned = false;
+        spins = 0;
     }
 }
 
-/// Encode and write the next batch into the open file, retrying a short
-/// write; records leave RAM only once the medium took them.
+/// The first `n` staged records are on the medium, covered by an `Ok` fsync:
+/// they leave RAM. Returns `n`.
+fn staged_durable(st: &mut Flush, n: usize) -> usize {
+    if n == 0 {
+        return 0;
+    }
+    DURABLE_POS.fetch_max(st.staged[n - 1].seq + 1, Ordering::AcqRel);
+    st.staged.copy_within(n..st.staged_n, 0);
+    st.staged_n -= n;
+    st.taken = st.taken.saturating_sub(n);
+    HELD.0.fetch_sub(n as u64, Ordering::AcqRel);
+    n
+}
+
+/// Encode and write the staged batch, topped up from the queues, into the
+/// open file, retrying a short write, then fsync it. Records leave RAM only
+/// once an `Ok` fsync of a file that holds them covered them: a failed or
+/// short write, a failed fsync or a cut anywhere keeps them staged, and the
+/// next pass writes them again (into the next file, after a rotation). A
+/// record written twice is harmless: the replay keeps the last latch, the
+/// highest nonce floor and the last key pin, all in number order.
 ///
 /// Extracted from `logger_flush` so the wrap notice can be carried to disk by
 /// **one more pass over the same code** rather than a second copy of it. A
@@ -1870,16 +2009,6 @@ fn flush_one_batch(storage: &'static dyn LogStorage, st: &mut Flush) -> BatchOut
         return BatchOutcome { consumed: 0, torn: false, failure: Some(LogStorageError::Unavailable), stop: true };
     };
     if n == 0 {
-        // Nothing new, but a durable call's record is written and no `Ok`
-        // fsync has covered it (the last one failed, or was cut): sync again.
-        let covered = DURABLE_POS.load(Ordering::Acquire);
-        if st.written > covered && DURABLE_WANT.load(Ordering::Acquire) > covered {
-            if let Err(e) = storage.fsync(open.handle) {
-                LOG_FLUSH_ERRORS.fetch_add(1, Ordering::Relaxed);
-                return BatchOutcome { consumed: 0, torn: false, failure: Some(e), stop: true };
-            }
-            DURABLE_POS.fetch_max(st.written, Ordering::AcqRel);
-        }
         return BatchOutcome { consumed: 0, torn: false, failure: None, stop: true };
     }
     let mut out = [0u8; LOG_FLUSH_BATCH_MAX * LOG_RECORD_SIZE];
@@ -1888,11 +2017,12 @@ fn flush_one_batch(storage: &'static dyn LogStorage, st: &mut Flush) -> BatchOut
         q.rec.encode(&mut buf);
         raw.copy_from_slice(&buf);
     }
+    let end = st.staged[n - 1].seq + 1;
     // Canary: the batch leaves RAM before the medium took it.
-    let dropped_early = cfg!(feature = "durable-staging-canary");
-    if dropped_early {
+    if cfg!(feature = "durable-staging-canary") {
         st.staged_n = 0;
-        HELD.fetch_sub(n as u64, Ordering::AcqRel);
+        st.taken = 0;
+        HELD.0.fetch_sub(n as u64, Ordering::AcqRel);
     }
 
     // Write the whole chunk, retrying the remainder. A short write is a
@@ -1907,16 +2037,11 @@ fn flush_one_batch(storage: &'static dyn LogStorage, st: &mut Flush) -> BatchOut
             Err(e) => { failure = Some(e); break; }
         }
     }
-
     open.bytes_written = open.bytes_written.saturating_add(off as u32);
-    // Only records the medium actually took leave RAM.
+    // The whole records this file took, of the batch.
     let whole = off / LOG_RECORD_SIZE;
-    let end = if whole > 0 { st.staged[whole - 1].seq + 1 } else { st.written };
-    st.written = st.written.max(end);
-    if !dropped_early {
-        st.staged.copy_within(whole..n, 0);
-        st.staged_n = n - whole;
-        HELD.fetch_sub(whole as u64, Ordering::AcqRel);
+    if !cfg!(feature = "durable-staging-canary") {
+        st.taken = whole;
     }
 
     if off != len {
@@ -1926,7 +2051,7 @@ fn flush_one_batch(storage: &'static dyn LogStorage, st: &mut Flush) -> BatchOut
         // next one starts on a record boundary.
         LOG_FLUSH_ERRORS.fetch_add(1, Ordering::Relaxed);
         return BatchOutcome {
-            consumed: whole,
+            consumed: 0,
             torn: off % LOG_RECORD_SIZE != 0,
             failure: Some(failure.unwrap_or(LogStorageError::Io)),
             stop: true,
@@ -1934,25 +2059,22 @@ fn flush_one_batch(storage: &'static dyn LogStorage, st: &mut Flush) -> BatchOut
     }
 
     // The records are written; `fsync` is what makes them durable (the
-    // kernel's implementation ends in a device flush). Its failure does not
-    // stop the drain: the records have already left RAM, and writing them
-    // again would not make them any more durable. It IS this batch's result,
-    // so `logger_flush` -- and through it every `*_durable` call -- answers
-    // `Err` for records that are written but not known durable.
-    let synced = storage.fsync(open.handle);
-    if synced.is_err() {
+    // kernel's implementation ends in a device flush). Its failure ends the
+    // flush and is its result: `logger_flush` -- and through it every
+    // `*_durable` call -- answers `Err`, and the batch stays staged.
+    if let Err(e) = storage.fsync(open.handle) {
         LOG_FLUSH_ERRORS.fetch_add(1, Ordering::Relaxed);
-    } else {
-        // The fsync is file-wide and the records go in number order: every
-        // record numbered below this batch's last, it included, is durable.
+        LOG_SYNC_FAILS.fetch_add(1, Ordering::Relaxed);
+        return BatchOutcome { consumed: 0, torn: false, failure: Some(e), stop: true };
+    }
+    LOG_SYNC_FAILS.store(0, Ordering::Relaxed);
+    let consumed = if cfg!(feature = "durable-staging-canary") {
         DURABLE_POS.fetch_max(end, Ordering::AcqRel);
-    }
-    BatchOutcome {
-        consumed: whole,
-        torn: false,
-        failure: synced.err(),
-        stop: n < LOG_FLUSH_BATCH_MAX,
-    }
+        n
+    } else {
+        staged_durable(st, n)
+    };
+    BatchOutcome { consumed, torn: false, failure: None, stop: n < LOG_FLUSH_BATCH_MAX }
 }
 
 // ---------------------------------------------------------------------------
@@ -1998,8 +2120,13 @@ pub enum EffectCommit {
     /// Not queued: the queue is at its limit ([`ORDINARY_QUEUE_LIMIT`]
     /// records for an effect, the [`QUEUE_SAFETY_RESERVE`] slots above stay
     /// free; down to [`STOP_KEEPS_FREE`] free slots for a stop). Nothing was
-    /// evicted; a stop's lost record is counted dropped.
-    Full,
+    /// evicted; a stop's lost record is counted dropped. `queue` is the
+    /// queue that refused it, holding `queued` records.
+    Full { queue: u32, queued: u32 },
+    /// Not queued: every queue's writer handle stayed held by other CPUs for
+    /// as long as an effect waits ([`BUSY_ROUNDS`]). A stop's lost record is
+    /// counted dropped and busy.
+    Busy,
     /// The logger is off (no medium opened): there is nowhere to commit to.
     Inactive,
 }
@@ -2104,9 +2231,10 @@ pub fn receipt_ages(device: u16, kind: u8) -> (u64, u64) {
 /// [`STOP_KEEPS_FREE`] free slots; past that `Full` means this one was lost
 /// (counted dropped, and by the gate as unrecorded).
 ///
-/// Lock-free, no I/O: a `refusable` commit that fills its queue past the
-/// flush watermark also wakes the log flusher, so the record waits for the
-/// medium for the flusher's pass, not for the watchdog's cadence.
+/// Lock-free, no I/O: a commit that fills its queue past the flush watermark
+/// also wakes the log flusher (as every push does), so the record waits for
+/// the medium for the flusher's pass, not for the watchdog's cadence. A stop
+/// whose own queue is full goes to another queue's reserve.
 pub fn commit_effect_record(payload: [u8; LOG_PAYLOAD_BYTES], refusable: bool) -> EffectCommit {
     if !LOG_ACTIVE.load(Ordering::Acquire) {
         return EffectCommit::Inactive;
@@ -2115,16 +2243,17 @@ pub fn commit_effect_record(payload: [u8; LOG_PAYLOAD_BYTES], refusable: bool) -
     match queue_push(&rec, if refusable { Admit::Commit } else { Admit::Stop }) {
         Ok(p) => {
             receipt_note(&payload, rec.ts);
-            if refusable && p.queued >= LOG_FLUSH_WATERMARK {
-                logger_request_flush();
-            }
+            nudge_flusher(p.queued);
             EffectCommit::Committed(p.seq)
         }
-        Err(_) => {
+        Err(why) => {
             if !refusable {
-                LOG_DROPPED.fetch_add(1, Ordering::Relaxed);
+                count_lost(why);
             }
-            EffectCommit::Full
+            match why {
+                Refused::Full { queue, queued } => EffectCommit::Full { queue: queue as u32, queued: queued as u32 },
+                Refused::Busy => EffectCommit::Busy,
+            }
         }
     }
 }
@@ -2156,11 +2285,15 @@ pub fn log_safety_violation_admitted(violation_code: u8, action_code: u8, detail
     payload[0] = violation_code;
     payload[1] = action_code;
     payload[4..8].copy_from_slice(&detail.to_le_bytes());
-    let admitted = push_event_at(LOG_EVT_SAFETY_VIOLATION, 0, payload, reserve_admit(&payload)).is_some();
-    if !admitted && LOG_ACTIVE.load(Ordering::Acquire) {
-        note_latch_lost(&payload);
+    match push_event_at(LOG_EVT_SAFETY_VIOLATION, 0, payload, reserve_admit(&payload)) {
+        Ok(_) => true,
+        Err(why) => {
+            if let Some(why) = why {
+                note_latch_lost(&payload, why);
+            }
+            false
+        }
     }
-    admitted
 }
 
 /// Record a safety violation AND push it to disk before returning.
@@ -2283,22 +2416,30 @@ pub fn logger_carry_key_pin(fp: &[u8; OPERATOR_KEY_FP_BYTES]) {
 /// off, as before (the flush reports it).
 fn push_durable(payload: [u8; LOG_PAYLOAD_BYTES]) -> Result<Option<u64>, LogStorageError> {
     let admit = reserve_admit(&payload);
-    if let Some(p) = push_event_at(LOG_EVT_SAFETY_VIOLATION, 0, payload, admit) {
-        DURABLE_WANT.fetch_max(p + 1, Ordering::AcqRel);
-        return Ok(Some(p));
-    }
-    if !LOG_ACTIVE.load(Ordering::Acquire) {
-        return Ok(None);
-    }
     let by = flush_by();
-    if by == FlushBy::Caller {
-        let _ = logger_flush_now();
-        if let Some(p) = push_event_at(LOG_EVT_SAFETY_VIOLATION, 0, payload, admit) {
+    // A caller that drains and pushes again counts only a record that is
+    // still refused after the drain.
+    let first = if by == FlushBy::Caller { push_record } else { push_event_at };
+    let mut why = match first(LOG_EVT_SAFETY_VIOLATION, 0, payload, admit) {
+        Ok(p) => {
             DURABLE_WANT.fetch_max(p + 1, Ordering::AcqRel);
             return Ok(Some(p));
         }
+        Err(None) => return Ok(None),
+        Err(Some(why)) => why,
+    };
+    if by == FlushBy::Caller {
+        let _ = logger_flush_now();
+        match push_event_at(LOG_EVT_SAFETY_VIOLATION, 0, payload, admit) {
+            Ok(p) => {
+                DURABLE_WANT.fetch_max(p + 1, Ordering::AcqRel);
+                return Ok(Some(p));
+            }
+            Err(None) => return Ok(None),
+            Err(Some(again)) => why = again,
+        }
     }
-    note_latch_lost(&payload);
+    note_latch_lost(&payload, why);
     // Dropped, not deferred: nothing of this call is queued.
     match by {
         FlushBy::Caller => {}
@@ -2372,6 +2513,13 @@ pub struct LoggerAnalytics {
     pub safety_violations:     u32,
     pub events_dropped:        u32,
     pub flush_errors:          u32,
+    /// Of `events_dropped`, the records lost because every writer handle
+    /// stayed taken (not a full queue).
+    pub events_busy:           u32,
+    /// Rounds a push waited for a writer handle another CPU held.
+    pub busy_waits:            u64,
+    /// Push numbers the flusher stepped over (a defect, see `GAP_SPINS`).
+    pub holes:                 u32,
 }
 
 /// Read the current analytics counters.
@@ -2388,6 +2536,9 @@ pub fn logger_analytics() -> LoggerAnalytics {
         safety_violations:      LOG_SAFETY_COUNT.load(Ordering::Relaxed),
         events_dropped:         LOG_DROPPED.load(Ordering::Relaxed),
         flush_errors:           LOG_FLUSH_ERRORS.load(Ordering::Relaxed),
+        events_busy:            LOG_BUSY.load(Ordering::Relaxed),
+        busy_waits:             LOG_BUSY_WAITS.load(Ordering::Relaxed),
+        holes:                  LOG_HOLES.load(Ordering::Relaxed),
     }
 }
 
@@ -2403,6 +2554,7 @@ pub fn logger_analytics_reset() {
     LOG_SAFETY_COUNT.store(0, Ordering::Relaxed);
     LOG_DROPPED.store(0, Ordering::Relaxed);
     LOG_FLUSH_ERRORS.store(0, Ordering::Relaxed);
+    LOG_BUSY.store(0, Ordering::Relaxed);
     LOG_INIT_TS.store(now_ticks(), Ordering::Relaxed);
 }
 
@@ -2446,17 +2598,30 @@ pub fn telemetry_recorded() -> u64 {
     azos_records::reader(azos_records::SOURCE_TELEMETRY).map_or(0, |r| r.head())
 }
 
-/// Push a record into this CPU's queue, returning its number (`None`: the
-/// logger is off, or the queue refused it, counted dropped).
-fn push_event_at(kind: u8, flags: u8, payload: [u8; LOG_PAYLOAD_BYTES], admit: Admit) -> Option<u64> {
-    if !LOG_ACTIVE.load(Ordering::Acquire) { return None; }
+/// Push a record into this CPU's queue, returning its number; `Err(None)`: the
+/// logger is off; `Err(Some(why))`: refused, counted dropped.
+fn push_event_at(kind: u8, flags: u8, payload: [u8; LOG_PAYLOAD_BYTES], admit: Admit) -> Result<u64, Option<Refused>> {
+    let r = push_record(kind, flags, payload, admit);
+    if let Err(Some(why)) = r {
+        count_lost(why);
+    }
+    r
+}
+
+/// [`push_event_at`] without counting a refusal.
+fn push_record(kind: u8, flags: u8, payload: [u8; LOG_PAYLOAD_BYTES], admit: Admit) -> Result<u64, Option<Refused>> {
+    if !LOG_ACTIVE.load(Ordering::Acquire) { return Err(None); }
     let rec = LogRecord { ts: now_ticks(), kind, flags, payload };
-    match queue_push(&rec, admit) {
-        Ok(p) => Some(p.seq),
-        Err(_) => {
-            LOG_DROPPED.fetch_add(1, Ordering::Relaxed);
-            None
-        }
+    let p = queue_push(&rec, admit).map_err(Some)?;
+    nudge_flusher(p.queued);
+    Ok(p.seq)
+}
+
+/// Count a record a push did not keep.
+fn count_lost(why: Refused) {
+    LOG_DROPPED.fetch_add(1, Ordering::Relaxed);
+    if why == Refused::Busy {
+        LOG_BUSY.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -2477,12 +2642,18 @@ fn reserve_admit(payload: &[u8; LOG_PAYLOAD_BYTES]) -> Admit {
 }
 
 /// A record that uses the reserve found no slot: count a latching e-stop as
-/// lost (`logger_latch_stats`) and say so. Only possible with this CPU's
-/// queue's reserve full of safety records the flusher has not taken yet.
-fn note_latch_lost(payload: &[u8; LOG_PAYLOAD_BYTES]) {
+/// lost (`logger_latch_stats`) and say why. Only possible with every queue's
+/// reserve full of safety records the flusher has not taken yet, or with
+/// every writer handle held by other CPUs for [`BUSY_ROUNDS`].
+fn note_latch_lost(payload: &[u8; LOG_PAYLOAD_BYTES], why: Refused) {
     if payload[0] == SAFETY_ESTOP && estop_action_latches(payload[1]) == Some(true) {
         LATCH_LOST.fetch_add(1, Ordering::Relaxed);
-        azos_drv_sys::kwarn!("[SAFETY] ESTOP record LOST (action {}): this CPU's recorder queue has no slot for it (the safety reserve full)", payload[1]);
+        match why {
+            Refused::Busy => azos_drv_sys::kwarn!(
+                "[SAFETY] ESTOP record LOST (action {}): every recorder queue's writer stayed taken", payload[1]),
+            Refused::Full { .. } => azos_drv_sys::kwarn!(
+                "[SAFETY] ESTOP record LOST (action {}): every recorder queue is full (the safety reserve too)", payload[1]),
+        }
     }
 }
 
@@ -2906,15 +3077,18 @@ fn read_full(src: &mut dyn LogReplaySource, buf: &mut [u8]) -> Result<usize, Log
 }
 
 fn open_log_file(serial: u32) -> Result<(), LogStorageError> {
-    open_log_file_inner(serial, false)
+    let file = open_file(serial, false)?;
+    LOG_FILE.acquire().file = Some(file);
+    Ok(())
 }
 
-/// `notice_already_written` is set by `logger_flush`'s rotate branch when it
+/// Open session `serial`'s file and write its header; the caller stores it in
+/// the flush claim. `notice_already_written` is set by `logger_flush`'s rotate branch when it
 /// has already queued AND flushed the wrap notice into the outgoing file — the
 /// only place that can, because it is the only place still holding the old
 /// handle. Everyone else passes `false` and this function emits it, which
 /// keeps the cold-`logger_init` path (below) covered.
-fn open_log_file_inner(serial: u32, notice_already_written: bool) -> Result<(), LogStorageError> {
+fn open_file(serial: u32, notice_already_written: bool) -> Result<OpenLogFile, LogStorageError> {
     // The serial wrapped, so this open is about to TRUNCATE a file that already
     // holds history. Circular is correct for a flight recorder — the most
     // recent record is the one an investigator wants, and refusing to log
@@ -2969,12 +3143,7 @@ fn open_log_file_inner(serial: u32, notice_already_written: bool) -> Result<(), 
     }
     let _ = storage.fsync(handle);
 
-    LOG_FILE.acquire().file = Some(OpenLogFile {
-        handle,
-        bytes_written: len as u32,
-        serial,
-    });
-    Ok(())
+    Ok(OpenLogFile { handle, bytes_written: len as u32, serial })
 }
 
 /// The header of session `serial`'s file and, right behind it in the same
@@ -3065,6 +3234,47 @@ pub fn set_serial_for_test(n: u32) {
 #[cfg(test)]
 std::thread_local! {
     static CPU_FOR_TEST: core::cell::Cell<Option<usize>> = const { core::cell::Cell::new(None) };
+}
+
+/// Run once by the next push, between taking its number and publishing the
+/// record: the window in which the flusher must wait for that number.
+/// Test-only, compiled out like [`set_serial_for_test`].
+#[cfg(test)]
+static PUSH_GAP_HOOK: AtomicFn<fn()> = AtomicFn::new();
+
+#[cfg(test)]
+pub fn set_push_gap_hook_for_test(f: Option<fn()>) {
+    PUSH_GAP_HOOK.set(f);
+}
+
+/// Spins the flusher spent waiting for a number a producer was publishing.
+#[cfg(test)]
+static GAP_WAITS: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(test)]
+pub fn gap_waits_for_test() -> u64 {
+    GAP_WAITS.load(Ordering::Relaxed)
+}
+
+/// Every queue's writer handle, held by the caller until dropped: other
+/// CPUs' pushes in flight, as long as the test likes.
+#[cfg(test)]
+pub struct HeldWriters(#[allow(dead_code)] std::vec::Vec<azos_rings::Producer<'static, Queued, LOG_QUEUE_CAPACITY>>);
+
+#[cfg(test)]
+pub fn hold_writers_for_test() -> HeldWriters {
+    HeldWriters(QUEUES.iter().map(|q| loop {
+        if let Some(w) = q.producer() {
+            break w;
+        }
+        std::thread::yield_now();
+    }).collect())
+}
+
+/// Flush requests made so far (`FLUSH_REQ`).
+#[cfg(test)]
+pub fn flush_requests_for_test() -> u32 {
+    FLUSH_REQ.load(Ordering::SeqCst)
 }
 
 /// Host suites, per thread: the CPU whose queue this thread's pushes try

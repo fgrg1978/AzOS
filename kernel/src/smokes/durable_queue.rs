@@ -58,7 +58,7 @@ fn full_queue_round() -> Result<(), &'static str> {
     if n != log::ORDINARY_QUEUE_LIMIT {
         return Err("the queue refused an effect before its limit");
     }
-    if log::commit_effect_record(payload(1), true) != EffectCommit::Full {
+    if !matches!(log::commit_effect_record(payload(1), true), EffectCommit::Full { .. }) {
         return Err("a full queue took another effect");
     }
     if !matches!(log::commit_effect_record(payload(0), false), EffectCommit::Committed(_)) {
