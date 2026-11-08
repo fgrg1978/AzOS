@@ -490,3 +490,62 @@ fn format_v1_is_frozen() {
     let r = Rec { env, payload };
     assert_eq!(String::from_utf8(line(&r)).unwrap(), format!("v1 4 1000 0 1 2 1 {ev} event microphone rule=59 verdict=1"));
 }
+
+// Proofs of the review of the sealed security log: each asserts the right
+// behaviour.
+#[test]
+fn review_p1a_a_deleted_boot_is_evidence() {
+    let b1 = tpm_boot([0; 32], 3);
+    let b2 = tpm_boot(b1.tpm, 2);
+    let b3 = tpm_boot(b2.tpm, 2);
+    let mut lines = b1.lines();
+    lines.push(seam());
+    lines.extend(b3.lines()[3..].to_vec());
+    let (found, s) = verify(&lines);
+    assert_eq!(s.last_anchor, Some(b3.tpm), "the live TPM check passes");
+    assert!(!evidence(&found).is_empty(), "boot 2 was deleted and nothing is evidence: {found:?}");
+}
+
+#[test]
+fn review_p1b_a_forged_refused_seal_is_evidence() {
+    let b1 = tpm_boot([0; 32], 3);
+    let b2 = tpm_boot(b1.tpm, 2);
+    let b3 = tpm_boot(b2.tpm, 2);
+    let s = Seal { backend: Backend::TpmNv, hardware: false, count: 1, through: 0, head: azos_seclog::chain::genesis(), anchor: b2.tpm };
+    let mut payload = [0u8; PAYLOAD];
+    payload[..Seal::LEN].copy_from_slice(&s.encode());
+    let env = Envelope { seq: 0, ts: 1, clock: 0, source: 4, kind: kind::SEAL, len: Seal::LEN as u16, cpu: 0, flags: 0 };
+    let mut lines = b1.lines();
+    lines.push(seam());
+    lines.push(line(&Rec { env, payload }));
+    lines.push(seam());
+    lines.extend(b3.lines());
+    let (found, _) = verify(&lines);
+    assert!(!evidence(&found).is_empty(), "boot 2 replaced by a forged refused seal: {found:?}");
+}
+
+#[test]
+fn review_p1c_seals_alone_are_evidence() {
+    let b = tpm_boot([0; 32], 3);
+    let seals: Vec<Rec> = b.recs.iter().filter(|r| r.env.kind == kind::SEAL).cloned().collect();
+    let k = seals.len() as u64;
+    let mut lines = Vec::new();
+    for (i, mut r) in seals.into_iter().enumerate() {
+        r.env.seq = k - i as u64;
+        lines.push(seam());
+        lines.push(line(&r));
+    }
+    let (found, s) = verify(&lines);
+    assert_eq!(s.last_anchor, Some(b.tpm));
+    assert!(!evidence(&found).is_empty(), "every event dropped: {found:?}");
+}
+
+#[test]
+fn review_p2_a_declared_loss_logd_kept_is_not_evidence() {
+    let mut b = tpm_boot([0; 32], 1);
+    b.lapped(3);
+    b.event(Class::Update, 40);
+    b.seal();
+    let (found, _) = verify(&b.lines());
+    assert_eq!(evidence(&found), vec![], "honest export shows evidence");
+}
