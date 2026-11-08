@@ -75,9 +75,14 @@ impl Dir for Server {
             _ => return Out::err(NOT_FOUND),
         };
         let Some(&(n, is_dir, size)) = list.get(index as usize) else { return Out::ok(Entry::default()) };
+        let bad = BAD_NAME.lock().unwrap().clone();
+        let n: &[u8] = match &bad {
+            Some(b) => b,
+            None => n.as_bytes(),
+        };
         let r = &mut self.region[out.off as usize..out.off as usize + READDIR_NAME_BYTES];
         r.fill(0);
-        r[..n.len()].copy_from_slice(n.as_bytes());
+        r[..n.len()].copy_from_slice(n);
         Out::ok(Entry { present: true, size, is_dir, cut: false })
     }
     fn statfs(&mut self, _name: Extent, _out: Extent) -> Out<()> {
@@ -106,7 +111,8 @@ impl Node for Server {
         let slot = self.badge.wrapping_sub(BASE) as usize;
         let Some(Some((data, pos))) = self.open.get_mut(slot) else { return Out::err(outcome::NO_RESOURCE) };
         let mut want = (buf.len.min(READ_MAX) as usize).min(data.len() - *pos as usize);
-        let lie = LIAR.load(Ordering::SeqCst);
+        let reads = READS.fetch_add(1, Ordering::SeqCst);
+        let lie = LIAR.load(Ordering::SeqCst) || reads >= LIE_FROM.load(Ordering::SeqCst);
         if lie {
             want /= 2;
         }
@@ -138,6 +144,13 @@ impl Node for Server {
 
 /// The server answers half of each read and never says the file ended.
 static LIAR: AtomicBool = AtomicBool::new(false);
+/// Reads the server answered; from `LIE_FROM` on it lies as `LIAR` does.
+static READS: AtomicU32 = AtomicU32::new(0);
+static LIE_FROM: AtomicU32 = AtomicU32::new(u32::MAX);
+/// A name the server lists in place of every entry's.
+static BAD_NAME: Mutex<Option<Vec<u8>>> = Mutex::new(None);
+/// The server's incarnation, as the kernel's link reports it.
+static EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 /// Ops that would change the tree, as the server saw them.
 static CHANGES: AtomicU32 = AtomicU32::new(0);
 static CLOSED: AtomicU32 = AtomicU32::new(0);
@@ -173,6 +186,9 @@ impl Link for TestLink {
             }
             None => false,
         }
+    }
+    fn epoch(&self) -> u64 {
+        EPOCH.load(Ordering::SeqCst)
     }
     fn get(&self, off: usize, out: &mut [u8]) -> bool {
         let s = self.0.lock().unwrap();
@@ -213,8 +229,9 @@ fn read_path(path: &str, chunk: usize) -> Option<Vec<u8>> {
     let mut b = vec![0u8; chunk];
     loop {
         let n = vfs::vfs_read(&mut t, fd, b.as_mut_ptr(), chunk);
-        assert!(n >= 0);
-        if n == 0 {
+        // An error ends the read as the end of the file does; what was read
+        // is what the caller compares.
+        if n <= 0 {
             break;
         }
         out.extend_from_slice(&b[..n as usize]);
@@ -298,5 +315,72 @@ fn a_node_the_server_dropped_is_opened_again() {
     for o in link().0.lock().unwrap().open.iter_mut() {
         *o = None;
     }
+    assert_eq!(read_path("/ep/hello.txt", 64).unwrap(), b"hello from ring 3\n");
+}
+
+/// **A read that fails in the middle of a file is an error, not the end of
+/// it**: the client's `vfs_read` answers -1 (EIO), so `cat` or `cp` never
+/// end cleanly with a truncated file.
+///
+/// **Canary.** `endpoint-eof-canary`: the failure reads as 0 bytes again.
+#[test]
+fn a_read_that_fails_mid_file_is_an_error_not_the_end() {
+    let _g = serial();
+    mounted();
+    LIAR.store(false, Ordering::SeqCst);
+    let mut t = vfs::ScratchFds::new();
+    let fd = vfs::vfs_open(&mut t, b"/ep/big.bin", vfs::O_RDONLY);
+    assert!(fd >= 0);
+    let mut b = vec![0u8; 4096];
+    assert_eq!(vfs::vfs_read(&mut t, fd, b.as_mut_ptr(), 4096), 4096);
+    // From the next read on, the server lies.
+    LIE_FROM.store(READS.load(Ordering::SeqCst), Ordering::SeqCst);
+    let n = vfs::vfs_read(&mut t, fd, b.as_mut_ptr(), 4096);
+    LIE_FROM.store(u32::MAX, Ordering::SeqCst);
+    vfs::vfs_close(&mut t, fd);
+    assert!(n < 0, "a read refused after 4096 of 10000 bytes answered {n}, which a client takes for the end");
+}
+
+/// **A listed name is one component**: an empty name, `.` or `..`, a `/` or
+/// a NUL with bytes after it is refused, whatever the server says (Linux's
+/// `verify_dirent_name`).
+///
+/// **Canary.** `endpoint-name-canary`.
+#[test]
+fn a_listed_name_that_is_not_one_component_is_refused() {
+    let _g = serial();
+    mounted();
+    for bad in [&b"a/b"[..], b"", b".", b"..", b"a\0b"] {
+        *BAD_NAME.lock().unwrap() = Some(bad.to_vec());
+        let mut e = vfs::DirEnt::new();
+        let r = vfs::vfs_readdir(b"/ep", 0, &mut e);
+        *BAD_NAME.lock().unwrap() = None;
+        assert!(r.is_err(), "{:?} was listed as {:?}", String::from_utf8_lossy(bad), r.map(|_| String::from_utf8_lossy(e.name()).to_string()));
+    }
+    let mut e = vfs::DirEnt::new();
+    assert!(vfs::vfs_readdir(b"/ep", 0, &mut e).is_ok());
+}
+
+/// **A server that restarted is asked again**: the opens the mount kept from
+/// the earlier one are dropped, even where the new server has the same
+/// handle in use for another file.
+///
+/// **Canary.** `endpoint-epoch-canary`: the cached open is kept.
+#[test]
+fn a_restarted_server_is_opened_again() {
+    let _g = serial();
+    mounted();
+    LIAR.store(false, Ordering::SeqCst);
+    assert_eq!(read_path("/ep/hello.txt", 64).unwrap(), b"hello from ring 3\n");
+    {
+        let mut s = link().0.lock().unwrap();
+        s.open.clear();
+        // Other clients' opens take the new server's handles, whichever the
+        // mount kept from the earlier one.
+        let n = s.open.capacity().max(64);
+        s.open.clear();
+        s.open.resize(n, Some((big(), 0)));
+    }
+    EPOCH.fetch_add(1, Ordering::SeqCst);
     assert_eq!(read_path("/ep/hello.txt", 64).unwrap(), b"hello from ring 3\n");
 }

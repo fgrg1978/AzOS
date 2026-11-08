@@ -13,7 +13,11 @@
 //! region the two share, where names go out and data comes back. Nothing the
 //! server writes there is believed before it is copied out and checked: a
 //! read that is shorter than asked without saying the file ended is refused
-//! ([`read_checked`]), so a truncated file is never served as the whole one.
+//! ([`read_checked`]) and reaches the client as an error, never as the end of
+//! the file, so a truncated file is never served as the whole one; a listed
+//! name that is not one component is refused as Linux's `verify_dirent_name`
+//! refuses it. The opens the mount keeps belong to one incarnation of the
+//! server ([`Link::epoch`]) and are dropped when it changes.
 //!
 //! One operation at a time per mount ([`Claim`]): the region holds one
 //! request. Read-only for now: every change is refused before it reaches the
@@ -76,6 +80,9 @@ pub trait Link: Sync {
     /// Copy the shared region at `off` into `out`; `false` when it does not
     /// hold that many.
     fn get(&self, off: usize, out: &mut [u8]) -> bool;
+    /// Which run of the server answers now (0: none): a capability one run
+    /// lent means nothing to the next.
+    fn epoch(&self) -> u64;
 }
 
 /// The protocol's calls through a [`Link`].
@@ -93,6 +100,7 @@ struct Open {
     node: u32,
     pos: u64,
     used: u64,
+    epoch: u64,
 }
 
 struct State {
@@ -187,6 +195,16 @@ impl EndpointFs {
     /// when the mount holds none.
     fn node(link: &dyn Link, st: &mut State, key: &InodeKey) -> Result<usize, FsErr> {
         st.clock += 1;
+        let epoch = link.epoch();
+        // What an earlier run of the server lent names nothing now (or, by
+        // the same badge, another file).
+        for o in st.nodes.iter_mut() {
+            if o.is_some_and(|o| o.epoch != epoch) && !cfg!(feature = "endpoint-epoch-canary") {
+                if let Some(old) = o.take() {
+                    link.close(old.node);
+                }
+            }
+        }
         if let Some(i) = st.nodes.iter().position(|o| o.is_some_and(|o| o.key == *key)) {
             if let Some(o) = st.nodes[i].as_mut() {
                 o.used = st.clock;
@@ -209,7 +227,7 @@ impl EndpointFs {
                 i
             }
         };
-        st.nodes[i] = Some(Open { key: *key, node, pos: 0, used: st.clock });
+        st.nodes[i] = Some(Open { key: *key, node, pos: 0, used: st.clock, epoch });
         Ok(i)
     }
 
@@ -338,6 +356,15 @@ impl FileSystem for EndpointFs {
         self.read(key, offset, dst).unwrap_or(0)
     }
 
+    fn read_at_checked(&self, key: &InodeKey, offset: u64, dst: &mut [u8]) -> Result<usize, FsErr> {
+        // Gate canary `endpoint-eof-canary`: a refused read is 0 bytes, the
+        // end of the file to the client.
+        if cfg!(feature = "endpoint-eof-canary") {
+            return Ok(self.read(key, offset, dst).unwrap_or(0));
+        }
+        self.read(key, offset, dst)
+    }
+
     fn write_at(&self, _key: &InodeKey, _offset: u64, _src: &[u8]) -> Result<usize, ()> {
         Err(())
     }
@@ -412,7 +439,15 @@ impl FileSystem for EndpointFs {
             return Err(FsErr::Io);
         }
         let len = b.iter().position(|&c| c == 0).unwrap_or(b.len());
-        if e.cut || !out.set(&b[..len], e.is_dir, e.size as u64) {
+        let name = &b[..len];
+        // One component, whatever the server says: not empty, not `.` or
+        // `..`, no `/`, and nothing after the NUL that ends it (a name cut
+        // there could shadow another).
+        let one = !name.is_empty() && name != b"." && name != b".." && !name.contains(&b'/') && b[len..].iter().all(|&c| c == 0);
+        if !one && !cfg!(feature = "endpoint-name-canary") {
+            return Err(FsErr::Io);
+        }
+        if e.cut || !out.set(name, e.is_dir, e.size as u64) {
             return Err(FsErr::NameTooLong);
         }
         Ok(Some(cookie + 1))

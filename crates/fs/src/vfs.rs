@@ -355,6 +355,14 @@ pub trait FileSystem: Sync {
     /// `write_at` pays for the bytes it touches, not the whole file.
     fn read_at(&self, key: &InodeKey, offset: u64, dst: &mut [u8]) -> usize;
 
+    /// [`read_at`](Self::read_at) for a backend whose read can fail part way
+    /// through a file (one served from ring 3): `Err` is an I/O error the
+    /// client is told (`-1`, EIO), never the end of the file. The default
+    /// cannot fail.
+    fn read_at_checked(&self, key: &InodeKey, offset: u64, dst: &mut [u8]) -> Result<usize, FsErr> {
+        Ok(self.read_at(key, offset, dst))
+    }
+
     /// Write `src` at `offset` bytes into the file named by `key`, growing
     /// it if `offset + src.len()` exceeds the current size. Returns bytes
     /// written. `Err(())` for a backend that cannot write at all, or on an
@@ -2177,7 +2185,10 @@ fn vfs_read_inner<const N: usize>(table: &mut FdTableN<N>, fd: i32, buf: *mut u8
             None if backing.ro_stream => {
                 backend.read_at_handle(&backing.key, backing.handle, backing.size, offset, dst)
             }
-            None => backend.read_at(&backing.key, offset, dst),
+            None => match backend.read_at_checked(&backing.key, offset, dst) {
+                Ok(n) => n,
+                Err(_) => return -1,
+            },
         }.min(want);
         table.set_off(fd, offset.saturating_add(n as u64));
         return n as i32;

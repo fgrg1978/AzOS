@@ -17,6 +17,13 @@ endpoint-fs = ["dep:azos_abi", "dep:azos_devif", "dep:azos_idl"]
 # server's short read as it comes, without the end of the file. Never in a
 # real build.
 endpoint-short-read-canary = []
+# Host canaries (fs-tests `endpoint_fs`), never in a real build: a refused
+# read is 0 bytes again (`endpoint-eof-canary`); a listed name is taken as
+# the server gives it (`endpoint-name-canary`); the opens of an earlier run of
+# the server are kept (`endpoint-epoch-canary`).
+endpoint-eof-canary = []
+endpoint-name-canary = []
+endpoint-epoch-canary = []
 # Gate canary: a retired mount's inodes stay on its backend (`vfs_unmount`):
 # a descriptor opened on one USB stick reads the next stick's file of the
 # same name. The fs-tests `usb_volume` row must turn red. Never in a real build.

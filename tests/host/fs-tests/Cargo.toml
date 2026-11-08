@@ -175,6 +175,11 @@ ro-open-canary = []
 tmpfs-bound-canary = []
 # The ring-3 mount takes a server's short read as it comes (endpoint_fs).
 endpoint-short-read-canary = []
+# The mount reads a refused read as the end of the file, lists a name that
+# is not one component, keeps a restarted server's opens (endpoint_fs).
+endpoint-eof-canary = []
+endpoint-name-canary = []
+endpoint-epoch-canary = []
 
 [dependencies]
 # Kconfig CHAOS / DECISION_RECORDS_DEV sites in the #[path]-pulled sources
