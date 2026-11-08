@@ -166,6 +166,8 @@ pub(crate) fn create_service_tasks(hart_id: usize) {
     }
     // K1: the io_ring worker, which runs an RT submitter's file entries.
     create_ioring_worker_task();
+    // The sealer of the security log (Kconfig SEC_LOG; nothing with it off).
+    crate::boot::seclog::create_task();
     // N4: the RCU callback task (Kconfig RCU_QSBR; nothing with it off).
     create_rcu_callback_task();
     // The memory reclaim task (Kconfig MM_RECLAIM_COMPRESS; nothing with it off),

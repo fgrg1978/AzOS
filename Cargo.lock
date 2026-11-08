@@ -739,6 +739,7 @@ dependencies = [
  "azos_rtc",
  "azos_safety_core",
  "azos_sched",
+ "azos_seclog",
  "azos_soc",
  "azos_sync",
  "azos_syscall",

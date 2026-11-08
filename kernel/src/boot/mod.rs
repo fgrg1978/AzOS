@@ -51,6 +51,7 @@ pub(crate) use energy::*;
 pub(crate) mod term_regions;
 // Kconfig KLOG: the structured kernel log's ring, as a kernel-owned region.
 pub(crate) mod klog_region;
+pub(crate) mod seclog;
 #[cfg(feature = "inspect")]
 mod inspect;
 #[cfg(feature = "inspect")]

@@ -17,6 +17,9 @@
 //!   what was measured.
 //! * **The OTA rollback floor.** With Kconfig `OTA_FLOOR_TPM_NV` an NV index
 //!   holds the epoch floor beside BOOTMETA's (`azos_ota::floor`).
+//! * **The sealed security log's anchor.** With Kconfig `SEC_LOG_SEAL_TPM_NV`
+//!   an extend index holds the anchor the security log's seals are
+//!   committed to (`boot::seclog`).
 //! * **The keystore's root.** With Kconfig `KEYSTORE_TPM_NV` a 32-byte NV
 //!   index holds the secret that keys opened with the `tpm_nv` backend derive
 //!   from ([`install_keystore_root`]; `azos_syscall::keys`).
@@ -54,7 +57,7 @@
 
 use azos_decision::{Rule, Verdict};
 use azos_tpm::tis::{Clock, Tis};
-use azos_tpm::tpm::{Tpm, FLOOR_INDEX};
+use azos_tpm::tpm::{Tpm, CHAIN_INDEX, FLOOR_INDEX};
 use azos_tpm::Error;
 use azos_arch_api::entropy::CpuCredit;
 use azos_sync::kmutex::Mutex;
@@ -353,6 +356,7 @@ pub(crate) fn init(dtb_ptr: usize) -> bool {
     *TPM.lock() = Some(tpm);
     measure_kernel();
     install_floor();
+    install_seclog();
     true
 }
 
@@ -639,6 +643,56 @@ fn install_floor() {
         Some(Err(e)) => azos_drv_sys::kerr!(
             "[TPM] OTA rollback floor: the NV index cannot be provisioned or read ({:?}): not used, \
              the volume's floor holds alone", e),
+        None => {}
+    }
+}
+
+// ── The sealed security log's anchor ────────────────────────────────────────
+
+/// The password of the anchor's index: public inputs, as the floor's, so it
+/// keeps out software that does not know the scheme. Whoever has it can only
+/// extend the index, which the verifier then reports as a broken chain.
+fn chain_auth() -> [u8; 32] {
+    let mut m = [0u8; 18];
+    m[..14].copy_from_slice(b"azos/seclog/v1");
+    m[14..].copy_from_slice(&CHAIN_INDEX.to_be_bytes());
+    sha256(&m)
+}
+
+fn chain_extend(head: &[u8; 32]) -> bool {
+    let auth = chain_auth();
+    match with(|t| t.nv_extend(CHAIN_INDEX, &auth, head)) {
+        Some(Ok(())) => true,
+        Some(Err(e)) => {
+            azos_drv_sys::kerr!("[TPM] security log: NV_Extend FAILED ({:?})", e);
+            false
+        }
+        None => false,
+    }
+}
+
+static CHAIN: super::seclog::Hw = super::seclog::Hw { extend: chain_extend };
+
+/// Define the anchor's extend index (once per TPM), read it, and install it
+/// as the security log's seal. Any failure leaves the log forward-only, and
+/// says so.
+fn install_seclog() {
+    if !azos_limits::SEC_LOG_SEAL_TPM_NV || !azos_records::SECURITY {
+        return;
+    }
+    let auth = chain_auth();
+    let r = with(|t| {
+        t.chain_provision(&[], CHAIN_INDEX, &auth)?;
+        t.chain_read(CHAIN_INDEX, &auth)
+    });
+    match r {
+        Some(Ok(anchor)) => {
+            super::seclog::install_hw(&CHAIN, anchor);
+            kprintln!("[TPM] security log: anchor in NV index {:#010x}", CHAIN_INDEX);
+        }
+        Some(Err(e)) => azos_drv_sys::kerr!(
+            "[TPM] security log: NV index {:#010x} cannot be provisioned or read ({:?}): the seals are forward-only",
+            CHAIN_INDEX, e),
         None => {}
     }
 }
