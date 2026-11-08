@@ -161,6 +161,8 @@ pub enum AdmissionError {
     /// A row receives a name no row serves (`READ` on `endpoint.<name>`), or
     /// a name it also imports or holds an endpoint grant on.
     UnknownReceive,
+    /// A row holds the call right on `endpoint.login` with `transfer`.
+    LentLoginCall,
     /// A `[signer.NAME]` repeats a name or a key id, has no frame ceiling or
     /// a warrant ceiling that is not `kind:prefix`.
     BadSigner,

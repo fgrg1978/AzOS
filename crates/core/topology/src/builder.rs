@@ -3066,24 +3066,23 @@ const TERM_CONSOLE_SCREEN: CapSpec = CapSpec {
 /// Behind a console login ([`LOGIND_ROW`]) it also holds the call right on
 /// `endpoint.login` ([`LOGIN_CALL`]), listed after the endpoint it serves: the
 /// credential its secure-attention prompt makes goes to the login service, and
-/// the end of the session is asked of it. First of all, the source of the
-/// terminals it lends jobs ([`TERM_JOB_SOURCE`]): a lookup of the endpoint by
-/// its index finds the lowest slot, so the call right it mints from is that
-/// one, and the serving right is not looked up (accepting needs no handle).
+/// the end of the session is asked of it. Last, the source of the terminals it
+/// lends jobs ([`TERM_JOB_SOURCE`]). It finds each by the endpoint it names
+/// (`CAP_INFO_ENDPOINT`), so neither the order nor the rights tell them apart.
 const TERMD_CAPS: &[CapSpec] = match (LOGIND_ROW, TERM_INPUT_RING, TERM_SCREEN_REGION) {
-    (false, true, true) => &[TERM_JOB_SOURCE, TERM_SERVE, TERM_INPUT_EVENTS, TERM_CONSOLE_SCREEN],
-    (false, true, false) => &[TERM_JOB_SOURCE, TERM_SERVE, TERM_INPUT_EVENTS],
-    (false, false, _) => &[TERM_JOB_SOURCE, TERM_SERVE],
-    (true, true, true) => &[TERM_JOB_SOURCE, TERM_SERVE, LOGIN_CALL, TERM_INPUT_EVENTS, TERM_CONSOLE_SCREEN],
-    (true, true, false) => &[TERM_JOB_SOURCE, TERM_SERVE, LOGIN_CALL, TERM_INPUT_EVENTS],
-    (true, false, _) => &[TERM_JOB_SOURCE, TERM_SERVE, LOGIN_CALL],
+    (false, true, true) => &[TERM_SERVE, TERM_INPUT_EVENTS, TERM_CONSOLE_SCREEN, TERM_JOB_SOURCE],
+    (false, true, false) => &[TERM_SERVE, TERM_INPUT_EVENTS, TERM_JOB_SOURCE],
+    (false, false, _) => &[TERM_SERVE, TERM_JOB_SOURCE],
+    (true, true, true) => &[TERM_SERVE, LOGIN_CALL, TERM_INPUT_EVENTS, TERM_CONSOLE_SCREEN, TERM_JOB_SOURCE],
+    (true, true, false) => &[TERM_SERVE, LOGIN_CALL, TERM_INPUT_EVENTS, TERM_JOB_SOURCE],
+    (true, false, _) => &[TERM_SERVE, LOGIN_CALL, TERM_JOB_SOURCE],
 };
 
 /// The login endpoint: `LOGIND.ELF` serves the `Login` object on it (`READ`),
 /// `TERMD.ELF` calls it (`WRITE`). Like `endpoint.term`, ring 3 finds it by
 /// scanning the endpoint capabilities its row holds (the rights are in the
 /// handle).
-const RESOURCE_ENDPOINT_LOGIN: &[u8] = b"endpoint.login";
+pub(crate) const RESOURCE_ENDPOINT_LOGIN: &[u8] = b"endpoint.login";
 /// The server half of `endpoint.login`: `READ` claims it for `LOGIND.ELF`.
 const LOGIN_SERVE: CapSpec = CapSpec {
     kind: CapKind::Endpoint,

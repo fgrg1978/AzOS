@@ -287,6 +287,15 @@ pub const CAP_INFO_TREE: u64 = 1;
 /// expiry.
 pub const CAP_INFO_QUERY: u64 = 2;
 
+/// [`SYS_CAP_INFO`] query: the caller's capability on the endpoint NAMED
+/// `endpoint.<name>`, `a0` the name's address, `a2` its length (1 to 24
+/// bytes), `a3` the rights it must hold (bits 0..8) and must not (bits
+/// 8..16). Returns the lowest-slot such handle; `-ENOENT` when the caller's
+/// topology row grants no such right; `-ECAPSTALE` when the row grants one
+/// and the caller holds none (it fails closed on that); `-EINVAL`, `-EFAULT`.
+/// Told apart by the endpoint, not by its rights or the row's order.
+pub const CAP_INFO_ENDPOINT: u64 = 3;
+
 
 // ── Domain and threads ────────────────────────────────────────────────
 

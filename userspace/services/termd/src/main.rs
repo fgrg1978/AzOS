@@ -76,10 +76,10 @@ use azos_input_wire::event::{REGION_BYTES, RING_CAP};
 use azos_input_wire::screen::Viewer;
 use azos_libsys as sys;
 use azos_rings::region::SpscRing;
-use azos_login::{ended, state, status, LoginClient, LoginCall};
+use azos_login::{ended, status, LoginClient, LoginCall};
 use azos_term::MsgDesc;
 use input::Input;
-use service::{Console, Gate, Service};
+use service::{Console, Gate, LoginRight, Service};
 
 /// The console as the kernel gives it to its input owner, and the server's
 /// own capability on `endpoint.term` (the source of a job's badged right).
@@ -154,11 +154,12 @@ fn open_input() -> Option<Input<SpscRing>> {
 /// The login service, over the call right on `endpoint.login`. The kernel mints
 /// that right only on a gated console (`azos_topology::builder::login_call_withheld`:
 /// the signed topology enrols a user), so the topology decides what an unreachable
-/// service means: `ep` 0, no right, no gate and no question (the shell is the
+/// service means: no right granted, no gate and no question (the shell is the
 /// component manager's, and a login service that is down cannot take the console);
-/// with the right, a service that does not answer keeps the console locked.
+/// with the right, a service that does not answer keeps the console locked, and so
+/// does a right the row grants that the server does not hold (`LoginRight::Missing`).
 struct LoginGate {
-    ep: u32,
+    right: LoginRight,
 }
 
 /// The transport of the `Login` client: the v2 call through the capability.
@@ -180,53 +181,28 @@ const GATE_TRIES: u32 = 20_000;
 
 impl Gate for LoginGate {
     fn state(&mut self) -> u32 {
-        if self.ep == 0 {
-            return state::OPEN;
-        }
-        for _ in 0..GATE_TRIES {
-            if let Ok(s) = LoginClient::new(Ep(self.ep)).state() {
-                return s;
+        service::gate_state(self.right, |ep| {
+            for _ in 0..GATE_TRIES {
+                if let Ok(s) = LoginClient::new(Ep(ep)).state() {
+                    return Some(s);
+                }
+                sys::yield_now();
             }
-            sys::yield_now();
-        }
-        // Gated, and the service cannot be reached: the gate stays shut.
-        state::LOCKED
+            None
+        })
     }
 
     fn login(&mut self, user: [u64; azos_login::NAME_WORDS], credential: [u64; azos_login::CREDENTIAL_WORDS]) -> u32 {
-        LoginClient::new(Ep(self.ep)).login(user, credential).unwrap_or(status::NOT_READY)
+        let LoginRight::Held(ep) = self.right else { return status::NOT_READY };
+        LoginClient::new(Ep(ep)).login(user, credential).unwrap_or(status::NOT_READY)
     }
 
     fn end(&mut self) -> bool {
         // Anything but a clear "none left" (including a service that does not
         // answer) is a session that may still run.
-        matches!(LoginClient::new(Ep(self.ep)).end(), Ok(ended::OK))
+        let LoginRight::Held(ep) = self.right else { return self.right == LoginRight::NotGranted };
+        matches!(LoginClient::new(Ep(ep)).end(), Ok(ended::OK))
     }
-}
-
-/// The `Cap<Endpoint>` of the row whose rights `want` says are the ones: the
-/// call right on `endpoint.login` (`WRITE` alone) or the source of a job's
-/// terminal (`WRITE` and `DUP`, no `READ`). They are told apart by their
-/// rights, without calling either (a call on the endpoint it serves would wait
-/// for itself). 0: the row grants none.
-fn find_endpoint(want: fn(u8) -> bool) -> u32 {
-    (0..16u32)
-        .filter_map(|i| {
-            let h = sys::cap_lookup(sys::ty::ENDPOINT.raw(), i);
-            (h > 0).then_some(h as u32)
-        })
-        .find(|&h| sys::cap_info(h).is_ok_and(|i| want(i.rights)))
-        .unwrap_or(0)
-}
-
-/// The call right on `endpoint.login`: `WRITE`, nothing to lend, not served.
-fn is_login_call(r: u8) -> bool {
-    r & CapPerms::READ.bits() == 0 && r & CapPerms::DUP.bits() == 0 && r & CapPerms::WRITE.bits() != 0
-}
-
-/// The source of a job's terminal: `WRITE` and `DUP`, not served through it.
-fn is_job_source(r: u8) -> bool {
-    r & CapPerms::READ.bits() == 0 && r & CapPerms::DUP.bits() != 0 && r & CapPerms::WRITE.bits() != 0
 }
 
 struct ServiceCell(core::cell::UnsafeCell<Service<Uart, LoginGate>>);
@@ -234,7 +210,7 @@ struct ServiceCell(core::cell::UnsafeCell<Service<Uart, LoginGate>>);
 unsafe impl Sync for ServiceCell {}
 
 static SERVICE: ServiceCell =
-    ServiceCell(core::cell::UnsafeCell::new(Service::with_gate(Uart { term: 0 }, LoginGate { ep: 0 })));
+    ServiceCell(core::cell::UnsafeCell::new(Service::with_gate(Uart { term: 0 }, LoginGate { right: LoginRight::NotGranted })));
 
 /// `-EBUSY`: another task owns console input.
 const E_BUSY: isize = -16;
@@ -257,8 +233,12 @@ fn main() -> ! {
         svc.d.push(&one[..n as usize]);
     }
     svc.inp = open_input();
-    svc.gate.ep = find_endpoint(is_login_call);
-    svc.con.term = find_endpoint(is_job_source);
+    // Each right by the endpoint it names (not by its rights or its slot):
+    // the call right on the login service, and the call right a job's
+    // terminal is minted from.
+    svc.gate.right = LoginRight::of(sys::cap_lookup_endpoint(b"login", CapPerms::WRITE.bits(), CapPerms::READ.bits()));
+    let src = sys::cap_lookup_endpoint(b"term", CapPerms::WRITE.union(CapPerms::DUP).bits(), CapPerms::READ.bits());
+    svc.con.term = if src > 0 { src as u32 } else { 0 };
     svc.sak_serial = azos_limits::LOGIN_SAK_SERIAL_BYTE as u8;
     svc.gate_up();
     let _ = sys::console_write(sys::STDOUT, b"[termd] AzOS terminal server (Terminal on endpoint.term)\n");

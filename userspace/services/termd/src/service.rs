@@ -103,6 +103,45 @@ pub trait Gate {
     fn end(&mut self) -> bool;
 }
 
+/// What looking up the call right on the login service came to (by the
+/// endpoint it names, `CAP_INFO_ENDPOINT`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoginRight {
+    /// Held: the console is gated, ask the service.
+    Held(u32),
+    /// The row grants none (the kernel withholds it where nobody is enrolled):
+    /// no gate.
+    NotGranted,
+    /// The row grants one and it is not held: the console is gated and the
+    /// service cannot be asked, so nobody is let in.
+    Missing,
+}
+
+impl LoginRight {
+    /// From the lookup's answer: a handle, `-ENOENT` (none granted), or
+    /// anything else (granted and not held, or the lookup failed).
+    pub fn of(rc: isize) -> Self {
+        if rc > 0 {
+            LoginRight::Held(rc as u32)
+        } else if rc == azos_abi::error::Errno::ENOENT.to_syscall_ret() as isize {
+            LoginRight::NotGranted
+        } else {
+            LoginRight::Missing
+        }
+    }
+}
+
+/// Where the gate is, given the login right: no right granted, `OPEN`; one
+/// granted and missing, `LOCKED` without a question; held, what `ask` gets
+/// from the service, `LOCKED` when it does not answer.
+pub fn gate_state(right: LoginRight, ask: impl FnOnce(u32) -> Option<u32>) -> u32 {
+    match right {
+        LoginRight::NotGranted => state::OPEN,
+        LoginRight::Missing => state::LOCKED,
+        LoginRight::Held(ep) => ask(ep).unwrap_or(state::LOCKED),
+    }
+}
+
 /// No login service: nobody is enrolled, the console is the system's.
 pub struct NoGate;
 

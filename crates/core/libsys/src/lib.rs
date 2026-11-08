@@ -136,7 +136,7 @@ pub use azos_rings::region::*;
 // These names are imported, not restated, so a number can no longer drift
 // between the kernel-facing definition and this userspace wrapper crate.
 // ---------------------------------------------------------------------------
-use azos_abi::syscall_nr::{CAP_INFO_LOOKUP, CAP_INFO_QUERY};
+use azos_abi::syscall_nr::{CAP_INFO_ENDPOINT, CAP_INFO_LOOKUP, CAP_INFO_QUERY};
 use azos_abi::syscall_nr::{
     SYS_EXIT, SYS_INVOKE,
     SYS_GETPID, SYS_YIELD,
@@ -2440,6 +2440,16 @@ pub fn sup_give_up(dead: u32) -> isize {
 /// capability the task does not hold has no handle to return.
 pub fn cap_lookup(kind: u8, resource: u32) -> isize {
     unsafe { syscall4(SYS_CAP_INFO, 0, CAP_INFO_LOOKUP, kind as u64, resource as u64) }
+}
+
+/// This task's capability on the endpoint called `endpoint.<name>` holding
+/// every right of `need` and none of `deny` (`CapPerms` bits): its handle,
+/// `-ENOENT` when the task's row grants none, `-ECAPSTALE` when the row grants
+/// one the task does not hold (`CAP_INFO_ENDPOINT`).
+pub fn cap_lookup_endpoint(name: &[u8], need: u8, deny: u8) -> isize {
+    unsafe {
+        syscall4(SYS_CAP_INFO, name.as_ptr() as u64, CAP_INFO_ENDPOINT, name.len() as u64, need as u64 | (deny as u64) << 8)
+    }
 }
 
 /// This task's capability to the kernel-hosted interface with host key `key`

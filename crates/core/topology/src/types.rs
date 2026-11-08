@@ -4506,6 +4506,19 @@ impl<'a> Topology<'a> {
                 }
             }
         }
+        // The call right on the login service is never lent on: the terminal
+        // server asks it for the console's gate, and a copy of it elsewhere
+        // is a second way into the login prompt's decisions.
+        for task in self.tasks() {
+            if self.caps_of(task).iter().any(|c| {
+                c.kind == CapKind::Endpoint
+                    && c.target.as_bytes() == crate::builder::RESOURCE_ENDPOINT_LOGIN
+                    && !c.perms.contains(CapPerms::READ)
+                    && c.transfer
+            }) {
+                return Err(AdmissionError::LentLoginCall);
+            }
+        }
         // An export lends an endpoint the row holds to a class that exists:
         // anything else is a typo in a signed file that would silently open
         // nothing (or, worse, read as if it had).

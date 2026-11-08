@@ -9,7 +9,7 @@
 
 use azos_abi::cap::{ty, CapHandle, CapPerms};
 use azos_abi::error::Errno;
-use azos_abi::syscall_nr::{CAP_INFO_LOOKUP, CAP_INFO_QUERY};
+use azos_abi::syscall_nr::{CAP_INFO_ENDPOINT, CAP_INFO_LOOKUP, CAP_INFO_QUERY};
 
 use crate::dispatch::SyscallOut;
 use crate::invoke::errno_cap;
@@ -18,6 +18,7 @@ use crate::invoke::errno_cap;
 pub(crate) fn sys_cap_info(h: u64, query: u64, a2: u64, a3: u64, out: &mut SyscallOut) -> i64 {
     match query {
         CAP_INFO_LOOKUP => crate::handlers::sys_cap_lookup(a2, a3),
+        CAP_INFO_ENDPOINT => crate::named_cap::sys_lookup(h, a2, a3),
         CAP_INFO_QUERY => {
             let Ok(raw) = u32::try_from(h) else { return Errno::ECAPSTALE.to_syscall_ret() };
             let handle = CapHandle::from_raw(raw);

@@ -484,3 +484,24 @@ fn the_end_of_a_session_revokes_the_terminal_lent_to_its_job() {
     assert_eq!(s.con.revoked, [1009], "the job's terminal outlived the session");
     assert_eq!(s.lent, None);
 }
+
+/// **A login right the row grants and the server does not hold locks the
+/// console**: the lookup by name says which (`CAP_INFO_ENDPOINT`), and only a
+/// right the row does not grant at all opens it. A held right asks the
+/// service, and a service that does not answer keeps it locked.
+///
+/// **Canary.** Make `gate_state` answer `OPEN` for `Missing`: the first
+/// assertion is red.
+#[test]
+fn a_login_right_granted_and_not_held_locks_the_console() {
+    use crate::service::{gate_state, LoginRight};
+    use azos_abi::error::Errno;
+    assert_eq!(gate_state(LoginRight::Missing, |_| panic!("asked a service it cannot reach")), state::LOCKED);
+    assert_eq!(gate_state(LoginRight::NotGranted, |_| panic!("asked with no right")), state::OPEN);
+    assert_eq!(gate_state(LoginRight::Held(7), |ep| (ep == 7).then_some(state::SESSION)), state::SESSION);
+    assert_eq!(gate_state(LoginRight::Held(7), |_| None), state::LOCKED, "a silent service");
+    assert_eq!(LoginRight::of(7), LoginRight::Held(7));
+    assert_eq!(LoginRight::of(Errno::ENOENT.to_syscall_ret() as isize), LoginRight::NotGranted);
+    assert_eq!(LoginRight::of(Errno::ECAPSTALE.to_syscall_ret() as isize), LoginRight::Missing);
+    assert_eq!(LoginRight::of(Errno::EINVAL.to_syscall_ret() as isize), LoginRight::Missing, "a failed lookup is not \"no gate\"");
+}

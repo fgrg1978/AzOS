@@ -5637,6 +5637,35 @@ mod imports_tests {
 }
 
 #[cfg(test)]
+mod login_call_tests {
+    use azos_topology::{parse_caps, parse_sched, AdmissionError, Topology};
+
+    const SCHED: &[u8] = b"[class.best_effort]\ncpu_budget_min_pct = 5\npolicy = \"fair\"\n";
+
+    /// **The login call right is never lent on**: a terminal server row whose
+    /// right on `endpoint.login` carries `transfer` is refused at admission.
+    /// The server's own `READ` grant and a plain call right are admitted.
+    ///
+    /// **Canary.** Skip the login loop in `admission_check`: the refusal is
+    /// gone and this goes red.
+    #[test]
+    fn a_login_call_right_with_transfer_is_refused() {
+        let file = |transfer: bool| -> &'static str {
+            Box::leak(format!(
+                "format = 8\n[task.LOGIND.ELF]\ncaps = [\n  {{ kind = \"endpoint\", target = \"endpoint.login\", perm = \"r\" }},\n]\n\
+[task.TERMD.ELF]\ncaps = [\n  {{ kind = \"endpoint\", target = \"endpoint.login\", perm = \"w\", transfer = {transfer} }},\n]\n"
+            ).into_boxed_str())
+        };
+        for (transfer, want) in [(false, Ok(())), (true, Err(AdmissionError::LentLoginCall))] {
+            let mut t = Topology::empty();
+            parse_sched(SCHED, &mut t).unwrap();
+            assert_eq!(parse_caps(file(transfer).as_bytes(), &mut t), Ok(()));
+            assert_eq!(t.admission_check(), want, "transfer = {transfer}");
+        }
+    }
+}
+
+#[cfg(test)]
 mod receives_tests {
     use azos_topology::{parse_caps, parse_sched, AdmissionError, ParseError, Topology};
 
@@ -7276,15 +7305,15 @@ mod mcp_row_tests {
             t.caps_of(r).iter().filter(|c| c.kind == CapKind::Endpoint && c.target.as_bytes().starts_with(b"endpoint.")).map(|c| (c.perms, c.target.as_str().to_string())).collect()
         };
         let termd = eps(b"TERMD.ELF");
-        assert_eq!(termd[0], (CapPerms::WRITE, "endpoint.term".to_string()), "it lends jobs from a call right, found first");
-        assert_eq!(termd[1], (CapPerms::READ, "endpoint.term".to_string()), "and serves the terminal");
+        assert_eq!(termd[0], (CapPerms::READ, "endpoint.term".to_string()), "it serves the terminal first");
+        assert_eq!(termd.last(), Some(&(CapPerms::WRITE, "endpoint.term".to_string())), "and lends jobs from a call right, last");
         let logind = row(azos_topology::builder::TASK_LOGIND_IMAGE);
         assert_eq!(logind.is_some(), azos_topology::builder::LOGIND_ROW, "a row exactly when Kconfig CONSOLE_LOGIN");
         let Some(l) = logind else {
             assert_eq!(termd.len(), 2, "no login service, no call to it");
             return;
         };
-        assert_eq!(termd[2], (CapPerms::WRITE, "endpoint.login".to_string()), "and calls the login service third");
+        assert_eq!(termd[1], (CapPerms::WRITE, "endpoint.login".to_string()), "and calls the login service second");
         assert!(l.start);
         assert_eq!(t.restart_of(b"LOGIND.ELF"), azos_topology::RestartPolicy::OnFailure);
         let caps = t.caps_of(l);

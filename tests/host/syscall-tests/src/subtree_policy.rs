@@ -50,7 +50,9 @@ const SCHED: &str = "[class.best_effort]\ncpu_budget_min_pct = 5\npolicy = \"fai
 ///
 /// And the spawn hand-off's (`spawn_handoff_tests`): `HOSRV.ELF` serves
 /// `endpoint.ho_term`, `HOJOB.ELF` receives it, and `HOOTHER.ELF` serves
-/// `endpoint.ho_other`, which nobody receives.
+/// `endpoint.ho_other`, which nobody receives. And the lookup by name's
+/// (`named_cap_tests`): `HOGATE.ELF` grants call rights with the same rights on
+/// `endpoint.ho_login` and `endpoint.ho_term`.
 const CAPS: &str = "format = 8\n\
 [task.JOBS.ELF]\ncaps = []\n\
 [task.CAPPED.ELF]\ncaps = []\n\
@@ -59,6 +61,7 @@ const CAPS: &str = "format = 8\n\
 [task.HOSRV.ELF]\ncaps = [\n  { kind = \"endpoint\", target = \"endpoint.ho_term\", perm = \"rw\", transfer = true },\n]\n\
 [task.HOOTHER.ELF]\ncaps = [\n  { kind = \"endpoint\", target = \"endpoint.ho_other\", perm = \"r\" },\n]\n\
 [task.HOJOB.ELF]\nreceives = [\"ho_term\"]\ncaps = []\n\
+[task.HOGATE.ELF]\ncaps = [\n  { kind = \"endpoint\", target = \"endpoint.ho_login\", perm = \"w\", transfer = true },\n  { kind = \"endpoint\", target = \"endpoint.ho_term\", perm = \"w\", transfer = true },\n]\n\
 [device.motor.0]\nmatch = \"dt:azos,motor0\"\ndriver = \"MOTORDRV.ELF\"\nsafe_state = \"brake\"\ncommit_ns = 400000\ncompensate = \"stop\"\n\
 [policy.jobsself]\ndomain = \"JOBS.ELF\"\ncreate_ports = false\n\
 [policy.jobstree]\ndomain = \"JOBS.ELF\"\nscope = \"subtree\"\ncreate_endpoints = false\n\

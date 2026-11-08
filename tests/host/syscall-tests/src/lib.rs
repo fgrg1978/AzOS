@@ -350,6 +350,11 @@ pub mod ioport;
 // declares it.
 #[path = "../../../../crates/core/syscall/src/spawn_handoff.rs"]
 pub mod spawn_handoff;
+// `SYS_CAP_INFO`'s lookup of an endpoint right by the endpoint's name
+// (`named_cap_tests`).
+#[path = "../../../../crates/core/syscall/src/named_cap.rs"]
+#[allow(dead_code)]
+pub mod named_cap;
 
 #[path = "../../../../crates/core/syscall/src/sleep.rs"]
 #[allow(dead_code)]
@@ -733,6 +738,12 @@ mod handlers {
     mod spawn_handoff_tests {
         use super::*;
         include!("spawn_handoff_tests.rs");
+    }
+
+    #[cfg(test)]
+    mod named_cap_tests {
+        use super::*;
+        include!("named_cap_tests.rs");
     }
 
     #[cfg(test)]
