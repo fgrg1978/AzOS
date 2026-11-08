@@ -1487,5 +1487,6 @@ azos_safety_core = { path = "../crates/domains/robot/safety-core", optional = tr
 # Wave 11 (DOMAIN): the actuation authority every domain shares — e-stop latch,
 # release authority, safe mode, flight recorder, sys-wdt, the timer-ISR feed.
 azos_actuation = { workspace = true }
+azos_ext_api = { workspace = true }
 # The entropy pool's boot-side helpers (kernel/src/boot/entropy_pool.rs).
 azos_crypto    = { workspace = true }

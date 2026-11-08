@@ -191,11 +191,35 @@ fn wire_motor_effects() {
     kprintln!("[SAFETY] motor effects watched against their deadline (safe-state sweep in sys-wdt)");
 }
 
+/// The drivetrain's command-to-PWM loop: the PID, the motor-command watchdog
+/// and the wheel writes (`rt_motor`).
+pub static RT_MOTOR: azos_ext_api::EffectLoop = azos_ext_api::EffectLoop {
+    name: "rt-motor",
+    body: crate::rt_motor::rt_motor_task,
+    priority: azos_sched::RT_MOTOR_PRIORITY,
+};
+
+/// The flight controller: PID, mixer and ESC writes, with its failsafes
+/// (`flight_ctrl`).
+pub static FLIGHT_CTRL: azos_ext_api::EffectLoop = azos_ext_api::EffectLoop {
+    name: "flight-ctrl",
+    body: crate::flight_ctrl::flight_control_task,
+    priority: azos_sched::FLIGHT_CTRL_PRIORITY,
+};
+
 #[cfg(feature = "effect-gate")]
-const ROBOT_HOOKS: &[azos_ext_api::BootHook] =
-    &[azos_ext_api::BootHook::Devices(azos_robot_sensors::register), azos_ext_api::BootHook::Effects(wire_motor_effects)];
+const ROBOT_HOOKS: &[azos_ext_api::BootHook] = &[
+    azos_ext_api::BootHook::Devices(azos_robot_sensors::register),
+    azos_ext_api::BootHook::Effects(wire_motor_effects),
+    azos_ext_api::BootHook::EffectLoop(&RT_MOTOR),
+    azos_ext_api::BootHook::EffectLoop(&FLIGHT_CTRL),
+];
 #[cfg(not(feature = "effect-gate"))]
-const ROBOT_HOOKS: &[azos_ext_api::BootHook] = &[azos_ext_api::BootHook::Devices(azos_robot_sensors::register)];
+const ROBOT_HOOKS: &[azos_ext_api::BootHook] = &[
+    azos_ext_api::BootHook::Devices(azos_robot_sensors::register),
+    azos_ext_api::BootHook::EffectLoop(&RT_MOTOR),
+    azos_ext_api::BootHook::EffectLoop(&FLIGHT_CTRL),
+];
 
 /// The robot extension, as the actuation core sees it: one effect provider
 /// for the wheels, the ESC and the payload, which owns the motor kind. The

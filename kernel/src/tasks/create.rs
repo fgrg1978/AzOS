@@ -305,20 +305,6 @@ pub(crate) fn create_service_tasks(hart_id: usize) {
             azos_sched::BEHAVIOR_PRIORITY + 1, place::pin(place::BEHAVIOR));
         kprintln!("[SCHED] Created camera-tx task (camera connection) [hart {}]", place::pin(place::BEHAVIOR));
     }
-    // Hart 0: dedicated real-time control — PID loop pinned to avoid jitter.
-    // The safety loops are exempt from the RT band budget (owner decision,
-    // wave 11 SCHED-RT): never throttled when the band runs out.
-    #[cfg(feature = "use-robot")]
-    let rt_motor = azos_sched::task_create_affinity("rt-motor", rt_motor_task, 0,
-        azos_sched::RT_MOTOR_PRIORITY, place::pin(place::CONTROL));
-    #[cfg(feature = "use-robot")]
-    azos_sched::rt::exempt_from_band_cap(rt_motor);
-    // RT7: a panic in a safety task is never contained (panic policy).
-    #[cfg(feature = "use-robot")]
-    panic::register_safety_task(rt_motor, "rt-motor");
-    #[cfg(feature = "use-robot")]
-    kprintln!("[SCHED] Created rt-motor task (MotorCmd→PID→PWM + watchdog) [hart {}]", place::pin(place::CONTROL));
-
     // Dedicated sensor tasks (AQ0: IO-wait, priority-separated)
     #[cfg(feature = "use-robot")]
     let imu = azos_sched::task_create_affinity("imu", imu_task, 0,
@@ -399,18 +385,6 @@ pub(crate) fn create_service_tasks(hart_id: usize) {
         azos_sched::SENSOR_AHRS_PRIORITY, place::pin(place::SENSING));
     #[cfg(feature = "use-robot")]
     kprintln!("[SCHED] Created sensor-ahrs task (IMU+baro+GPS→AHRS→channels) [hart {}]", place::pin(place::SENSING));
-
-    // Phase J+K: flight controller task (mixer + PID + failsafe).
-    // Hart 0: flight controller — same hart as rt-motor for cache locality.
-    #[cfg(feature = "use-robot")]
-    let flight_ctrl = azos_sched::task_create_affinity("flight-ctrl", flight_control_task, 0,
-        azos_sched::FLIGHT_CTRL_PRIORITY, place::pin(place::CONTROL));
-    #[cfg(feature = "use-robot")]
-    azos_sched::rt::exempt_from_band_cap(flight_ctrl);
-    #[cfg(feature = "use-robot")]
-    panic::register_safety_task(flight_ctrl, "flight-ctrl");
-    #[cfg(feature = "use-robot")]
-    kprintln!("[SCHED] Created flight-ctrl task (PID→mixer→ESC + failsafe) [hart {}]", place::pin(place::CONTROL));
 
     // Phase L: telemetry task (attitude + GPS → UDP).
     #[cfg(feature = "use-robot")]

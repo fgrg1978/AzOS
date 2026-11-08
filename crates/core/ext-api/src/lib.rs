@@ -13,11 +13,13 @@
 //! stop work for the physical effects it owns, run by the actuation core
 //! whenever the e-stop latches, and the effect kinds they serve) and its
 //! [`BootHook`]s, run at declared boot phases, so the base never names an
-//! extension's devices or tasks.
+//! extension's devices or tasks. Its hard-deadline loops over an effect are
+//! [`EffectLoop`]s: the base creates them, as safety tasks, from the
+//! descriptor the extension's driver registers.
 
 /// The contract's level. A change to [`Provider`] or [`Manifest`] that an
 /// extension built against the old shape could not meet raises it.
-pub const API_LEVEL: u16 = 3;
+pub const API_LEVEL: u16 = 4;
 
 /// What an extension owns of the machine's effects, as the actuation core
 /// drives it.
@@ -46,6 +48,25 @@ pub struct Provider {
 /// the line is routed there.
 pub type EnableLine = fn(line: u32) -> bool;
 
+/// A loop with a hard deadline over an irreversible effect (a drivetrain's
+/// command-to-PWM loop, a flight controller's mixer), whose body the effect's
+/// driver provides. The base creates it at the task phase on the CPU class of
+/// the effect loops (Kconfig `TASK_CONTROL_PLACE`), outside the real-time
+/// band's budget, and registers it as a safety task: a fault in it is never
+/// contained. It is the only kind of task an extension keeps in the kernel;
+/// what chooses rather than enforces runs in ring 3.
+pub struct EffectLoop {
+    /// The task's name.
+    pub name: &'static str,
+    /// The loop; it never returns.
+    pub body: fn(usize),
+    /// Its scheduler priority, inside the real-time band.
+    pub priority: u32,
+}
+
+/// The kernel's creation of one [`EffectLoop`].
+pub type SpawnLoop = fn(&'static EffectLoop);
+
 /// Work an extension does at one declared boot phase, run once per phase in
 /// install order.
 #[derive(Clone, Copy)]
@@ -66,6 +87,8 @@ pub enum BootHook {
     /// With the system watchdog, before the scheduler starts: create the
     /// extension's kernel tasks.
     Tasks(fn(EnableLine)),
+    /// At the same phase, in the same order: an effect loop the base creates.
+    EffectLoop(&'static EffectLoop),
 }
 
 /// An extension, as the base sees it.

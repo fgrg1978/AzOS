@@ -101,6 +101,15 @@ shared by every domain with an actuator.
   after CONFIG.INI is loaded, at the effects phase, with the board's devices
   (the extension attaches what it produces to the instance numbers the base
   reserves: the robot's ten sensors), and with the system watchdog's task.
+- The only tasks an extension keeps in the kernel are its hard-deadline
+  loops over an effect (`ext_api::EffectLoop`: a name, the loop body its
+  driver provides, a priority in the real-time band). The robot registers
+  two, `rt-motor` (command, PID, motor-command watchdog, wheel writes) and
+  `flight-ctrl` (PID, mixer, ESC writes, failsafes). The base creates each
+  one at the task phase, on the effect loops' CPU (Kconfig
+  `TASK_CONTROL_PLACE`), exempt from the real-time band's budget and
+  registered as a safety task, so a fault in it is never contained. The
+  kernel names no loop.
   The GPIO kill switch is a base provider of the board's I/O
   (`crates/drivers/kill-switch`, Kconfig `BOARD_IO`, which the robot's kernel
   feature turns on): its manifest has no effect of its own, a hook that

@@ -371,12 +371,13 @@ config TASK_OTA_RECV_PLACE
       the boot. Default `general`: outside the real-time cluster.
 
 config TASK_CONTROL_PLACE
-    string "Robot control loops (rt-motor, flight-ctrl): placement class"
+    string "Effect loops a driver registers (rt-motor, flight-ctrl): placement class"
     default "rt.0"
     help
-      The motor PID loop and the flight controller, on one CPU (cache
-      locality: flight-ctrl writes what rt-motor reads). Read only with
-      USE_ROBOT. Their priorities stay where they are (azos_sched).
+      The hard-deadline loops over an effect that an extension's driver
+      registers (azos_ext_api::EffectLoop; the robot's motor PID loop and
+      flight controller), on one CPU (cache locality: flight-ctrl writes
+      what rt-motor reads). Each loop carries its own priority.
 
 config TASK_SENSING_PLACE
     string "Robot sensor loops (imu, sensor-ahrs): placement class"

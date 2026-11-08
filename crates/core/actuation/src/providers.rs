@@ -18,7 +18,7 @@
 use core::sync::atomic::{AtomicU8, Ordering};
 
 use azos_common::hook::{Hook, SetError};
-use azos_ext_api::{BootHook, EnableLine, Manifest, Provider, API_LEVEL};
+use azos_ext_api::{BootHook, EnableLine, Manifest, Provider, SpawnLoop, API_LEVEL};
 
 /// Room for every provider the extensions of one image install.
 pub const MAX_PROVIDERS: usize = 4;
@@ -175,13 +175,14 @@ pub fn devices() {
     });
 }
 
-/// The [`BootHook::Tasks`] phase.
-pub fn start_tasks(enable_line: EnableLine) {
+/// The [`BootHook::Tasks`] phase: each extension's own tasks, and each
+/// [`BootHook::EffectLoop`] it registers created by `spawn`, in hook order.
+pub fn start_tasks(enable_line: EnableLine, spawn: SpawnLoop) {
     enter(TASKS, "tasks");
-    each_hook(|h| {
-        if let BootHook::Tasks(f) = h {
-            f(enable_line);
-        }
+    each_hook(|h| match h {
+        BootHook::Tasks(f) => f(enable_line),
+        BootHook::EffectLoop(l) => spawn(l),
+        _ => {}
     });
 }
 

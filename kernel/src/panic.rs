@@ -88,7 +88,6 @@ static NESTED: [AtomicBool; azos_sched::MAX_CPUS] =
 /// The lines must not contain the word "panic" in any case: many gate rows
 /// fail a boot whose log matches `panic` case-insensitively, and these print
 /// on every robot boot.
-#[cfg(feature = "use-robot")]
 pub fn register_safety_task(idx: usize, name: &str) {
     use azos_drv_sys::kprintln;
     match azos_sched::tid_for_idx(idx) {

@@ -21,9 +21,8 @@ pub(crate) const AUTORUN: Place = Place::of_kconfig(azos_limits::TASK_AUTORUN_PL
 pub(crate) const SYS_WDT: Place = Place::of_kconfig(azos_limits::TASK_SYS_WDT_PLACE);
 #[cfg(all(feature = "net", feature = "boot-slots"))]
 pub(crate) const OTA_RECV: Place = Place::of_kconfig(azos_limits::TASK_OTA_RECV_PLACE);
-/// rt-motor and flight-ctrl.
-#[cfg(feature = "use-robot")]
-pub(crate) const CONTROL: Place = Place::of_kconfig(azos_limits::TASK_CONTROL_PLACE);
+/// The effect loops a driver registers (`azos_ext_api::EffectLoop`).
+pub(crate) const EFFECT_LOOPS: Place = Place::of_kconfig(azos_limits::TASK_CONTROL_PLACE);
 /// imu and sensor-ahrs.
 #[cfg(feature = "use-robot")]
 pub(crate) const SENSING: Place = Place::of_kconfig(azos_limits::TASK_SENSING_PLACE);

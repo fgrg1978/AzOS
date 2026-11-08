@@ -11,6 +11,8 @@
 //! * a manifest of another contract level is refused and registers nothing;
 //! * each boot hook runs at its own phase only, in manifest order, and the
 //!   task phase hands it the kernel's line enable;
+//! * the task phase hands each effect loop the manifest registers to the
+//!   kernel's spawn, once, in hook order with the task hooks;
 //! * the table serves exactly the effect kinds its providers own;
 //! * when the latch arms, every `on_latch` runs, then every `stop`, both
 //!   after the latch store, each in provider order;
@@ -24,7 +26,7 @@
 //! kernel's ktest holds that the table carries its providers.
 
 use crate::{estop, providers};
-use azos_ext_api::{BootHook, Manifest, Provider, API_LEVEL};
+use azos_ext_api::{BootHook, EffectLoop, Manifest, Provider, API_LEVEL};
 use std::sync::{Mutex, TryLockError};
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -38,6 +40,8 @@ enum Ev {
     Hook(&'static str),
     /// A task hook enabled an interrupt line through the kernel's enable.
     Enable(u32),
+    /// The kernel was asked to create an effect loop.
+    Spawn(&'static str, u32),
 }
 
 static EVENTS: Mutex<Vec<Ev>> = Mutex::new(Vec::new());
@@ -130,6 +134,18 @@ fn enable_line(line: u32) -> bool {
     true
 }
 
+/// The kernel's creation of an effect loop, as the task phase hands it over.
+fn spawn(l: &'static EffectLoop) {
+    note(Ev::Spawn(l.name, l.priority));
+}
+
+fn never_runs(_: usize) {
+    unreachable!("the test spawns no task");
+}
+
+static DRIVE: EffectLoop = EffectLoop { name: "drive-loop", body: never_runs, priority: 8 };
+static ROTOR: EffectLoop = EffectLoop { name: "rotor-loop", body: never_runs, priority: 9 };
+
 const KIND_MOTOR: u8 = crate::kind::KIND_MOTOR;
 
 fn yes() -> bool {
@@ -144,7 +160,12 @@ static ROBOT_SHAPED: Manifest = Manifest {
     name: "robot-shaped",
     api_level: API_LEVEL,
     providers: &[provider!("actuators", kinds: &[KIND_MOTOR], latch: true, ready: Some(yes))],
-    hooks: &[hook!(Effects, "robot-shaped effects"), hook!(Devices, "robot-shaped devices")],
+    hooks: &[
+        hook!(Devices, "robot-shaped devices"),
+        hook!(Effects, "robot-shaped effects"),
+        BootHook::EffectLoop(&DRIVE),
+        BootHook::EffectLoop(&ROTOR),
+    ],
 };
 
 static MIXED: Manifest = Manifest {
@@ -157,6 +178,7 @@ static MIXED: Manifest = Manifest {
     ],
     hooks: &[
         hook!(Tasks, "mixed tasks", line: 7),
+        BootHook::EffectLoop(&ROTOR),
         hook!(ConfigLoaded, "mixed config"),
         hook!(Effects, "mixed effects"),
         hook!(ConfigLoaded, "mixed config again"),
@@ -172,6 +194,7 @@ fn hooks_at(m: &Manifest, phase: fn(&BootHook) -> bool) -> Vec<Ev> {
         match *h {
             BootHook::ConfigLoaded(f) | BootHook::Effects(f) | BootHook::Devices(f) => f(),
             BootHook::Tasks(f) => f(enable_line),
+            BootHook::EffectLoop(l) => spawn(l),
         }
     }
     take()
@@ -204,7 +227,7 @@ fn check_a_manifest_after_the_effects_phase_is_refused(m: &'static Manifest) {
     }
     providers::config_loaded();
     providers::devices();
-    providers::start_tasks(enable_line);
+    providers::start_tasks(enable_line, spawn);
     assert!(take().is_empty(), "`{}`: a hook of a refused manifest ran", m.name);
 }
 
@@ -230,7 +253,7 @@ fn check_hooks_run_once_at_their_phase(m: &'static Manifest) {
     let want_config = hooks_at(m, |h| matches!(h, BootHook::ConfigLoaded(_)));
     let want_effects = hooks_at(m, |h| matches!(h, BootHook::Effects(_)));
     let want_devices = hooks_at(m, |h| matches!(h, BootHook::Devices(_)));
-    let want_tasks = hooks_at(m, |h| matches!(h, BootHook::Tasks(_)));
+    let want_tasks = hooks_at(m, |h| matches!(h, BootHook::Tasks(_) | BootHook::EffectLoop(_)));
     install(m);
     install(m);
     assert_eq!(providers::manifests(), 1, "`{}`: a repeated install kept the manifest twice", m.name);
@@ -241,8 +264,9 @@ fn check_hooks_run_once_at_their_phase(m: &'static Manifest) {
     assert_eq!(take(), want_config, "`{}`: the config phase ran other hooks, or these out of order", m.name);
     providers::devices();
     assert_eq!(take(), want_devices, "`{}`: the devices phase ran other hooks, or these out of order", m.name);
-    providers::start_tasks(enable_line);
-    assert_eq!(take(), want_tasks, "`{}`: the task phase ran other hooks, or without the line enable", m.name);
+    providers::start_tasks(enable_line, spawn);
+    assert_eq!(take(), want_tasks,
+               "`{}`: the task phase ran other hooks, spawned other loops, or without the line enable", m.name);
 }
 
 fn check_serves_the_kinds_its_providers_own(m: &'static Manifest) {
@@ -299,12 +323,12 @@ conformance!(
 fn each_boot_phase_runs_once_and_in_order() {
     let _g = fresh();
     providers::effects();
-    providers::start_tasks(enable_line);
+    providers::start_tasks(enable_line, spawn);
     for (name, run) in [
         ("effects twice", (|| providers::effects()) as fn()),
         ("devices after tasks", || providers::devices()),
         ("config after tasks", || providers::config_loaded()),
-        ("tasks twice", || providers::start_tasks(enable_line)),
+        ("tasks twice", || providers::start_tasks(enable_line, spawn)),
     ] {
         assert!(std::panic::catch_unwind(run).is_err(), "{name} ran");
     }

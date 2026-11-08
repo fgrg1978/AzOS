@@ -791,6 +791,17 @@ fn task_release_all_resources(tid: u32) {
     azos_sched::prof::add(21, t_ph);
 }
 
+/// Create one effect loop an extension registered: on the effect loops' CPU
+/// (Kconfig `TASK_CONTROL_PLACE`), exempt from the real-time band's budget,
+/// and a safety task, so a fault in it is never contained.
+fn spawn_effect_loop(l: &'static azos_ext_api::EffectLoop) {
+    let hart = crate::tasks::place::pin(crate::tasks::place::EFFECT_LOOPS);
+    let idx = azos_sched::task_create_affinity(l.name, l.body, 0, l.priority, hart);
+    azos_sched::rt::exempt_from_band_cap(idx);
+    crate::panic::register_safety_task(idx, l.name);
+    kprintln!("[SCHED] Created {} task (effect loop, prio {}) [hart {}]", l.name, l.priority, hart);
+}
+
 /// Create the Phase 16 system watchdog. Both ISAs, one call site each.
 ///
 /// `hart` is the pin, and it is a PARAMETER rather than a constant because
@@ -818,7 +829,7 @@ pub(crate) fn create_sys_wdt_task(hart: i8) {
                [hart {}]", hart);
     // The extensions' and base providers' tasks (the GPIO kill switch), with
     // the watchdog, so every kernel that runs one runs them.
-    azos_actuation::providers::start_tasks(super::blk_irq::enable_line);
+    azos_actuation::providers::start_tasks(super::blk_irq::enable_line, spawn_effect_loop);
     // Owner rule (wave 15): an RT task never does block I/O. The watchdog
     // above is RT (11): its periodic flush, its durable e-stop records and
     // the OTA boot-good mark go to this task, outside the RT band. Created

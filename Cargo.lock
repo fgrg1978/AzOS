@@ -699,6 +699,7 @@ dependencies = [
  "azos_drvkit",
  "azos_dtb",
  "azos_energy",
+ "azos_ext_api",
  "azos_fb",
  "azos_firmware",
  "azos_flight",

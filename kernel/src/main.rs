@@ -120,12 +120,6 @@ use core::sync::atomic::Ordering;
 // merge task) and from `camera_send_frame`, both now unconditional.
 use azos_config::ML_ENABLED;
 use azos_drv_sys::kprintln;
-// `flight_control_task`/`rt_motor_task` are read from the shared task
-// roster (kernel-main-merge task) and so must resolve on every ISA.
-// `txn_try_rollback` is called by each ISA's trap entry
-// (`entry/<isa>/trap.rs`), which imports it itself.
-#[cfg(feature = "use-robot")]
-use azos_safety_core::{flight_ctrl::flight_control_task, rt_motor::rt_motor_task};
 // NOT `#[cfg]`'d, unlike its three ex-neighbours above: `create_sys_wdt_task`
 // is shared by both `kernel_main`s now, so this name has to resolve on both
 // targets. A `use` left inside the riscv64 group is the exact shape that
