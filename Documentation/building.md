@@ -118,6 +118,7 @@ Other targets:
 | Target | What |
 |---|---|
 | `make sdk`, `make sdk-check` | The SDK of the `.config` ISA; the port layer's checks ([sdk.md](sdk.md)) |
+| `make ports` | ripgrep (`rg`), fd (`fd`) and kibi for the three ISAs from `third_party/ports` and the vendored crates; `rg` and `fd` are system-volume images (Kconfig `USERSPACE_RG`, `USERSPACE_FD`) |
 | `make relibc`, `make busybox` | C programs against relibc; BusyBox for the three ISAs (needs `zig` and the fetched tree, `tools/build/third_party_fetch.sh busybox`) |
 | `make micro-config`, `micro-topology`, `micro-check`, `micro`, `micro-test`, `micro-qemu` | The MCU kernel (`micro/`): riscv32imac, M-mode, PMP |
 | `make vf2`, `flash-vf2`, `vf2-console`, `vf2-ktest`, `vf2-pstore` | The VisionFive 2 image, writing it to an SD card (`VF2_SD`), its serial console (`VF2_SERIAL`), and the board-farm rows (`tools/dev/farm/README.md`) |

@@ -50,10 +50,16 @@ makes the program build there; `make ports` builds all three for the three ISAs.
   only for its one client, the shell, so `enable_raw_mode` returns `Unsupported` and
   the editor stops with that error instead of running on line-buffered input.
 
-## Not yet usable on a volume
+## On the system volume
 
-The three build, but none can do its job on AzOS until the SDK `std` has a
-filesystem: `sdk/std/sys/` has no `fs`, so `std::fs` (`File::open`, `read_dir`,
-`metadata`) is the `unsupported` implementation and every call fails at run time.
-ripgrep and fd need it to read a tree; kibi needs it to open a file and, in
-addition, a raw terminal mode for a child program.
+`rg` and `fd` are images of the system volume and of the shell volumes (Kconfig
+`USERSPACE_RG`, `USERSPACE_FD`, on by default for the desktop and server presets), with a
+row each in the built-in topology (the read-only root directory and the `entropy` interface),
+a seccomp row (`crates/core/sched/src/seccomp.rs`) and boot rows (`sh: rg finds a string in a
+file`, `sh: fd lists a directory`, each with a canary). They read through `std::fs`
+(`sdk/std/sys/fs/azos.rs`), which names every path beneath the task's root `Cap<Dir>`.
+
+`kibi` is built (`make ports`) but is not an image: it needs the terminal in raw mode and its
+size, and the terminal server hands those to one client only, the shell. A child program that
+holds a Terminal handle the shell passed it at spawn, with the server restoring cooked mode
+when that handle closes, is the design; it is not implemented, so `enable_raw_mode` refuses.
