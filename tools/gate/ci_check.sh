@@ -12525,9 +12525,12 @@ host_job host_canary_row "logger: rotation latch canary" behavior-tests rotate-l
 host_job host_canary_row "logger: wrap tail canary" behavior-tests wrap-tail-canary after_the_wrap_the_newest_file_is_found_by_its_serial
 # The flight recorder's durable records sit in one queue per CPU
 # (crates/core/actuation/src/logger.rs): the flusher writes them in push
-# order, a full queue refuses rather than drops, a batch leaves RAM only once
-# the medium took it, a real-time caller does no block I/O, and the reserve
-# keeps the latch's slots. Each canary breaks one; the named test, alone,
+# order and waits for a number in flight, a full queue refuses rather than
+# drops, a busy writer handle is waited for, a safety record or a stop spills
+# to another queue, a push at the watermark wakes the flusher, a batch leaves
+# RAM only once an fsync of a file that holds it succeeded (a rotation's
+# included), a real-time caller does no block I/O, and the reserve keeps the
+# latch's slots. Each canary breaks one; the named test, alone,
 # must go red.
 host_job host_canary_row "logger: merge order canary" behavior-tests durable-merge-canary records_of_every_cpu_reach_the_medium_in_push_order
 host_job host_canary_row "logger: latch restart canary" behavior-tests durable-merge-canary a_latch_after_a_release_on_another_cpu_survives_the_restart
@@ -12536,6 +12539,11 @@ host_job host_canary_row "logger: full queue count canary" behavior-tests durabl
 host_job host_canary_row "logger: staged batch canary" actuation-tests durable-staging-canary a_cut_flush_keeps_its_records_for_the_next_pass
 host_job host_canary_row "logger: rt caller canary" behavior-tests rt-flush-canary an_rt_durable_record_is_written_by_the_flusher_not_the_caller
 host_job host_canary_row "logger: reserve canary" actuation-tests ring-reserve-canary the_estop_is_recorded_when_the_ring_is_at_its_limit_and_no_effect_is_evicted
+host_job host_canary_row "logger: busy handle canary" behavior-tests durable-busy-canary a_busy_writer_handle_is_waited_for_not_called_full
+host_job host_canary_row "logger: rotation sync canary" behavior-tests durable-rotate-sync-canary a_rotation_whose_old_file_did_not_sync_keeps_its_records
+host_job host_canary_row "logger: gap wait canary" behavior-tests durable-gap-skip-canary the_flusher_waits_for_a_number_in_flight
+host_job host_canary_row "logger: spill canary" actuation-tests durable-spill-canary a_full_queue_hands_a_stop_and_a_latch_to_another_queue_in_order
+host_job host_canary_row "logger: watermark wake canary" actuation-tests durable-nowake-canary a_push_that_reaches_the_watermark_asks_for_a_flush
 # Proxy execution (`rt_core::proxy_chain`): a reservation whose holder is blocked
 # in a call never finds the passive server that works on it.
 host_job host_canary_row "sched: proxy execution canary" sched-policy-tests rt-proxy-canary \

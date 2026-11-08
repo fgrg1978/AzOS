@@ -760,9 +760,13 @@ record the recorder took reaches the medium or is still in RAM. Of each queue,
 `LOG_QUEUE_SAFETY_RESERVE` slots are kept for safety records (an e-stop latch or
 release, the boot replay's restore record, the release nonce floor, the
 release-key pin); a stop's record may use half of them. A push takes its queue's
-one writer handle with interrupts off and a number from one counter; the flusher,
+one writer handle with interrupts off and a number from one counter (a handle
+another CPU holds is waited for, a bounded time, not taken for a full queue; a
+safety record or a stop whose queue is full goes to another one); the flusher,
 the one consumer, merges the queue fronts by that number and keeps the batch it
-took until the medium took it. Real-time producers never wait: durable entry
+took until an `Ok` fsync of a file that holds it, writing it again otherwise.
+`logger_analytics` counts the records lost as busy (`events_busy`), the rounds a
+push waited (`busy_waits`) and the numbers the flusher stepped over (`holes`). Real-time producers never wait: durable entry
 points queue and wake the flusher instead of flushing in the caller. The
 invariants and their tests: [effects.md](effects.md#durability-invariants-of-the-recorder). The
 recorder is where durable decision receipts, the per-fault crash record, safety

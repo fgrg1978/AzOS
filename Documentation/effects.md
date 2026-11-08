@@ -182,33 +182,42 @@ The `Refusal::receipt` is the id of the refusal's decision record (see
 records are off in this build, and the refusal still happened.
 
 **The queues and their reserve.** The flight recorder keeps its records in one
-single-producer queue per CPU (`LOG_QUEUES` of them, at most `NR_CPUS`; a CPU
-past them shares the queue of its number modulo it), each `LOG_QUEUE_ENTRIES`
-deep. A push takes its queue's one writer handle with interrupts off, so no
-other context of that CPU writes the queue at the same time; a context that
-finds the handle out takes the next queue's. Nothing is ever evicted: a queue
-that has no room for a record's class refuses it. `LOG_QUEUE_SAFETY_RESERVE` of
-each queue's slots are used only by safety records: a latching or releasing
-`SAFETY_ESTOP`, the boot replay's restore record, the release nonce floor and
-the release-key pin (`SAFETY_OPERATOR_KEY`). Everything else is admitted only
-while fewer than `ORDINARY_QUEUE_LIMIT` (the queue minus the reserve) records
-are queued:
+single-producer queue per CPU (the smaller of `LOG_QUEUES` and `NR_CPUS`: up to
+16 by default, so such a machine never shares one; a CPU past them shares the
+queue of its number modulo the count), each `LOG_QUEUE_ENTRIES` deep. A push
+takes its queue's one writer handle with interrupts off, so no other context of
+that CPU writes the queue at the same time. A handle another CPU holds is never
+a full queue: the push tries the other queues, and a safety, stop or effect
+record keeps going round them (`BUSY_ROUNDS`) before it is refused as busy
+(`Why::RecorderBusy` for an effect, `events_busy` and a console line naming the
+cause for a lost latch). Nothing is ever evicted: a queue that has no room for a
+record's class refuses it. `LOG_QUEUE_SAFETY_RESERVE` of each queue's slots are
+used only by safety records: a latching or releasing `SAFETY_ESTOP`, the boot
+replay's restore record, the release nonce floor and the release-key pin
+(`SAFETY_OPERATOR_KEY`). Everything else is admitted only while fewer than
+`ORDINARY_QUEUE_LIMIT` (the queue minus the reserve) records are queued:
 
 | Record                     | Queue below its limit | Queue at its limit                                             |
 |----------------------------|-----------------------|----------------------------------------------------------------|
 | Ordinary record            | queued                | refused, counted in `events_dropped`                           |
-| Reversible effect record   | committed             | refused: `Why::RingFull`, nothing counted                      |
-| Safe effect record (a stop)| committed             | uses the reserve, down to the last `STOP_KEEPS_FREE` slots (half the reserve); past that lost, counted dropped and unrecorded |
-| Safety record              | committed             | may take any free slot, the reserve included; lost (counted, a latch also in `logger_latch_stats` and on the console) only with the reserve full |
+| Reversible effect record   | committed             | refused: `Why::RingFull` (the receipt names the queue and its length), nothing counted |
+| Safe effect record (a stop)| committed             | uses the reserve, down to the last `STOP_KEEPS_FREE` slots (half the reserve); past that it goes to another queue's; with every queue past it, lost, counted dropped and unrecorded |
+| Safety record              | committed             | may take any free slot, the reserve included, then another queue's; lost (counted, a latch also in `logger_latch_stats` and on the console) only with every queue full |
 
-A committed record leaves RAM only when the flusher wrote it: the flusher, the
-queues' one consumer, takes the queue fronts in the order of every push (each
-push takes a number from one counter while it holds its writer handle) into a
-batch it keeps until the medium took it. Durability is the flusher's, a flush
-interval later. A commit that fills its queue past the flush watermark also
-wakes the flusher. A loop of stops cannot fill the slots the e-stop needs, and
-the stop's record is admitted into the reserve so that a stop is recorded even
-when the queue is at its effect limit.
+A committed record leaves RAM only once an `Ok` fsync of a file that holds it
+covered it: the flusher, the queues' one consumer, takes the queue fronts in the
+order of every push (each push takes a number from one counter while it holds a
+writer handle) into a batch it keeps through a failed or short write, a failed
+fsync, a rotation whose old file did not sync and a cut anywhere, and writes the
+batch again (into the next file after a rotation). A record written twice is
+harmless: the replay keeps the last latch, the highest nonce floor and the last
+key pin, all in push order. Durability is the flusher's, a flush interval later.
+Any push that fills its queue to the flush watermark wakes the flusher. A loop
+of stops cannot fill the slots the e-stop needs, and the stop's record is
+admitted into the reserve so that a stop is recorded even when the queue is at
+its effect limit. While the medium fails, each queue keeps the oldest records it
+took and refuses the newer ones (the overwrite ring kept the newest); what it
+took is never lost.
 
 The promise gives way in two places, and both give way toward safety. A stop
 whose record finds its queue past the stop limit goes ahead and is counted as
@@ -233,21 +242,21 @@ unless named), and the test that holds it.
 |---|-----------|-------------------------|----------------------|---------|
 | D1 | A reversible effect's record is in RAM before its op runs; at the limit the effect is refused with a receipt, nothing evicted or counted | `Admit::Commit` at `ORDINARY_RING_LIMIT` of the one ring | `Admit::Commit` at `ORDINARY_QUEUE_LIMIT` of the CPU's queue; another CPU's queue is not affected | actuation-tests `the_op_runs_only_after_…`, `a_ring_at_its_effect_limit_…`, `a_full_queue_refuses_its_cpus_effect_…` (`durable-full-canary`), `a_power_cut_never_leaves_…`; ktest `logger_a_full_queue_…` (`log-queue-full-drops`) |
 | D2 | A committed record leaves RAM only after the medium took it | `EFFECT_PIN` watermark: no producer evicts below it | nothing is evicted from a queue; the pin is gone | `committed_effect_records_are_never_evicted`, `no_committed_effect_is_ever_evicted_…` |
-| D3 | A stop is never refused; its record uses the reserve down to `STOP_KEEPS_FREE` | past `STOP_LIMIT` it evicted the oldest unpinned record, and with a pinned tail it was lost | past the stop limit it is lost, counted dropped and unrecorded: it no longer displaces an ordinary record | `a_stop_is_never_refused_…`, `a_loop_of_stops_cannot_take_…` |
-| D4 | Only a latching or releasing e-stop, the nonce floor and the key pin use the reserve; such a record is lost only with the reserve full, and then counted (`LATCH_LOST`, a warning) | the ring's reserve, behind a pinned tail | each queue's reserve: a safety-record storm on one CPU cannot take another CPU's | `only_a_safety_record_may_use_the_reserve`, `release_restore_and_nonce_…`, `the_estop_is_recorded_when_…` (`ring-reserve-canary`) |
-| D5 | A latching e-stop pushed by a durable call is pending until an `Ok` fsync covers it, then `[SAFETY] ESTOP record durable (action N): fsync confirmed` once | `LATCH_PENDING` in ring positions, also a pin in `evict_oldest` | `LATCH_PENDING` in push numbers; no pin needed | `a_pending_latch_record_survives_…`, `a_latch_after_a_release_on_another_cpu_survives_the_restart`, `a_cut_flush_keeps_its_records_…`; QEMU `safety: latch record flushed` (and its aarch64 run) |
-| D6 | An ordinary record never takes the reserve and every loss is counted | at the limit it evicted the OLDEST record | at the limit the NEWEST record is refused; what a queue took stays | `ordinary_records_never_queue_into_the_reserve`, `a_full_queue_refuses_the_newest_…` (`durable-full-canary`), `a_saturated_queue_counts_every_refusal_…` |
-| D7 | Records reach the medium in the order they were pushed, across every producer | `RING_HEAD` claim order of one MPSC ring | one push counter (`NEXT_SEQ`) taken under the writer handle; the flusher merges the queue fronts by it and waits for a number whose producer is publishing | `records_of_every_cpu_reach_the_medium_in_push_order`, `a_latch_after_a_release_…` (`durable-merge-canary`), `concurrent_producers_past_capacity_…` |
-| D8 | A failed or short write keeps the rest, a torn record rotates the file | `ring_peek` / `ring_consume` | the flusher's staged batch (`Flush::staged`), cut only after `write` returned | `a_failed_flush_does_not_destroy_…`, `a_short_write_is_completed_…`, `a_device_that_stalls_mid_record_…`, `a_cut_flush_keeps_its_records_…` (`durable-staging-canary`) |
-| D9 | `durable_record_pending` holds until an `Ok` fsync covers every record a durable call pushed; only the flush that carries one asks for the real-time block class | `DURABLE_WANT`/`DURABLE_POS` in ring positions | the same in push numbers; a pass with nothing new syncs again while such a record is written and not covered | `a_durable_record_is_pending_until_…`, `only_the_flush_that_carries_…`, `a_cut_flush_keeps_its_records_…` |
+| D3 | A stop is never refused; its record uses the reserve down to `STOP_KEEPS_FREE` | past `STOP_LIMIT` it evicted the oldest unpinned record, and with a pinned tail it was lost | past the stop limit of its queue it goes to another queue; with every queue past it, lost, counted dropped and unrecorded: it no longer displaces an ordinary record | `a_stop_is_never_refused_…`, `a_loop_of_stops_cannot_take_…`, `a_full_queue_hands_a_stop_and_a_latch_to_another_queue_in_order` (`durable-spill-canary`) |
+| D4 | Only a latching or releasing e-stop, the nonce floor and the key pin use the reserve; such a record is lost only with the reserves full, and then counted (`LATCH_LOST`, a warning naming the cause) | the ring's reserve, behind a pinned tail | each queue's reserve, then the other queues' (the number keeps the order); a busy writer handle is waited for, not taken for a full queue | `only_a_safety_record_may_use_the_reserve`, `release_restore_and_nonce_…`, `the_estop_is_recorded_when_…` (`ring-reserve-canary`), `a_busy_writer_handle_is_waited_for_not_called_full` (`durable-busy-canary`) |
+| D5 | A latching e-stop pushed by a durable call is pending until an `Ok` fsync covers it, then `[SAFETY] ESTOP record durable (action N): fsync confirmed` once | `LATCH_PENDING` in ring positions, also a pin in `evict_oldest` | `LATCH_PENDING` in push numbers; no pin needed; every flusher pass ends with the announcement check | `a_pending_latch_record_survives_…`, `a_latch_after_a_release_on_another_cpu_survives_the_restart`, `a_cut_flush_keeps_its_records_…`; QEMU `safety: latch record flushed` (and its aarch64 run) |
+| D6 | An ordinary record never takes the reserve and every loss is counted | at the limit it evicted the OLDEST record | at the limit the NEWEST record is refused; what a queue took stays, so a failing medium keeps the oldest records | `ordinary_records_never_queue_into_the_reserve`, `a_full_queue_refuses_the_newest_…` (`durable-full-canary`), `a_saturated_queue_counts_every_refusal_…` |
+| D7 | Records reach the medium in the order they were pushed, across every producer | `RING_HEAD` claim order of one MPSC ring | one push counter (`NEXT_SEQ`) taken under the writer handle; the flusher merges the queue fronts by it and waits for a number whose producer is publishing (bounded by `GAP_SPINS`, then stepped over, counted in `holes` with a warning) | `records_of_every_cpu_reach_the_medium_in_push_order`, `a_latch_after_a_release_…` (`durable-merge-canary`), `the_flusher_waits_for_a_number_in_flight` (`durable-gap-skip-canary`) |
+| D8 | A failed or short write keeps the rest, a torn record rotates the file | `ring_peek` / `ring_consume` | the flusher's staged batch (`Flush::staged`), cut only after an `Ok` fsync of a file that holds it; written again otherwise | `a_failed_flush_does_not_destroy_…`, `a_short_write_is_completed_…`, `a_device_that_stalls_mid_record_…`, `a_cut_flush_keeps_its_records_…` (`durable-staging-canary`), `a_record_written_twice_after_a_failed_sync_is_replayed_once` |
+| D9 | `durable_record_pending` holds until an `Ok` fsync covers every record a durable call pushed; only the flush that carries one asks for the real-time block class | `DURABLE_WANT`/`DURABLE_POS` in ring positions; a rotation threw the old file's fsync result away | the same in push numbers, moved only by an `Ok` fsync of a file that holds the records (the rotation's included); after four failed fsyncs in a row the flusher retries every 2nd..64th pass | `a_durable_record_is_pending_until_…`, `only_the_flush_that_carries_…`, `a_cut_flush_keeps_its_records_…`, `a_rotation_whose_old_file_did_not_sync_keeps_its_records` (`durable-rotate-sync-canary`) |
 | D10 | A real-time caller never does block I/O: `Err(Deferred)`, record queued, flusher woken; a caller that may not block only bumps the request | `flush_by` | unchanged | `an_rt_durable_record_is_written_by_the_flusher_…` (`rt-flush-canary`) |
 | D11 | A non-real-time durable call flushes itself and `Ok` means fsync confirmed; refused a slot it drains and retries once, then `Err(Io)` | `push_durable` | unchanged | `log_safety_violation_durable_reaches_storage_…`, `a_durable_record_behind_a_pinned_full_ring_…` |
 | D12 | The release nonce floor is written synchronously before the in-memory floor moves; `Err` refuses the release | `log_release_nonce_floor_durable` | unchanged | behavior-tests `estop_release_authority` |
 | D13 | No storage: the logger is inactive, pushes are refused, effects go ahead counted unrecorded, a release is refused, a flush counts an error | `LOG_ACTIVE` | unchanged | `a_durable_record_is_pending_…`, `estop_release_authority` |
 | D14 | A failing medium keeps records in RAM and counts `flush_errors`; the queues fill and effects are refused at the limit | D8 + D1 | D8 + D1, per CPU | `a_failed_flush_does_not_destroy_…` |
 | D15 | Every file opens with the latch, nonce floor and key pin; the latch carry follows every e-stop at push time; the wrap notice lands in the outgoing file | `LATCH_CARRY`, `write_file_header`, the rotate branch | unchanged | `a_rotation_carries_the_latch_…` (`rotate-latch-canary`), `the_wrap_notice_is_logged_before_…` |
-| D16 | The flusher never loses a wake and one consumer writes at a time | `FLUSH_REQ` + `wait_if`, the `LOG_FILE` claim | unchanged: every queue's producers ring the one request word the flusher waits on | `concurrent_flush_and_push_never_invert_…` |
-| D17 | Producers take no lock and never sleep | CAS on the ring head, preemption off | the queue's writer handle (an atomic), interrupts off over the push | `concurrent_producers_past_capacity_…`, `a_saturated_queue_counts_every_refusal_…` |
+| D16 | The flusher never loses a wake and one consumer writes at a time | `FLUSH_REQ` + `wait_if`, the `LOG_FILE` claim (given up while a rotation opened the next file) | every push that reaches the watermark rings the one request word the flusher waits on; the next file is opened under the claim | `concurrent_flush_and_push_never_invert_…`, `a_push_that_reaches_the_watermark_asks_for_a_flush` (`durable-nowake-canary`) |
+| D17 | Producers take no lock and never sleep | CAS on the ring head, preemption off | the queue's writer handle (an atomic), interrupts off over the push; a safety, stop or effect record spins a bounded time for a handle another CPU holds | `concurrent_producers_past_capacity_…`, `a_saturated_queue_counts_every_refusal_…` |
 | D18 | `log-latch-defer` holds every flush back while a latch record is pending; `logger_drain` hands what is owed to the flusher and waits | the canary also lifted the latch pin | the flush hold alone | QEMU `safety: kill switch (gpio)`, `safety: latch survives reboot` under the canary; `orderly-drain-smoke` |
 
 ## Deadline or safe state

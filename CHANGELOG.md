@@ -17,9 +17,13 @@ releases yet. The ABI crate keeps its own file,
   `LOG_RING_SAFETY_RESERVE`). Nothing is evicted: a full queue refuses the new
   record (an effect with `Why::RingFull`, anything else counted in
   `events_dropped`), where the ring evicted the oldest; the effect pin and the
-  latch pin are gone. The flusher writes the records in push order across CPUs
-  and keeps a batch in RAM until the medium took it; a pass with nothing new
-  syncs again while a durable call's record is written and not yet covered
+  latch pin are gone. A writer handle another CPU holds is waited for (a
+  bounded time) rather than reported as a full queue, and an effect refused
+  for it gets `Why::RecorderBusy`; a safety record or a stop whose queue is full
+  goes to another queue; every push that reaches the flush watermark wakes the
+  flusher. The flusher writes the records in push order across CPUs and keeps
+  a batch in RAM until an `Ok` fsync of a file that holds it (the rotation's
+  fsync result included), writing it again otherwise
   ([Documentation/effects.md](Documentation/effects.md#durability-invariants-of-the-recorder)).
 
 - kibi, the ported terminal editor, is back as `KIBI.ELF` (Kconfig
