@@ -2738,13 +2738,26 @@ pub fn engage_pt_protection() -> crate::ptprot::Engaged {
         return Engaged::Untaggable;
     }
     let kpt = *KERNEL_PT.lock();
+    // Every page is checked before any leaf changes: a refusal leaves the pool
+    // as it was (writable, untagged), never part read-only and unarmed.
     for addr in (lo..hi).step_by(PAGE_SIZE) {
         match walk_level(kpt, addr, false, false) {
-            // SAFETY: a live level-0 leaf of the kernel root; the pool is not armed yet, so this is a store.
-            Ok((leaf, 0)) if keyed => unsafe { crate::pt::pt_set(leaf, ARCH.pt_tag_leaf(core::ptr::read_volatile(leaf))) },
+            Ok((_, 0)) if keyed => {}
             #[cfg(feature = "pt-protection-soft")]
-            Ok((leaf, 0)) if !leaf_in_pool(leaf) => pool_leaf(addr, false),
+            Ok((leaf, 0)) if !leaf_in_pool(leaf) => {}
             _ => return Engaged::Untaggable,
+        }
+    }
+    for addr in (lo..hi).step_by(PAGE_SIZE) {
+        let Ok((leaf, 0)) = walk_level(kpt, addr, false, false) else {
+            unreachable!("a pool page's leaf changed between the check and the flip");
+        };
+        if keyed {
+            // SAFETY: a live level-0 leaf of the kernel root; the pool is not armed yet, so this is a store.
+            unsafe { crate::pt::pt_set(leaf, ARCH.pt_tag_leaf(core::ptr::read_volatile(leaf))) };
+        } else {
+            #[cfg(feature = "pt-protection-soft")]
+            pool_leaf(addr, false);
         }
     }
     ARCH.flush_tlb_all();
