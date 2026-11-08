@@ -10,7 +10,7 @@
 # the same commit (python3 tools/lint/unsafe_budget.py --update); a growth needs
 # its reason in the commit message.
 # crate	blocks	fns	impls	attrs	forbid	share
-.	5	10	1	0	0	-
+.	7	10	1	0	0	-
 arch/aarch64	202	49	1	2	0	74
 arch/api	32	10	0	0	0	41
 arch/facade	0	0	0	0	1	0
@@ -51,7 +51,7 @@ crates/core/records	8	1	1	0	0	100
 crates/core/recovery	5	0	0	0	0	55
 crates/core/rings	45	14	8	0	0	99
 crates/core/sched	421	160	14	3	0	67
-crates/core/stdrt	45	1	4	0	0	-
+crates/core/stdrt	47	1	4	0	0	-
 crates/core/sync	47	9	20	0	0	82
 crates/core/syscall	37	2	1	0	0	38
 crates/core/topology	4	0	1	0	0	1
