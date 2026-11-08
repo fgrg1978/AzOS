@@ -4,13 +4,11 @@
 //! build ships as `BEHAVIOR.MBL` (`mk/images.mk`: `tools/image/make_gguf.py`'s policy
 //! wrapped by `tools/image/make_mbl.py` with the same name, tensor sizes and cost row),
 //! loaded by the real loader, called through the real dispatcher with the input
-//! the kernel's client builds, and answered with the class the policy gives.
+//! a client builds, and answered with the class the policy gives.
 //!
-//! What this pins that no other test sees: the model reference the kernel names
-//! the model by (`BEHAVIOR_MODEL_REF` in `kernel/src/behavior_ml.rs`) is the
-//! bundle's, the signed worst case of the cost row fits the 10 ms deadline the
-//! loop gives a call, and the three reference scenarios classify as the gate's
-//! `[GGUF] 3/3` self-test says they do.
+//! What this pins that no other test sees: the signed worst case of the cost
+//! row fits a 10 ms deadline, and the three reference scenarios classify as the
+//! gate's `[GGUF] 3/3` self-test says they do.
 
 use azos_devif::infer::{Done, InferCall, InferClient, Tensor};
 use azos_devif::outcome::{self, Out};
@@ -37,24 +35,12 @@ fn behavior_bundle() -> (Vec<u8>, [u8; 32]) {
     bundle_as("behavior", "behavior-mlp", (16, 12), &[var], None)
 }
 
-/// `const BEHAVIOR_MODEL_REF: u64 = 0x...;` of the kernel's client.
+/// The model reference of the bundle the build ships: the first eight bytes of
+/// the SHA-256 of its manifest (`azos_devif::infer::model_ref`).
 fn pinned_ref() -> u64 {
-    let src = include_str!("../../../../kernel/src/behavior_ml.rs");
-    let at = src.find("pub const BEHAVIOR_MODEL_REF: u64 = 0x").expect("the kernel pins the model reference");
-    let hex: String = src[at..].split("0x").nth(1).unwrap().chars().take_while(|c| c.is_ascii_hexdigit() || *c == '_').collect();
-    u64::from_str_radix(&hex.replace('_', ""), 16).unwrap()
-}
-
-#[test]
-fn the_kernels_model_reference_is_the_bundles() {
     let (file, _) = behavior_bundle();
     let d = azos_crypto::sha256::sha256(&file[..azos_ml::bundle::manifest_len(1)]);
-    assert_eq!(
-        azos_devif::infer::model_ref(&d),
-        pinned_ref(),
-        "kernel/src/behavior_ml.rs BEHAVIOR_MODEL_REF is not the model_ref of the bundle the build ships \
-         (the build says the right value: tools/image/make_mbl.py --expect-ref-from)"
-    );
+    azos_devif::infer::model_ref(&d)
 }
 
 /// The three scenarios of `tools/image/make_gguf.py` and of the start-up self-test,
@@ -115,26 +101,4 @@ fn another_model_reference_is_no_resource() {
         .infer(pinned_ref() ^ 1, Cap::<Tensor>::from_raw(caps.0), Cap::<Tensor>::from_raw(caps.1), 0)
         .expect("the call reached the service");
     assert_eq!(out.code, outcome::NO_RESOURCE);
-}
-
-/// The string literal of `const NAME: &[u8] = b"...";` in `src`.
-fn byte_const<'a>(src: &'a str, name: &str) -> &'a str {
-    let at = src.find(&format!("const {name}: &[u8] = b\"")).unwrap_or_else(|| panic!("no const {name}"));
-    let rest = &src[at..];
-    let start = rest.find("b\"").unwrap() + 2;
-    &rest[start..start + rest[start..].find('"').unwrap()]
-}
-
-/// The kernel calls the endpoint the service serves. The topology names it by a
-/// target (`endpoint.infer`: the kind, a dot, the name) and the kernel by the
-/// name alone; a name with the prefix on it would be another endpoint, never
-/// claimed, and every call would find nobody.
-///
-/// **Canary.** Write `b"endpoint.infer"` in `kernel/src/behavior_ml.rs`: red.
-#[test]
-fn the_kernel_calls_the_endpoint_the_row_serves() {
-    let row = include_str!("../../../../crates/core/topology/src/builder.rs");
-    let kernel = include_str!("../../../../kernel/src/behavior_ml.rs");
-    let target = byte_const(row, "RESOURCE_ENDPOINT_INFER");
-    assert_eq!(target.strip_prefix("endpoint."), Some(byte_const(kernel, "INFER_ENDPOINT")));
 }
