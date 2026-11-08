@@ -558,8 +558,9 @@ pub enum IoErr {
     Io,
 }
 
-/// Bytes of a directory entry name the store hands back.
-pub const NAME_BUF: usize = 64;
+/// Bytes of a directory entry name the store hands back: `READDIR_NAME_BYTES` of the native
+/// ABI (`azos_abi::syscall_nr`), which this crate does not depend on; pkgd's store asserts they agree.
+pub const NAME_BUF: usize = 256;
 
 /// A step of applying an update that the requester's Domain may be held back
 /// from (`ota` envelope row, `azos_common::envelope::OtaOp`: the numbers are

@@ -61,7 +61,7 @@ impl crate::file_ops::FileOps for Statter {
     fn dup(&self, _: i32) -> i64 { unreachable!() }
     fn mkdir(&self, _: &[u8]) -> i64 { unreachable!() }
     fn unlink(&self, _: &[u8]) -> i64 { unreachable!() }
-    fn readdir(&self, _: &[u8], _: u32) -> Option<([u8; 64], u32, bool)> { unreachable!() }
+    fn readdir(&self, _: &[u8], _: u32) -> Option<([u8; azos_abi::syscall_nr::READDIR_NAME_BYTES], u32, bool)> { unreachable!() }
     fn release_all(&self, _: u32) -> usize { unreachable!() }
     fn read_whole(&self, _: &[u8], _: &mut [u8]) -> usize { unreachable!() }
     fn stat(&self, path: &[u8]) -> Result<crate::file_ops::StatOut, i64> {
@@ -129,7 +129,7 @@ impl crate::file_ops::FileOps for Round23 {
     fn dup(&self, _: i32) -> i64 { unreachable!() }
     fn mkdir(&self, _: &[u8]) -> i64 { unreachable!() }
     fn unlink(&self, _: &[u8]) -> i64 { unreachable!() }
-    fn readdir(&self, _: &[u8], _: u32) -> Option<([u8; 64], u32, bool)> { unreachable!() }
+    fn readdir(&self, _: &[u8], _: u32) -> Option<([u8; azos_abi::syscall_nr::READDIR_NAME_BYTES], u32, bool)> { unreachable!() }
     fn release_all(&self, _: u32) -> usize { unreachable!() }
     fn read_whole(&self, _: &[u8], _: &mut [u8]) -> usize { unreachable!() }
     fn rmdir(&self, path: &[u8]) -> i64 {

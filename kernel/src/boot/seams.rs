@@ -760,7 +760,7 @@ pub(crate) fn install_ring3_seams() {
             fn unlink(&self, path: &[u8]) -> i64 {
                 match azos_fs::vfs_unlink(path) { Ok(()) => 0, Err(e) => fs_errno(e) }
             }
-            fn readdir(&self, path: &[u8], index: u32) -> Option<([u8; 64], u32, bool)> {
+            fn readdir(&self, path: &[u8], index: u32) -> Option<([u8; azos_abi::syscall_nr::READDIR_NAME_BYTES], u32, bool)> {
                 // The cookie is opaque, so the `index`-th entry is reached by
                 // walking from the start.
                 let mut ent = azos_fs::DirEnt::new();
@@ -769,9 +769,9 @@ pub(crate) fn install_ring3_seams() {
                     cookie = azos_fs::vfs_readdir(path, cookie, &mut ent).ok()??;
                 }
                 azos_fs::vfs_readdir(path, cookie, &mut ent).ok()??;
-                // A name that does not fit fills all 64 bytes with no NUL: the
+                // A name that does not fit fills the whole buffer with no NUL: the
                 // caller can tell it was cut.
-                let mut name = [0u8; 64];
+                let mut name = [0u8; azos_abi::syscall_nr::READDIR_NAME_BYTES];
                 let n = ent.name().len().min(name.len());
                 name[..n].copy_from_slice(&ent.name()[..n]);
                 Some((name, ent.size.min(u32::MAX as u64) as u32, ent.is_dir))

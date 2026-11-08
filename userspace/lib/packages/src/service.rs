@@ -724,7 +724,7 @@ fn staged_name(n: &[u8]) -> bool {
 /// head (read into `head`, parsed, NOT verified: the caller decides what that
 /// is worth). `*i` is left after the entry.
 fn staged_at<'h, V: Volume>(vol: &mut V, head: &'h mut [u8], i: &mut usize) -> Option<(StagePath, Package<'h>)> {
-    let mut name = [0u8; 64];
+    let mut name = [0u8; update::NAME_BUF];
     // The borrow of `head` that the returned package keeps is made once, at
     // the end, from the bytes the successful read left there.
     let (path, n) = loop {

@@ -76,9 +76,9 @@ impl crate::file_ops::FileOps for Recorder {
         LOG.lock().unwrap().push(Call::Unlink { path: path.to_vec() });
         0
     }
-    fn readdir(&self, path: &[u8], index: u32) -> Option<([u8; 64], u32, bool)> {
+    fn readdir(&self, path: &[u8], index: u32) -> Option<([u8; azos_abi::syscall_nr::READDIR_NAME_BYTES], u32, bool)> {
         LOG.lock().unwrap().push(Call::Readdir { path: path.to_vec(), index });
-        let mut name = [0u8; 64];
+        let mut name = [0u8; azos_abi::syscall_nr::READDIR_NAME_BYTES];
         name[..5].copy_from_slice(b"HELLO");
         Some((name, 1234, true))
     }
@@ -201,9 +201,9 @@ fn the_file_syscalls_route_through_the_seam() {
     assert_eq!(super::sys_unlinkat(dir, p, 0), 0);
     assert_eq!(drain(), vec![Call::Unlink { path: b"/fat/CONFIG.INI".to_vec() }]);
 
-    // `readdir` writes the name NUL-padded to the full 64 bytes it promises
+    // `readdir` writes the name NUL-padded to the full record it promises
     // and answers the size and the directory flag.
-    let mut name_out = [0xFFu8; 64];
+    let mut name_out = [0xFFu8; azos_abi::syscall_nr::READDIR_NAME_BYTES];
     let rc = super::sys_readdirat(dir, p, 3, name_out.as_mut_ptr() as u64, azos_abi::syscall_nr::READDIR_NAME_BYTES as u64);
     assert_eq!(rc, Ok(Some((1234, true, false))), "readdir failed");
 
@@ -212,7 +212,7 @@ fn the_file_syscalls_route_through_the_seam() {
     // refused, and refused before the filesystem is CALLED (what separates
     // the gate from a lookup that also fails).
     let _ = drain();
-    for declared in [0u64, 1, 16, 63] {
+    for declared in [0u64, 1, 16, 63, azos_abi::syscall_nr::READDIR_NAME_BYTES as u64 - 1] {
         assert_eq!(
             super::sys_readdirat(dir, p, 3, name_out.as_mut_ptr() as u64, declared),
             Err(azos_abi::error::Errno::EINVAL.to_syscall_ret()),
@@ -229,7 +229,7 @@ fn the_file_syscalls_route_through_the_seam() {
     assert_eq!(drain(), vec![Call::Readdir { path: b"/fat/CONFIG.INI".to_vec(), index: 3 }]);
     assert_eq!(&name_out[..5], b"HELLO");
     assert!(name_out[5..].iter().all(|&b| b == 0),
-        "readdir left the tail of the 64-byte name buffer unwritten");
+        "readdir left the tail of the name buffer unwritten");
 
     // ── User context: the path must be trimmed at its NUL ──────────────────
     //

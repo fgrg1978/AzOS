@@ -270,6 +270,7 @@ impl Files for SysFiles {
     }
 
     fn entry(&mut self, dir: &[u8], index: usize, name: &mut [u8; NAME_BUF]) -> Option<usize> {
+        const _: () = assert!(NAME_BUF == sys::READDIR_NAME_BYTES);
         let (p, n) = Self::cstr(dir)?;
         let (d, dir) = sys::beneath_root(&p[..n]).ok()?;
         sys::readdir_at(d, dir, u32::try_from(index).ok()?, name).ok()??;

@@ -73,7 +73,7 @@ impl FileOps for Medium {
     fn dup(&self, _: i32) -> i64 { -1 }
     fn mkdir(&self, _: &[u8]) -> i64 { -1 }
     fn unlink(&self, _: &[u8]) -> i64 { -1 }
-    fn readdir(&self, _: &[u8], _: u32) -> Option<([u8; 64], u32, bool)> { None }
+    fn readdir(&self, _: &[u8], _: u32) -> Option<([u8; azos_abi::syscall_nr::READDIR_NAME_BYTES], u32, bool)> { None }
     fn release_all(&self, _: u32) -> usize { 0 }
     fn read_whole(&self, _: &[u8], dst: &mut [u8]) -> usize {
         self.plain_reads.fetch_add(1, Ordering::SeqCst);

@@ -1117,7 +1117,14 @@ pub const IO_MAX_BYTES: usize = 4096;
 /// Lives here rather than in `libsys` so the kernel and userspace read ONE
 /// definition. It used to exist only on the userspace side, which meant the
 /// kernel wrote 64 bytes because a constant it could not see said so.
-pub const READDIR_NAME_BYTES: usize = 64;
+///
+/// 256: a `NAME_MAX` (255-byte) name and its NUL, so no FAT long name is cut.
+pub const READDIR_NAME_BYTES: usize = 256;
+
+/// Maximum filesystem path length the kernel copies from userspace, NUL included: a
+/// `NAME_MAX` (255-byte) name under a mount point and a few directories. The kernel's
+/// copy buffers and the userspace layers that name paths (`azos_stdrt::fspure`) read this one number.
+pub const SYS_PATH_MAX: usize = 512;
 
 /// Bytes the statfs op of a directory (`NODE_STATFS`) writes: all little-endian, at these offsets. A shorter
 /// buffer is refused with `-EINVAL` and nothing is written.

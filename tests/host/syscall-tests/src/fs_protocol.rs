@@ -43,7 +43,7 @@ fn kernel_file_ops() -> BTreeSet<u16> {
             // Two sets of words: a flag word of 0 (what `unlinkat` and
             // `seek` accept), and one that is a mapped address (what an op
             // with a second buffer refuses as null otherwise).
-            let rcs = [[w, 0, w, 64], [w, w, w, 64]].map(|[a, b, c, d]| {
+            let rcs = [[w, 0, w, azos_abi::syscall_nr::READDIR_NAME_BYTES as u64], [w, w, w, azos_abi::syscall_nr::READDIR_NAME_BYTES as u64]].map(|[a, b, c, d]| {
                 let mut out = SyscallOut::new();
                 sys_invoke(stale, INVOKE_REGS | o as u64, a, b, c, d, &mut out)
             });
@@ -84,7 +84,7 @@ fn the_kernel_serves_exactly_the_file_protocols_ops() {
 /// A directory of two entries: a short name, and one longer than the record.
 struct Listing;
 
-const LONG: [u8; 64] = [b'L'; 64];
+const LONG: [u8; azos_abi::syscall_nr::READDIR_NAME_BYTES] = [b'L'; azos_abi::syscall_nr::READDIR_NAME_BYTES];
 
 impl crate::file_ops::FileOps for Listing {
     fn open_at(&self, _: &[u8], _: &[u8], _: u32) -> i64 { unreachable!() }
@@ -95,9 +95,9 @@ impl crate::file_ops::FileOps for Listing {
     fn dup(&self, _: i32) -> i64 { unreachable!() }
     fn mkdir(&self, _: &[u8]) -> i64 { unreachable!() }
     fn unlink(&self, _: &[u8]) -> i64 { unreachable!() }
-    fn readdir(&self, path: &[u8], index: u32) -> Option<([u8; 64], u32, bool)> {
+    fn readdir(&self, path: &[u8], index: u32) -> Option<([u8; azos_abi::syscall_nr::READDIR_NAME_BYTES], u32, bool)> {
         assert_eq!(path, b"/tmp/d");
-        let mut short = [0u8; 64];
+        let mut short = [0u8; azos_abi::syscall_nr::READDIR_NAME_BYTES];
         short[..5].copy_from_slice(b"HELLO");
         match index {
             0 => Some((short, 7777, true)),
@@ -155,10 +155,10 @@ fn readdir_answers_its_entry_in_the_reply_registers() {
     let (name, buf) = (SCRATCH as u64, (SCRATCH + 0x100) as u64);
     let call = |index: u64| {
         let mut out = SyscallOut::new();
-        let rc = sys_invoke(d, INVOKE_REGS | NODE_READDIR as u64, name, index, buf, 64, &mut out);
+        let rc = sys_invoke(d, INVOKE_REGS | NODE_READDIR as u64, name, index, buf, azos_abi::syscall_nr::READDIR_NAME_BYTES as u64, &mut out);
         (rc, out.regs)
     };
-    let record = || unsafe { core::slice::from_raw_parts(host.add(0x100), 64).to_vec() };
+    let record = || unsafe { core::slice::from_raw_parts(host.add(0x100), azos_abi::syscall_nr::READDIR_NAME_BYTES).to_vec() };
 
     let (rc, regs) = call(0);
     assert_eq!((rc, &regs[..3]), (1, &[7777, 1, 0][..]), "size, directory, not cut");
@@ -169,7 +169,7 @@ fn readdir_answers_its_entry_in_the_reply_registers() {
     let (rc, regs) = call(1);
     assert_eq!((rc, &regs[..3]), (1, &[9, 0, 1][..]), "a name longer than the record says it was cut");
     let r = record();
-    assert!(r[..63].iter().all(|&b| b == b'L') && r[63] == 0, "cut to 63 bytes and a NUL");
+    assert!(r[..azos_abi::syscall_nr::READDIR_NAME_BYTES - 1].iter().all(|&b| b == b'L') && r[azos_abi::syscall_nr::READDIR_NAME_BYTES - 1] == 0, "cut to one byte short and a NUL");
 
     assert_eq!(call(2).0, 0, "past the last entry");
 }

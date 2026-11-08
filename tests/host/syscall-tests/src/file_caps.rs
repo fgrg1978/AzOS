@@ -74,7 +74,7 @@ impl crate::file_ops::FileOps for Disk {
     fn dup(&self, _fd: i32) -> i64 { -1 }
     fn mkdir(&self, _path: &[u8]) -> i64 { -1 }
     fn unlink(&self, _path: &[u8]) -> i64 { -1 }
-    fn readdir(&self, _path: &[u8], _index: u32) -> Option<([u8; 64], u32, bool)> { None }
+    fn readdir(&self, _path: &[u8], _index: u32) -> Option<([u8; azos_abi::syscall_nr::READDIR_NAME_BYTES], u32, bool)> { None }
     fn release_all(&self, _tid: u32) -> usize { 0 }
     fn read_whole(&self, _path: &[u8], _dst: &mut [u8]) -> usize { 0 }
 }

@@ -2024,11 +2024,7 @@ pub fn sys_lseek(fd: u64, offset: u64, whence: u64) -> i64 {
 
 // ── Filesystem ────────────────────────────────────────────────────────────────
 
-/// Maximum filesystem path length copied from userspace, NUL included: a
-/// `NAME_MAX` (255-byte) name under a mount point and a few directories
-/// (was 256, which one such name under `/fat/` overflowed).
-/// [`sys_file_openat_typed`] uses it too.
-const SYS_PATH_MAX: usize = 512;
+use azos_abi::syscall_nr::SYS_PATH_MAX;
 
 /// Copy a NUL-terminated name from a user pointer into `dst`, returning the
 /// name slice, so a malformed/kernel pointer can't

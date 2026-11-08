@@ -50,7 +50,7 @@ impl crate::file_ops::FileOps for Tree {
     fn dup(&self, _: i32) -> i64 { unreachable!() }
     fn mkdir(&self, p: &[u8]) -> i64 { note(format!("mkdir {}", s(p))); FS_ANSWER }
     fn unlink(&self, p: &[u8]) -> i64 { note(format!("unlink {}", s(p))); FS_ANSWER }
-    fn readdir(&self, _: &[u8], _: u32) -> Option<([u8; 64], u32, bool)> { unreachable!() }
+    fn readdir(&self, _: &[u8], _: u32) -> Option<([u8; azos_abi::syscall_nr::READDIR_NAME_BYTES], u32, bool)> { unreachable!() }
     fn release_all(&self, _: u32) -> usize { unreachable!() }
     fn read_whole(&self, _: &[u8], _: &mut [u8]) -> usize { unreachable!() }
     fn rmdir(&self, p: &[u8]) -> i64 { note(format!("rmdir {}", s(p))); FS_ANSWER }
