@@ -469,6 +469,16 @@ pub struct TaskSpec<'a> {
     /// server lends for one is a derived, attenuated link of the server's own.
     /// 0 unless the row declares them.
     pub imports_count: u32,
+    /// Start of this row's received names in the imports pool.
+    pub receives_start: u32,
+    /// `receives = [...]` (CAPS.TOML format 8): how many endpoint names the
+    /// row may be handed a call capability on by its spawner (`SYS_SPAWN_EX`,
+    /// `MOVE_KIND_ENDPOINT`): the name `term` stands for `endpoint.term`. **A
+    /// name is never authority**: the row is granted nothing, and the
+    /// capability it may receive is the one its spawner holds. A handed
+    /// capability the row does not name is refused. 0 unless the row declares
+    /// them.
+    pub receives_count: u32,
     /// `place`, `stateless` and `call_budget_us` in the row (CAPS.TOML format
     /// 6): the host the driver starts in, whether it may move between hosts
     /// at run time and the call budget a move to the kernel is admitted
@@ -635,6 +645,8 @@ impl<'a> TaskSpec<'a> {
             lx_class: MaybeStr::from_bytes(&[]),
             imports_start: 0,
             imports_count: 0,
+            receives_start: 0,
+            receives_count: 0,
             place: PlaceSpec::DEFAULT,
             exports_start: 0,
             exports_count: 0,
@@ -726,7 +738,8 @@ pub struct Topology<'a> {
     /// and the Kconfig floor ([`Topology::dma_pool_pages`]).
     pipelines: [PipelineSpec<'a>; MAX_PIPELINES],
     pipelines_len: u8,
-    /// The names rows import, `TaskSpec::imports_start`/`imports_count` slice it.
+    /// The names rows import and receive: `TaskSpec::imports_start`/`imports_count`
+    /// and `receives_start`/`receives_count` slice it.
     imports_pool: [MaybeStr<'a>; IMPORTS_TOTAL],
     imports_pool_len: usize,
     /// `[device.NAME]` rows of `CAPS.TOML` (format 6): what the hardware bus
@@ -3625,6 +3638,21 @@ impl<'a> Topology<'a> {
         &self.imports_pool[start..start + task.imports_count as usize]
     }
 
+    /// The names row `task` may be handed a call capability on at spawn.
+    pub fn receives_of(&self, task: &TaskSpec<'a>) -> &[MaybeStr<'a>] {
+        let start = task.receives_start as usize;
+        &self.imports_pool[start..start + task.receives_count as usize]
+    }
+
+    /// Does row `task` receive the endpoint called `endpoint` (the full
+    /// name, `endpoint.term`)? What `SYS_SPAWN_EX` asks of the child's row
+    /// before it moves a call capability on that endpoint into it.
+    pub fn row_receives(&self, task: &TaskSpec<'a>, endpoint: &[u8]) -> bool {
+        endpoint
+            .strip_prefix(b"endpoint.")
+            .is_some_and(|n| self.receives_of(task).iter().any(|r| r.as_bytes() == n))
+    }
+
     /// The declared package signers.
     pub fn signers(&self) -> &[SignerSpec<'a>] {
         &self.signers[..self.signers_len as usize]
@@ -3734,6 +3762,47 @@ impl<'a> Topology<'a> {
         self.tasks[t].imports_start = start as u32;
         self.tasks[t].imports_count = names.len() as u32;
         Ok(())
+    }
+
+    /// Declare the names the task pushed most recently may receive. The
+    /// rules of [`Topology::set_last_task_imports`], in the same pool:
+    /// `BadImport` for a name outside the endpoint alphabet, a repeat, or a
+    /// second declaration; `TooManyImports` past `MAX_IMPORTS` or a full
+    /// pool. That a row serves each one, at admission.
+    pub fn set_last_task_receives(&mut self, names: &[MaybeStr<'a>]) -> Result<(), AdmissionError> {
+        if names.is_empty() {
+            return Ok(());
+        }
+        if names.len() > MAX_IMPORTS || self.imports_pool_len + names.len() > IMPORTS_TOTAL {
+            return Err(AdmissionError::TooManyImports);
+        }
+        for (i, n) in names.iter().enumerate() {
+            if !import_name_ok(n.as_bytes()) || names[..i].iter().any(|m| m.as_bytes() == n.as_bytes()) {
+                return Err(AdmissionError::BadImport);
+            }
+        }
+        let Some(t) = self.tasks_len.checked_sub(1) else { return Err(AdmissionError::BadImport) };
+        if self.tasks[t].receives_count != 0 {
+            return Err(AdmissionError::BadImport);
+        }
+        let start = self.imports_pool_len;
+        self.imports_pool[start..start + names.len()].copy_from_slice(names);
+        self.imports_pool_len += names.len();
+        self.tasks[t].receives_start = start as u32;
+        self.tasks[t].receives_count = names.len() as u32;
+        Ok(())
+    }
+
+    /// Does some row serve the task-hosted endpoint `endpoint.<name>` (hold
+    /// `READ` on it)?
+    fn endpoint_served(&self, name: &[u8]) -> bool {
+        self.tasks().iter().any(|t| {
+            self.caps_of(t).iter().any(|c| {
+                c.kind == CapKind::Endpoint
+                    && c.perms.contains(CapPerms::READ)
+                    && endpoint_target(c) == Some(name)
+            })
+        })
     }
 
     /// The row that serves the name server's endpoint: the one holding
@@ -4038,6 +4107,10 @@ impl<'a> Topology<'a> {
             // (`set_last_task_imports`).
             imports_start: 0,
             imports_count: 0,
+            // Nothing received unless the row declares it
+            // (`set_last_task_receives`).
+            receives_start: 0,
+            receives_count: 0,
             // Ring 3, fixed there, unless the row declares a placement
             // (`set_last_task_place`).
             place: PlaceSpec::DEFAULT,
@@ -4425,6 +4498,17 @@ impl<'a> Topology<'a> {
             for n in self.imports_of(task) {
                 if !self.names_server_exports(n.as_bytes()) {
                     return Err(AdmissionError::UnknownImport);
+                }
+            }
+        }
+        // A row receives only an endpoint some row serves, and never one it
+        // also imports: the import would reach the same server through the
+        // name server, with none of the spawner's attenuation.
+        for task in self.tasks() {
+            let imports = self.imports_of(task);
+            for n in self.receives_of(task) {
+                if !self.endpoint_served(n.as_bytes()) || imports.iter().any(|i| i.as_bytes() == n.as_bytes()) {
+                    return Err(AdmissionError::UnknownReceive);
                 }
             }
         }

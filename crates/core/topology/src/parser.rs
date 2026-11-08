@@ -952,10 +952,10 @@ fn parse_cap_perms(s: &[u8]) -> Result<CapPerms, ParseError> {
 /// joins them.
 const MAX_CAPS_PER_TASK_BUF: usize = azos_limits::MAX_CAPS_PER_TASK;
 
-/// The format-7 keys of the `[task.NAME]` row being read; applied to the row
-/// when it is committed.
-#[derive(Clone, Copy, Default)]
-struct TaskExt {
+/// The format-7 and format-8 keys of the `[task.NAME]` row being read;
+/// applied to the row when it is committed.
+#[derive(Clone, Copy)]
+struct TaskExt<'a> {
     shadow: bool,
     isolated: bool,
     kmem_kib: u32,
@@ -963,10 +963,29 @@ struct TaskExt {
     security_boundary: bool,
     partition_id: u16,
     mem_pages_max: u32,
+    receives: [MaybeStr<'a>; crate::types::MAX_IMPORTS],
+    receives_len: usize,
 }
 
-impl TaskExt {
-    fn commit(self, topology: &mut Topology<'_>) -> Result<(), ParseError> {
+impl Default for TaskExt<'_> {
+    fn default() -> Self {
+        Self {
+            shadow: false,
+            isolated: false,
+            kmem_kib: 0,
+            principal: None,
+            security_boundary: false,
+            partition_id: 0,
+            mem_pages_max: 0,
+            receives: [MaybeStr::from_bytes(&[]); crate::types::MAX_IMPORTS],
+            receives_len: 0,
+        }
+    }
+}
+
+impl<'a> TaskExt<'a> {
+    fn commit(self, topology: &mut Topology<'a>) -> Result<(), ParseError> {
+        topology.set_last_task_receives(&self.receives[..self.receives_len]).map_err(ParseError::Admission)?;
         topology.set_last_task_shadow(self.shadow);
         topology.set_last_task_isolated(self.isolated);
         topology.set_last_task_kmem_kib(self.kmem_kib);
@@ -1399,7 +1418,7 @@ fn handle_task_kv<'a>(
     imports_len: &mut usize,
     exports: &mut [crate::types::ExportSpec<'a>; crate::types::EXPORTS_TOTAL],
     exports_len: &mut usize,
-    ext: &mut TaskExt,
+    ext: &mut TaskExt<'a>,
     format: u8,
 ) -> Result<(), ParseError> {
     let (key, after) = take_ident(line)?;
@@ -1777,6 +1796,26 @@ fn handle_task_kv<'a>(
                     }
                 }
             }
+            Ok(())
+        }
+        // Format 8: the endpoint names the row may be handed a call
+        // capability on by its spawner (`receives = ["term"]`, the
+        // `TaskSpec::receives_count` list). Once per row; the names' shape is
+        // checked when the row is committed, that a row serves each one at
+        // admission.
+        "receives" => {
+            if format < 8 {
+                return Err(ParseError::FieldNeedsFormat);
+            }
+            if ext.receives_len != 0 {
+                return Err(ParseError::BadValue);
+            }
+            ext.receives_len = parse_string_array(
+                after,
+                crate::types::MAX_TASK_NAME_LEN,
+                &mut ext.receives,
+                ParseError::Admission(AdmissionError::TooManyImports),
+            )?;
             Ok(())
         }
         // Real-time profile, checked for feasibility by `Topology::deadline_admission`.

@@ -5588,6 +5588,116 @@ mod imports_tests {
     }
 }
 
+#[cfg(test)]
+mod receives_tests {
+    use azos_topology::{parse_caps, parse_sched, AdmissionError, ParseError, Topology};
+
+    const SCHED: &[u8] = b"[class.best_effort]\ncpu_budget_min_pct = 5\npolicy = \"fair\"\n";
+
+    /// A terminal server (serves `endpoint.term`), a name server that may
+    /// lend `term`, and a program row with `extra` lines.
+    fn file(format: u8, extra: &str) -> &'static str {
+        Box::leak(format!(
+            "format = {format}\n\
+[task.TERMD.ELF]\ncaps = [\n\
+  {{ kind = \"endpoint\", target = \"endpoint.term\", perm = \"rw\", transfer = true }},\n\
+]\n\
+[task.NAMESD.ELF]\ncaps = [\n\
+  {{ kind = \"endpoint\", target = \"endpoint.names\", perm = \"r\" }},\n\
+  {{ kind = \"endpoint\", target = \"endpoint.term\", perm = \"w\", transfer = true }},\n\
+]\n\
+[task.KIBI.ELF]\n{extra}caps = []\n"
+        ).into_boxed_str())
+    }
+
+    fn parse(text: &str) -> (Topology<'_>, Result<(), ParseError>) {
+        let mut t = Topology::empty();
+        parse_sched(SCHED, &mut t).unwrap();
+        let r = parse_caps(text.as_bytes(), &mut t);
+        (t, r)
+    }
+
+    /// **`receives` is a format-8 key** listing the endpoint names a row may
+    /// be handed a call capability on by its spawner. It grants nothing:
+    /// the row holds no capability for it, and `row_receives` answers by the
+    /// full endpoint name the kernel knows the handed capability by.
+    ///
+    /// **Canaries.** Make `TaskExt::commit` skip `set_last_task_receives`:
+    /// the list is empty and the first assertion goes red. Accept the key
+    /// below format 8: the `FieldNeedsFormat` assertion goes red.
+    #[test]
+    fn receives_parse_in_format_8_per_row_and_grant_nothing() {
+        let (t, r) = parse(file(8, "receives = [\"term\"]\n"));
+        assert_eq!(r, Ok(()));
+        assert_eq!(t.admission_check(), Ok(()));
+        let kibi = &t.tasks()[2];
+        let names: Vec<&[u8]> = t.receives_of(kibi).iter().map(|n| n.as_bytes()).collect();
+        assert_eq!(names, [&b"term"[..]]);
+        assert!(t.caps_of(kibi).is_empty(), "receiving is not a grant");
+        assert!(t.imports_of(kibi).is_empty(), "nor an import");
+        assert!(t.row_receives(kibi, b"endpoint.term"));
+        assert!(!t.row_receives(kibi, b"term"), "the kernel asks by the endpoint's full name");
+        assert!(!t.row_receives(kibi, b"endpoint.names"));
+        assert!(!t.row_receives(&t.tasks()[0], b"endpoint.term"), "the server's row receives nothing");
+
+        let text = format!("{}[task.NEXT.ELF]\ncaps = []\n", file(8, "receives = [\"term\"]\n")).leak();
+        let (t, r) = parse(text);
+        assert_eq!(r, Ok(()));
+        assert!(t.receives_of(&t.tasks()[3]).is_empty(), "the next row does not inherit the list");
+
+        for f in 1..=7u8 {
+            let (_, r) = parse(file(f, "receives = [\"term\"]\n"));
+            assert_eq!(r, Err(ParseError::FieldNeedsFormat), "format {f}");
+        }
+        let (_, r) = parse(file(8, "receives = [\"term\"]\nreceives = [\"term\"]\n"));
+        assert_eq!(r, Err(ParseError::BadValue), "a second list would silently win");
+    }
+
+    /// **A received name is an endpoint some row serves, and a row never both
+    /// receives and imports one**: the import would reach the same server
+    /// through the name server without the spawner's badge. A malformed name
+    /// is refused when the row is committed, as an import's is.
+    ///
+    /// **Canary.** Skip the receives loop in `admission_check`: the
+    /// `UnknownReceive` assertions go red.
+    #[test]
+    fn a_received_name_no_row_serves_or_also_imported_is_refused() {
+        for bad in ["typo", "names2"] {
+            let (t, r) = parse(file(8, &format!("receives = [\"{bad}\"]\n")));
+            assert_eq!(r, Ok(()), "{bad} parses; admission decides");
+            assert_eq!(t.admission_check(), Err(AdmissionError::UnknownReceive), "{bad}");
+        }
+        let (t, r) = parse(file(8, "receives = [\"term\"]\nimports = [\"term\"]\n"));
+        assert_eq!(r, Ok(()));
+        assert_eq!(t.admission_check(), Err(AdmissionError::UnknownReceive), "received and imported");
+        for bad in ["a.b", "", "endpoint.term"] {
+            let (_, r) = parse(file(8, &format!("receives = [\"{bad}\"]\n")));
+            assert_eq!(r, Err(ParseError::Admission(AdmissionError::BadImport)), "{bad:?}");
+        }
+    }
+
+    /// The emitter writes the list and the round trip keeps it.
+    ///
+    /// **Canary.** Drop the `receives` line from `emit_caps`: the text check
+    /// and the round trip go red.
+    #[test]
+    fn the_emitter_round_trips_receives() {
+        use azos_topology::emit::{emit_caps, first_difference};
+        use azos_topology::Binding;
+        let (t, r) = parse(file(8, "receives = [\"term\"]\n"));
+        assert_eq!(r, Ok(()));
+        let mut caps = String::new();
+        emit_caps(&t, &Binding::default(), &mut caps).unwrap();
+        assert!(caps.contains("receives = [\"term\"]"), "{caps}");
+        let mut back = Topology::empty();
+        parse_sched(SCHED, &mut back).unwrap();
+        parse_caps(caps.as_bytes(), &mut back).unwrap();
+        assert_eq!(first_difference(&t, &back), None);
+        let (u, _) = parse(file(8, ""));
+        assert_eq!(first_difference(&t, &u), Some("task receives"));
+    }
+}
+
 /// The kernel half of the Names object, with the real capability tables: what
 /// the name server's lookup reply does to the warrant tree. (The server's own
 /// decision and refusal record are `tests/host/names-tests`.)

@@ -190,6 +190,14 @@ pub fn emit_caps<W: Write>(topo: &Topology<'_>, binding: &Binding, out: &mut W) 
             }
             writeln!(out, "]")?;
         }
+        let receives = topo.receives_of(t);
+        if !receives.is_empty() {
+            write!(out, "receives = [")?;
+            for (i, n) in receives.iter().enumerate() {
+                write!(out, "{}\"{}\"", if i == 0 { "" } else { ", " }, quoted(n)?)?;
+            }
+            writeln!(out, "]")?;
+        }
         let exports = topo.exports_of(t);
         if !exports.is_empty() {
             write!(out, "export = [")?;
@@ -465,6 +473,7 @@ pub fn first_difference(a: &Topology<'_>, b: &Topology<'_>) -> Option<&'static s
         if x.partition_id != y.partition_id { return Some("task partition_id"); }
         if x.mem_pages_max != y.mem_pages_max { return Some("task mem_pages_max"); }
         if topo_imports_differ(a, b, x, y) { return Some("task imports"); }
+        if topo_receives_differ(a, b, x, y) { return Some("task receives"); }
         if topo_exports_differ(a, b, x, y) { return Some("task exports"); }
         let (cx, cy) = (a.caps_of(x), b.caps_of(y));
         if cx.len() != cy.len() { return Some("task grant count"); }
@@ -785,6 +794,11 @@ fn topo_exports_differ(a: &Topology<'_>, b: &Topology<'_>, x: &crate::types::Tas
             m.endpoint.as_bytes() != n.endpoint.as_bytes()
                 || m.peer.as_bytes() != n.peer.as_bytes()
         })
+}
+
+fn topo_receives_differ(a: &Topology<'_>, b: &Topology<'_>, x: &crate::types::TaskSpec<'_>, y: &crate::types::TaskSpec<'_>) -> bool {
+    let (p, q) = (a.receives_of(x), b.receives_of(y));
+    p.len() != q.len() || p.iter().zip(q).any(|(m, n)| m.as_bytes() != n.as_bytes())
 }
 
 fn topo_imports_differ(a: &Topology<'_>, b: &Topology<'_>, x: &crate::types::TaskSpec<'_>, y: &crate::types::TaskSpec<'_>) -> bool {
