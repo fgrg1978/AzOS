@@ -30,6 +30,8 @@ mod behave;
 #[cfg(test)]
 mod behave_tests;
 
+// The whole protocol vocabulary; the suite reads part of it.
+#[allow(dead_code)]
 #[path = "../../../../crates/domains/robot/behavior/src/brain_protocol.rs"]
 // Named for the file it is, not shortened: `remote.rs` — pulled in below —
 // refers to `crate::brain_protocol`, and a suite that renames a module makes

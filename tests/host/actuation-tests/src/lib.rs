@@ -97,6 +97,7 @@ mod liveness;
 mod liveness_tests;
 #[cfg(test)]
 mod verdict_tests;
+#[allow(dead_code)]
 #[path = "../../../../crates/core/actuation/src/estop_pin.rs"]
 mod estop_pin;
 #[cfg(test)]
