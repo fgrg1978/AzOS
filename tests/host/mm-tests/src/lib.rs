@@ -1260,8 +1260,8 @@ mod budget_tests {
 
     /// **This workspace's overflow rule, held on the real code.** `panic =
     /// "abort"` + `overflow-checks = true` means a plain `+` here is a board
-    /// reset, not a caught error (see `note_stalled_tick`,
-    /// `crates/core/actuation/src/watchdog.rs`, for the established precedent).
+    /// reset, not a caught error (see `Liveness::alive`,
+    /// `crates/core/actuation/src/liveness.rs`, for the established precedent).
     /// `charge` must saturate instead.
     ///
     /// Canary verified by hand (not left in the tree): replacing

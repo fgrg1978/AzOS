@@ -249,9 +249,9 @@ pub fn system_wdt_task(_: usize) {
         //
         // The freeze case is not lost, it moves to where it always belonged:
         // the HARDWARE watchdog is kicked from the timer ISR itself, gated on
-        // `CONTROL_HEARTBEAT`. A frozen ISR stops kicking it and the board
-        // resets — a backstop that does not depend on the scheduler, unlike
-        // this task. What section 2 keeps is the case it can still observe: a
+        // `CONTROL_HEARTBEAT` and `ENFORCE_HEARTBEAT`. A frozen ISR stops
+        // kicking it and the board resets — a backstop that does not depend
+        // on the scheduler, unlike this task. What section 2 keeps is the case it can still observe: a
         // timer that STALLS between two wakes rather than stopping outright.
         // Under `feature = "qemu"` it was already thresholded to 200 stalls
         // because TCG false-positives, so nothing measurable is given up here.

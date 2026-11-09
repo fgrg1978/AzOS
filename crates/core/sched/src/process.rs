@@ -2086,11 +2086,11 @@ fn fork_refusal_site_name(site: ForkRefusalSite) -> &'static str {
 /// and atomics bypass overflow checks entirely, so a bare `fetch_add` would
 /// silently wrap to 0 at `u32::MAX` instead of panicking or saturating --
 /// exactly backwards for a diagnostic counter. The pattern (load ->
-/// saturating_add -> store) matches `note_stalled_tick`
-/// (`crates/core/actuation/src/watchdog.rs`) and `note_cow_break`
+/// saturating_add -> store) matches `Liveness::alive`
+/// (`crates/core/actuation/src/liveness.rs`) and `note_cow_break`
 /// (`crates/core/mm/src/cow_table.rs`).
 ///
-/// Unlike `note_stalled_tick` (hart-0-owned by construction), fork can run
+/// Unlike `Liveness::alive` (hart-0-owned by construction), fork can run
 /// concurrently on any hart, so two simultaneous refusals at the same site
 /// can race the load and lose an increment. Accepted for a best-effort
 /// diagnostic: nothing downstream needs an exact count, only "did this ever

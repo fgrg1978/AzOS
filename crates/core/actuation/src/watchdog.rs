@@ -8,7 +8,7 @@
 //! profile has `lto = false`.
 
 use azos_arch::Cpu as _;
-use core::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use azos_drv_sys::kprintln;
 
 /// Total timer ticks received across all CPUs (for verification).
@@ -49,18 +49,19 @@ pub static CONTROL_HEARTBEAT: AtomicU32 = AtomicU32::new(0);
 pub fn control_heartbeat() -> u32 {
     CONTROL_HEARTBEAT.load(Ordering::Relaxed)
 }
-/// Last heartbeat observed by the WDT feeder (hart-0-owned).
-static WDT_LAST_HEARTBEAT: AtomicU32 = AtomicU32::new(0);
-/// Consecutive ticks the control heartbeat has not advanced (hart-0-owned).
-static WDT_STALL_TICKS: AtomicU32 = AtomicU32::new(0);
+/// The enforcement task's liveness counter: one per pass of
+/// `enforce::enforce_task`. The feed stalls on it as on [`CONTROL_HEARTBEAT`],
+/// so a hung enforcer (whose verdict the drivetrain then reads as stale and
+/// caps to 0) also lets the WDT reset the board. Zero: no enforcer runs.
+pub static ENFORCE_HEARTBEAT: AtomicU32 = AtomicU32::new(0);
+
+/// Both heartbeats as the feeder last saw them (hart-0-owned).
+static WDT_FEED: crate::liveness::Feed = crate::liveness::Feed::new();
 /// Ticks the control task may stall before the WDT stops being fed. At the
 /// 100 Hz tick this is ~400 ms of grace; with the 500 ms HW timeout the board
 /// resets within ~900 ms of a genuine control-task hang. Comfortably above the
 /// RT-priority control task's real scheduling period, so no false resets.
 const WDT_CONTROL_STALL_LIMIT: u32 = 40;
-/// `timebase::now()` when the feeder last saw the heartbeat advance
-/// (hart-0-owned).
-static WDT_LAST_ADVANCE: AtomicU64 = AtomicU64::new(0);
 /// The same ~400 ms of grace in time, which the tick count only approximates:
 /// timer interrupts are not 100 Hz. Each handler programs the nearest timer
 /// sleeper, and since wave 11 (ONESHOT) a task blocking on a timer deadline
@@ -94,52 +95,27 @@ pub fn halt_if_panicked() {
     }
 }
 
-/// Timer ISR: one more tick with the control heartbeat stalled; returns the new
-/// stall count.
-///
-/// Saturating. `fetch_add(1) + 1` put an overflow-panic branch inside the timer
-/// ISR under `overflow-checks = true`, and a wrapping count would drop back
-/// under `WDT_CONTROL_STALL_LIMIT` after 2^32 stalled ticks and feed the WDT
-/// again. The load and the store are separate operations: the counter is
-/// hart-0-owned (both writers are in `feed_from_timer_tick`, under
-/// `hart_id() == 0`), and the trap path does not set `sstatus.SIE` before
-/// `schedule()`, so no second timer trap runs between them on that hart.
-#[inline]
-fn note_stalled_tick() -> u32 {
-    let stalled = WDT_STALL_TICKS.load(Ordering::Relaxed).saturating_add(1);
-    WDT_STALL_TICKS.store(stalled, Ordering::Relaxed);
-    stalled
-}
-
-/// Timer ISR: K-A1 hardware-WDT feed, gated on `CONTROL_HEARTBEAT`.
+/// Timer ISR: K-A1 hardware-WDT feed, gated on `CONTROL_HEARTBEAT` and
+/// `ENFORCE_HEARTBEAT`.
 #[inline]
 pub fn feed_from_timer_tick() {
-    // K-A1: feed the hardware WDT from hart 0 only, and only while the
-    // RT control task is advancing. Kicking unconditionally would keep
-    // the board alive even if the control task hung with the motors at
-    // their last command; gating on its heartbeat lets the HW WDT reset
-    // instead. `hb == 0` keeps feeding until the task first runs (no
-    // boot-time false reset); after that a stall beyond the grace window
-    // stops the kicks. (WDT is a no-op on QEMU; real effect on VF2/K1.)
+    // K-A1: feed the hardware WDT from hart 0 only, and only while the RT
+    // control task and the enforcement task are advancing. Kicking
+    // unconditionally would keep the board alive with the motors at their last
+    // command; gating on the heartbeats lets the HW WDT reset instead. A
+    // heartbeat still at 0 never stalls the feed (no boot-time false reset).
+    // The tick-count and time bounds hold together: the feed continues while
+    // EITHER does, never shorter than 400 ms. The trap path does not set
+    // `sstatus.SIE` before `schedule()`, so no second timer trap runs between
+    // the feeder's loads and stores on hart 0.
+    // (WDT is a no-op on QEMU; real effect on VF2/K1.)
     // percpu-hint: the watchdog tick runs in the timer interrupt: interrupts off
     if azos_arch::ARCH.hart_id() == 0 {
-        let hb = CONTROL_HEARTBEAT.load(Ordering::Relaxed);
-        if hb != WDT_LAST_HEARTBEAT.load(Ordering::Relaxed) {
-            WDT_LAST_HEARTBEAT.store(hb, Ordering::Relaxed);
-            WDT_STALL_TICKS.store(0, Ordering::Relaxed);
-            WDT_LAST_ADVANCE.store(azos_drv_sys::timebase::now(), Ordering::Relaxed);
-            azos_drv_sys::wdt::wdt_kick();
-        } else if hb == 0 || {
-            let stalled = note_stalled_tick();
-            let since = azos_drv_sys::timebase::now()
-                .saturating_sub(WDT_LAST_ADVANCE.load(Ordering::Relaxed));
-            stalled <= WDT_CONTROL_STALL_LIMIT
-                || since <= azos_drv_sys::timebase::TIMER_FREQ
-                    .saturating_mul(WDT_CONTROL_STALL_GRACE_MS) / 1_000
-        } {
+        let grace = azos_drv_sys::timebase::TIMER_FREQ.saturating_mul(WDT_CONTROL_STALL_GRACE_MS) / 1_000;
+        if WDT_FEED.kick(CONTROL_HEARTBEAT.load(Ordering::Relaxed), ENFORCE_HEARTBEAT.load(Ordering::Relaxed),
+                         azos_drv_sys::timebase::now(), WDT_CONTROL_STALL_LIMIT, grace) {
             azos_drv_sys::wdt::wdt_kick();
         }
-        // else: control task stalled after running — stop feeding the WDT.
     }
 }
 

@@ -21,8 +21,12 @@ pub fn enforcer_count() -> usize {
     n
 }
 
+/// The longest the task sleeps, whatever its enforcers' periods: the hardware
+/// watchdog's feed stalls on its heartbeat after 400 ms, four of these.
+const BEAT_MS: u64 = 100;
+
 /// The task body: run each enforcer when its period is due, sleep to the
-/// soonest next one.
+/// soonest next one, and beat the watchdog's heartbeat every pass.
 pub fn enforce_task(_: usize) {
     let mut due = [0u64; MAX_ENFORCERS];
     loop {
@@ -39,9 +43,8 @@ pub fn enforce_task(_: usize) {
             }
             i += 1;
         });
-        if next == u64::MAX {
-            next = t + freq();
-        }
+        next = next.min(t + freq() * BEAT_MS / 1000);
+        crate::watchdog::ENFORCE_HEARTBEAT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         azos_sched::task_block(azos_sched::WaitReason::Timer(next));
     }
 }

@@ -56,6 +56,7 @@ pub mod estop;
 pub mod estop_pin;
 pub mod gate;
 pub mod kind;
+pub mod liveness;
 pub mod logger;
 pub mod providers;
 #[cfg(feature = "effect-gate")]

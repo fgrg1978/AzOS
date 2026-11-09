@@ -37,7 +37,7 @@
 //!     `overflow-checks = true` and `panic = "abort"` (see `mm-tests`'s own
 //!     `[profile.release]`, which reproduces it), so a plain `+` here would be
 //!     a board reset on the target, not a caught error. Precedent:
-//!     `note_stalled_tick` in `crates/core/actuation/src/watchdog.rs`.
+//!     `Liveness::alive` in `crates/core/actuation/src/liveness.rs`.
 //!   - a charge that would exceed the limit charges **nothing** — partial
 //!     charges would leave the counter describing memory the caller did not
 //!     get.

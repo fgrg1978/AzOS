@@ -90,6 +90,11 @@ mod effect;
 #[allow(dead_code)]
 #[path = "../../../../crates/core/actuation/src/verdict.rs"]
 mod verdict;
+#[allow(dead_code)]
+#[path = "../../../../crates/core/actuation/src/liveness.rs"]
+mod liveness;
+#[cfg(test)]
+mod liveness_tests;
 #[cfg(test)]
 mod verdict_tests;
 #[path = "../../../../crates/core/actuation/src/estop_pin.rs"]

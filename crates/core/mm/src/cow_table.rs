@@ -160,8 +160,8 @@ static COW_BREAK_FRAMES: AtomicU32 = AtomicU32::new(0);
 /// `AtomicU32::fetch_add` does not go through `overflow-checks` — atomics are
 /// not instrumented by that lint, so an unguarded counter would wrap silently
 /// on the target instead of the workspace's usual panic = abort. Load-then-
-/// `saturating_add`-then-store instead, the same shape as `note_stalled_tick`
-/// (`crates/core/actuation/src/watchdog.rs`): a wrapped counter would read as
+/// `saturating_add`-then-store instead, the same shape as `Liveness::alive`
+/// (`crates/core/actuation/src/liveness.rs`): a wrapped counter would read as
 /// "no COW breaks happened" rather than "over four billion", which is the
 /// wrong direction for a diagnostic to fail in.
 pub fn note_cow_break() {
