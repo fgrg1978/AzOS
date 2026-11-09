@@ -35,7 +35,7 @@ tree also builds desktop and server configurations.
   `IRQ_THREADED`; riscv64 and aarch64, since x86_64's IOAPIC loses an edge
   that arrives while the line is masked). Source: `crates/core/sched/src/sc.rs`,
   `config/kernel/Kconfig.sched`.
-- **A small native ABI.** 33 system calls, plus `SYS_INVOKE(handle, op,
+- **A small native ABI.** 30 system calls, plus `SYS_INVOKE(handle, op,
   words)` for operations on an object a task holds a handle to. Devices and
   services are interfaces declared as Rust traits in an IDL
   (`#[azos_interface]`) and called through endpoints; the kernel hosts some
@@ -67,6 +67,20 @@ tree also builds desktop and server configurations.
   handed to a successor without losing queued callers. Source:
   `crates/core/actuation/src/logger.rs`, `crates/fs/src/crash_log.rs`,
   `crates/core/recovery`.
+- **Robot control split.** The enforcer runs in the kernel: it caps every
+  motor command and latches the e-stop (UART bridge frames, RC link loss and
+  kill switch, geofence breach); a verdict that goes stale is a stop. The behaviour engine and
+  the brain link run in ring 3 (`BRAINCLI.ELF`); the engine asks the ring-3
+  inference service each cycle for a verdict, and a missing verdict stops the
+  robot. Source: `crates/domains/robot/safety-core/src/enforce.rs`,
+  `userspace/services/brain_client`.
+- **ext4 from ring 3.** A read-only ext4 volume is mounted through `EndpointFs`,
+  a file system the kernel forwards to a ring-3 server that parses the
+  untrusted image. Source: `userspace/services/ext4d`, `crates/fs/src/endpoint.rs`.
+- **Sealed security log.** Security-relevant records are chained, sealed and
+  anchored to a TPM counter where one exists; `make seclog-verify` checks an
+  export offline. Source: `crates/core/seclog`, `userspace/services/logd`,
+  `tools/forensic/seclog_verify`.
 - **Introspection without system calls.** The kernel publishes a tree of typed
   values (scheduler, memory, decision counters) into a memory object that
   holders map read-only. Source: `crates/core/inspect`,
@@ -89,7 +103,7 @@ posture):
 | General | Generic |
 | Embedded control | Robot, Industrial, Automotive, Firmware |
 | Connected devices | IoT / HMI, Wearable, Gateway |
-| Computers | Desktop, Server |
+| Computers | Desktop, Server, MicroVM |
 
 Kconfig is the single source of configuration. Source: `Kconfig`,
 `config/axes/Kconfig.preset`.
@@ -124,6 +138,10 @@ make ci            # the full gate: builds, host suites and QEMU scenarios
 make help          # every target
 ```
 
+`make fetch` downloads the pinned third-party trees, the toolchain and the host
+tools; `make build` never downloads (see
+[`Documentation/building.md`](Documentation/building.md)).
+
 `make build` prints where the kernel, the system volume and the SDK target are.
 Work in a checkout outside a synced folder: in a path with spaces (iCloud
 Drive's "Mobile Documents") make runs `config`, `defconfig-*` and `help` only
@@ -139,7 +157,7 @@ is split by concern under `mk/` (`vars.mk`, `userspace.mk`, `images.mk`,
 ```
 kernel/      composition root: kernel_main, boot steps, trap entry and
              boot hooks per ISA (kernel/src/entry/<isa>), kernel tasks
-arch/        the ISA crates: api, facade, riscv64, aarch64, x86_64 (each
+arch/        the ISA crates: api, facade, riscv, aarch64, x86_64 (each
              with its kernel linker scripts in boot/)
 crates/      core (abi, sched, mm, ipc, syscall, topology, idl, ...),
              drivers (one crate per class; lx/, the glue for running Linux
@@ -154,7 +172,6 @@ mk/          the Makefile, split by concern
 tools/       build, check, signing, packaging and analysis tools
 tests/       host test crates, fuzz targets, QEMU smoke test
 formal/      TLA+ models
-boot/        U-Boot boot script source
 third_party/ vendored crates and pinned external trees
 ```
 

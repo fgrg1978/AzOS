@@ -28,7 +28,7 @@ section names the paths to read.
               azvol)
           [optional] robot domain, hypervisor core, Linux personality
  ---------------------------------------------------------------------------
- arch     arch-api traits  ->  arch-riscv64 | arch-aarch64 | arch-x86_64
+ arch     arch/api traits  ->  arch/riscv | arch/aarch64 | arch/x86_64
  ---------------------------------------------------------------------------
  entry    kernel/src/entry/<isa>: boot asm, trap asm, ArchEntry hooks
 ```
@@ -85,7 +85,7 @@ records say which rule decided and on what numbers.
 
 ### ABI
 
-33 native syscalls, dense from 1, plus `SYS_INVOKE` for every op on a handle.
+30 native syscalls, dense from 1, plus `SYS_INVOKE` for every op on a handle.
 The register conventions per ISA, error codes, shared structures, the vDSO
 address and the io_ring page layout are in one crate that kernel and ring 3
 both import.
@@ -170,7 +170,8 @@ them. A per-task frame budget is charged to the task's domain.
 
 ### Storage
 
-A VFS with FAT32 and tmpfs; a block cache and a page cache; a crash
+A VFS with FAT32 and tmpfs, and `EndpointFs`, a mount served by a ring-3
+server (the read-only ext4 server `EXT4D.ELF`); a block cache and a page cache; a crash
 log and a pstore; `azvol`, a native volume format with snapshots and per-block
 encryption. Block devices come from VirtIO, SD/eMMC or NVMe drivers and a
 partition table parser.
@@ -227,8 +228,8 @@ against a pinned Linux tree (`crates/drivers/lx/glue`).
 
 A polling-based stack: Ethernet, ARP, IPv4 and IPv6, ICMP, UDP, TCP, DHCP,
 DNS, NTP, IGMP, NAT, a packet filter and BSD-style sockets. Link-layer pieces:
-an encrypted link with handshake and record layer, a stream multiplexer and a
-TFTP client. Ring-3 libraries add TLS, QUIC, Zenoh, RPC and MCP.
+an EtherCAT master and a TFTP client. Ring-3 libraries add TLS, QUIC, Zenoh,
+RPC and MCP; the Noise link primitives are in `crates/core/crypto`.
 
 - Source: `crates/net/*`, `crates/drivers/net`,
   `userspace/lib/{tls,quic,zenoh,rpc,mcp}`,
@@ -288,7 +289,9 @@ ported through a relibc overlay.
 
 Ring-3 programs whose topology row is their whole authority: the component
 manager, name server, package installer, decision server, terminal server,
-shell and tools, power policy and the protocol gateways. Services reach each
+shell and tools, the basic utilities (`COREUTIL.ELF`), the read-only ext4
+server, the sink of the sealed security log (`logd`), power policy and the
+protocol gateways. Services reach each
 other through endpoints they were wired to, not through a global name space.
 The kernel keeps no service table: names are resolved by `namesd` and the
 topology rows, and a restarted driver re-claims its endpoints.
@@ -339,14 +342,16 @@ Where the public surfaces are defined: `azos_abi` (kernel and ring-3 boundary),
 
 ## The robot domain
 
-`crates/domains/robot` holds the robot application domain: a behavior engine,
-navigation, flight control, telemetry and the motor safety envelope; it also
+`crates/domains/robot` holds the robot application domain: the enforcer
+(motor cap, e-stop, RC link, geofence) and the safety layer, navigation,
+flight control, telemetry and the motor safety envelope; it also
 links the AHRS and flight math (`crates/lib/control/`) and the ESC and RC
 drivers (`crates/drivers/rc-esc`). It is linked only when the image selects `USE_ROBOT` (kernel feature
 `use-robot`) and plugs into the shared actuation authority as an extension:
 its effect provider (`azos_safety_core::actuation::ROBOT`, the contract in
-`crates/core/ext-api`), installed at boot through `azos_actuation::providers`. Its ring-3 pieces are
-`userspace/services/{brain_client,reflex,infsrv}`.
+`crates/core/ext-api`), installed at boot through `azos_actuation::providers`. The behaviour engine and the brain link are ring 3: `userspace/services/brain_client`
+(which asks the inference service `infsrv` for a verdict each cycle and stops on a
+missing one) and `reflex`.
 
 Source: `crates/domains/robot/`, `crates/lib/control/`, `crates/drivers/rc-esc/`, `config/axes/Kconfig.use`, `crates/core/actuation/src/providers.rs`, `crates/core/ext-api/`.
 
