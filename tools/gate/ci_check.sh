@@ -25389,7 +25389,11 @@ behavior_camera_port=${cport:-none}"
     # nonzero. Three rows:
     #   tick   — the plain kernel arms the tick on PPI 27 and five ticks arrive.
     #   canary — `a64clk-ppi-canary` programs CNTV but enables PPI 30: no tick
-    #            ever arrives, the boot stops right after the svc self-test.
+    #            ever arrives. Under TCG the tick check's `wfi` never returns
+    #            and the boot stops right after the svc self-test; under HVF
+    #            the `wfi` returns at the timer's deadline (the architecture
+    #            lets it), so the check times out and prints that 0 of 5
+    #            ticks arrived. Either is the canary biting.
     #   offset — `a64clk-cntvoff-canary` drops from EL2 leaving CNTVOFF_EL2 =
     #            2_000_000 ticks (2 ms), and captest's stamped-read summary
     #            (every sensor stamp inside its own read, on the vDSO clock)
@@ -25442,10 +25446,12 @@ behavior_camera_port=${cport:-none}"
             bad; echo "      the aarch64 kernel (--features qemu,a64clk-ppi-canary) did not build"; return
         fi
         local log="$CI_LOG_DIR/a64clk-ppi-canary.log"; rm -f "$log"
-        a64clk_boot "$log" "" "[TIMER] ticks:" 12 "$CI_LOG_DIR/a64clk-ppi-canary.img"
+        a64clk_boot "$log" "" "[TIMER] FAILED: only 0 of" 12 "$CI_LOG_DIR/a64clk-ppi-canary.img"
         if ! grep -aqF "PPI 30 + SGI 0 enabled" "$log" \
             || ! grep -aqF "[TRAP] svc #0 self-test: PASS" "$log" \
-            || grep -aqE "AARCH64-TRAP\] unhandled|panic|\[FATAL\]|FAILED" "$log"; then
+            || grep -aqE "AARCH64-TRAP\] unhandled|panic|\[FATAL\]" "$log" \
+            || sed '/\[TIMER\] FAILED: only 0 of 5 ticks arrived/q' "$log" | grep -a "FAILED" \
+                | qgrep -vqF "[TIMER] FAILED: only 0 of 5 ticks arrived"; then
             bad; echo "      the canary kernel did not park silently at the tick check (a build, boot or trap problem, not a verdict):"
             tr -d '\r' <"$log" | sed -n '$p' | sed 's|^|        |'
             echo "      log kept: $log"; return

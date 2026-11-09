@@ -66,10 +66,10 @@ fn interrupt_selftests() {
     // from anything this test derived. The loop's own timeout is a
     // generous, unrelated 2-real-second safety cap for a timer that
     // ticks but too slowly or too rarely — it is not what decides
-    // pass/fail. It does NOT bound a timer whose line never fires
-    // (PPI 27 never enabled): `wfi` runs before the deadline compare, so
-    // with no interrupt at all the PE parks here for good — which is
-    // what the `a64clk-ppi-canary` gate row relies on.
+    // pass/fail. It bounds a timer whose line never fires (PPI 27 never
+    // enabled) only where `wfi` returns without an interrupt (HVF, at the
+    // timer's deadline); under TCG the PE parks here for good. The
+    // `a64clk-ppi-canary` gate row takes either as the canary biting.
     const TICK_TARGET: u64 = 5;
     const EXPECTED_MS: u64 = 1000 * TICK_TARGET / AARCH64_SCHED_HZ; // 50 ms
     let ticks_before = crate::entry::aarch64::TICK_COUNT.load(AOrdering::Acquire);
