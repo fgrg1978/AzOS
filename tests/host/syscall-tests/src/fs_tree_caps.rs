@@ -56,6 +56,12 @@ impl crate::file_ops::FileOps for Tree {
     fn rmdir(&self, p: &[u8]) -> i64 { note(format!("rmdir {}", s(p))); FS_ANSWER }
     fn rename(&self, a: &[u8], b: &[u8]) -> i64 { note(format!("rename {} {}", s(a), s(b))); FS_ANSWER }
     fn truncate(&self, p: &[u8], _: u64) -> i64 { note(format!("truncate {}", s(p))); FS_ANSWER }
+    fn stat_beneath(&self, r: &[u8], p: &[u8]) -> Result<crate::file_ops::StatOut, i64> { note(format!("stat {} {}", s(r), s(p))); Err(FS_ANSWER) }
+    fn readdir_beneath(&self, r: &[u8], p: &[u8], i: u32) -> Result<Option<([u8; azos_abi::syscall_nr::READDIR_NAME_BYTES], u32, bool)>, i64> {
+        note(format!("readdir {} {} {i}", s(r), s(p)));
+        Err(FS_ANSWER)
+    }
+    fn statfs_beneath(&self, r: &[u8], p: &[u8]) -> Result<crate::file_ops::StatFsOut, i64> { note(format!("statfs {} {}", s(r), s(p))); Err(FS_ANSWER) }
 }
 
 static TREE: Tree = Tree;
@@ -625,4 +631,28 @@ fn the_root_directory_is_the_tree_on_slash() {
     let (a, _) = paths(page, b"fat/X\0", b"");
     assert_eq!(super::sys_file_openat_typed(root, a, 0), FS_ANSWER);
     assert_eq!(calls(), vec!["open / fat/X 0x0".to_string()]);
+}
+
+/// **Stat, listing and statfs through a directory capability tell the
+/// filesystem the directory they are rooted at**, as an open does, so a
+/// backend that follows links can keep a link inside it.
+///
+/// **Canary.** Make `sys_statat`, `sys_readdirat` or `sys_statfsat` call the
+/// seam's rootless `stat`, `readdir` or `statfs`: nothing is noted.
+#[test]
+fn stat_listing_and_statfs_name_the_directory_they_are_rooted_at() {
+    let _g = serial();
+    let _u = Uninstall;
+    let tid = 0x7A00_0107;
+    let page = ring3(tid);
+    let d = dir(tid, "/fat/x", CapPerms::READ);
+    let (a, _) = paths(page, b"f/g\0", b"");
+    let out = (SCRATCH + 0x1000) as u64;
+    assert_eq!(sys_statat(d, a, out), FS_ANSWER);
+    assert_eq!(sys_statfsat(d, a, out, azos_abi::syscall_nr::STATFS_BYTES as u64), FS_ANSWER);
+    assert_eq!(sys_readdirat(d, a, 2, out, azos_abi::syscall_nr::READDIR_NAME_BYTES as u64), Err(FS_ANSWER));
+    assert_eq!(
+        calls(),
+        vec!["stat /fat/x /fat/x/f/g".to_string(), "statfs /fat/x /fat/x/f/g".to_string(), "readdir /fat/x /fat/x/f/g 2".to_string()]
+    );
 }

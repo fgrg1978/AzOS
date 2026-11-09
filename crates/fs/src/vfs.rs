@@ -337,6 +337,13 @@ pub trait FileSystem: Sync {
     /// Size and locator for an existing file, or `None` if it does not exist.
     fn stat(&self, key: &InodeKey) -> Option<FileStat>;
 
+    /// [`FileSystem::stat`] with the reason it failed: a backend that follows
+    /// links itself says `Denied` for one that leaves the directory the key
+    /// is rooted at.
+    fn stat_checked(&self, key: &InodeKey) -> Result<FileStat, FsErr> {
+        self.stat(key).ok_or(FsErr::NotFound)
+    }
+
     /// Read the whole file named by `key` and described by `st` into `dst`;
     /// returns bytes copied.
     ///
@@ -511,6 +518,15 @@ pub trait FileSystem: Sync {
     /// Capacity and free space of the volume.
     fn statfs(&self) -> Result<StatFs, FsErr> { Err(FsErr::Unsupported) }
 
+    /// [`FileSystem::statfs`] of the volume `name` (relative to the mount
+    /// point) is on, for a caller rooted at the directory the first `floor`
+    /// components of it make. A backend that follows links itself refuses one
+    /// that leads out of it; the others answer for the whole volume.
+    fn statfs_beneath(&self, name: &[u8], floor: usize) -> Result<StatFs, FsErr> {
+        let _ = (name, floor);
+        self.statfs()
+    }
+
     /// Is the volume refusing every write for this mount (FAT32 whose
     /// mount-time check failed)? The VFS then refuses a write-intent open,
     /// before a page-cached write could be told it landed and be dropped at
@@ -534,6 +550,13 @@ pub trait FileSystem: Sync {
     /// the caller only passes it back. 0 always means "from the start".
     fn readdir(&self, _dir: &[u8], _cookie: u64, _out: &mut DirEnt) -> Result<Option<u64>, FsErr> {
         Err(FsErr::Unsupported)
+    }
+
+    /// [`FileSystem::readdir`] for a caller rooted at the directory the first
+    /// `floor` components of `dir` make (see [`FileSystem::key_for_beneath`]).
+    fn readdir_beneath(&self, dir: &[u8], floor: usize, cookie: u64, out: &mut DirEnt) -> Result<Option<u64>, FsErr> {
+        let _ = floor;
+        self.readdir(dir, cookie, out)
     }
 
     /// Swap file (Kconfig `MM_SWAP_BACKEND_FILE`): make the file `len` bytes
@@ -2398,19 +2421,32 @@ pub const S_IFCHR: u32 = 0o020000;
 
 /// Size, type and metadata of the file or directory at `path`.
 pub fn vfs_stat(path: &[u8]) -> Option<FileStat> {
+    vfs_stat_beneath(ROOT_DIR, path).ok()
+}
+
+/// [`vfs_stat`] for a caller whose authority is the directory `root`: a
+/// backend that follows links itself refuses one that leaves it.
+pub fn vfs_stat_beneath(root: &[u8], path: &[u8]) -> Result<FileStat, FsErr> {
     let mut moved = [0u8; OVERLAY_PATH_MAX];
     let path = overlaid(path, &mut moved);
-    let (backend, sub) = backend_for_path(path)?;
+    let (backend, sub) = backend_for_path(path).ok_or(FsErr::NotFound)?;
     if sub.is_empty() {
         // The mount point itself: the backend's root directory.
-        return Some(FileStat::dir(0));
+        return Ok(FileStat::dir(0));
     }
-    backend.stat(&backend.key_for(sub)?)
+    let key = backend.key_for_beneath(sub, floor_in(root, path, sub)).ok_or(FsErr::NotFound)?;
+    backend.stat_checked(&key)
 }
 
 /// Capacity and free space of the filesystem `path` is on.
 pub fn vfs_statfs(path: &[u8]) -> Result<StatFs, FsErr> {
-    backend_for_path(path).ok_or(FsErr::NotFound)?.0.statfs()
+    vfs_statfs_beneath(ROOT_DIR, path)
+}
+
+/// [`vfs_statfs`] for a caller whose authority is the directory `root`.
+pub fn vfs_statfs_beneath(root: &[u8], path: &[u8]) -> Result<StatFs, FsErr> {
+    let (backend, sub) = backend_for_path(path).ok_or(FsErr::NotFound)?;
+    backend.statfs_beneath(sub, floor_in(root, path, sub))
 }
 
 /// Check the volume mounted at `path` ([`FileSystem::check`]). `path` names
@@ -2426,8 +2462,13 @@ pub fn vfs_check(path: &[u8], scrub: bool) -> Result<FsCheck, FsErr> {
 /// The entry of directory `path` at or after `cookie`; see
 /// [`FileSystem::readdir`].
 pub fn vfs_readdir(path: &[u8], cookie: u64, out: &mut DirEnt) -> Result<Option<u64>, FsErr> {
+    vfs_readdir_beneath(ROOT_DIR, path, cookie, out)
+}
+
+/// [`vfs_readdir`] for a caller whose authority is the directory `root`.
+pub fn vfs_readdir_beneath(root: &[u8], path: &[u8], cookie: u64, out: &mut DirEnt) -> Result<Option<u64>, FsErr> {
     let (backend, sub) = backend_for_path(path).ok_or(FsErr::NotFound)?;
-    backend.readdir(sub, cookie, out)
+    backend.readdir_beneath(sub, floor_in(root, path, sub), cookie, out)
 }
 
 /// The backend and in-mount path for `path`; `Invalid` for a mount point

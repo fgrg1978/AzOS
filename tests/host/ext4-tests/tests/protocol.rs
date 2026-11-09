@@ -164,7 +164,7 @@ fn stat_list_and_statfs_answer_the_records() {
     let out = Extent { off: OUT, len: READDIR_NAME_BYTES as u32 };
     for i in 0.. {
         let n = name(&s, "");
-        let e = outcome::served(dir.readdir(n, i, out)).unwrap();
+        let e = outcome::served(dir.readdir(n, 0, i, out)).unwrap();
         if !e.present {
             break;
         }
@@ -183,7 +183,7 @@ fn stat_list_and_statfs_answer_the_records() {
     let mut count = 0;
     for i in 0.. {
         let n = name(&s, "many");
-        if !outcome::served(dir.readdir(n, i, out)).unwrap().present {
+        if !outcome::served(dir.readdir(n, 0, i, out)).unwrap().present {
             break;
         }
         count += 1;
@@ -192,7 +192,7 @@ fn stat_list_and_statfs_answer_the_records() {
 
     let out = Extent { off: OUT, len: STATFS_BYTES as u32 };
     let n = name(&s, "");
-    assert_eq!(outcome::served(dir.statfs(n, out)), Ok(()));
+    assert_eq!(outcome::served(dir.statfs(n, 0, out)), Ok(()));
     let r = &s.borrow().host.region[OUT as usize..OUT as usize + 16];
     assert_eq!(u32::from_le_bytes(r[..4].try_into().unwrap()), service::STATFS_TYPE_EXT4);
     assert_eq!(u32::from_le_bytes(r[4..8].try_into().unwrap()), 1024);
@@ -377,4 +377,49 @@ fn a_link_out_of_the_callers_directory_is_refused() {
     let out = Extent { off: OUT, len: STAT_BYTES as u32 };
     assert_eq!(outcome::served(DirClient::new(Loop(&s, DIR_BADGE)).statat(n, 1, out)), Err(outcome::DENIED));
     assert_eq!(outcome::served(DirClient::new(Loop(&s, DIR_BADGE)).statat(n, 0, out)), Ok(()));
+}
+
+/// **Stat, listing and statfs keep to the caller's directory as an open
+/// does**: a link that leads out of it is refused (`DENIED`), and in a listing
+/// of the directory itself such an entry is shown as the link it is, not as
+/// the file or directory it points at outside.
+///
+/// **Canary.** `escape-canary`: the same names are resolved out of the
+/// directory.
+#[test]
+fn stat_listing_and_statfs_refuse_a_link_out_of_the_callers_directory() {
+    let s = service();
+    let dir = || DirClient::new(Loop(&s, DIR_BADGE));
+    let out = Extent { off: OUT, len: READDIR_NAME_BYTES as u32 };
+    let st = Extent { off: OUT, len: STATFS_BYTES as u32 };
+    let n = name(&s, "jail/outdir");
+    assert_eq!(outcome::served(dir().readdir(n, 1, 0, out)).map(|_| ()), Err(outcome::DENIED));
+    assert_eq!(outcome::served(dir().statfs(n, 1, st)), Err(outcome::DENIED));
+    assert_eq!(outcome::served(dir().statat(n, 1, Extent { off: OUT, len: STAT_BYTES as u32 })), Err(outcome::DENIED));
+    assert!(outcome::served(dir().readdir(n, 0, 0, out)).unwrap().present, "from the root it is deep/a");
+    assert_eq!(outcome::served(dir().statfs(n, 0, st)), Ok(()));
+    let n = name(&s, "jail/indir");
+    assert!(outcome::served(dir().readdir(n, 1, 0, out)).unwrap().present);
+    assert_eq!(outcome::served(dir().statfs(n, 1, st)), Ok(()));
+
+    let list = |floor: u32| {
+        let mut seen = Vec::new();
+        for i in 0.. {
+            let n = name(&s, "jail");
+            let e = outcome::served(dir().readdir(n, floor, i, out)).unwrap();
+            if !e.present {
+                break;
+            }
+            let r = &s.borrow().host.region[OUT as usize..OUT as usize + READDIR_NAME_BYTES];
+            let len = r.iter().position(|&c| c == 0).unwrap();
+            seen.push((String::from_utf8(r[..len].to_vec()).unwrap(), e.is_dir, e.size));
+        }
+        seen
+    };
+    let get = |l: &[(String, bool, u32)], n: &str| l.iter().find(|e| e.0 == n).unwrap().clone();
+    let rooted = list(1);
+    assert!(!get(&rooted, "outdir").1 && get(&rooted, "out").2 == 12, "a link out of the directory lists as the link: {rooted:?}");
+    assert!(get(&rooted, "indir").1 && get(&rooted, "in").2 == 10, "a link inside lists as its target");
+    let whole = list(0);
+    assert!(get(&whole, "outdir").1 && get(&whole, "out").2 == 11, "from the root the same links list as their targets");
 }

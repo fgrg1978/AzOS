@@ -2107,9 +2107,23 @@ fn name_beneath(
     entry: bool,
     out: &mut [u8; azos_common::path::MAX_PATH],
 ) -> Result<usize, i64> {
-    use azos_abi::error::Errno;
     let mut root = [0u8; azos_ipc::file_cap::TREE_PATH_MAX];
-    let root_len = dir_root_for(dir_raw, azos_abi::cap::CapPerms::READ, op, &mut root)?;
+    name_in_root(dir_raw, op, name_ptr, entry, out, &mut root).map(|(n, _)| n)
+}
+
+/// [`name_beneath`] that also hands back the directory's root path: `root`
+/// holds its first `.1` bytes, for the ops that tell the filesystem where the
+/// caller is rooted.
+fn name_in_root(
+    dir_raw: u64,
+    op: u16,
+    name_ptr: u64,
+    entry: bool,
+    out: &mut [u8; azos_common::path::MAX_PATH],
+    root: &mut [u8; azos_ipc::file_cap::TREE_PATH_MAX],
+) -> Result<(usize, usize), i64> {
+    use azos_abi::error::Errno;
+    let root_len = dir_root_for(dir_raw, azos_abi::cap::CapPerms::READ, op, root)?;
     if name_ptr == 0 {
         return Err(Errno::EFAULT.to_syscall_ret());
     }
@@ -2119,7 +2133,7 @@ fn name_beneath(
         return Err(Errno::EINVAL.to_syscall_ret());
     }
     match azos_common::path::join_beneath(&root[..root_len], name, out) {
-        Ok(n) => Ok(n),
+        Ok(n) => Ok((n, root_len)),
         Err(azos_common::path::JoinError::TooLong) => Err(Errno::ENAMETOOLONG.to_syscall_ret()),
         Err(azos_common::path::JoinError::Invalid) => Err(Errno::EINVAL.to_syscall_ret()),
     }
@@ -2192,9 +2206,10 @@ pub fn sys_readdirat(dir_raw: u64, name_ptr: u64, index: u64, name_out: u64, nam
         return Err(Errno::EFAULT.to_syscall_ret());
     }
     let mut path = [0u8; azos_common::path::MAX_PATH];
-    let n = name_beneath(dir_raw, azos_abi::invoke::NODE_READDIR, name_ptr, false, &mut path)?;
+    let mut root = [0u8; azos_ipc::file_cap::TREE_PATH_MAX];
+    let (n, root_len) = name_in_root(dir_raw, azos_abi::invoke::NODE_READDIR, name_ptr, false, &mut path, &mut root)?;
     let ops = fs_or_nosys()?;
-    let Some((name, size, is_dir)) = ops.readdir(&path[..n], index as u32) else { return Ok(None) };
+    let Some((name, size, is_dir)) = ops.readdir_beneath(&root[..root_len], &path[..n], index as u32)? else { return Ok(None) };
     // The seam fills all of `name` with no NUL for a name that does not fit.
     let full = name.iter().position(|&b| b == 0).unwrap_or(name.len());
     let len = full.min(READDIR_NAME_BYTES - 1);
@@ -2230,9 +2245,10 @@ pub fn sys_statat(dir_raw: u64, name_ptr: u64, out: u64) -> i64 {
     use azos_abi::syscall_nr::STAT_BYTES;
     if out == 0 { return azos_abi::error::Errno::EFAULT.to_syscall_ret(); }
     let mut path = [0u8; azos_common::path::MAX_PATH];
-    let n = match name_beneath(dir_raw, azos_abi::invoke::NODE_STATAT, name_ptr, false, &mut path) { Ok(n) => n, Err(e) => return e };
+    let mut root = [0u8; azos_ipc::file_cap::TREE_PATH_MAX];
+    let (n, root_len) = match name_in_root(dir_raw, azos_abi::invoke::NODE_STATAT, name_ptr, false, &mut path, &mut root) { Ok(r) => r, Err(e) => return e };
     let ops = match fs_or_nosys() { Ok(o) => o, Err(e) => return e };
-    let st = match ops.stat(&path[..n]) { Ok(st) => st, Err(e) => return e };
+    let st = match ops.stat_beneath(&root[..root_len], &path[..n]) { Ok(st) => st, Err(e) => return e };
     match record_to_caller(out, &st.to_bytes()[..STAT_BYTES]) { Ok(()) => 0, Err(e) => e }
 }
 
@@ -2245,9 +2261,10 @@ pub fn sys_statfsat(dir_raw: u64, name_ptr: u64, out: u64, out_len: u64) -> i64 
     if out_len < STATFS_BYTES as u64 { return Errno::EINVAL.to_syscall_ret(); }
     if out == 0 { return Errno::EFAULT.to_syscall_ret(); }
     let mut path = [0u8; azos_common::path::MAX_PATH];
-    let n = match name_beneath(dir_raw, azos_abi::invoke::NODE_STATFS, name_ptr, false, &mut path) { Ok(n) => n, Err(e) => return e };
+    let mut root = [0u8; azos_ipc::file_cap::TREE_PATH_MAX];
+    let (n, root_len) = match name_in_root(dir_raw, azos_abi::invoke::NODE_STATFS, name_ptr, false, &mut path, &mut root) { Ok(r) => r, Err(e) => return e };
     let ops = match fs_or_nosys() { Ok(o) => o, Err(e) => return e };
-    let st = match ops.statfs(&path[..n]) { Ok(st) => st, Err(e) => return e };
+    let st = match ops.statfs_beneath(&root[..root_len], &path[..n]) { Ok(st) => st, Err(e) => return e };
     match record_to_caller(out, &st.to_bytes()[..STATFS_BYTES]) { Ok(()) => 0, Err(e) => e }
 }
 

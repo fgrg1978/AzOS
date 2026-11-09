@@ -12394,6 +12394,8 @@ host_job host_canary_row "ext4: a listed name not one component canary" fs-tests
 host_job host_canary_row "ext4: a restarted server's opens kept canary" fs-tests endpoint-epoch-canary a_restarted_server_is_opened_again
 host_job host_canary_row "ext4: a key forgets its opener's directory canary" fs-tests endpoint-floor-canary an_open_beneath_a_directory_names_its_floor_to_the_server
 host_job host_canary_row "ext4: a link out of the caller's directory canary" ext4-tests escape-canary a_link_out_of_the_callers_directory_is_refused
+host_job host_canary_row "ext4: stat, listing and statfs out of the caller's directory canary" ext4-tests escape-canary stat_listing_and_statfs_refuse_a_link_out_of_the_callers_directory
+host_job host_canary_row "ext4: a key's floor in stat, listing and statfs canary" fs-tests endpoint-floor-canary stat_listing_and_statfs_refuse_a_link_out_of_the_callers_directory
 host_job host_canary_row "ext4: an open's badge is its slot canary" ext4-tests badge-slot-canary a_badge_from_an_earlier_server_reaches_nothing
 host_job host_canary_row "ext4: a late block completion taken canary" ext4-tests stale-completion-canary a_late_completion_is_dropped
 host_job host_canary_row "ext4: the server's row holds one more partition canary" topology-tests ext4d-grant-canary ext4d_holds_its_partition_endpoint_and_region_and_nothing_else

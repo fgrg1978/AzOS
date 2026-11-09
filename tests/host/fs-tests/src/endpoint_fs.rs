@@ -75,10 +75,13 @@ impl Dir for Server {
         self.region[out.off as usize..out.off as usize + STAT_BYTES].copy_from_slice(&b);
         Out::ok(())
     }
-    fn readdir(&mut self, name: Extent, index: u32, out: Extent) -> Out<Entry> {
+    fn readdir(&mut self, name: Extent, floor: u32, index: u32, out: Extent) -> Out<Entry> {
+        if floor > 0 && self.name(name).ends_with("link") {
+            return Out::err(outcome::DENIED);
+        }
         let list: &[(&str, bool, u32)] = match self.name(name).as_str() {
             "" => &[("hello.txt", false, 18), ("big.bin", false, 10_000), ("dir", true, 0)],
-            "dir" => &[("a.txt", false, 2)],
+            "dir" | "dir/link" => &[("a.txt", false, 2)],
             _ => return Out::err(NOT_FOUND),
         };
         let Some(&(n, is_dir, size)) = list.get(index as usize) else { return Out::ok(Entry::default()) };
@@ -92,8 +95,12 @@ impl Dir for Server {
         r[..n.len()].copy_from_slice(n);
         Out::ok(Entry { present: true, size, is_dir, cut: false })
     }
-    fn statfs(&mut self, _name: Extent, _out: Extent) -> Out<()> {
-        Out::err(outcome::UNSUPPORTED)
+    fn statfs(&mut self, name: Extent, floor: u32, _out: Extent) -> Out<()> {
+        match self.name(name).as_str() {
+            n if floor > 0 && n.ends_with("link") => Out::err(outcome::DENIED),
+            "" | "dir/link" => Out::ok(()),
+            _ => Out::err(outcome::UNSUPPORTED),
+        }
     }
     fn mkdirat(&mut self, _name: Extent) -> Out<()> {
         CHANGES.fetch_add(1, Ordering::SeqCst);
@@ -440,4 +447,25 @@ fn a_link_out_of_the_callers_directory_is_not_opened() {
     let fd = vfs::vfs_open_at(&mut t, b"/ep", b"dir/link", vfs::O_RDONLY);
     assert!(fd >= 0);
     vfs::vfs_close(&mut t, fd);
+}
+
+/// **A link out of the caller's directory is refused by stat, listing and
+/// statfs as it is by open**: the three tell the server the floor, and what
+/// it refuses (`DENIED`) is the mount's `Denied`, not an absent file or an
+/// empty listing. The same link from a caller rooted at the mount is the
+/// directory it names.
+///
+/// **Canary.** `endpoint-floor-canary`: none of the three says it, and each
+/// refusal below becomes an answer.
+#[test]
+fn stat_listing_and_statfs_refuse_a_link_out_of_the_callers_directory() {
+    let _g = serial();
+    mounted();
+    let mut e = vfs::DirEnt::new();
+    assert_eq!(vfs::vfs_stat_beneath(b"/ep/dir", b"/ep/dir/link").err(), Some(vfs::FsErr::Denied));
+    assert!(vfs::vfs_stat_beneath(b"/ep", b"/ep/dir/link").is_ok());
+    assert_eq!(vfs::vfs_readdir_beneath(b"/ep/dir", b"/ep/dir/link", 0, &mut e).err(), Some(vfs::FsErr::Denied));
+    assert!(vfs::vfs_readdir_beneath(b"/ep", b"/ep/dir/link", 0, &mut e).unwrap().is_some());
+    assert_eq!(vfs::vfs_statfs_beneath(b"/ep/dir", b"/ep/dir/link").err(), Some(vfs::FsErr::Denied));
+    assert!(vfs::vfs_statfs_beneath(b"/ep", b"/ep/dir/link").is_ok());
 }

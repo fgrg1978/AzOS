@@ -761,20 +761,28 @@ pub(crate) fn install_ring3_seams() {
                 match azos_fs::vfs_unlink(path) { Ok(()) => 0, Err(e) => fs_errno(e) }
             }
             fn readdir(&self, path: &[u8], index: u32) -> Option<([u8; azos_abi::syscall_nr::READDIR_NAME_BYTES], u32, bool)> {
+                self.readdir_beneath(azos_fs::vfs::ROOT_DIR, path, index).ok()?
+            }
+            fn readdir_beneath(&self, root: &[u8], path: &[u8], index: u32) -> Result<Option<([u8; azos_abi::syscall_nr::READDIR_NAME_BYTES], u32, bool)>, i64> {
                 // The cookie is opaque, so the `index`-th entry is reached by
                 // walking from the start.
                 let mut ent = azos_fs::DirEnt::new();
                 let mut cookie = 0u64;
                 for _ in 0..index {
-                    cookie = azos_fs::vfs_readdir(path, cookie, &mut ent).ok()??;
+                    cookie = match azos_fs::vfs::vfs_readdir_beneath(root, path, cookie, &mut ent).map_err(fs_errno)? {
+                        Some(next) => next,
+                        None => return Ok(None),
+                    };
                 }
-                azos_fs::vfs_readdir(path, cookie, &mut ent).ok()??;
+                if azos_fs::vfs::vfs_readdir_beneath(root, path, cookie, &mut ent).map_err(fs_errno)?.is_none() {
+                    return Ok(None);
+                }
                 // A name that does not fit fills the whole buffer with no NUL: the
                 // caller can tell it was cut.
                 let mut name = [0u8; azos_abi::syscall_nr::READDIR_NAME_BYTES];
                 let n = ent.name().len().min(name.len());
                 name[..n].copy_from_slice(&ent.name()[..n]);
-                Some((name, ent.size.min(u32::MAX as u64) as u32, ent.is_dir))
+                Ok(Some((name, ent.size.min(u32::MAX as u64) as u32, ent.is_dir)))
             }
             fn read_whole(&self, path: &[u8], dst: &mut [u8]) -> usize {
                 // A throwaway table: the descriptor this opens is never handed
@@ -855,14 +863,14 @@ pub(crate) fn install_ring3_seams() {
             /// The VFS's `vfs_stat` (the backend mounted under the path),
             /// laid out by the syscall layer.
             fn stat(&self, path: &[u8]) -> Result<azos_syscall::file_ops::StatOut, i64> {
-                use azos_abi::error::Errno;
-                match azos_fs::vfs_stat(path) {
-                    Some(st) => Ok(azos_syscall::file_ops::StatOut {
-                        size: st.size, mode: st.mode, nlink: st.nlink, uid: st.uid,
-                        gid: st.gid, atime: st.atime, mtime: st.mtime, ctime: st.ctime,
-                    }),
-                    None => Err(Errno::ENOENT.to_syscall_ret()),
-                }
+                self.stat_beneath(azos_fs::vfs::ROOT_DIR, path)
+            }
+            fn stat_beneath(&self, root: &[u8], path: &[u8]) -> Result<azos_syscall::file_ops::StatOut, i64> {
+                let st = azos_fs::vfs::vfs_stat_beneath(root, path).map_err(fs_errno)?;
+                Ok(azos_syscall::file_ops::StatOut {
+                    size: st.size, mode: st.mode, nlink: st.nlink, uid: st.uid,
+                    gid: st.gid, atime: st.atime, mtime: st.mtime, ctime: st.ctime,
+                })
             }
 
             // ── Owner round 23: rmdir, rename, truncate, fsync, statfs ──
@@ -973,7 +981,10 @@ pub(crate) fn install_ring3_seams() {
                 azos_fs::fat32_unmount(azos_fs::Volume::assume_mounted()).is_ok()
             }
             fn statfs(&self, path: &[u8]) -> Result<azos_syscall::file_ops::StatFsOut, i64> {
-                let st = azos_fs::vfs_statfs(path).map_err(fs_errno)?;
+                self.statfs_beneath(azos_fs::vfs::ROOT_DIR, path)
+            }
+            fn statfs_beneath(&self, root: &[u8], path: &[u8]) -> Result<azos_syscall::file_ops::StatFsOut, i64> {
+                let st = azos_fs::vfs::vfs_statfs_beneath(root, path).map_err(fs_errno)?;
                 Ok(azos_syscall::file_ops::StatFsOut {
                     fs_type: st.fs_type, block_size: st.block_size, blocks: st.blocks,
                     blocks_free: st.blocks_free, files: st.files, files_free: st.files_free,

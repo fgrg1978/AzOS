@@ -109,6 +109,14 @@ pub trait FileOps: Sync {
     /// bytes or more fills all of it with no NUL, so the cut is seen.
     fn readdir(&self, path: &[u8], index: u32) -> Option<([u8; azos_abi::syscall_nr::READDIR_NAME_BYTES], u32, bool)>;
 
+    /// [`FileOps::readdir`] for a caller whose authority is the directory
+    /// `root` (the `Cap<Dir>` it names): a link that leaves it is not followed.
+    /// `Err` is the refusal, as a negative errno. An implementation whose
+    /// filesystems have no links keeps the default.
+    fn readdir_beneath(&self, _root: &[u8], path: &[u8], index: u32) -> Result<Option<([u8; azos_abi::syscall_nr::READDIR_NAME_BYTES], u32, bool)>, i64> {
+        Ok(self.readdir(path, index))
+    }
+
     /// Close every descriptor the task `tid` still holds, and report how many
     /// there were.
     ///
@@ -154,6 +162,10 @@ pub trait FileOps: Sync {
     /// negative errno. The default answers `-1`, as every entry point does
     /// with nothing installed.
     fn stat(&self, _path: &[u8]) -> Result<StatOut, i64> { Err(-1) }
+
+    /// [`FileOps::stat`] for a caller rooted at `root`, as
+    /// [`FileOps::readdir_beneath`].
+    fn stat_beneath(&self, _root: &[u8], path: &[u8]) -> Result<StatOut, i64> { self.stat(path) }
 
     /// (`SYS_SPAWN_EX` move list): descriptor `fd`, owned by `from`,
     /// now belongs to `to`, whose per-task share of the table it is charged
@@ -213,6 +225,10 @@ pub trait FileOps: Sync {
 
     /// `NODE_STATFS`: capacity and free space of the filesystem `path` is on.
     fn statfs(&self, _path: &[u8]) -> Result<StatFsOut, i64> { Err(-1) }
+
+    /// [`FileOps::statfs`] for a caller rooted at `root`, as
+    /// [`FileOps::readdir_beneath`].
+    fn statfs_beneath(&self, _root: &[u8], path: &[u8]) -> Result<StatFsOut, i64> { self.statfs(path) }
 
     /// What the page cache needs to map the file open as `fd` (`NODE_MMAP`,
     /// `crate::file_map`): its name in the cache, the backing its pages come

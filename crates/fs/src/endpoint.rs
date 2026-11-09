@@ -145,6 +145,14 @@ fn floor_of(key: &InodeKey) -> u32 {
     u32::from(key.bytes[INODE_KEY_LEN - 1])
 }
 
+/// A floor as the protocol's argument (canary `endpoint-floor-canary`: none).
+fn floor_arg(floor: usize) -> Result<u32, FsErr> {
+    if cfg!(feature = "endpoint-floor-canary") {
+        return Ok(0);
+    }
+    u32::try_from(floor).map_err(|_| FsErr::Invalid)
+}
+
 fn u32_at(b: &[u8], o: usize) -> u32 {
     u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]])
 }
@@ -354,6 +362,10 @@ impl FileSystem for EndpointFs {
         self.stat_of(key).ok()
     }
 
+    fn stat_checked(&self, key: &InodeKey) -> Result<FileStat, FsErr> {
+        self.stat_of(key)
+    }
+
     fn read_all(&self, key: &InodeKey, _st: &FileStat, dst: &mut [u8]) -> usize {
         self.read(key, 0, dst).unwrap_or(0)
     }
@@ -416,10 +428,14 @@ impl FileSystem for EndpointFs {
     }
 
     fn statfs(&self) -> Result<StatFs, FsErr> {
+        self.statfs_beneath(b"", 0)
+    }
+
+    fn statfs_beneath(&self, name: &[u8], floor: usize) -> Result<StatFs, FsErr> {
         let link = self.link()?;
         let _one = self.state.acquire();
-        let n = Self::name(link, b"")?;
-        Self::served(DirClient::new(Via(link, None)).statfs(n, Extent { off: OUT_OFF as u64, len: STATFS_BYTES as u32 }))?;
+        let n = Self::name(link, name)?;
+        Self::served(DirClient::new(Via(link, None)).statfs(n, floor_arg(floor)?, Extent { off: OUT_OFF as u64, len: STATFS_BYTES as u32 }))?;
         let mut b = [0u8; STATFS_BYTES];
         if !link.get(OUT_OFF, &mut b) {
             return Err(FsErr::Io);
@@ -436,12 +452,17 @@ impl FileSystem for EndpointFs {
     }
 
     fn readdir(&self, dir: &[u8], cookie: u64, out: &mut DirEnt) -> Result<Option<u64>, FsErr> {
+        self.readdir_beneath(dir, 0, cookie, out)
+    }
+
+    fn readdir_beneath(&self, dir: &[u8], floor: usize, cookie: u64, out: &mut DirEnt) -> Result<Option<u64>, FsErr> {
         let index = u32::try_from(cookie).map_err(|_| FsErr::Invalid)?;
         let link = self.link()?;
         let _one = self.state.acquire();
         let n = Self::name(link, dir)?;
         let e = Self::served(DirClient::new(Via(link, None)).readdir(
             n,
+            floor_arg(floor)?,
             index,
             Extent { off: OUT_OFF as u64, len: READDIR_NAME_BYTES as u32 },
         ))?;

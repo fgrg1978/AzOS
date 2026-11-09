@@ -84,6 +84,8 @@ pub fn fixture(root: &Path) {
     symlink("../hello.txt", root.join("jail/out")).unwrap();
     symlink("../../hello.txt", root.join("jail/sub/out2")).unwrap();
     symlink("/hello.txt", root.join("jail/abs")).unwrap();
+    symlink("../deep/a", root.join("jail/outdir")).unwrap();
+    symlink("sub", root.join("jail/indir")).unwrap();
     symlink("loop2", root.join("loop1")).unwrap();
     symlink("loop1", root.join("loop2")).unwrap();
 }

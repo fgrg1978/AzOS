@@ -245,15 +245,17 @@ pub trait Dir {
     #[idempotent]
     fn statat(&mut self, name: Extent, floor: u32, out: Extent) -> Out<()>;
     /// Entry `index` of the directory `name`: its name into `out`
-    /// (`READDIR_NAME_BYTES`, zero-padded).
+    /// (`READDIR_NAME_BYTES`, zero-padded); `floor` as for [`Dir::openat`], and
+    /// the size and type listed for a link that leads out of it are the link's own.
     #[op = NODE_READDIR]
     #[idempotent]
-    fn readdir(&mut self, name: Extent, index: u32, out: Extent) -> Out<Entry>;
+    fn readdir(&mut self, name: Extent, floor: u32, index: u32, out: Extent) -> Out<Entry>;
     /// Capacity and free space of the volume `name` is on
-    /// (`azos_abi::syscall_nr::STATFS_BYTES`) into `out`.
+    /// (`azos_abi::syscall_nr::STATFS_BYTES`) into `out`; `floor` as for
+    /// [`Dir::openat`].
     #[op = NODE_STATFS]
     #[idempotent]
-    fn statfs(&mut self, name: Extent, out: Extent) -> Out<()>;
+    fn statfs(&mut self, name: Extent, floor: u32, out: Extent) -> Out<()>;
     /// Make the directory `name`. Needs write authority over it.
     #[op = NODE_MKDIRAT]
     #[at_most_once]

@@ -202,27 +202,27 @@ impl<S: BlockSource, H: Host> Service<S, H> {
         }
     }
 
-    /// The inode `e` names beneath the root, symlinks followed.
-    fn resolve(&mut self, e: Extent) -> Result<Inode, u32> {
-        self.resolve_beneath(e, 0)
-    }
-
-    /// [`Service::resolve`] with the first `floor` components of the name as
-    /// the directory the caller is rooted at: what is below it is resolved
-    /// beneath it, and no symlink leads out.
+    /// The inode `e` names, symlinks followed, with the first `floor` components
+    /// of the name as the directory the caller is rooted at: what is below it is
+    /// resolved beneath it, and no symlink leads out.
     fn resolve_beneath(&mut self, e: Extent, floor: u32) -> Result<Inode, u32> {
         if self.badge != DIR_BADGE {
             return Err(outcome::DENIED);
         }
         let mut buf = [0u8; PATH_MAX];
         let n = name_of(self.host.region(), e, &mut buf)?;
-        let name = &buf[..n];
+        self.resolve_path(&buf[..n], floor, true).map_err(code)
+    }
+
+    /// The inode `name` names, rooted at the directory its first `floor`
+    /// components make (the volume's root for 0).
+    fn resolve_path(&mut self, name: &[u8], floor: u32, follow_last: bool) -> Result<Inode, Error> {
         if floor == 0 {
-            return self.vol.resolve(name, true).map_err(code);
+            return self.vol.resolve(name, follow_last);
         }
-        let end = components_end(name, floor as usize).ok_or(outcome::BAD_ARGUMENT)?;
-        let base = self.vol.resolve(&name[..end], true).map_err(code)?;
-        self.vol.resolve_beneath(&base, &name[end..], true).map_err(code)
+        let end = components_end(name, floor as usize).ok_or(Error::BadName)?;
+        let base = self.vol.resolve(&name[..end], true)?;
+        self.vol.resolve_beneath(&base, &name[end..], follow_last)
     }
 
     /// The open file of the call's badge.
@@ -285,14 +285,14 @@ impl<S: BlockSource, H: Host> Service<S, H> {
 
     /// What a client sees of entry `e` of the directory `dir` names: the
     /// file a symlink names, or the link itself when it names nothing.
-    fn seen(&mut self, dir: &[u8], e: &DirEntry) -> Result<Inode, Error> {
+    fn seen(&mut self, dir: &[u8], floor: u32, e: &DirEntry) -> Result<Inode, Error> {
         let mut p = [0u8; PATH_MAX];
         let n = dir.len() + 1 + e.name().len();
         if n <= PATH_MAX {
             p[..dir.len()].copy_from_slice(dir);
             p[dir.len()] = b'/';
             p[dir.len() + 1..n].copy_from_slice(e.name());
-            if let Ok(i) = self.vol.resolve(&p[..n], true) {
+            if let Ok(i) = self.resolve_path(&p[..n], floor, true) {
                 return Ok(i);
             }
         }
@@ -368,14 +368,14 @@ impl<S: BlockSource, H: Host> Dir for Service<S, H> {
         done(r)
     }
 
-    fn readdir(&mut self, name: Extent, index: u32, out: Extent) -> Out<Entry> {
+    fn readdir(&mut self, name: Extent, floor: u32, index: u32, out: Extent) -> Out<Entry> {
         let r = (|| {
             if self.badge != DIR_BADGE {
                 return Err(outcome::DENIED);
             }
             let mut path = [0u8; PATH_MAX];
             let pn = name_of(self.host.region(), name, &mut path)?;
-            let dir = self.vol.resolve(&path[..pn], true).map_err(code)?;
+            let dir = self.resolve_path(&path[..pn], floor, true).map_err(code)?;
             if !dir.is_dir() {
                 return Err(NOT_DIR);
             }
@@ -383,7 +383,7 @@ impl<S: BlockSource, H: Host> Dir for Service<S, H> {
             if !self.entry(&dir, index, &mut e)? {
                 return Ok(Entry::default());
             }
-            let i = self.seen(&path[..pn], &e).map_err(code)?;
+            let i = self.seen(&path[..pn], floor, &e).map_err(code)?;
             let mut rec = [0u8; READDIR_NAME_BYTES];
             let room = (out.len as usize).min(READDIR_NAME_BYTES);
             let n = e.name().len().min(room.saturating_sub(1));
@@ -399,8 +399,8 @@ impl<S: BlockSource, H: Host> Dir for Service<S, H> {
         done(r)
     }
 
-    fn statfs(&mut self, name: Extent, out: Extent) -> Out<()> {
-        let r = self.resolve(name).and_then(|_| {
+    fn statfs(&mut self, name: Extent, floor: u32, out: Extent) -> Out<()> {
+        let r = self.resolve_beneath(name, floor).and_then(|_| {
             let s = *self.vol.info();
             let mut b = [0u8; STATFS_BYTES];
             b[STATFS_OFF_TYPE..STATFS_OFF_TYPE + 4].copy_from_slice(&STATFS_TYPE_EXT4.to_le_bytes());
