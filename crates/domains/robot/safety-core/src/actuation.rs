@@ -231,6 +231,9 @@ const ROBOT_HOOKS: &[azos_ext_api::BootHook] = &[
     azos_ext_api::BootHook::EffectLoop(&FLIGHT_CTRL),
 ];
 
+const _: () = assert!(azos_ext_api::enforcers_in(ROBOT_HOOKS) <= azos_actuation::enforce::MAX_ENFORCERS,
+    "the robot registers more enforcers than the enforcement task runs");
+
 /// The robot extension, as the actuation core sees it: one effect provider
 /// for the wheels, the ESC and the payload, which owns the motor kind; ring-3
 /// images start only once the motor gate is in place (the loader asks

@@ -107,6 +107,19 @@ pub enum BootHook {
     Enforcer(&'static Enforcer),
 }
 
+/// How many [`BootHook::Enforcer`]s `hooks` registers: a manifest asserts at
+/// build time that the base's enforcement task has room for them.
+pub const fn enforcers_in(hooks: &[BootHook]) -> usize {
+    let (mut i, mut n) = (0, 0);
+    while i < hooks.len() {
+        if let BootHook::Enforcer(_) = hooks[i] {
+            n += 1;
+        }
+        i += 1;
+    }
+    n
+}
+
 /// An extension, as the base sees it.
 pub struct Manifest {
     pub name: &'static str,

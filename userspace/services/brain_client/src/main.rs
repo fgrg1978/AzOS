@@ -392,8 +392,8 @@ fn ring_drain(ring: &sys::ioring::Ring, mut each: impl FnMut(sys::ioring::Cqe)) 
 }
 
 /// Submit the brain's command as one `Motor::command` `OP_CALL` entry on the
-/// left wheel's endpoint and print its completion as
-/// `[brain_client] ioring command status=<s> outcome=<o> flags=<f>`.
+/// left wheel's endpoint and print its completion, when it differs from the
+/// last one, as `[brain_client] ioring command status=<s> outcome=<o> flags=<f>`.
 ///
 /// The kernel decides the entry the way it decides the typed call: this
 /// image's row must list the `motor` interface, the table must carry WRITE on
@@ -413,12 +413,22 @@ fn command_ring_submit(left: i32, right: i32) -> bool {
         if tag != TAG_MOTOR {
             return;
         }
-        let outcome = ring.reply(motor_window(0))[1];
+        let outcome = if flags & sys::ioring::CQE_F_REFUSED != 0 { -1 } else { ring.reply(motor_window(0))[1] as i64 };
+        // On a change only: the command goes out every period.
+        use core::sync::atomic::{AtomicI64, AtomicU64, Ordering::Relaxed};
+        static LAST_STATUS: AtomicI64 = AtomicI64::new(i64::MIN);
+        static LAST_OUTCOME: AtomicI64 = AtomicI64::new(i64::MIN);
+        static LAST_FLAGS: AtomicU64 = AtomicU64::new(u64::MAX);
+        let same = LAST_STATUS.swap(result as i64, Relaxed) == result as i64;
+        let same = LAST_OUTCOME.swap(outcome, Relaxed) == outcome && same;
+        if LAST_FLAGS.swap(flags as u64, Relaxed) == flags as u64 && same {
+            return;
+        }
         let mut line = Line::new();
         line.push(b"[brain_client] ioring command status=");
         line.push_i64(result as i64);
         line.push(b" outcome=");
-        line.push_i64(if flags & sys::ioring::CQE_F_REFUSED != 0 { -1 } else { outcome as i64 });
+        line.push_i64(outcome);
         line.push(b" flags=");
         line.push_i64(flags as i64);
         line.push(b"\n");
@@ -953,19 +963,22 @@ fn dial(ip: [u8; 4], port: u16, rekey_secs: u64, now_ms: u64) -> Option<u32> {
 
 /// The layers the kernel's switches enable (`behavior enable|disable`,
 /// CONFIG.INI `behavior_l1_enabled` .. `_l3_` at boot), read through the
-/// `Behavior` interface: bit `n` for layer `n`. With no grant, or a refused
-/// read, every layer.
-fn layers_now() -> behave::Layers {
+/// `Behavior` interface: bit `n` for layer `n`. A refused or failed read keeps
+/// `last`; with no grant, only the obstacle layer, which can only stop or turn
+/// away: an engine that cannot read its switches never drives on its own.
+fn layers_now(last: behave::Layers) -> behave::Layers {
     // SAFETY: single-threaded; written once before the engine loop.
     let cap = unsafe { CAP_BEHAVIOR };
     if cap == 0 {
-        return behave::Layers::ALL;
+        return behave::Layers::AVOID_ONLY;
     }
-    let mask = match sys::dev::BehaviorClient::new(Regs(cap)).status() {
-        Ok(o) if o.is_ok() => o.value,
-        _ => return behave::Layers::ALL,
-    };
-    behave::Layers { avoid: mask & 1 << 1 != 0, remote: mask & 1 << 2 != 0, explore: mask & 1 << 3 != 0 }
+    match sys::dev::BehaviorClient::new(Regs(cap)).status() {
+        Ok(o) if o.is_ok() => {
+            let m = o.value;
+            behave::Layers { avoid: m & 1 << 1 != 0, remote: m & 1 << 2 != 0, explore: m & 1 << 3 != 0 }
+        }
+        _ => last,
+    }
 }
 
 /// The `behavior` endpoint, 0 for none.
@@ -992,12 +1005,12 @@ fn engine(brain: Option<([u8; 4], u16)>, rekey_secs: u64) -> ! {
     let mut remote: Option<behave::Remote> = None;
     let mut next_dial = 0u64;
     let mut last: Option<behave::Winner> = None;
-    let mut layers = layers_now();
+    let mut layers = layers_now(behave::Layers::AVOID_ONLY);
     let mut next_layers = 0u64;
     loop {
         let now = sys::vdso_now_ns() / 1_000_000;
         if now >= next_layers {
-            layers = layers_now();
+            layers = layers_now(layers);
             next_layers = now + LAYERS_POLL_MS;
         }
         sensors.read_all();

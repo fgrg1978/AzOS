@@ -10,8 +10,8 @@ use azos_drv_sys::timebase::{freq, now};
 /// effect loops it never preempts.
 pub const ENFORCE_PRIORITY: u32 = azos_sched::WATCHDOG_PRIORITY;
 
-/// The most enforcers the task tracks; a registry past it is refused at boot
-/// by [`enforcer_count`]'s caller.
+/// The most enforcers the task tracks: each manifest asserts its own count
+/// against it at build time (`azos_ext_api::enforcers_in`), the boot their sum.
 pub const MAX_ENFORCERS: usize = 8;
 
 /// How many enforcers the installed manifests register.

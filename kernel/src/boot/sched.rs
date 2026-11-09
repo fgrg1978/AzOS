@@ -833,10 +833,9 @@ pub(crate) fn create_sys_wdt_task(hart: i8) {
     azos_actuation::providers::start_tasks(super::blk_irq::enable_line, spawn_effect_loop);
     // The extensions' enforcers, in one task on the watchdog's CPU.
     let enforcers = azos_actuation::enforce::enforcer_count();
-    if enforcers > azos_actuation::enforce::MAX_ENFORCERS {
-        azos_drv_sys::kerr!("[SAFETY] {} enforcers registered, the task runs {}: the rest never run",
-            enforcers, azos_actuation::enforce::MAX_ENFORCERS);
-    }
+    // Each manifest asserts its own count at build time; this is their sum.
+    assert!(enforcers <= azos_actuation::enforce::MAX_ENFORCERS,
+        "{} enforcers registered, the enforcement task runs {}", enforcers, azos_actuation::enforce::MAX_ENFORCERS);
     if enforcers > 0 {
         let idx = azos_sched::task_create_affinity(
             "enforce", azos_actuation::enforce::enforce_task, 0,

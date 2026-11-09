@@ -589,6 +589,20 @@ mod profiles {
         assert!(!tc.audit, "the trace tool's row is enforcing, not audit");
     }
 
+    /// **The authority interface is the behaviour engine's alone.** The
+    /// autorun row grants `endpoint.authority` to whichever image runs under
+    /// it; the loader withholds a grant whose interface the image's row does
+    /// not list (`spawn::withheld_by_profile`), so only `BRAINCLI.ELF` holds it.
+    ///
+    /// **Canary.** List `AUTHORITY` in `REFLEX.ELF`'s row: red.
+    #[test]
+    fn only_the_behaviour_engine_lists_the_authority_interface() {
+        let holders: Vec<&str> = IMAGE_PROFILES.iter()
+            .filter(|p| image_filter(p).iface_listed(azos_devif::key::AUTHORITY))
+            .map(|p| p.image).collect();
+        assert_eq!(holders, vec!["BRAINCLI.ELF"]);
+    }
+
     /// Wave 12: each family's interface is its tool's alone, and the four
     /// tools hold no other privileged or exec call and no other interface.
     ///

@@ -69,3 +69,17 @@ fn an_estop_replaces_the_standing_command() {
     let i = Inputs { remote: Some(Remote::stop(1_200)), ..at(1_300) };
     assert_eq!(arbitrate(Layers::ALL, &i), Some(((0, 0), Winner::Remote)));
 }
+
+/// **An engine that cannot read its switches never drives on its own**: with
+/// only the obstacle layer, a clear road and a fresh brain command drive
+/// nothing, and an obstacle still stops.
+///
+/// **Canary.** Let `AVOID_ONLY` keep the remote layer: the brain drives.
+#[test]
+fn the_fallback_layers_only_stop_or_turn_away() {
+    let remote = Some(Remote { left: 50, right: 50, at_ms: 0 });
+    let clear = Inputs { remote, session_up: true, ..at(10) };
+    assert_eq!(arbitrate(Layers::AVOID_ONLY, &clear), None);
+    let blocked = Inputs { front_mm: Some(100), ..clear };
+    assert_eq!(arbitrate(Layers::AVOID_ONLY, &blocked), Some(((0, 0), Winner::Avoid)));
+}

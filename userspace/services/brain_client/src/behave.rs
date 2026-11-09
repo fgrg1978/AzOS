@@ -31,7 +31,12 @@ pub struct Layers {
 }
 
 impl Layers {
+    /// Every layer on (the host tests' default).
+    #[cfg(test)]
     pub const ALL: Layers = Layers { avoid: true, remote: true, explore: true };
+    /// What an engine that cannot read the kernel's switches runs: the layer
+    /// that only stops or turns away.
+    pub const AVOID_ONLY: Layers = Layers { avoid: true, remote: false, explore: false };
 }
 
 /// The brain's latest drive command and when it arrived.
