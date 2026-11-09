@@ -810,9 +810,12 @@ impl Verifier {
                     self.b.sink_loss.add(d.first, d.count);
                 }
             }
-        } else if i > 0 || self.b.pending_over || base.is_some_and(|b| s.sink_lost != b.0 || s.sink_digest != b.1) {
+        } else if base.is_some_and(|b| i > 0 || self.b.pending_over || s.sink_lost != b.0 || s.sink_digest != b.1) {
             self.emit(Finding::DeclarationMismatch { boot, seq }, out);
         }
+        // With no base (an export that rotation cut mid-boot), the
+        // declarations the seal covers stay unconfirmed: they explain
+        // nothing and say nothing, and this seal is the next one's base.
         (self.b.pending, self.b.npending, self.b.pending_over) = (kept, nkept, false);
         self.b.sink_lost = Some((s.sink_lost, s.sink_digest));
     }
