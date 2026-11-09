@@ -24,7 +24,8 @@ use core::sync::atomic::AtomicBool;
 /// `Uart` interface refuses to attach it.
 static ESTOP_LINE: AtomicBool = AtomicBool::new(false);
 
-/// Give the line to the kernel's e-stop reader (once, at its first read).
+/// Give the line to the kernel's e-stop reader. Called at boot, before any
+/// ring-3 program can attach the line (`azos_safety_core::actuation::install`).
 pub fn bridge_claim_for_estop() {
     ESTOP_LINE.store(true, core::sync::atomic::Ordering::Release);
 }

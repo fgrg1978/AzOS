@@ -262,6 +262,9 @@ pub fn install() {
     if let Err(e) = azos_actuation::providers::install(&ROBOT) {
         panic!("the robot extension's providers were refused: {:?}", e);
     }
+    // The UART bridge line is the kernel's e-stop channel before any ring-3
+    // program can attach it (`enforce::bridge_estop`).
+    azos_drv_bus::uart_bridge::bridge_claim_for_estop();
     // The brain protocol's authority frames, from the ring-3 behaviour engine.
     azos_syscall::authority_host::set_handler(crate::frames::submitted);
 
