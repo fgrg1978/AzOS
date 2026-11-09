@@ -92,14 +92,20 @@ pub fn set_producer_wake(wake: fn(bool)) {
     PRODUCER_WAKE.set(wake);
 }
 
-/// Attach reader `c` and wake the producers if it is the first. `false`: the
-/// pool has no buffers.
-pub fn attach(c: usize) -> bool {
+/// Whether the pool has its buffers, lending them first if it has none.
+fn lent() -> bool {
     if !POOL.ready() {
         if let Some(lend) = LEND.get() {
             lend();
         }
     }
+    POOL.ready()
+}
+
+/// Attach reader `c` and wake the producers if it is the first. `false`: the
+/// pool has no buffers.
+pub fn attach(c: usize) -> bool {
+    lent();
     let first = !POOL.any_attached();
     // The sender is the reader the pool is owed to; ring 3 never holds capture back.
     let attached = if c == LINK { POOL.attach_owed(c) } else { POOL.attach(c) };
@@ -220,7 +226,7 @@ impl azos_devif::Frame for Server {
             record(Verdict::Refuse, tid, 0, frame::reason::NO_EFFECT);
             return Out::err(outcome::REFUSED);
         }
-        if !POOL.ready() {
+        if !lent() {
             return Out::err(outcome::NOT_READY);
         }
         #[cfg(not(feature = "frame-check-late-canary"))]
