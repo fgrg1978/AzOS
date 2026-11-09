@@ -146,7 +146,7 @@ userspace/lib/tls-probe	0	1	0	0	0	-
 userspace/lib/ualloc	10	5	2	0	0	-
 userspace/lib/zenoh	0	0	0	0	1	-
 userspace/services/audiod	4	0	1	0	0	-
-userspace/services/brain_client	28	0	0	0	0	-
+userspace/services/brain_client	33	0	0	0	0	-
 userspace/services/compmgr	1	0	0	0	0	-
 userspace/services/compositor	4	0	2	0	0	-
 userspace/services/coreutil	1	0	0	0	0	-
