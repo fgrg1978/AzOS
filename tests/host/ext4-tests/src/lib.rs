@@ -118,10 +118,11 @@ pub fn image(dir: &Path, spec: &Spec) -> Vec<u8> {
     // Tests run on threads of one process and share the fixture tree.
     static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _one = ONE.lock().unwrap_or_else(|p| p.into_inner());
+    // The tree is laid out afresh once per process, so a fixture that gained
+    // an entry is never read from a tree an older build left in `dir`.
+    static LAID: std::sync::Once = std::sync::Once::new();
     let root = dir.join("fixture");
-    if !root.join("hello.txt").exists() {
-        fixture(&root);
-    }
+    LAID.call_once(|| fixture(&root));
     let img = dir.join(format!("{}.img", spec.name));
     let mut ext = String::from("hash_seed=01234567-89ab-cdef-0123-456789abcdef,lazy_itable_init=1");
     if !spec.extended.is_empty() {
