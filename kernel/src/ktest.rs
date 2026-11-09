@@ -585,6 +585,7 @@ azos_ktest::ktest! {
 
 // A load at `p` that may fault, as `store_expecting_fault`: the value read, or
 // the fault's cause.
+// arch-only: a load that may fault, read back through the aarch64 exception table the S1PIE and GCS ktests use
 #[cfg(target_arch = "aarch64")]
 fn load_expecting_fault(p: *const u64) -> Result<u64, u32> {
     use crate::trap::fault::expected;
@@ -605,6 +606,7 @@ fn load_expecting_fault(p: *const u64) -> Result<u64, u32> {
 
 // A kernel VA nothing maps, above the RAM map past `text_poke`'s alias slots,
 // for a ktest's own page.
+// arch-only: the aarch64 ktests' scratch VA (the S1PIE and GCS page tests)
 #[cfg(target_arch = "aarch64")]
 fn ktest_scratch_va() -> Option<usize> {
     const SLOT: usize = 2 << 20;
@@ -616,6 +618,7 @@ fn ktest_scratch_va() -> Option<usize> {
 
 // `body(va, frame)` on a zeroed frame mapped at a scratch kernel VA by `map`;
 // the page is unmapped and freed afterwards whatever `body` said.
+// arch-only: maps the aarch64 ktests' scratch page (the S1PIE and GCS page tests)
 #[cfg(target_arch = "aarch64")]
 fn with_scratch_page(
     map: impl FnOnce(usize, usize) -> bool,
@@ -641,6 +644,7 @@ fn with_scratch_page(
 // canary `canary=pan-read-kernel-page` (the page is a kernel one): the read
 // goes through and the test fails.
 azos_ktest::ktest! {
+    // arch-only: PAN under S1PIE is an aarch64 permission; riscv64 SUM and x86_64 SMAP have their own rows
     #[cfg(target_arch = "aarch64")]
     fn mm_pan_refuses_an_el1_read_of_a_user_page() {
         if !azos_arch_api::isa::aarch64::PAN.gate(azos_arch::cpu::features::read_id_regs().pan()) {
@@ -675,6 +679,7 @@ azos_ktest::ktest! {
 // `canary=s1pie-gcs-rw` (the GCS index grants a plain store: the PIR check and
 // the store check fail).
 azos_ktest::ktest! {
+    // arch-only: GCS is an aarch64 shadow-stack page kind; Zicfiss and CET shadow stacks have their own rows
     #[cfg(target_arch = "aarch64")]
     fn cfi_gcs_page_refuses_a_plain_store() {
         use azos_arch::mmu::pie;
