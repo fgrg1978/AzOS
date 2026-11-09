@@ -27,7 +27,7 @@ board (`config/axes/Kconfig.build`):
 | Kconfig symbol | Default | Turns on |
 |----------------|---------|----------|
 | `SECURE_BOOT_ENFORCED` | `y` unless `BUILD_TYPE_DEV`; forced on `BUILD_TYPE_CERTIFIABLE` | Refusing an unverified kernel image at boot and at OTA install |
-| `LINK_PROVISIONING_ENFORCED` | `n`; the `vf2` and `k1` board features build it in | No boot without a link key, no handshake on an unseeded pool, no UART bridge |
+| `LINK_PROVISIONING_ENFORCED` | `y` unless `BUILD_TYPE_DEV` (robot domain only; forced on in certifiable builds) | No boot without a link key, no handshake on an unseeded pool; the UART bridge takes e-stop frames only |
 | `CONSOLE_LOCKDOWN` | `n` | No recovery console; every authority-table row checked |
 | `TOPOLOGY_SOURCE` | signed required unless `BOARD_QEMU`, where a missing set boots the built-in topology | Where task grants come from |
 | `TOPOLOGY_NEVERALLOW`, `TOPOLOGY_BIND_DEVICE`, `TOPOLOGY_COUNTER_FLOOR` | `y` | The topology admission checks named below |
@@ -70,7 +70,7 @@ mechanism.
 | Drivers and most services | In the kernel, or root-owned daemons | Many drivers and services in ring 3 under their own rows |
 
 **Known limits of the current tree.**
-- **Large subsystems still run in ring 0:** the network stack, the FAT32 file system, the in-kernel Linux personality, the robot brain link and behaviour tasks, and many drivers. A defect there is a kernel defect.
+- **Large subsystems still run in ring 0:** the network stack, the FAT32 file system, the in-kernel Linux personality, the robot enforcer and its motor and flight loops, and many drivers. A defect there is a kernel defect.
 - **DMA without an IOMMU:** a ring-3 driver for a DMA-capable device is only as contained as the platform's DMA isolation. On boards without an IOMMU (VF2, K1), such a driver can reach physical memory through its device ([DMA](#dma)).
 - **Interrupts on x86_64:** an IOMMU domain confines a ring-3 driver's memory but not the interrupts its device can send: without interrupt remapping (never enabled in this tree) a message-signalled write carries any vector and delivery mode. A ring-3 PCI driver on x86_64 is therefore treated as unconfined: it needs `DMA_RING3_WITHOUT_IOMMU` and is kernel-trust, and `msi.<k>` is refused without it.
 - **Partial CFI:** control-flow integrity coverage is incomplete; see [Control-flow integrity](#control-flow-integrity).
@@ -263,7 +263,7 @@ extension when the CPU has it (`probe`) or refuses the CPU (`require`).
 
 | ISA | Forward edge | Backward edge |
 |-----|--------------|---------------|
-| aarch64 | `A64_BTI`: `bti` pads are emitted (`-Z branch-protection=bti,pac-ret`). Enforced on the kernel's text with `A64_BTI_ENFORCE` (default `n`; the GP bit of the text leaves after the W^X pass, `SCTLR_EL1.BT1` on every CPU; `tools/lint/bti_pads_lint.py` holds the assembly's indirect-branch targets to a pad, and the context switch resumes through `ret`); otherwise not enforced. Never run on a core yet: the arm-phase rows prove it. | `A64_PAUTH`: `paciasp` / `autiasp` in non-leaf functions, kernel and user images. One key (A) for the kernel, loaded on every CPU; checking is switched on by `_azos_cfi_enable` (sets `SCTLR_EL1.EnIA`, and with `A64_PAUTH_PROC_KEYS` also `EnIB`, `EnDA`, `EnDB`) right before Rust is entered. With `A64_PAUTH_PROC_KEYS` (default) every process has its own `APIA`, `APIB`, `APDA`, `APDB` and `APGA` keys from the DRBG (`spawn` and `exec` draw, `fork` and threads copy), and the kernel's key is back in `APIAKey_EL1` on every entry from EL0 (`trap_entry.S`), so ring 3 cannot sign under the kernel's key or another process's; with it off, ring 3 shares the key and this is corruption detection inside an image, not a privilege boundary. The kernel key comes from `RNDRRS` when available, mixed with counter values; without FEAT_RNG it is the counter values alone, guessable by whoever knows the boot time closely. Both choices default to `n` on `BOARD_RPI5` (the Cortex-A76 has neither). |
+| aarch64 | `A64_BTI`: `bti` pads are emitted (`-Z branch-protection=bti,pac-ret`). Enforced on the kernel's text with `A64_BTI_ENFORCE` (default `n`; the GP bit of the text leaves after the W^X pass, `SCTLR_EL1.BT1` on every CPU; `tools/lint/bti_pads_lint.py` holds the assembly's indirect-branch targets to a pad, and the context switch resumes through `ret`); otherwise not enforced. | `A64_PAUTH`: `paciasp` / `autiasp` in non-leaf functions, kernel and user images. One key (A) for the kernel, loaded on every CPU; checking is switched on by `_azos_cfi_enable` (sets `SCTLR_EL1.EnIA`, and with `A64_PAUTH_PROC_KEYS` also `EnIB`, `EnDA`, `EnDB`) right before Rust is entered. With `A64_PAUTH_PROC_KEYS` (default) every process has its own `APIA`, `APIB`, `APDA`, `APDB` and `APGA` keys from the DRBG (`spawn` and `exec` draw, `fork` and threads copy), and the kernel's key is back in `APIAKey_EL1` on every entry from EL0 (`trap_entry.S`), so ring 3 cannot sign under the kernel's key or another process's; with it off, ring 3 shares the key and this is corruption detection inside an image, not a privilege boundary. The kernel key comes from `RNDRRS` when available, mixed with counter values; without FEAT_RNG it is the counter values alone, guessable by whoever knows the boot time closely. Both choices default to `n` on `BOARD_RPI5` (the Cortex-A76 has neither). |
 | x86_64 | `X86_CET_IBT`: `endbr64` at every function entry (`-Z cf-protection=branch`) and at every hand-written entry point. Enforced in ring 0 by `IA32_S_CET.ENDBR_EN` with `CR4.CET`, on each CPU after `CR0.WP` is set; an indirect branch to a non-`endbr64` target raises #CP. `NO_TRACK_EN` is set so jump tables (in read-only memory) work. Ring 3 gets nothing from this. | `X86_CET_SHSTK`: the policy and the CPUID row exist; the kernel does not enable the shadow stack. |
 | riscv64 | None: no landing-pad or shadow-stack code is generated or enabled (Zicfilp and Zicfiss are not used). The pinned rustc accepts the `experimental-zicfilp` target feature and `-Z cf-protection=branch` then emits `lpad 0` at every function entry. | None: rustc emits no `sspush`/`sspopchk` for `-Z cf-protection=return`, so the shadow stack would be hand-written assembly (it assembles with `+experimental-zicfiss`). |
 
@@ -312,8 +312,7 @@ with the hypervisor or the split monitor, which do not save or allow
 `TCR2_EL1` and the PIR registers. Premises taken from the encodings rather than
 the Arm ARM (not reachable): PAN applies to a page `PIRE0_EL1` lets EL0 read
 (a ktest checks it on the S1PIE row), and no table descriptor carries
-hierarchical permissions. Default `n`: never run on a core; the arm-phase rows
-boot it.
+hierarchical permissions. Default `n`.
 
 ## Kernel page tables (PT_PROTECTION)
 
@@ -332,7 +331,7 @@ windows nest). A stray kernel store into a word of the kernel root's own tables 
 | ISA | Key | State |
 |-----|-----|-------|
 | x86_64 | `X86_PKS`: PKS (key 1 in PTE bits 62:59, `CR4.PKS`, `IA32_PKRS`; the window is two WRMSRs) | built; default `n`; on a CPU without PKS (AMD) the boot line says the tables are not protected |
-| aarch64 | `A64_POE`: stage-1 permission overlays (index 1 in leaf bits 62:60, `TCR2_EL1.POE`, `POR_EL1`; the window is a `POR_EL1` write and an ISB each way). The boot trampoline grants EL1 `HCRX_EL2.TCR2En` and the `nPOR_EL1` bit of `HFGRTR_EL2`/`HFGWTR_EL2` | built; default `n`; never run on a core: the arm-phase rows boot it. Not used with the split monitor |
+| aarch64 | `A64_POE`: stage-1 permission overlays (index 1 in leaf bits 62:60, `TCR2_EL1.POE`, `POR_EL1`; the window is a `POR_EL1` write and an ISB each way). The boot trampoline grants EL1 `HCRX_EL2.TCR2En` and the `nPOR_EL1` bit of `HFGRTR_EL2`/`HFGWTR_EL2` | built; default `n`. Not used with the split monitor |
 | riscv64 | none | no supervisor key hardware: not protected, unless `PT_PROTECTION_SOFT` |
 
 `PT_PROTECTION_SOFT` (default `n`) is the window for a CPU with no key, on any ISA: the pool is read-only in the direct map and the funnel flips the one page writable for the store, interrupts off, one window at a time. It is bug hardening, not an attacker boundary: the leaves of the pool's pages sit in ordinary tables (re-homed out of the pool at engage if an earlier split put them there). On aarch64 and riscv64 the close flushes every CPU's translation of the page; on x86_64 the flush is local, so on SMP a CPU that read the page during a window may keep a writable translation until it is evicted and the protection holds on the writing CPU only (the boot line says which). `A64_POE` is not selectable with the hypervisor (`HV`): the world switch does not save `TCR2_EL1` and `POR_EL1`.
@@ -903,7 +902,7 @@ replay the seals' public data to any value of the chain, or to the last anchor
 of a forged export. The counter cannot be brought back: a counter defined anew
 starts above the highest value any counter on the TPM has held, and TPM2_Clear
 does not lower that value (TPM 2.0 Library, Part 1, NV counters, and Part 3,
-`TPM2_NV_Increment`; the swtpm row of the arm phase holds both). So against that
+`TPM2_NV_Increment`). So against that
 actor the TPM detects that seals are missing, not that a record was rewritten.
 **Requirement for the rewrite to be evidence on a board:** before the OS runs,
 the firmware or a provisioning step defines index `0x01500003` in the platform
@@ -1122,7 +1121,7 @@ Source: `crates/core/syscall/src/link_key.rs`,
 
 There are two kinds of authenticated link.
 
-**Brain link** (robot domain). A 32-byte pre-shared key is provisioned into
+**Brain link** (robot domain). The link lives in the ring-3 behaviour engine (`BRAINCLI.ELF`); the kernel's part is the `linkkey` endpoint and the UART e-stop reader. A 32-byte pre-shared key is provisioned into
 reserved tail sector 0 of the boot medium, as a record with a magic, a version
 and an integrity tag (`tools/sign/link_key_provision.py`). That sector is outside
 the FAT volume and the USB mass-storage export never reports it, so a USB host
@@ -1162,8 +1161,8 @@ link does not run. Over a TCP connection:
    signal: both sides replace that direction's key with Noise `REKEY`. The
    sender rekeys at 2^20 messages, 1 GiB, a wall-clock interval of at most an
    hour, or on request; the receiver enforces the same limits.
-3. The kernel seals one brain-protocol packet per transport message (it reads
-   a run of packets out of one). There is no second MAC
+3. The ring-3 engine seals one brain-protocol packet per transport message (it
+   reads a run of packets out of one). There is no second MAC
    or replay floor inside it: replay is refused by the transport's message
    counter within a session, and a frame recorded in an earlier session fails
    the AEAD under the new keys.

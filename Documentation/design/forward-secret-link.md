@@ -83,9 +83,8 @@ the link key is never used as a curve scalar.
 - A failed handshake ends the connection. There is no `REJECT` frame and no
   hint about which check failed.
 - The session id is derived from the handshake hash. `SessionIdCache` keeps
-  recent ids in RAM and a repeat is refused. The kernel remembers 16 per boot
-  (the control and the camera connection both record there). The cache covers
-  one boot, not a reboot.
+  recent ids in RAM and a repeat is refused. The client remembers `SESSION_IDS` (8) per run. The cache covers
+  one run, not a restart.
 - The handshake has a wall-clock deadline of 5 seconds for the whole
   exchange, because X25519 is slow on a small core.
 
@@ -105,7 +104,7 @@ closes in-session replay.
 
 - A message of up to 16 KiB (`MAX_MESSAGE_BYTES`) is sealed as one frame
   (preceded by a rekey frame when one is due); a message is never empty. A
-  camera frame travels this way.
+  camera frame (`PKT_CAMERA`) travels this way, on the control session.
 - Any violation (bad length, tag failure, overdue rekey, oversize message) is
   terminal: the link leaves `Established`, the keys are wiped and the caller
   closes the connection. The reconnect is a fresh handshake with fresh
@@ -131,9 +130,8 @@ message when the generation would pass any of:
 
 The message and byte limits are enforced by the link on both sides; a
 generation that overruns them without a rekey is a violation. The wall-clock
-trigger belongs to the caller, because the module has no clock: the kernel's
-behavior loop and the camera task call `request_rekey` when their timer
-expires. The engine rekeys every `REKEY_INTERVAL_SECS`, which CONFIG.INI
+trigger belongs to the caller, because the module has no clock: the engine
+calls `request_rekey` when its timer expires. It rekeys every `REKEY_INTERVAL_SECS`, which CONFIG.INI
 `brain_client_rekey_secs` may only shorten (the gate's link rows set 5 or 10 s).
 `rekey_interval_secs`, the clamp a configured request would go through
 (5..3600 s, so a file on the USB-exported volume could only shorten a key's
@@ -199,7 +197,7 @@ Source: `crates/core/crypto/src/noise.rs`,
 - **Keys derived from the link key, with an optional second factor.** The
   deployed secret stays one 32-byte key; pinning the brain's own static key in
   the signed topology adds a factor a leaked link key does not cover.
-- **Security boundary in the kernel link layer.** The session sits inside the
+- **Security boundary in the link client.** The session sits inside the
   brain TCP connection, so it does not depend on a network-layer tunnel or on
   a transport the kernel does not provide.
 - **One cipher state per direction.** Each direction has its own key, so a

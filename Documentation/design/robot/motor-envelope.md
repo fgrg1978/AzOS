@@ -115,7 +115,7 @@ is bounded by construction and is not a formally verified component, and the
 design does not claim it is.
 
 It is not redundant with the sensor-reactive layer. The emergency-stop layer
-`safety_check` (L0 of the behavior arbiter) asks whether the world is unsafe
+`safety_check` (L0, run by the robot enforcer) asks whether the world is unsafe
 right now (obstacle, tilt, battery, temperature). The envelope asks whether this
 command, in itself, is inside the actuator's allowed range. They are
 orthogonal and both are needed. The envelope is also where the per-type speed
@@ -129,7 +129,7 @@ Source: `crates/domains/robot/behavior/src/safety.rs`, `crates/domains/robot/beh
 * The speed unit is a duty percentage per wheel. The envelope does not know
   the robot's real velocity, mass or stopping distance.
 * The confidence input is binary and coarse. The flag tracks the most recent
-  actuator command, not a tag carried through the arbiter, and a low-confidence
+  actuator command, not a tag carried through the engine, and a low-confidence
   command keeps the cap low until a normal command clears it. That is the
   conservative direction, and the motor-command watchdog (500 ms) safe-stops on
   link loss regardless. A graded confidence needs a confidence byte on the

@@ -57,6 +57,7 @@ Source: `crates/core/topology/src/builder.rs` (the `*_CAPS` constants and the `p
 | `SH.ELF` | `userspace/services/sh` | with `TERMD.ELF`; behind a console login with users enrolled, by `LOGIND.ELF` | nothing | `Terminal`, `Names` | X on the tool images, RW `/fat`, RW `/tmp`, `tasks` view, `ROOT_RO`; imports `term` |
 | `TOOLBOX.ELF` | `userspace/services/toolbox` | by the shell | nothing | `sound.0` or `endpoint.audio` (`beep`), `endpoint.input` (`input`), `endpoint.compositor` (`window`), `endpoint.vmctl` (`vm`) | `tasks` view, R `net`, R `clock`, RW `sound.0` (with Kconfig `DRV_VIRTIO_SND`; or W `endpoint.audio`, lent, with Kconfig `AUDIOD`), W `endpoint.input` (with Kconfig `INPUTD`), W `endpoint.compositor` (with Kconfig `COMPOSITOR`), inspect regions (Kconfig `INSPECT`), `ROOT_RO`; imports `vmctl` (with Kconfig `HV`) |
 | `COREUTIL.ELF` | `userspace/services/coreutil` | by the shell and the SSH server | nothing | nothing | RW `/fat` and `/tmp` (`/tmp` alone under `CONSOLE_LOCKDOWN`), `ROOT_RO`; no endpoint, region or task view |
+| `EXT4D.ELF` | `userspace/services/ext4d` | by its row (`start`), with Kconfig `FS_EXT4_RING3` | `Dir` and `Node` on `endpoint.ext4` | | `READ` on its partition (`block.part.<n>`), `READ` and `WRITE` with transfer on `endpoint.ext4`, RW `MemObj fs.share`; see [storage.md](storage.md#ext4-served-from-ring-3) |
 | `POWER.ELF` | `userspace/services/power` | by the shell | nothing | `power` | RW `power`, R `sensor.9`, X `endpoint.pm-gpio` and `endpoint.pm-ina` (where the INA219 driver has a ring-3 row; the drivers' `DevicePower`) |
 | `TRACECTL.ELF` | `userspace/services/tracectl` | by the shell | nothing | `trace` | RW `trace` log, RW `/fat`, `ROOT_RO` |
 | `FLIGHT.ELF`, `BEHAVIOR.ELF`, `CONFIG.ELF`, `OTA.ELF` | `userspace/services/famtools` | by the shell | nothing | `flight`, `behavior`, `config`, `ota` | see [famtools](#famtools) |
@@ -963,8 +964,7 @@ argument registers to the call the runtime answers, and the runtime writes the x
 ## infsrv
 
 Source: `userspace/services/infsrv/src/` (`lib.rs` is the broker, `main.rs` the program),
-`crates/core/devif/src/infer.rs`, `userspace/lib/ml/src/bundle.rs`; its client in the kernel is
-none yet (the behaviour engine's L1 does not ask it). Tests: `tests/host/infsrv-tests`. The image is
+`crates/core/devif/src/infer.rs`, `userspace/lib/ml/src/bundle.rs`; its client is the robot's behaviour engine (`BRAINCLI.ELF`). Tests: `tests/host/infsrv-tests`. The image is
 `MLSRV.ELF`: the topology row, the seccomp profile and the disk-image recipes name it.
 
 The ring-3 inference service.
@@ -1065,8 +1065,12 @@ futex for at most Kconfig `ML_REPLY_TIMEOUT_US` (also the deadline the call carr
 in time, a refusal (`REFUSED`: the signed worst case does not fit), no such model (a bundle
 whose signature failed is never loaded), a reply of another model, logits that are not
 numbers: every one is a missing verdict, and L1 publishes a stop; the engine never drives on
-a verdict it did not get. A topology that grants no inference endpoint runs on the
-rangefinders alone, and so does a cycle with no rangefinder reading to build the input from.
+a verdict it did not get. The verdict may only brake or limit: a turn
+verdict never starts motion, and the command is bounded wheel by wheel by what the layers chose without the
+model, so the model cannot raise a wheel. A topology that grants no inference endpoint runs on the
+rangefinders alone. With L1 on, a cycle in which either rangefinder gave no reading (the read failed, or the
+distance is 0) is a missing verdict too, and the robot stops: a dead rangefinder never lets the model switch
+itself off.
 
 **The camera.** With the camera granted (`frame.0`, `READ`) the engine reads the newest frame
 through `Frame::next` while a brain session is up and sends it on that session as a
@@ -1074,13 +1078,14 @@ through `Frame::next` while a brain session is up and sends it on that session a
 capture period while the engine is attached). A frame is sealed into the link's transmit
 buffer and sent a piece per cycle without waiting; the sensor frames wait behind it, and a
 socket that takes nothing for two seconds ends the session. A frame that is not a JPEG that
-fits one message (16 KiB) is skipped.
+fits one message (16 KiB) is skipped. The first `next` of a task finds a pool without buffers
+and lends it kernel memory before it answers.
 
 **The brain's prediction.** A `PKT_PREDICT` frame (a predicted next command and a confidence
 byte) is a hint to L1 for 500 ms: a predicted stop or reverse widens the distance at which
 L1 turns away by 300 mm, a predicted turn by 150 mm. The hint only narrows what the layers
-chose, wheel by wheel (the same direction, no faster, and a cycle that would not drive does
-not), and sits under the kernel's cap and the envelope like every command.
+chose, wheel by wheel (the same direction, no faster, a wheel that would reverse stops the command,
+and a cycle that would not drive does not); only a differential-drive prediction is read, and sits under the kernel's cap and the envelope like every command.
 `REFLEX.ELF` reads the rangefinder and the IMU and overrides motor commands when danger is
 detected (extreme tilt, then an obstacle too close, then a warning distance), whether or not
 the brain link is up. The topology holds a row for each (with `GPIODRV.ELF`, the GPIO driver
