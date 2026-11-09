@@ -554,11 +554,10 @@ pub const SAFETY_SENSOR_INCOHERENT: u8 = 0x12;
 /// `PayloadCmd::payload_type` refused; `detail` is unused (0).
 pub const SAFETY_PAYLOAD_REFUSED: u8 = 0x13;
 
-/// A brain-link handshake was REFUSED because the entropy pool was unseeded
-/// on a `link-provisioning-enforced` build (owner decision, 2026-09-26, V1.2 —
-/// U09-8 / security finding #26). `action_code`/`detail` unused (0) — which
-/// side initiated (dial vs. accept) is already in the console line next to
-/// this record's timestamp, and is not safety-relevant on its own.
+/// A ring-3 entropy read (the brain link's ephemeral key among them) was
+/// REFUSED because the pool was unseeded (owner decision, 2026-09-26, V1.2 —
+/// U09-8 / security finding #26). `action_code` is 1 (a ring-3 read),
+/// `detail` the caller's TID.
 pub const SAFETY_ENTROPY_UNSEEDED_REFUSED: u8 = 0x14;
 
 /// A ring-3 task's topology row names a scheduling class this build's

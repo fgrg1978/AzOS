@@ -12,13 +12,6 @@
 pub mod types;
 pub mod switches;
 pub mod brain_protocol;
-pub mod encrypt_link;
-// Pure policy `encrypt_link` depends on (U09-8/V1.2). Its own module doc
-// explains why it is a separate, dependency-free sibling file rather than
-// inline in `encrypt_link.rs`: `tests/host/behavior-tests/` needs to
-// `#[path]`-include it alone, the same pattern `crates/core/ota/src/pure.rs`
-// uses for `tests/host/ota-tests/`.
-pub mod encrypt_link_policy;
 pub mod safety;
 // Wave 15: the RC receiver's safety policy (Kconfig `RC_INPUT`).
 #[cfg(feature = "rc-input")]

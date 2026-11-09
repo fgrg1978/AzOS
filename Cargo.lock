@@ -133,7 +133,6 @@ version = "0.1.0"
 dependencies = [
  "azos_abi",
  "azos_actuation",
- "azos_crypto",
  "azos_degrade_policy",
  "azos_drv_actuator",
  "azos_drv_base",
@@ -1009,6 +1008,7 @@ dependencies = [
  "azos_config",
  "azos_drv_actuator",
  "azos_drv_base",
+ "azos_drv_bus",
  "azos_drv_gpio",
  "azos_drv_sensor",
  "azos_drv_sys",

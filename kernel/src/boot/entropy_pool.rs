@@ -4,9 +4,8 @@
 //! around `azos_crypto::entropy`, the persisted-seed record, and the
 //! durable record of a refused ring-3 read.
 //!
-//! Moved here from `crates/domains/robot/behavior/src/encrypt_link.rs` (wave 11,
-//! DOMAIN): the pool seeds the network stack and the `entropy` endpoint in
-//! every image, with or without the Robot domain's brain link.
+//! The pool seeds the network stack and the `entropy` endpoint in every image,
+//! with or without the Robot domain's brain link.
 
 /// Credited bytes that seed the kernel entropy pool, for the kernel's seed
 /// read.
@@ -87,10 +86,8 @@ pub fn pool_next_seed_record() -> Option<[u8; SEED_FILE_BYTES]> {
 /// boot (`crates/core/syscall/src/entropy.rs` calls this once per boot; later
 /// refusals are only counted there).
 ///
-/// The same record the handshake refusal above writes,
-/// `SAFETY_ENTROPY_UNSEEDED_REFUSED`, durably, told apart by its action
-/// code: `0` is the kernel's own link handshake, `1` a ring-3 read, whose
-/// `detail` is the caller's TID. Runs on the refused caller's syscall, like
+/// `SAFETY_ENTROPY_UNSEEDED_REFUSED`, durably, with action code `1` (a ring-3
+/// read) and the caller's TID as `detail`. Runs on the refused caller's syscall, like
 /// the ring-3 e-stop's durable record (`safety-core`'s `actuation.rs`).
 pub fn record_ring3_unseeded_refusal(tid: u32) {
     azos_drv_sys::kwarn!(

@@ -81,12 +81,8 @@ virtio-input-canary = ["virtio-input", "azos_drv_virtio/input-rx-canary"]
 # the symbol n off x86_64.
 ps2 = []
 # Board builds REQUIRE the authenticated brain link (owner decision 2026-09-13).
-# Without `link-provisioning-enforced` the UART bridge carries brain-protocol
-# frames with no authentication, where seven bytes -- `PKT_MODE 0xFF` plus a
-# CRC-8 -- clear a latched e-stop, and a keyless boot goes on with the TCP link
-# down.
-# Enforced: no link key means no boot, and `bridge_policy_permits()` holds the
-# UART bridge down in both directions. Provision the key per robot. The board
+# Without `link-provisioning-enforced` a keyless boot goes on with the brain
+# link down. Enforced: no link key means no boot. Provision the key per robot. The board
 # features do not turn it on: Kconfig LINK_PROVISIONING_ENFORCED does, on every
 # build but BUILD_TYPE_DEV (owner decision 2026-10-23), through
 # tools/build/kconfig_to_cargo.py like any other symbol.
@@ -654,7 +650,7 @@ pkg-boot-apply = []
 # field). The TCP link itself is always a Noise session, in every build.
 # Compile-time only, by design -- see the gate in kernel/src/main.rs. Emitted
 # from Kconfig LINK_PROVISIONING_ENFORCED (on outside BUILD_TYPE_DEV).
-link-provisioning-enforced = ["azos_behavior?/link-provisioning-enforced"]
+link-provisioning-enforced = ["azos_crypto/link-provisioning-enforced"]
 # Drive the ring-3 reflex daemon through a real obstacle decision by moving
 # the simulated rangefinder under it. QEMU-only validation aid.
 reflex-smoke = ["qemu", "use-robot"]

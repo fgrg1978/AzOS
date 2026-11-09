@@ -1117,7 +1117,7 @@ restarts it).
 
 Source: `crates/core/syscall/src/link_key.rs`,
 `crates/core/crypto/src/secure_channel.rs`,
-`crates/domains/robot/behavior/src/encrypt_link.rs`, `userspace/lib/rpc/src/chan.rs`,
+`userspace/services/brain_client/src/link.rs`, `userspace/lib/rpc/src/chan.rs`,
 `config/subsys/Kconfig.topology`.
 
 There are two kinds of authenticated link.
@@ -1168,17 +1168,15 @@ link does not run. Over a TCP connection:
    counter within a session, and a frame recorded in an earlier session fails
    the AEAD under the new keys.
 
-An ephemeral key is a SHA-256 over a label, the link key, the clock, the cycle
-counter, a salt and, when the entropy pool is seeded, 32 bytes from the pool
-(`derive_ephemeral_priv`). With an unseeded pool the session is not
-forward-secret; a build that enforces the link (below) refuses the handshake
-instead, any other build proceeds.
+An ephemeral key is 32 bytes the ring-3 client draws from the kernel entropy
+pool (the `entropy` endpoint), per connection. An unseeded pool refuses the
+draw on every build, so there is no handshake and no link until it seeds.
 
 Policy symbol:
 
 | Kconfig symbol | Effect |
 |----------------|--------|
-| `LINK_PROVISIONING_ENFORCED` | Compile-time (cargo feature `link-provisioning-enforced`, which only Kconfig sets), no runtime override; on by default outside `BUILD_TYPE_DEV` (forced on in `BUILD_TYPE_CERTIFIABLE`). Boot halts rather than go on with no valid link key, the handshake is refused while the entropy pool is unseeded, and the UART bridge (brain-protocol frames, motion commands included, with no authentication, outside any session) is down in both directions. The link itself is the same Noise session in every build. |
+| `LINK_PROVISIONING_ENFORCED` | Compile-time (cargo feature `link-provisioning-enforced`, which only Kconfig sets), no runtime override; on by default outside `BUILD_TYPE_DEV` (forced on in `BUILD_TYPE_CERTIFIABLE`). Boot halts rather than go on with no valid link key. The UART bridge carries no session and no command: on a robot the kernel takes only its e-stop frames. The link itself is the same Noise session in every build. |
 
 **Node-to-node RPC links** (`userspace/lib/rpc`). Every session is
 authenticated. A node dials with `Noise_IK_25519_ChaChaPoly_SHA256`: the dialer

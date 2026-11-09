@@ -58,7 +58,7 @@ use azos_sync::SpinLock;
 use crate::khost::Caller;
 
 /// Length of the brain-link PSK. Mirrors
-/// `azos_behavior::encrypt_link::PSK_BYTES` (32) and
+/// `azos_crypto::secure_channel::PSK_BYTES` (32) and
 /// the reserved-sector record's key, restated here because this crate
 /// cannot depend on `azos_behavior` (this crate is core; `behavior` sits
 /// above it — same TCB boundary the hook below exists for) and the kernel

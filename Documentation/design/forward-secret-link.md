@@ -13,8 +13,9 @@ policy and the limits of the forward-secrecy claim.
 
 Source: `crates/core/crypto/src/secure_channel.rs`,
 `crates/core/crypto/src/noise.rs`,
-`crates/domains/robot/behavior/src/encrypt_link.rs` (the link key and the
-provisioning policy, kernel side), `userspace/services/brain_client/src/link.rs`.
+`kernel/src/boot/persist.rs` (the link key and the provisioning policy,
+kernel side), `crates/core/syscall/src/link_key.rs` (the `linkkey` endpoint),
+`userspace/services/brain_client/src/link.rs`.
 
 Layers on the wire, outermost first:
 
@@ -142,8 +143,8 @@ life), has no caller outside the host tests.
 
 Source: `config/subsys/Kconfig.secure-boot` (`LINK_PROVISIONING_ENFORCED`),
 `crates/core/topology/src/types.rs` (`Topology::brain_noise_pk`),
-`crates/domains/robot/behavior/src/encrypt_link.rs` (`brain_pinned_key`,
-`link_key_copy`).
+`crates/core/syscall/src/link_key.rs` (the link key and the pinned brain key,
+read by the ring-3 client).
 
 There is no negotiated downgrade and no runtime switch; the only choice an
 operator has on each side is the handshake pattern, and both sides must agree
@@ -154,42 +155,34 @@ on it.
   refusal is a `login` decision record (method 5, the brain link). A
   development build (`BUILD_TYPE_DEV`) goes on booting with the link down;
   every other robot build has `LINK_PROVISIONING_ENFORCED` and halts.
-- **The brain's key is the topology's.** `brain_pinned_key()` reads the
-  `noise_pk` of the signed topology's `[peer.brain]` row and selects `IK`;
-  with no such row (or a row without a key) the link is `XX`. There is no
-  Kconfig symbol and no file for it: a second source would be a second
-  authority over who the brain is. The ring-3 link client (`brain_client`)
-  reads the same key through the `linkkey` endpoint's `brain_pk` op.
+- **The brain's key is the topology's.** The `linkkey` endpoint's `brain_pk`
+  op answers the `noise_pk` of the signed topology's `[peer.brain]` row, and
+  the ring-3 link client (`brain_client`) selects `IK` with it; with no such
+  row (or a row without a key) the link is `XX`. There is no Kconfig symbol
+  and no file for it: a second source would be a second authority over who
+  the brain is.
 - **`LINK_PROVISIONING_ENFORCED`** (cargo feature `link-provisioning-enforced`, robot
   domain, fixed at compile time with no runtime override; on by default
   outside `BUILD_TYPE_DEV`, and only Kconfig turns it on): boot halts without
-  a valid link key; a handshake is refused while the entropy pool is unseeded;
-  and the UART bridge, which carries brain-protocol frames (motion commands
-  included) outside any session with no authentication, is down in both
-  directions.
+  a valid link key. The UART bridge carries no session and no command: on a
+  robot the kernel takes only e-stop frames from it, which can only stop the
+  machine.
 
 ## Entropy
 
-Source: `crates/domains/robot/behavior/src/encrypt_link.rs`
-(`derive_ephemeral_priv`), `crates/domains/robot/behavior/src/encrypt_link_policy.rs`,
+Source: `userspace/services/brain_client/src/link.rs` (`handshake`),
+`userspace/services/brain_client/src/main.rs` (`entropy_init`),
 `crates/core/crypto/src/entropy.rs`.
 
 `azos_crypto::secure_channel` is pure: it collects no entropy. The caller
-supplies the 32-byte ephemeral private key. The kernel derives it from a hash
-over a domain label, the link key, the clock, the cycle counter, a salt and,
-when the kernel entropy pool is seeded, 32 bytes from the pool.
+supplies the 32-byte ephemeral private key. The ring-3 client draws it, per
+connection, from the kernel entropy pool through the `entropy` endpoint.
 
-Forward secrecy therefore depends on the platform's entropy source:
-
-- With a seeded pool (for example a virtio RNG device, or a persisted seed
-  provisioned for a board without an entropy device) the key does not collapse
-  when the link key leaks.
-- With an unseeded pool the key's remaining inputs are low-entropy counters.
-  The session still gives confidentiality and integrity against an attacker
-  who never learns the link key, but must not be described as forward-secret.
-  A build with `link-provisioning-enforced` refuses the handshake in that case
-  (`refuse_unseeded`) and writes a durable safety record; a build without it
-  proceeds with the degraded key.
+Forward secrecy therefore depends on the platform's entropy source: a seeded
+pool (for example a virtio RNG device, or a persisted seed provisioned for a
+board without an entropy device). An unseeded pool answers `NOT_READY` on
+every build and writes a durable safety record, so the client does not run
+the link at all: there is no degraded key.
 
 ## Design choices
 

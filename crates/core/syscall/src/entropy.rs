@@ -15,16 +15,11 @@
 //!
 //! ## The refusal rule
 //!
-//! The kernel's own link handshake already refuses on an unseeded pool
-//! (`azos_behavior::encrypt_link::refuse_unseeded(seeded, enforced)`,
-//! owner decision 2026-09-26 V1.2). That rule refuses only on a
-//! `link-provisioning-enforced` build because the handshake has a degraded
-//! fallback (a hash of the link key, the clock and counters) it may use on a
-//! dev build.
+//! Unseeded means refused, on every build (owner decision 2026-09-26 V1.2).
 //! This interface has no fallback: the pool's `fill` writes nothing while
-//! unseeded, and handing out counter-derived bytes under the name
-//! "entropy" is exactly what V1.2 refused. So this is the same rule with
-//! `enforced` pinned `true`: unseeded => refuse, on every build.
+//! unseeded, and handing out counter-derived bytes under the name "entropy" is
+//! exactly what V1.2 refused. The brain link's handshake draws its ephemeral
+//! key here, so an unseeded pool is a link that does not run.
 //!
 //! The answer is `NOT_READY`. It changes within a boot only when a ring-3
 //! entropy source feeds the pool (`feed`, below): on an image whose
@@ -42,17 +37,15 @@
 //!
 //! The first refusal of a boot is recorded through the recorder hook -- the
 //! kernel installs one that prints `[ENTROPY] REFUSED: ring-3 read` and
-//! writes the same `SAFETY_ENTROPY_UNSEEDED_REFUSED` record the handshake
-//! writes, durably. Every later refusal only counts: a ring-3 loop asking an
+//! writes a `SAFETY_ENTROPY_UNSEEDED_REFUSED` record, durably. Every later refusal only counts: a ring-3 loop asking an
 //! unseeded pool must not be a synchronous disk write per call (the ring-3
 //! e-stop's latch in `crates/domains/robot/safety-core/src/actuation.rs` exists for the
 //! same reason).
 //!
 //! ## Why hooks and not a direct call
 //!
-//! Same seam as `link_key.rs`: the pool (`azos_crypto::entropy`, reached
-//! through `azos_behavior::encrypt_link::pool_fill` for its critical
-//! section) and the durable logger both sit above this crate. A missing
+//! Same seam as `link_key.rs`: the pool (`azos_crypto::entropy`, filled under
+//! a critical section) and the durable logger both sit above this crate. A missing
 //! fill hook fails CLOSED -- it answers exactly like an unseeded pool.
 
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};

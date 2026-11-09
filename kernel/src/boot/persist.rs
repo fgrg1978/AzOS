@@ -41,7 +41,7 @@ pub(crate) fn recover_persistent_state() {
 
         // ── Brain link key (reserved tail sector) ───────────────────────
         // The 32-byte pre-shared key the brain link's Noise static keys derive
-        // from (`azos_behavior::encrypt_link`, `azos_crypto::secure_channel`).
+        // from (`azos_crypto::secure_channel`).
         // The brain's matching key lives in env `AZOS_BRAIN_LINK_KEY`. The link
         // is always a Noise session: without a key it does not run at all (the
         // control and camera dials close at once, `brain_dial`), it is never
@@ -97,21 +97,18 @@ pub(crate) fn recover_persistent_state() {
         let link_key_reason: &str;
         #[cfg(feature = "use-robot")]
         {
-            let mut key_buf = [0u8; azos_behavior::encrypt_link::PSK_BYTES];
-            match link_key_read(&mut key_buf) {
+            // Checked, not kept: the behaviour engine reads the key through the
+            // `LinkKey` interface, from the sector, when it dials.
+            let mut key_buf = [0u8; azos_crypto::secure_channel::PSK_BYTES];
+            let read = link_key_read(&mut key_buf);
+            azos_crypto::ct::secure_zero(&mut key_buf);
+            match read {
                 Ok(()) => {
-                    // SAFETY: called exactly once during boot, single-threaded,
-                    // before any task that reads the key is spawned.
-                    if unsafe { azos_behavior::encrypt_link::install_link_key(&key_buf) } {
-                        kprintln!("[SECCHAN] link key loaded ({} bytes, reserved sector {}) — \
-                                   brain link authenticated",
-                            key_buf.len(), crate::reserved_tail::LINK_KEY);
-                        link_keyed = true;
-                        link_key_reason = "key loaded";
-                    } else {
-                        azos_drv_sys::kerr!("[SECCHAN] link key rejected by encrypt_link::install_link_key");
-                        link_key_reason = "key rejected by encrypt_link::install_link_key";
-                    }
+                    kprintln!("[SECCHAN] link key loaded ({} bytes, reserved sector {}) — \
+                               brain link authenticated",
+                        key_buf.len(), crate::reserved_tail::LINK_KEY);
+                    link_keyed = true;
+                    link_key_reason = "key loaded";
                 }
                 Err(azos_crypto::secure_channel::LinkKeyFault::Malformed) => {
                     azos_drv_sys::kerr!("[SECCHAN] link key REFUSED: reserved sector {} holds no valid \
@@ -260,7 +257,7 @@ pub(crate) fn recover_persistent_state() {
                     0,
                     [LOGIN_METHOD_BRAIN_LINK, 0, LOGIN_NO_KEY],
                 );
-                if azos_behavior::encrypt_link::link_provisioning_enforced() {
+                if azos_crypto::secure_channel::link_provisioning_enforced() {
                     azos_drv_sys::kerr!("[SECCHAN] FATAL: brain link has no key — {} — \
                                link-provisioning-enforced is compiled in, refusing to boot \
                                (decision {})",

@@ -42,8 +42,8 @@
 //! `azos_sync::SpinLock::lock` does so for a reason: a holder preempted on
 //! its own hart would leave a higher-priority caller there spinning against a
 //! lock whose owner cannot run. So kernel code calls [`fill`] and [`mix`]
-//! from inside `azos_sync::critical_section()` — through
-//! `azos_behavior::encrypt_link::pool_fill` / `pool_mix` — except at boot,
+//! from inside `azos_sync::critical_section()` (the entropy server,
+//! `azos_syscall::entropy`) — except at boot,
 //! before the first task exists, when there is nobody to contend with.
 
 use core::cell::UnsafeCell;
@@ -227,9 +227,8 @@ pub fn fill(out: &mut [u8]) -> bool {
 // ── Persisted seed record (U09-8, owner decision 2026-09-26 V1.2) ─────────
 //
 // "Refuse to derive session keys on an unseeded pool" (the fix for U09-8 /
-// security finding #26, applied at the caller —
-// `crates/domains/robot/behavior/src/encrypt_link.rs::derive_ephemeral_priv`, not in this
-// crate) is only survivable on hardware with no TRNG if a seed can persist
+// security finding #26, applied by the entropy server, `azos_syscall::entropy`,
+// not in this crate) is only survivable on hardware with no TRNG if a seed can persist
 // ACROSS boots. This is the pure side of that seed: the record format, the
 // load-and-rotate rule, and the check that the storage is not filesystem
 // data. The kernel-side storage location (deliberately NOT the FAT volume —
@@ -339,7 +338,7 @@ impl Pool {
     /// seed file only when the operator vouches for it (`random.trust_*`);
     /// here a seed that is the sole source on a board with no TRNG is the
     /// only way the pool ever seeds, and refusing to credit it would leave
-    /// `derive_ephemeral_priv` refusing every handshake forever. When another
+    /// the brain link's handshake refused forever. When another
     /// source has seeded the pool, an attacker-supplied file is not allowed to
     /// count toward that: it only stirs.
     ///
@@ -374,7 +373,7 @@ impl Pool {
 }
 
 /// [`Pool::apply_persisted_seed`] on the kernel pool. Call inside
-/// `azos_sync::critical_section()` (`encrypt_link::pool_apply_persisted_seed`).
+/// `azos_sync::critical_section()`.
 pub fn apply_persisted_seed(sector: &[u8]) -> SeedApply {
     with_pool(|p| p.apply_persisted_seed(sector))
 }
