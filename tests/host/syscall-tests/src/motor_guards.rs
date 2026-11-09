@@ -1202,7 +1202,9 @@ fn a_per_wheel_op_is_capped_by_the_safety_layer() {
 /// next tick's re-cap brings it to the new cap (0: a stop or a stale verdict, 30:
 /// a slow-down), leaves a wheel within the cap alone and keeps its direction.
 ///
-/// **Canary.** Make `motor_recap` do nothing: the wheel keeps 100.
+/// **Canary.** Make `motor_recap` do nothing (the wheel keeps 100), or write the
+/// wheel's old direction at the capped duty (it would restart a wheel a stop
+/// reached between the check and the write).
 #[test]
 fn a_running_wheel_is_recapped_when_the_verdict_tightens() {
     let _g = serial();
@@ -1216,13 +1218,13 @@ fn a_running_wheel_is_recapped_when_the_verdict_tightens() {
     clear_probes();
     L0_CAP.store(30, SeqCst);
     azos_robot::motor::motor_recap();
-    assert_eq!(azos_robot::motor_state(0), Some((MotorDir::Forward, 30)), "a running wheel kept a duty above the cap");
+    assert_eq!(azos_robot::motor_state(0), Some((MotorDir::Coast, 0)), "a running wheel above the cap was not stopped");
     assert_eq!(azos_robot::motor_state(1), Some((MotorDir::Backward, 20)), "a wheel within the cap was touched");
     assert_eq!(pwm_calls().iter().filter(|c| c.0 == PwmOp::SetDutyPct).map(|c| c.2).collect::<Vec<_>>(),
-               vec![30], "the re-cap did not reach the channel, or wrote more than the wheel above the cap");
+               vec![0], "the re-cap did not stop the wheel above the cap on its channel, or wrote another wheel");
     L0_CAP.store(0, SeqCst);
     azos_robot::motor::motor_recap();
-    assert_eq!(azos_robot::motor_state(0), Some((MotorDir::Forward, 0)), "a stop verdict left a wheel running");
-    assert_eq!(azos_robot::motor_state(1), Some((MotorDir::Backward, 0)));
+    assert_eq!(azos_robot::motor_state(0), Some((MotorDir::Coast, 0)), "a stop verdict left a wheel running");
+    assert_eq!(azos_robot::motor_state(1), Some((MotorDir::Coast, 0)), "a stop verdict left a wheel running");
     azos_robot::motor::set_motor_gate(test_gate);
 }

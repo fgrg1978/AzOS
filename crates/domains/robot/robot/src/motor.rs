@@ -203,12 +203,15 @@ fn gate_speed(id: u32, speed_pct: u32) -> u32 {
     match MOTOR_CAP.get() { Some(cap) => gated.min(cap()), None => 0 }
 }
 
-/// Bring every running wheel down to what the gate and the cap allow now. A
-/// write is capped when it is made; a wheel driven while the safety layer was
-/// clear keeps that duty until someone writes again, so the drivetrain loop and
-/// the enforcer call this on their ticks. A wheel within what is allowed is not
-/// written; the rest are written again through [`motor_set`], so the halt rule,
-/// the holds and the record apply as to any write.
+/// Stop every running wheel whose duty is above what the gate and the cap allow
+/// now. A write is capped when it is made; a wheel driven while the safety layer
+/// was clear keeps that duty until someone writes again, so the drivetrain loop
+/// and the enforcer call this on their ticks. A wheel within what is allowed is
+/// not written. One above it is written `Coast` at 0 through [`motor_set`] (the
+/// holds and the record apply as to any write), never its old direction at the
+/// lower duty: the check and the write are not one step, and a stop that lands
+/// between them must stay a stop. Its writer, if it is still there, drives it
+/// again within the cap on its next write.
 pub fn motor_recap() {
     for id in 0..MAX_MOTORS as u32 {
         let running = |id: u32| match motor_state(id) {
@@ -218,7 +221,7 @@ pub fn motor_recap() {
         let Some((dir, speed)) = running(id) else { continue };
         let allowed = if motor_halted() { 0 } else { gate_speed(id, speed) };
         if allowed < speed && running(id) == Some((dir, speed)) {
-            let _ = motor_set(id, dir, allowed);
+            let _ = motor_set(id, MotorDir::Coast, 0);
         }
     }
 }

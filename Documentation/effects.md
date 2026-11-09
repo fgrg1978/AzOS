@@ -163,8 +163,10 @@ shared by every domain with an actuator.
 - Every motor write is capped by the safety layer's fresh verdict
   (`enforce::l0_cap`, two enforcer periods): the drivetrain loop's, a ring-3
   per-wheel op's and a driver's alike (`motor::set_motor_cap`), and a wheel
-  already running is re-capped on every enforcer and rt-motor tick, safe mode
-  included (`motor::motor_recap`). A stale
+  already running above that cap is stopped (`Coast` at 0) on every enforcer
+  and rt-motor tick, safe mode included (`motor::motor_recap`), never rewritten
+  at a lower duty in its old direction, so a stop that lands between the check
+  and the write stays a stop; its writer drives it again within the cap. A stale
   verdict, or none yet, caps to 0, so a stalled enforcer stops the robot; the
   hardware watchdog is fed only while the enforcement task and the control
   loop both advance (`liveness::Feed`), so a stalled enforcer also resets the
