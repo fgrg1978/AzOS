@@ -1,12 +1,11 @@
 # Linux driver slices in ring 3
 
-> **Status:** draft
 > **Supersedes:** none
 > **Superseded by:** none
 
 ## Summary
 
-The next three slices of the Linux driver layer ([linux.md](../linux.md#path-2-the-linux-kernel-driver-slice-lx)) are ext4 (read-only first, then read-write), the URB adapter for the HID quirk drivers, and the IMX219 sensor pilot. This note lists the Linux sources each one needs at the pinned tag, and specifies what running the ext4 module set in a ring-3 server needs on all three ISAs, with no GPL code in ring 0: a fixed low window for module memory, a virtual interrupt flag, and per-CPU state and `current` without privileged registers. On the module set as built, interrupt state needs no kernel mechanism on any ISA, and per-CPU state needs none on riscv64 and x86_64 while a server runs its Linux code on one thread. The kernel side is the window, the aarch64 thread pointer kept per task for a Linux class server, and a per-thread base register once a server runs more than one thread.
+Three slices of the Linux driver layer ([linux.md](../linux.md#path-2-the-linux-kernel-driver-slice-lx)) need the module set to run in ring 3: ext4 (the Linux module set is for journaled read-write ext4; a read-only ext4 volume is already served natively from ring 3, see [storage.md](../storage.md#ext4-served-from-ring-3)), the URB adapter for the HID quirk drivers, and the IMX219 sensor pilot. This note lists the Linux sources each one needs at the pinned tag, and specifies what running the ext4 module set in a ring-3 server needs on all three ISAs, with no GPL code in ring 0: a fixed low window for module memory, a virtual interrupt flag, and per-CPU state and `current` without privileged registers. On the module set as built, interrupt state needs no kernel mechanism on any ISA, and per-CPU state needs none on riscv64 and x86_64 while a server runs its Linux code on one thread. The kernel side is the window, the aarch64 thread pointer kept per task for a Linux class server, and a per-thread base register once a server runs more than one thread.
 
 Source: `crates/drivers/lx/FS_EXT4_UNRESOLVED`, `crates/drivers/lx/DEVICE_SOURCES`, `tools/build/third_party_fetch.sh linux`, `tools/build/lx_kbuild/`.
 
@@ -134,14 +133,14 @@ The kernel's part is the window (a flag and its checks) and, on aarch64, `TPIDR_
 
 Source: `tools/lint/lx_license_lint.py` (T1 to T5, A1).
 
-### Next fronts
+### Work needed
 
 1. **lx-module-window** (kernel, three ISAs): the Kconfig window, the fixed no-replace flag on `SYS_MO_MAP` for a task that holds a live module token, the break kept out of the window by construction, the window check in `DOMAIN_MODULE_MAP_X`, and the loader's planner, which `lxsrv` uses. Host tests in `tests/host/syscall-tests` and `tests/host/lx-loader-tests`, each with a canary.
 2. **lx-insn-rewrite** (`crates/core/lx-loader`, ring 3): the riscv64 `sstatus` rewrites and the aarch64 `SP_EL0`/`TPIDR_EL1`/`TPIDR_EL2` rewrites, with a refusal for anything else privileged. Host tests in `tests/host/lx-loader-tests` over the built filesystem set: no privileged instruction is left, and the canary is a module with one other CSR.
 3. **lx-tpidr-el0**, then **arm-tpidr-all-tasks** (kernel, aarch64): `TPIDR_EL0` saved and restored per task for every task, not only for Linux-personality tasks (a native relibc task writes it too). Tested with ktests whose canary keeps only the Linux-personality slots.
 4. **lx-virtual-irq** (`crates/drivers/lx/emul`): `request_irq`, `request_threaded_irq`, `free_irq`, `enable_irq` and `disable_irq` over the kernel's mask-until-ACK line, with thread functions on their own tasks. The `irqsave` family over the emulated interrupt flag, with sleeping inside it refused and counted, was already in `crates/drivers/lx/emul/src/lock.rs`; the exported `_raw_spin_lock_irqsave` symbols are the ext4 slice's.
 5. **lx-percpu-single** (`crates/drivers/lx/emul`): the preemption count and the spinlock calls that raise it, the CPU number, and `current` as a word per task, installed at each task switch through the server's `CurrentOps`. The `lxsrv` side (the per-ISA install, the glue values above) comes with the ext4 slice.
-6. **ext4-lx-slice** itself: the symbols `crates/drivers/lx/FS_EXT4_UNRESOLVED` lists, over fronts 1 to 5.
+6. **ext4-lx-slice** itself: the symbols `crates/drivers/lx/FS_EXT4_UNRESOLVED` lists, over items 1 to 5.
 7. **Deferred until a multi-threaded server exists:** the x86_64 per-thread user GS base and the aarch64 per-thread `TPIDRRO_EL0`.
 
 ## Drawbacks
@@ -172,4 +171,4 @@ Source: `tools/lint/lx_license_lint.py` (T1 to T5, A1).
 ## Future possibilities
 
 - The usb and hid bus kinds in `tools/build/lx_device_table.py`, which turn the URB adapter's leaves into `crates/drivers/lx/DEVICE_SOURCES` lines.
-- Per-thread bases for multi-threaded servers, as listed under the next fronts.
+- Per-thread bases for multi-threaded servers, as listed under the work needed.

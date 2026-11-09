@@ -390,8 +390,8 @@ of the Domain of the task woken, the same as a `dN/domain`, 0 for a kernel task;
 `cpu` the CPU the task was queued on, `from_cpu` the CPU that woke it); `now_us`
 is the clock when the values were written. **The public region carries no task
 ID**: it is one set of words for every task that maps it, so it cannot show a
-reader its own Domain's tasks and hide the others'; it shows none (owner
-decision 21-10: a program without the admin right sees the waker only for its
+reader its own Domain's tasks and hide the others'; it shows none (a
+program without the admin right sees the waker only for its
 own Domain, and the other Domains' wakes only as counters and a source). The
 task IDs are in the admin region, behind the task view (`wake/rN` there is the
 same row followed by `[tid, waker]`: the task woken and the task that woke it,

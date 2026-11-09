@@ -85,8 +85,10 @@ The kernel's call has no wait bound of its own: it blocks until the server
 answers (the deadline in the message is checked before the call is queued and
 read by the server). A kernel component that must not wait on a server that
 hangs makes the call from a task of its own and waits for that task with a timer
-(the power monitor's `powermon-call`, `kernel/src/powermon.rs`, whose readers
-that ask the same thing share one call). A client that
+(`kernel/src/call_task.rs`: one task per component, capabilities in its own table,
+one call in flight, a bounded reply wait, and the caller's priority lent to it while
+it waits; the power monitor's `powermon-call`, `kernel/src/powermon.rs`, whose readers
+that ask the same thing share one call, and the ext4 mount's `ext4-call` are its users). A client that
 needs to keep a `Cap<T>` argument wraps the transport so the entries go as
 copies.
 

@@ -265,7 +265,7 @@ task's record still reaches the medium through the ring and the log flusher.
 
 A started command is timed by its device driver, not by the request layer: NVMe,
 AHCI and virtio-blk give each command a budget, and when one runs out the driver
-follows one policy (`azos_drv_api::recovery`, owner decision 2026-10-23): it
+follows one policy (`azos_drv_api::recovery`): it
 stops the controller, confirms the stop (virtio status reads 0, `CSTS.RDY`
 drops, `GHC.HR` clears), programs it again over the same memory and carries on,
 `DEVICE_TIMEOUT_RESETS` times per boot (default 1); the next timeout latches the
@@ -334,15 +334,10 @@ list; a sleeper registers first and reads the epoch second, so one of the two
 sees the other and a wake cannot fall between the look and the sleep. If a wake
 still does not reach a sleeper (a stamp lost, a TID that is not the sleeper's)
 the slice ends it. This replaced a `WaitQueue` sleep, which has no deadline.
-**The cause of the hang that prompted it is not found.** Found 20-10 with an OTA
-receive and a paused QEMU: `ota-recv` blocked in the directory scan's sector
-read, the wait queue empty, the epoch 300 signals on. The slice bounds it; it
-does not explain it. Reading `WaitQueue` turned up three ways it drops a wake,
-fixed in `crates/core/sync/src/waitqueue.rs` with host tests: a task whose
-block returned unwoken (a stamp pending, a refused block) stayed listed, so
-`wake_one` later popped it instead of the real sleeper and the queue filled
-with such entries; `wait()` on a full list blocked with no entry; TID 0 (a CPU
-with no current task) was listed and no wake reaches it.
+The slice bounds a wait that no wake reaches. `WaitQueue` (`crates/core/sync/src/waitqueue.rs`) itself
+keeps no entry for a task whose block returned unwoken (a stamp pending, a refused block), so `wake_one` never pops
+it instead of the real sleeper; it refuses `wait()` on a full list instead of blocking with no entry; and it never
+lists TID 0 (a CPU with no current task), which no wake reaches.
 
 **Is a wake still being lost? The counters say.** Every sleep that ends at its
 deadline with no wake is counted per site (`azos_sync::waitstat`, exported as
@@ -353,7 +348,7 @@ receive with QEMU paused) that ends with `block_done/lost` at 0 refutes a lost
 wake in the request layer; a nonzero value is the evidence, and the other
 sites' counters say whether the fault is the layer's or the scheduler's.
 
-**What reading the layer found (a hang, no; lost wakes, yes).** The request
+**What the layer guarantees.** The request
 layer's own register-then-check order is sound (a sleeper registers its TID,
 then reads the epoch; a completer bumps the epoch, then reads the TIDs; all
 `SeqCst`). The device wait is not the same code in each driver, and two of them
@@ -371,8 +366,7 @@ could sleep through an event:
   (list, fence, re-check; and the waker's event, fence, look), with a host litmus
   test of the pair.
 
-Both are bounded by the slice (a delay, not a hang) and neither is shown to be
-the 20-10 hang. A reaper that dies holding the reaper role would leave every
+Both are bounded by the slice (a delay, not a hang). A reaper that dies holding the reaper role would leave every
 other waiter polling at one slice instead of sleeping in the device; nothing
 makes a task die there.
 
@@ -966,6 +960,18 @@ be two definitions of "beneath".
 The join is lexical, which is exact here: the native namespace has no symlinks
 and no bind mounts a `..` could cross.
 
+A volume served from ring 3 can hold symlinks, so for it the join is not enough.
+The `Dir` operations that take a name (`openat`, `statat`, `readdir`, `statfs`)
+carry a `floor`: how many leading components of the name are the directory the
+caller holds. The syscall layer passes that directory's root to the filesystem
+(`FileOps::open_at`, `stat_beneath`, `readdir_beneath`, `statfs_beneath`;
+`vfs_stat_beneath`, `vfs_readdir_beneath`, `vfs_statfs_beneath`), and
+`EndpointFs` sends it as the floor, so a link never resolves above the directory
+the caller was granted: an open of a link that leads out of it is refused, and a
+listing shows a link that leaves it as the link itself. `EXT4D.ELF` also refuses a
+symlink among the components that make that directory itself (a grant made through
+a link is refused, not followed).
+
 ### The calls
 
 | Layer | Item |
@@ -1032,16 +1038,16 @@ descriptor whose checksum does not match, and a geometry that does not add
 up. `has_journal` on a clean volume is read as it stands. One ext4 row is
 served per boot (one region, one endpoint).
 
-Limits of this stage, by design: one operation in flight per mount; the mount
+Limits: one operation in flight per mount; the mount
 is not page-cached (a backing read cannot fail through `read_at`, so a page
 filled from a refused read would hold zeros), so every read crosses to the
 server, which keeps only metadata; the server reads 2 KiB per block entry (the
 ring's data window); a path through the VFS is at most 72 bytes beneath the
-mount (`INODE_KEY_LEN`); a listed entry's size is a `u32`. The supply-pages
-pager (the server's cached pages are the cache's, no second copy) and writes
-without a journal (block and inode allocation, `write_at`, create, unlink,
-rename, truncate, the orphan list; a volume with a journal still refused for
-writing) are the next stages.
+mount (`INODE_KEY_LEN`); a listed entry's size is a `u32`. There is no supply-pages
+pager (the server's cached pages are the cache's, no second copy) and no write
+path: block and inode allocation, `write_at`, create, unlink, rename, truncate
+and the orphan list are not implemented, and a volume with a journal is refused
+for writing.
 
 Tests: `tests/host/ext4-tests` (eleven mke2fs-made images, feature sets and
 1, 2 and 4 KiB blocks, read against the fixture tree; refusals; byte flips and mangled
@@ -1056,7 +1062,7 @@ volume on partition 2.
 
 The ext4 module set is the unmodified Linux `fs/ext4` code, built as
 relocatable modules that the module loader lays out and relocates, for a
-journaled read-write ext4 later. No Kconfig symbol selects them yet, and
+journaled read-write ext4. No Kconfig symbol selects them, and
 nothing loads the modules: the imports listed below are not there. A read-only
 ext4 volume is served natively ([ext4 served from ring 3](#ext4-served-from-ring-3)).
 

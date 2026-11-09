@@ -54,20 +54,15 @@ departure stamp. Ring depths are Kconfig: `NET_VIRTIO_RXQ_SIZE` and
 
 Each NIC contributes one queue pair (`QUEUES_PER_NIC` is a const, so taking its
 queue takes the NIC). Multi-queue virtio-net (the MQ feature and its control
-queue) is a later performance front.
+queue) is not built.
 
 The vsbench network lanes that reach a driver (`nic-egress`, `tcp-bulk-tx`,
 `tcp-bulk-rx`; `udp-roundtrip` is loopback and never does) have a gate row per
 ISA that holds them to a recorded baseline (`tools/bench/net_lane_gate.py`; the
-TCP lanes have a wider tolerance, the host peer runs beside the guest). Recording
-the baseline needs QEMU, which waits for the test phase, so the rows skip until
-then. The baseline is recorded from the tree before the queue pair, main at
-`d316a8009` (the bundle `~/azos-backup/main-2026-11-06-b68.bundle`), at the start
-of the test phase: one recorded after the change would make what it costs the
-reference.
+TCP lanes have a wider tolerance, the host peer runs beside the guest). The baseline is recorded from the tree before the queue pair; one recorded after the change
+would make what it costs the reference. The rows skip until a baseline exists.
 riscv64 (`vsbench_compare.sh`) and aarch64 (`vsbench_aarch64.sh`) run the UDP and TCP lanes against Linux; x86_64 has no
-network lane yet (its microvm line has no NIC), which belongs to the x86 PC
-phase. There is no PTP row in the gate for the NIC-queue path.
+network lane yet (its microvm line has no NIC). There is no PTP row in the gate for the NIC-queue path.
 
 ## Receive path
 

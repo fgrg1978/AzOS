@@ -276,7 +276,7 @@ Every slot records the slot it was derived from. Together the slots form a
   `MAP` only, and has neither `DUP` nor `TRANSFER` to give. A shadow task's
   whole table can be marked weak so every slot granted into it is (Kconfig
   `CAP_WEAK`, default `y`; with it `n` a shadow row is seeded with nothing).
-- **Deleting a capability is not revoking it** (owner decision 20-10, seL4's
+- **Deleting a capability is not revoking it** (seL4's
   rule). A close or an exit frees the task's own slots; copies made from them
   stay alive in their holders' tables and keep their mappings, hung under the
   freed slot's parent.

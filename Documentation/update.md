@@ -323,7 +323,7 @@ The request is the recovery console's `swap <image path>`
    word changes, so resolve-cache entries miss on their own and a task that
    resolved the old server and calls after the flip is refused like any call to an
    endpoint that changed server, not lost. Driver-server slots are handed over
-   (`driver_adopt`), and the queued calls' wake goes to the successor.
+   (`endpoint_handover_begin_all`, `endpoint_handover_represent_all`), and the queued calls' wake goes to the successor.
 5. **Stop** the old server, which is no longer supervised.
 
 Any step before the flip cancels: the old server serves on, its queued calls are
