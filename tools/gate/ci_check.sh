@@ -25325,8 +25325,11 @@ behavior_camera_port=${cport:-none}"
     tickless_idle_wakeups_row_aarch64() { # [wdt]: the simulated-watchdog build
         local mode="${1:-}" feats="qemu,bench-minimal"
         local label="aarch64: idle wakeups/s (tickless)"
+        local tcg=()
         if [ "$mode" = wdt ]; then
             feats="qemu,use-robot,bench-minimal,wdt-sim"; label="aarch64: idle keepalive (simulated WDT)"
+            # HVF stops the vtimer tick in idle wfi (cause under investigation).
+            tcg=(--tcg)
         fi
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
@@ -25343,7 +25346,7 @@ behavior_camera_port=${cport:-none}"
         fi
         local log="$CI_LOG_DIR/tickless-idle-aarch64${mode:+-$mode}.log" kimg="$CI_LOG_DIR/tickless-idle-aarch64.img"
         rm -f "$log"; cp "$A64_IMG" "$kimg"
-        "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 1 -m 128M \
+        "$QEMU_A64" ${tcg[@]+"${tcg[@]}"} -M virt,gic-version=3 -cpu max,pauth=on -smp 1 -m 128M \
             -nographic -kernel "$kimg" -gdb tcp::1236 >"$log" 2>&1 </dev/null &
         local qpid=$!
         sleep 10
