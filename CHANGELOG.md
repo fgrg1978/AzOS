@@ -85,7 +85,11 @@ releases yet. The ABI crate keeps its own file,
   brain when the image has no link key. The kernel keeps the enforcement: the
   safety layer's cap (L0), the e-stop latch and the operator's release, the RC
   override (which outranks the engine and survives its death), the geofence,
-  the envelope and the effect loops. `MLSRV.ELF` starts by its own row; the
+  the envelope and the effect loops. Every motor write is capped by the
+  safety layer's fresh verdict (a stale one stops); relaxing a restriction
+  needs the operator's signed warrant; the UART bridge carries only the
+  e-stop, straight to the kernel. `MLSRV.ELF` is not started while it has no
+  client; the
   `[BENCH-RES]` sweep and the WCET report are a QEMU boot task.
 
 ### Removed
@@ -97,7 +101,9 @@ releases yet. The ABI crate keeps its own file,
   (`crates/net/multi-stream`, `multi_stream=`), the brain-tx Kconfig
   (`config/subsys/Kconfig.brain`), `NO_ML`, `TASK_BEHAVIOR_PLACE`,
   `ML_REPLY_TIMEOUT_US`, the `ml_enabled` and `behavior_camera_port` keys, and
-  the robot-named priorities of `azos_sched` (the manifest declares each task's).
+  the robot-named priorities of `azos_sched` (the manifest declares each task's),
+  the kernel-side brain link (`encrypt_link`), the frame handler's
+  `PKT_PREDICT` arm, and the UART bridge's brain role.
   The camera's frames reach ring 3 through the `Frame` interface only; the
   engine's L1 does not ask the inference service yet.
 
