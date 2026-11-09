@@ -1881,7 +1881,7 @@ fn record_full(rule: Rule, verdict: Verdict, subject: u32, bucket: u32, n: [u64;
     // push a microphone's record out of the security ring unseen.
     if azos_records::SECURITY && !held && !cfg!(feature = "canary-no-security-copy") {
         if let Some(class) = rule.security_class(n[0]) {
-            security(class, rule, verdict, subject, n, seq, origin);
+            security(class, rule, verdict, subject, bucket, n, seq, origin);
         }
     }
     if seq != 0 {
@@ -1940,9 +1940,10 @@ pub fn security_tally() -> (
 /// The security records' rate cap (Kconfig `SEC_LOG_PER_S`): a bucket for
 /// them all; a quarter of it for each class a task can raise in a loop
 /// (capability denials, the decision layer's reports of them), half of it
-/// for egress and logins and a quarter for each of their subjects, so a
-/// flood of one class leaves the others room and one task cannot spend its
-/// class's share to hide another's records. A record costs 1000 of the
+/// for egress and logins and a quarter for each Domain (the record's bucket:
+/// its subject's Domain where the caller names it), so a flood of one class
+/// leaves the others room and one application, however many tasks it runs,
+/// cannot spend its class's share to hide another's records. A record costs 1000 of the
 /// whole's tokens and 4000 of a share's, both refilled at the whole's rate:
 /// no division drops a remainder, and the time the tokens did not account
 /// for is kept for the next call.
@@ -2013,8 +2014,9 @@ enum SecAdmit {
     Repeat,
 }
 
-/// May a security record of `class` about `subject` be copied now? `dest`:
-/// an egress admit's destination.
+/// May a security record of `class` whose bucket is `subject` (a Domain's
+/// key, or the subject itself) be copied now? `dest`: an egress admit's
+/// destination; it counts as the Domain's last only once its record is copied.
 fn sec_admit(class: SecClass, subject: u32, dest: Option<u64>) -> SecAdmit {
     const ONE: u64 = 1000;
     const SHARE: u64 = 4 * ONE;
@@ -2041,13 +2043,8 @@ fn sec_admit(class: SecClass, subject: u32, dest: Option<u64>) -> SecAdmit {
             }
         }
         let c = class as usize;
-        if let Some(d) = dest {
-            let key = (subject, d);
-            if t.dests.contains(&key) {
-                return SecAdmit::Repeat;
-            }
-            t.dests[t.next_dest] = key;
-            t.next_dest = (t.next_dest + 1) % SEC_SUBJECTS;
+        if dest.is_some_and(|d| t.dests.contains(&(subject, d))) {
+            return SecAdmit::Repeat;
         }
         let slot = sec_per_subject(class).then(|| {
             match t.subj.iter().position(|x| x.0 == class as u8 && x.1 == subject) {
@@ -2073,6 +2070,10 @@ fn sec_admit(class: SecClass, subject: u32, dest: Option<u64>) -> SecAdmit {
             if let Some(i) = slot {
                 t.subj[i].2 -= SHARE;
             }
+            if let Some(d) = dest {
+                t.dests[t.next_dest] = (subject, d);
+                t.next_dest = (t.next_dest + 1) % SEC_SUBJECTS;
+            }
             return SecAdmit::Copy;
         }
         match t.top.iter().position(|x| x.0 == subject && x.1 != 0) {
@@ -2092,10 +2093,11 @@ fn sec_admit(class: SecClass, subject: u32, dest: Option<u64>) -> SecAdmit {
 /// rate cap; what the cap holds back is counted by class, and the sealer
 /// declares it in the chain.
 #[inline(never)]
-fn security(class: SecClass, rule: Rule, verdict: Verdict, subject: u32, n: [u64; 3], seq: u64, origin: Origin) {
+#[allow(clippy::too_many_arguments)]
+fn security(class: SecClass, rule: Rule, verdict: Verdict, subject: u32, bucket: u32, n: [u64; 3], seq: u64, origin: Origin) {
     let Some(w) = azos_records::writer(azos_records::SOURCE_SECURITY) else { return };
     let dest = (rule == Rule::EnvelopeEgress && verdict == Verdict::Admit).then_some(n[0]);
-    match sec_admit(class, subject, dest) {
+    match sec_admit(class, bucket, dest) {
         SecAdmit::Copy => {}
         SecAdmit::Repeat => return,
         SecAdmit::Hold => {

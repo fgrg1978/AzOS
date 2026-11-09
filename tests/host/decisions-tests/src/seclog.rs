@@ -156,3 +156,29 @@ fn seclog_each_task_has_its_own_egress_share() {
     assert_eq!(of(8002), 1, "the other task's destination");
     assert_eq!(of(8003), 2, "two destinations, alternated");
 }
+
+/// The share is the Domain's, whatever tasks it runs: 40 tasks of one Domain
+/// flooding together get one share, and another Domain's first destination
+/// is recorded. A destination the cap held back is recorded once there is
+/// room: it is no repeat.
+#[test]
+fn seclog_the_egress_share_is_the_domains() {
+    let _g = ONE.lock().unwrap_or_else(|e| e.into_inner());
+    clock();
+    TIME.store(TIME.load(Ordering::Relaxed) + 10_000, Ordering::Relaxed);
+    let from = head();
+    for i in 0..400u64 {
+        azos_decision::record_keyed(Rule::EnvelopeEgress, Verdict::Admit, 9000 + (i % 40) as u32, 77, [5000 + i, 3, 0]);
+    }
+    azos_decision::record_keyed(Rule::EnvelopeEgress, Verdict::Admit, 9100, 78, [42, 3, 0]);
+    let (ev, _) = events(from);
+    let flood = ev.iter().filter(|e| e.0 == SecClass::Egress as u8 && (9000..9040).contains(&e.3)).count();
+    assert!(flood <= azos_limits::SEC_LOG_PER_S as usize / 4, "{flood} copied for one Domain's 40 tasks");
+    assert!(ev.iter().any(|e| e.0 == SecClass::Egress as u8 && e.3 == 9100), "the other Domain's destination: {ev:?}");
+    // The last destination the flood asked for was held; a second later it is copied.
+    TIME.store(TIME.load(Ordering::Relaxed) + 1_000, Ordering::Relaxed);
+    let from = head();
+    azos_decision::record_keyed(Rule::EnvelopeEgress, Verdict::Admit, 9039, 77, [5399, 3, 0]);
+    let (ev, _) = events(from);
+    assert!(ev.iter().any(|e| e.0 == SecClass::Egress as u8 && e.3 == 9039), "a held destination is no repeat: {ev:?}");
+}

@@ -861,7 +861,9 @@ impl azos_devif::Keys for Server {
             return Out::err(outcome::BAD_ARGUMENT);
         }
         let verdict = if admitted { Verdict::Admit } else { Verdict::Refuse };
-        azos_decision::record(Rule::Login, verdict, self.0.tid, [LOGIN_METHOD_KEY, u64::from(attempt), reason]);
+        // The rate cap's share is the caller's Domain's.
+        let domain = azos_sched::idx_for_tid(self.0.tid).map_or(self.0.tid, azos_sched::task_domain);
+        azos_decision::record_keyed(Rule::Login, verdict, self.0.tid, domain, [LOGIN_METHOD_KEY, u64::from(attempt), reason]);
         Out::ok(())
     }
 }

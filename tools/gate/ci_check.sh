@@ -14245,8 +14245,8 @@ if ! (cd "$REPO_ROOT" && KCONFIG_CONFIG="$ds_cfg" python3 -m olddefconfig >/dev/
     bad; echo "      $ds_cfg: olddefconfig lost SEC_LOG"
 else
     ds_run() { (cd "${REPO_ROOT}/tests/host/decisions-tests" && KCONFIG_CONFIG="$ds_cfg" CARGO_TARGET_DIR="$AZOS_OUT/target/host-canary/decisions-seclog" "$CARGO" test --release --features "seclog$1" -- seclog_ 2>&1); }
-    if ds_out=$(ds_run "") && echo "$ds_out" | qgrep -qE "^test result: ok\. 5 passed"; then
-        if ds_c=$(ds_run ",canary-no-security-copy"); echo "$ds_c" | qgrep -qE "^test result: FAILED\. 0 passed; 5 failed"; then
+    if ds_out=$(ds_run "") && echo "$ds_out" | qgrep -qE "^test result: ok\. 6 passed"; then
+        if ds_c=$(ds_run ",canary-no-security-copy"); echo "$ds_c" | qgrep -qE "^test result: FAILED\. 0 passed; 6 failed"; then
             ok
         else
             bad; echo "      the canary (nothing copied) did not turn both seclog_ tests red:"; echo "$ds_c" | grep -m3 "^test result" | sed 's/^/      /'

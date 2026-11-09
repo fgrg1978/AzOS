@@ -90,10 +90,14 @@ fn egress_gate(owner: u32, class: DestClass, dest: u32, port: u16) -> bool {
     };
     let ok = effect_gate::record(&e).is_ok();
     if ok && azos_records::SECURITY {
-        azos_decision::record(
+        // The rate cap's share is the owner's Domain's: one application's
+        // tasks share one.
+        let domain = azos_sched::idx_for_tid(owner).map_or(owner, azos_sched::task_domain);
+        azos_decision::record_keyed(
             azos_decision::Rule::EnvelopeEgress,
             azos_decision::Verdict::Admit,
             owner,
+            domain,
             [dest as u64, class as u64, 0],
         );
     }
