@@ -457,7 +457,7 @@ parked word waits in `wait_out_parked_fault` and the access retries.
 A run is `Mmu::contig_run_pages()` adjacent 4 KiB leaves that the hardware may
 cache as one TLB entry; the first is aligned in both virtual and physical
 address to the run size, the frames are consecutive, and every word carries one
-set of attributes (`arch-api/src/contig.rs`: `is_run`, `step_pages`).
+set of attributes (`arch/api/src/contig.rs`: `is_run`, `step_pages`).
 
 | ISA | Mechanism | Run size |
 |-----|-----------|----------|

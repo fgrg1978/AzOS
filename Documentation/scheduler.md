@@ -38,7 +38,7 @@ Two class vocabularies exist and are separate types:
 * `sc::Class` (this section) decides which queue the CPU is taken from.
 * `class::SchedClass` (`SafetyCritical`, `HardRT`, `SoftRT`, `BestEffort`, `Idle`, `Interactive`) names the `[class.<name>]` sections of a signed topology; `SchedClass::from_name` parses them; the interactive class is declared as `session` (the interactive shell's row in the built-in topology; a signed topology of a deployment gets it only by declaring `[class.session]`; see [effects.md](effects.md)). The principal belongs to a topology class, so the shell needs a class name of its own. A task in `session` is dispatched as a fair task like `best_effort`, runs at the latency QoS tier (`SchedClass::qos_hint`, applied by `classes::on_row_class` where the row's class is written: slot creation and row application; the task may say otherwise with `SCHEDCTL`'s QoS hint afterwards), and reports `interactive` in `task_class_raw` and in the kernel's log lines, never `best_effort`. The tier decides the task's timer slack and its energy QoS domains; the fair queue's weight is not changed by it. Each task carries one as a raw byte (`Task::sched_class_raw`, `task_class_raw`), set from its topology row and read by admission checks, for example the refusal of a real-time caller on a proxy endpoint (`crates/core/syscall/src/ipc_deadline.rs`); the dispatcher does not use it.
 
-The dispatcher (`do_schedule`) takes its pick from a fused path: `rt::pick` when the hart has real-time state, otherwise the ready-bitmap dequeue (`cpu_dequeue`), which hands the fair levels to EEVDF. `classes::pick_here` walks the same queues through the `SchedClassOps` table (`classes::TABLE`) in precedence order and is the class-by-class view of that decision; `sc::pick_in_precedence` and `sc::should_preempt` are the pure walk and the cross-class preemption rule. Each class implements `SchedClassOps` (`enqueue`, `dequeue`, `pick`, `tick`, `preempt_check`): `StopClass`, `DlClass`, `RtClass`, `FairClass`, `IdleClass`.
+The dispatcher (`do_schedule`) takes its pick from `classes::pick`: the walk of `sc::walk` over a `ClassSet` of five `ClassStep` implementations (`StopClass`, `DlClass`, `RtClass`, `FairClass`, `IdleClass`, each with a `pick_next`), unrolled at compile time and run under the CPU's run-queue lock. The running task competes in its own class and outranks every later class; a class whose budget throttles it takes it out of the competition. `scheduler/wake/preempt.rs` holds the wake-time rule across classes (`must_preempt`, `local_resched`): a task woken onto the waking CPU that outranks the one it runs sets `need_resched`.
 
 Source: `crates/core/sched/src/sc.rs`, `crates/core/sched/src/classes.rs`, `crates/core/sched/src/class.rs`, `crates/core/sched/src/scheduler/mod.rs` (`do_schedule`, `cpu_dequeue`), `config/kernel/Kconfig.sched` (`SCHED_CLASS_*`, `SCHED_DEFAULT_*`).
 
@@ -72,7 +72,7 @@ The stop class has two sources of tasks:
 * a per-CPU slot, installed with `classes::set_stop_task(cpu, idx)` and read by `StopClass::pick`;
 * the kernel safety loops marked with `rt::exempt_from_band_cap(idx)`. They are never skipped when the band budget is exhausted and are not charged to it, and their SC is `Class::Stop`.
 
-In the fused dispatch the exempt loops are the stop class: `rt_core::stop_pick` keeps a running exempt loop, or takes a queued one past any running task, ahead of every reservation and band task; between two exempt loops the more urgent level wins. `StopClass::tick` and `preempt_check` never preempt: stop work runs to completion. The per-CPU slot is read by the class walk (`pick_here`); the fused dispatch does not consult it.
+In the dispatch the exempt loops are the stop class: `rt_core::stop_pick` keeps a running exempt loop, or takes a queued one past any running task, ahead of every reservation and band task; between two exempt loops the more urgent level wins. Stop work runs to completion: a running exempt loop is displaced only by a more urgent queued one (`rt_core::stop_preempts`).
 
 Source: `crates/core/sched/src/classes.rs` (`StopClass`, `set_stop_task`), `crates/core/sched/src/rt.rs` (`exempt_from_band_cap`), `crates/core/sched/src/rt_core.rs` (`stop_pick`, `stop_preempts`).
 
@@ -120,7 +120,7 @@ Source: `crates/core/sched/src/rt_core.rs`, `crates/core/sched/src/rt.rs`, `crat
 
 ## Real-time class: the band
 
-Priorities `0..12` form the band. Dispatch inside it is strict priority, FIFO within a level, with no time slicing; a ready task of a more urgent level preempts (`RtClass::preempt_check`). The band is bounded by a per-hart budget (`rt_core::Band`): in each window of `RT_BAND_WINDOW_MS`, while a task outside the band is ready on the hart, the band may run at most `RT_BAND_CAP_PCT` percent. Past it, the pick skips the band levels until the window ends (`rt_core::band_throttled`). With nothing else ready the band keeps the CPU, and the overshoot is charged. A cap of 100 disables the budget. Enforcement instants (budget exhaustion, window end, reservation budget, replenishment) are armed with `timebase::arm_if_earlier`, which only writes the comparator when the instant is earlier than what the hart already has programmed.
+Priorities `0..12` form the band. Dispatch inside it is strict priority, FIFO within a level, with no time slicing; a ready task of a more urgent level preempts (`rt_core`, and `must_preempt` at wake-up). The band is bounded by a per-hart budget (`rt_core::Band`): in each window of `RT_BAND_WINDOW_MS`, while a task outside the band is ready on the hart, the band may run at most `RT_BAND_CAP_PCT` percent. Past it, the pick skips the band levels until the window ends (`rt_core::band_throttled`). With nothing else ready the band keeps the CPU, and the overshoot is charged. A cap of 100 disables the budget. Enforcement instants (budget exhaustion, window end, reservation budget, replenishment) are armed with `timebase::arm_if_earlier`, which only writes the comparator when the instant is earlier than what the hart already has programmed.
 
 Source: `crates/core/sched/src/rt_core.rs` (`Band`, `band_cap_ticks`), `crates/core/sched/src/rt.rs` (`pick`, `tick`), `crates/drivers/sys/src/timebase.rs` (`arm_if_earlier`), `config/kernel/Kconfig.sched` (`RT_BAND_WINDOW_MS`, `RT_BAND_CAP_PCT`).
 
@@ -191,7 +191,7 @@ Two priority-inheritance mechanisms coexist. The wait graph is always built in; 
 
 ### Counted donation
 
-`donation_for(donor, target)` gives a waiting donor's live priority to its target, once, and undoes it once when the wait ends; the target's priority moves only towards more urgent (`boost_step`), and the count rises on every donation so several donors can share one target. It is not transitive: nothing follows the target's own waits. A target already as urgent as the donation is not boosted, which is what stops an A-waits-on-B-waits-on-A loop. A ring-3 target is held at `RT_PRIORITY_THRESHOLD` at the most urgent (`floored`). `donation_for_call` judges a fast-IPC call against the target's base priority, so a second client's donation is still counted.
+Counted donation (`boost_step`, `return_step`, `boost_locked` in `crates/core/sched/src/donation.rs`; `boost_ready_task`, `restore_ready_task` in `scheduler/donation.rs`) gives a waiting donor's live priority to its target, once, and undoes it once when the wait ends; the target's priority moves only towards more urgent (`boost_step`), and the count rises on every donation so several donors can share one target. It is not transitive: nothing follows the target's own waits. A target already as urgent as the donation is not boosted, which is what stops an A-waits-on-B-waits-on-A loop. A ring-3 target is held at `RT_PRIORITY_THRESHOLD` at the most urgent (`floored`).
 
 | Client | Mechanism |
 |---|---|
@@ -274,7 +274,7 @@ The crate root (`lib.rs`) declares the model modules and re-exports the API. The
 | Module | File | Role |
 |---|---|---|
 | `class` | `src/class.rs` | topology class names (`SchedClass`) |
-| `sc` | `src/sc.rs` | `Class`, `SchedContext`, `SchedClassOps`, precedence walk (pure) |
+| `sc` | `src/sc.rs` | `Class`, `SchedContext`, `ClassStep`, `ClassSet`, the precedence `walk` (pure) |
 | `eevdf_core` | `src/eevdf_core.rs` | EEVDF arithmetic (pure) |
 | `rt_core` | `src/rt_core.rs` | band budget, EDF + CBS, admission arithmetic (pure) |
 | `rt_receipt` | `src/rt_receipt.rs` | writes the decision record of a refused reservation |

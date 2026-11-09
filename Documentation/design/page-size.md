@@ -21,7 +21,7 @@ break-before-make rule that changes between them have to follow on some CPUs.
 
 | ISA | Base page | How it is chosen |
 |---|---|---|
-| riscv64 | 4 KiB | Fixed: Sv39 has no other base page. A `page-16k` or `page-64k` feature reaching a riscv64 build fails a compile-time assertion in `arch-riscv64`. |
+| riscv64 | 4 KiB | Fixed: Sv39 has no other base page. A `page-16k` or `page-64k` feature reaching a riscv64 build fails a compile-time assertion in `azos_arch_riscv64`. |
 | x86_64 | 4 KiB | Fixed: the Kconfig choice exists only for aarch64. |
 | aarch64 | 4, 16 or 64 KiB | Kconfig `AARCH64_PAGE_4K` (default), `AARCH64_PAGE_16K`, `AARCH64_PAGE_64K`, at compile time. |
 
@@ -34,7 +34,7 @@ two disagree:
 - as `azos_limits::PAGE_SHIFT`, derived from `.config`, which `kernel/src/main.rs`
   asserts equal to the first.
 
-`arch-aarch64`'s `Granule` (`arch/aarch64/src/mmu/mod.rs`) carries
+`azos_arch_aarch64`'s `Granule` (`arch/aarch64/src/mmu/mod.rs`) carries
 the consequences: the `TG0`/`TG1` encodings, `T0SZ`/`T1SZ`, the root size and the
 boot tables. The 4 KiB and 16 KiB granules walk three levels over a 39-bit
 input range, with the same virtual layout; at 16 KiB the root has 8 live

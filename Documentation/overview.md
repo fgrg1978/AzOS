@@ -239,7 +239,7 @@ The same kernel crate builds for riscv64, aarch64 and x86_64.
 - **Contract.** `arch/api` defines the trait surface: `Cpu`,
   `Interrupts`, `Mmu`, `Boot`, `Vector`, `SpinWait`, `Pmu`, plus `ArchPlatform` and
   `ArchEntry`, and for the hypervisor `Hypervisor`, `StageTableMem` and
-  `HypercallHost`. Each ISA crate (`arch-riscv64`, `arch-aarch64`, `arch-x86_64`)
+  `HypercallHost`. Each ISA crate (`azos_arch_riscv64`, `azos_arch_aarch64`, `azos_arch_x86_64`)
   implements it, and `arch/facade` re-exports the one that matches
   `target_arch`.
 - **One boot sequence.** `kernel_main` calls `boot::early_main`

@@ -17,17 +17,16 @@ Contents: [Top level](#top-level) | [crates/core](#cratescore) |
 | Path | Contents |
 |---|---|
 | `kernel/` | The kernel image: `kernel_main`, boot steps, per-ISA entry code, kernel tasks, panic handler, the linker scripts' shared include. |
-| `arch/` | The architecture crates: `api/` (`azos_arch_api`, the cross-ISA contract), `facade/` (`azos_arch`, re-exports the build's ISA crate), and one crate per ISA, `riscv64/`, `aarch64/`, `x86_64/`, each with its kernel linker scripts in `boot/`. |
+| `arch/` | The architecture crates: `api/` (`azos_arch_api`, the cross-ISA contract), `facade/` (`azos_arch`, re-exports the build's ISA crate), and one crate per ISA, `riscv/` (`azos_arch_riscv64`), `aarch64/`, `x86_64/`, each with its kernel linker scripts in `boot/`. |
 | `crates/` | Kernel libraries, in six groups: `core/`, `drivers/`, `fs/`, `net/`, `lib/`, and `domains/robot/` (the optional robot application domain, linked only when the image selects it). |
-| `userspace/` | Ring-3 programs: `services/`, `drivers/`, `lib/`, `tests/`, `bench/`, `thirdparty/`, plus `image_hashes.py`, `rustc_stable_metadata.py` (the `RUSTC_WRAPPER` that keeps each ring-3 ELF's bytes a function of source and toolchain, since the seccomp image profiles bind them by SHA-256) and `x86_64-azos-user.json` (the target spec the x86_64 ring-3 programs are built for). |
+| `userspace/` | Ring-3 programs: `services/`, `drivers/`, `lib/`, `tests/`, `bench/`, plus `image_hashes.py`, `rustc_stable_metadata.py` (the `RUSTC_WRAPPER` that keeps each ring-3 ELF's bytes a function of source and toolchain, since the seccomp image profiles bind them by SHA-256) and `x86_64-azos-user.json` (the target spec the x86_64 ring-3 programs are built for). |
 | `sdk/` | The native `std` SDK: target specs, linker scripts and the `std` overlay. Its own test program is `userspace/tests/sdktest`. |
 | `micro/` | AzOS-micro, the MMU-less MCU kernel (riscv32imac, M-mode, PMP region domains, static tasks from the signed topology in `micro/topology/`). It is its own workspace and links the main kernel's pure crates; `make micro` builds it. |
 | `config/` | The Kconfig fragments (`Kconfig.*`) and `defconfigs/`. The root `Kconfig` sources them. One fragment, `Kconfig.userspace` (the programs under `userspace/`), is generated at every parse by `tools/build/gen_userspace_kconfig.py` and is not committed. |
-| `mk/` | Makefile fragments included by the top-level `Makefile`: `vars.mk`, `kernel.mk`, `userspace.mk`, `images.mk`, `system.mk`, `host.mk`, `qemu.mk`, `lints.mk`. |
+| `mk/` | Makefile fragments included by the top-level `Makefile`: `vars.mk`, `kernel.mk`, `userspace.mk`, `images.mk`, `system.mk`, `host.mk`, `qemu.mk`, `lints.mk`, `fetch.mk`, `firmware.mk`. |
 | `tools/` | The host tools (Python and shell), one directory per role (see [Tests and tools](#tests-and-tools)); `tools/image/boot.cmd` is the U-Boot script that boots slots A/B/R from the SD card. |
 | `tests/` | `host/` (host-side test crates), `fuzz/` (fuzz targets), plus the emulator runner scripts `qemu_boot.sh` and `run_all.sh`. |
 | `formal/` | `tla/` (TLA+ models `cap_table` and `topology_load`, each with its `.cfg`), `INVARIANTS.md` and `README.md`. |
-| `boot/` | `boot.scr.cmd`, a U-Boot boot script. |
 | `third_party/` | `vendor/` (vendored crates) and its pin `VENDOR_PIN`; the third-party source trees `busybox/`, `limine/`, `linux/`, `lvgl/`, `relibc/`, `u-boot/` (gitlinks in `.gitmodules`, `update = none`, fetched here by `tools/build/third_party_fetch.sh`); `busybox.fragment` (the BusyBox configuration `make busybox` adds to allnoconfig); `patches/`. |
 | `LICENSES/` | Licence texts: Apache-2.0, GPL-2.0-only, MIT. |
 
@@ -44,11 +43,6 @@ Source: the directories above; `Cargo.toml`, `Makefile`, `Kconfig`.
 |---|---|---|
 | `abi` | `azos_abi` | The user/kernel boundary: syscall numbers, error codes, `#[repr(C)]` shared types, the capability handle format, the vDSO base, the io_ring page layout. `no_std`, `forbid(unsafe_code)`. |
 | `actuation` | `azos_actuation` | The authority over irreversible effects: e-stop latch, effect gate, safe state, flight recorder, watchdogs. |
-| `arch-api` | `azos_arch_api` | The cross-ISA trait surface (`Cpu`, `Interrupts`, `Mmu`, `Boot`, `Vector`, `SpinWait`, `ArchPlatform`, `ArchEntry`). |
-| `arch` | `azos_arch` | The facade: re-exports the active ISA crate by `target_arch`. |
-| `arch-riscv64` | `azos_arch_riscv64` | The riscv64 implementation of `arch-api`. |
-| `arch-aarch64` | `azos_arch_aarch64` | The aarch64 implementation of `arch-api`. |
-| `arch-x86_64` | `azos_arch_x86_64` | The x86_64 implementation of `arch-api`. |
 | `azos-config` | `azos-config` | Build-time `.config` reader and Rust constant emitter (host crate). |
 | `limits` | `azos_limits` | Compile-time constants generated from `.config`. |
 | `config` | `azos_config` | Persistent `KEY=VALUE` runtime configuration store. |
@@ -62,6 +56,12 @@ Source: the directories above; `Cargo.toml`, `Makefile`, `Kconfig`.
 | `devif` | `azos_devif` | The interfaces of what the kernel hosts and a driver endpoint serves (gpio, i2c, spi, can, uart, pwm, motor, sensor, block, clock, entropy, power, time, vm, vm control, buzzer, adc, link key, display, input, sound, inference, keys, memory-object control, the network name and time services), and the outcome code every op answers. |
 | `idl` | `azos_idl` | The AzOS interface definition language: traits annotated with `#[azos_interface]` and their wire form. |
 | `idl-macros` | `azos_idl_macros` | The proc-macro behind `#[azos_interface(id, level, words)]`. |
+| `ext-api` | `azos_ext_api` | The contract between the base kernel and an extension: effect providers, effect loops, enforcers, boot hooks. |
+| `hyp-api` | `azos_hyp_api` | The ABI between the kernel and the resident monitor: call ids, status codes, the invariants `probe` reports. |
+| `hyp-mon` | `azos_hyp_mon` | The aarch64 resident monitor (`VIRT_SPLIT`), entered at EL2 before EL1 runs. |
+| `image` | `azos_image` | What the image loader needs about a static ELF image, native or Linux: where its program headers land. |
+| `records` | `azos_records` | The kernel's record substrate: the kernel log, decision records, actuation telemetry and security records, one ring each. |
+| `seclog` | `azos_seclog` | The sealed security log: the format, chain, sealer and verifier of the records, and the line `logd` writes. |
 | `energy` | `azos_energy` | Utilisation tracking, energy model, placement / governor / idle seams, OPP bookkeeping. |
 | `hv` | `azos_hv` | The hypervisor core: guest admission, VM objects, guest memory, vCPU loop, virtual LAPIC/IOAPIC. |
 | `inspect` | `azos_inspect` | The introspection tree: typed nodes in a region the kernel alone writes. |
@@ -125,6 +125,10 @@ Source: `crates/core/*/Cargo.toml` and the `//!` header of each `lib.rs`.
 | `tpm` | The TPM 2.0 TIS/FIFO and CRB interfaces and the commands. |
 | `rtc` | Real-time clocks behind one `Rtc` trait: goldfish, PL031, MC146818 CMOS, PCF8563 over I2C. |
 | `firmware` | A firmware mailbox property-protocol encoder. The crate is a single source file at the crate directory root, which its `Cargo.toml` declares as the library root. |
+| `kill-switch` | The physical kill switch: its boot-time report and the task that takes its edges and latches the e-stop. |
+| `kit` | What a driver reaches the machine through: the `Mmio`, `PortIo` and `Ticks` traits a driver is written over. |
+| `pcspk` | The PC speaker as the buzzer chip logic's PWM channel (8254 PIT channel 2). |
+| `virtio-rng` | The virtio entropy device on the virtio-mmio transport. |
 | `lx` | The Linux driver compatibility layer (not one crate): `emul/` (the Rust base), `glue/` (the C module built against a pinned Linux tree), and the lists it is checked against: `HOST_ABI` (every symbol the Linux driver server exports to modules), `DEVICE_SOURCES` (the Linux leaf drivers whose ids the hardware bus matches), `FS_EXT4_UNRESOLVED` (the imports of the ext4 module set). |
 | `chip_source.rs` | Not a crate: a file `include!`d by the build scripts of `buzzer` and `ina219` to fingerprint their source. |
 
@@ -156,7 +160,8 @@ Source: `crates/lib/*/*/Cargo.toml`.
 |---|---|
 | `safety-core` | The safety path of the actuation authority: the motor gate (`actuation.rs`), the real-time motor loop (`rt_motor.rs`), flight control (`flight_ctrl.rs`), the transactional control ticks rolled back on a synchronous exception (`txn.rs`). |
 | `degrade-policy` | The graded degrade levels and their speed ceilings (leaf crate). |
-| `behavior` | A layered, subsumption-style behavior engine. |
+| `behavior` | The kernel-side robot behaviour: the safety layer (L0), brain-protocol framing, payload drivers, RC policy, the sensor bus and the layer switches the ring-3 engine reads. |
+| `sensors` | The sensors the robot extension produces, at the instance numbers the topology's `sensor.<n>` endpoints name. |
 | `flight` | Flight controller (mixer, PID, modes); its pure math is `crates/lib/control/flight-math`. |
 | `nav` | Waypoints, mission, occupancy grid, obstacle avoidance. |
 | `telemetry` | The binary telemetry protocol. |
@@ -225,7 +230,7 @@ The one module outside the shared set that sits outside `ext/` is aarch64's
 | `boot_hooks.rs` (what the hooks do) | yes | yes | yes |
 | `asm/` (`boot.S`, `context_switch.S`, `trap_entry.S`) | yes | yes | yes |
 | `board_map.rs` (device windows) | yes | yes | no (memory map comes from the loader and ACPI, `kernel/src/entry/x86_64/ext/limine.rs`) |
-| `fp.rs` | no (`arch-riscv64` `fp` and `context_switch.S` save FP state) | yes | yes |
+| `fp.rs` | no (the riscv64 crate's `fp` and `context_switch.S` save FP state) | yes | yes |
 | `irq.rs` | yes | yes | yes |
 | `resume.rs` | yes | yes | yes |
 | `smp.rs` | yes | yes | yes |
@@ -265,9 +270,9 @@ ISA by the `mk/userspace.mk` rules.
 
 | Directory | Contents |
 |---|---|
-| `services/` | `compmgr` (component manager), `sh` and `toolbox` (shell and tools), `termd` (terminal server), `namesd` (name server), `logd` (sink of the structured kernel log), `logind` and `sshd` (login service, SSH server), `pkgd` and `pkg` (package installer), `decisd` and `why` (decision server and query), `inputd` (input server), `compositor` (display server and trusted surface), `power`, `tracectl`, `mcpd`, `ptpd`, `audiod` (audio server), `zenohd`, `rpcsrv` and `rpcquic`, `vmmd` (virtual machine monitor), `lxsrv` and `lxrt` (Linux driver server, Linux runtime), `infsrv` (inference broker and the behavior loop's MLP), `famtools` (four small tool images: behavior, config, flight, ota), and the robot-domain `brain_client` and `reflex`. |
-| `drivers/` | Ring-3 hosts of drivers: `buzz_drv`, `ina_drv`, `gpio_drv`. |
-| `lib/` | Libraries for ring-3 programs: `compose` (the compositor's pixel engine), `compositor`, `decisions`, `inspect`, `names`, `packages`, `power`, `term` (typed objects over IPC); `rpc`, `quic`, `tls`, `zenoh`, `mcp`, `ml`, `ualloc` (hardened allocator), `linux_rt`, `relibc-azos` (overlay for the relibc C library); `login` (the `Login` object and the credential the login service checks); `tls-probe` (a rustls client/server handshake run over memory or a stream). |
+| `services/` | `compmgr` (component manager), `sh` and `toolbox` (shell and tools), `termd` (terminal server), `namesd` (name server), `logd` (sink of the structured kernel log and the sealed security log), `coreutil` (multicall image of the basic utilities), `ext4d` (read-only ext4 server), `logind` and `sshd` (login service, SSH server), `pkgd` and `pkg` (package installer), `decisd` and `why` (decision server and query), `inputd` (input server), `compositor` (display server and trusted surface), `power`, `tracectl`, `mcpd`, `ptpd`, `audiod` (audio server), `zenohd`, `rpcsrv` and `rpcquic`, `vmmd` (virtual machine monitor), `lxsrv` and `lxrt` (Linux driver server, Linux runtime), `infsrv` (inference broker; its client is the robot engine), `famtools` (four small tool images: behavior, config, flight, ota), and the robot-domain `brain_client` (the ring-3 behaviour engine and brain link) and `reflex`. |
+| `drivers/` | Ring-3 hosts of drivers: `buzz_drv`, `ina_drv`, `gpio_drv`, `rng_drv`. |
+| `lib/` | Libraries for ring-3 programs: `compose` (the compositor's pixel engine), `compositor`, `decisions`, `inspect`, `names`, `packages`, `power`, `term` (typed objects over IPC); `rpc`, `quic`, `tls`, `zenoh`, `mcp`, `ml`, `ualloc` (hardened allocator), `linux_rt`, `relibc-azos` (overlay for the relibc C library); `coreutils` (the basic utilities, over a `Host` trait), `ext4` (the read-only ext4 parser), `srv` (the ring-3 server runtime), `login` (the `Login` object and the credential the login service checks); `tls-probe` (a rustls client/server handshake run over memory or a stream). |
 | `tests/` | Ring-3 test programs: `abitest` and `abichild` (the processes it spawns), `captest`, `ipctest`, `hello`, `uhello` (a minimal `no_std` program over `libsys`), `epsrv`, `syscall_test`, the `lx*` programs (`lxbench`, `lxhello`, `lxmod`, `lxthreads`) and `relibc`. |
 | `bench/` | `latbench`, `vsbench`, `vssrv`: ring-3 measurement programs. |
 
@@ -288,6 +293,7 @@ Source: `userspace/*/`, the header of each program's `main.rs`.
 | `tools/bench/` | Benchmarks against Linux (`vsbench_compare.sh` and its aarch64 and x86_64 versions). |
 | `tools/dev/` | Run, flash, serve and debug by hand: QEMU and guest launchers, UART and TFTP servers, OTA senders, the board farm. |
 | `tools/lib/` | The modules the other tools import: `out_dir.py` (the output root) and `azos_tools.py` (the checkout root, and the path to every other tool). |
+| `tools/forensic/` | `seclog_verify`, the offline checker of an exported security log. |
 | `tools/dev/farm/` | Host-side scripts that run a test kernel on an attached device and read the result from its console; `boot.cmd`, the board's U-Boot script that boots it over TFTP. |
 
 Source: `tests/`, `tools/`.

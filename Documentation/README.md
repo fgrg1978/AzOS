@@ -78,7 +78,7 @@ and its limits. Authors start from the two templates.
 | [design/absolute-sleep.md](design/absolute-sleep.md) | `SYS_SLEEP_UNTIL` and drift-free periodic wakeups. |
 | [design/trap-and-switch-cost.md](design/trap-and-switch-cost.md) | The cost of traps and address-space switches and how it is kept small. |
 | [design/page-size.md](design/page-size.md) | The base page per ISA and the larger-translation mechanisms. |
-| [design/lx-driver-slices.md](design/lx-driver-slices.md) | The next Linux driver slices: their sources and what running ext4 in a ring-3 server needs. |
+| [design/lx-driver-slices.md](design/lx-driver-slices.md) | Linux driver slices in ring 3: the module sources each needs and what running the ext4 module set in a ring-3 server requires. |
 | [design/arch/aarch64-trap-return-windows.md](design/arch/aarch64-trap-return-windows.md) | Masking interrupts across the aarch64 trap return. |
 | [design/forward-secret-link.md](design/forward-secret-link.md) | The forward-secret encrypted brain link. |
 | [design/robot/degrade-levels.md](design/robot/degrade-levels.md) | The four graded degrade levels the brain can select. |

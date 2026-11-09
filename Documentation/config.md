@@ -21,7 +21,7 @@ generated and ignored by git.
 | `config/axes/` | The profile axes: the preset, the hardware class, structure, real-time class, security posture (with the mitigation switches it sets), virtualization role, build type, the application domain (`USE`), the Linux personality and the C library. |
 | `config/arch/` | The ISA choice, one file per ISA for its baseline level and extensions, and the board choice with its platform addresses. |
 | `config/kernel/` | The core kernel: scheduler, IPC and capabilities, synchronization, memory management, kernel tasks, energy and thermal, panic and crash dump, hardening, live patches, tracing and logging, the lock dependency checker, decision records, and AzOS-micro. |
-| `config/subsys/` | Subsystems and drivers: storage, file systems, network, RPC, network services, the signed topology, secure boot, entropy and TPM, the keystore, packages, drivers, USB, display and input, console and login, audio, OTA. The application domains too, shown only for their `USE`: the robot domain (`Kconfig.robot`) and its brain link (`Kconfig.brain`). |
+| `config/subsys/` | Subsystems and drivers: storage, file systems, network, RPC, network services, the signed topology, secure boot, entropy and TPM, the keystore, packages, drivers, USB, display and input, console and login, audio, OTA. The application domains too, shown only for their `USE`: the robot domain (`Kconfig.robot`). |
 | `config/limits/` | The resource cap table: the integers that bound a static table, with defaults per hardware class. |
 | config/Kconfig.userspace | Generated at every parse by `tools/build/gen_userspace_kconfig.py` from the directories under `userspace/`; never committed. |
 | `config/fragments/`, `config/defconfigs/` | The defconfig matrix (below). |

@@ -16,7 +16,7 @@ Related pages: [drivers.md](drivers.md) covers the device side (buses, DMA, inte
 
 Source: `arch/api/src/lib.rs`, `arch/facade/src/lib.rs`.
 
-## The `arch-api` contract
+## The `azos_arch_api` contract
 
 `azos_arch_api` is `#![no_std]`. The traits fall into three groups: the original per-subsystem traits, the platform contract, and the optional services.
 
@@ -138,7 +138,7 @@ The per-ISA tables live in `azos_arch_api::isa::{riscv64, aarch64, x86_64}` as `
 | ISA | Baseline levels | Extension policies (names in `isa.rs`) |
 |---|---|---|
 | riscv64 | `rv64imac`, `rv64gc`, `rv64gcv` | `ZICBOZ`, `ZICBOM`, `SSTC`, `SVPBMT`, `SVNAPOT`, `SVADU`, `SVINVAL`, `ZBA`, `ZBB`, `ZBS`, `V`, `AIA`, `ZAWRS`, `ZACAS`, `ZIHINTPAUSE`, `ZKR`, `H`, `SSQOSID`, `SENVCFG`, `PMU` |
-| aarch64 | `armv8.0` to `armv8.5` | `LSE`, `PAN`, `CRC32`, `PAUTH`, `BTI`, `MTE`, `SVE`, `AES`, `PMULL`, `SHA2`, `RNG`, `E0PD`, `WFXT`, `TLBIRANGE`, `HAFDBS`, `PMU`, and the speculation mitigations `MIT_SPECTRE_V2`, `MIT_SSB`, `MIT_BHB` |
+| aarch64 | `armv8.0` to `armv8.5` | `LSE`, `PAN`, `CRC32`, `PAUTH`, `BTI`, `GCS`, `POE`, `S1PIE`, `MTE`, `SVE`, `AES`, `PMULL`, `SHA2`, `RNG`, `E0PD`, `WFXT`, `TLBIRANGE`, `HAFDBS`, `PMU`, and the speculation mitigations `MIT_SPECTRE_V2`, `MIT_SSB`, `MIT_BHB` |
 | x86_64 | `x86-64`, `x86-64-v2`, `x86-64-v3`, `x86-64-v4` | `SSE4_2`, `POPCNT`, `XSAVE`, `AVX`, `AVX2`, `BMI1`, `BMI2`, `FMA`, `MOVBE`, `AVX512F`, `AVX512BW`, `AVX512CD`, `AVX512DQ`, `AVX512VL`, `AES`, `PCLMULQDQ`, `SHA_NI`, `RDRAND`, `RDSEED`, `ADX`, `FSGSBASE`, `PCID`, `INVPCID`, `INVLPGB`, `SMEP`, `SMAP`, `UMIP`, `PKU`, `LA57`, `CET_IBT`, `CET_SHSTK`, `XSAVEOPT`, `XSAVES`, `X2APIC`, `TSC_DEADLINE`, `INVARIANT_TSC`, `GBPAGES`, `WAITPKG`, `SPLIT_LOCK`, `SVM`, `VMX`, `PMU`, and the mitigations `MIT_MELTDOWN`, `MIT_L1TF`, `MIT_MDS_TAA`, `MIT_RFDS`, `MIT_GDS`, `MIT_SPECTRE_V2`, `MIT_BHI`, `MIT_RETBLEED`, `MIT_SRSO`, `MIT_ZENBLEED` |
 
 ### Probe sites that rewrite themselves
@@ -221,7 +221,7 @@ What the kernel does when the hardware traps is written once in `kernel/src/trap
 **Rules the policy implements.**
 
 - Syscall flow, in order: interrupts on; the seccomp filter verdict; the prologue, whose pledge mask can refuse the call with `EACCES`; the call (a number-only shortcut, the IPC fast path, or the dispatch); result, exit tracepoint and the step over the trap instruction; at the return to user mode, an `exec`'s new frame and signal work. A Linux task's number is not in the native table, so its entry is counted in slot 0 with no case.
-- Faults: a fault from user mode kills that task, never the kernel; a fault from the kernel is fatal. A page fault from user mode tries copy-on-write (for a write), then demand paging, then setting the Accessed bit on a CPU that does not set it in hardware (`FaultServices::accessed`); what none resolves ends the task with `SIGSEGV`.
+- Faults: a fault from user mode kills that task, never the kernel; a fault from the kernel is fatal. A page fault from user mode tries copy-on-write (for a write), then demand paging, then setting the Accessed bit on a CPU that does not set it in hardware (`FaultServices::accessed`); what none resolves ends the task with `SIGSEGV`. A fault that lost a race to another install (the leaf now allows the access, judged as a read, a write or an instruction fetch: `azos_abi::fault::Access`) is retried, not the task's; a fetch from a mapped page that is not executable is the task's fault.
 - Interrupts: a handler runs on the hart's interrupt stack and may only raise the reschedule flag (`Resched::request`); `resched_exit` spends it from the entry assembly once `sp` is back on the interrupted task's own stack.
 
 Source: `kernel/src/trap/mod.rs`, `frame.rs`, `syscall.rs`, `fault.rs`, `irq.rs`, `kernel.rs`, `crash.rs`; per-ISA `kernel/src/entry/<isa>/trap.rs` and `asm/trap_entry.S`.

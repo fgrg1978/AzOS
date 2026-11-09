@@ -235,7 +235,7 @@ Source: `crates/core/bytepipe/src/lib.rs`.
 ### azos_arch_api
 
 What the kernel needs from an architecture, not how an architecture provides it.
-Every ISA crate (`arch-riscv64`, `arch-aarch64`, `arch-x86_64`) implements this
+Every ISA crate (`azos_arch_riscv64`, `azos_arch_aarch64`, `azos_arch_x86_64`) implements this
 surface.
 
 | Item | Captures |
