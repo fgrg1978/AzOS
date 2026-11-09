@@ -162,7 +162,9 @@ shared by every domain with an actuator.
   attach the claimed line.
 - Every motor write is capped by the safety layer's fresh verdict
   (`enforce::l0_cap`, two enforcer periods): the drivetrain loop's, a ring-3
-  per-wheel op's and a driver's alike (`motor::set_motor_cap`). A stale
+  per-wheel op's and a driver's alike (`motor::set_motor_cap`), and a wheel
+  already running is re-capped on every enforcer and rt-motor tick, safe mode
+  included (`motor::motor_recap`). A stale
   verdict, or none yet, caps to 0, so a stalled enforcer stops the robot; the
   hardware watchdog is fed only while the enforcement task and the control
   loop both advance (`liveness::Feed`), so a stalled enforcer also resets the
