@@ -4275,7 +4275,7 @@ raspi3b_row() { # raspi3b_row <label> <shell|usb|reboot>
     printf "  %-26s" "${label}..."
     mkdir -p "$CI_LOG_DIR"
     local slug log fifo kimg dtb="$REPO_ROOT/tests/host/dtb-tests/fixtures/qemu-raspi3b.dtb"
-    local feats="qemu,wdt-bcm2835-pm,rpi-firmware,usb-dwc2,usb-cdc"
+    local feats="qemu,wdt-bcm2835-pm,rpi-firmware,usb-dwc2,usb-cdc,CONFIG_WDT_BCM2835_PM_ARM=n"
     slug="$(printf '%s' "$label" | tr -c 'A-Za-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//')"
     log="$CI_LOG_DIR/${slug}.log"; fifo="$CI_LOG_DIR/${slug}.fifo"; kimg="$CI_LOG_DIR/${slug}.img"
     rm -f "$log" "$fifo" "$kimg"
