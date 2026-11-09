@@ -230,7 +230,7 @@ pub trait FaultServices<F: Frame> {
     /// Demand-page `va` for `access`; counts a resolved fault. `Resolved`
     /// also for a fault another install already resolved (the page is mapped
     /// with the access allowed): the access retries.
-    fn demand(space: Self::Space, va: u64, access: azos_mm::access::Access) -> Demand;
+    fn demand(space: Self::Space, va: u64, access: azos_abi::fault::Access) -> Demand;
     /// Page aging's software half: set the Accessed bit the CPU did not set
     /// itself on the user leaf of `va`, so the access can be retried. Asked
     /// last, after COW and demand paging declined (a leaf this resolves is

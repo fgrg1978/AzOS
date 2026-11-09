@@ -16,7 +16,7 @@
 //! transactional rollback of an EL1 Alignment fault, which arrives as a data
 //! abort) and the register dump of its frame ([`Frame::print`]).
 
-use azos_mm::access::Access;
+use azos_abi::fault::Access;
 use core::fmt;
 
 use azos_abi::exit_status as es;

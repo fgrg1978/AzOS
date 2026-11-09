@@ -55,6 +55,7 @@ pub mod power;
 pub mod rt_levels;
 /// Wave 12: the flight, behavior, config and OTA typed calls (615..=618).
 pub mod families;
+pub mod fault;
 pub mod sensor_sample;
 pub mod syscall_nr;
 pub mod time;

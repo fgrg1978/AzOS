@@ -1,12 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! What a faulting access was, as the trap reads it from the ISA's syndrome
-//! and the fault path asks the leaf about it.
+//! The fault access kind lives in azos_abi, which the trap layer may name.
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Access {
-    Read,
-    Write,
-    /// An instruction fetch.
-    Fetch,
-}
+pub use azos_abi::fault::Access;
