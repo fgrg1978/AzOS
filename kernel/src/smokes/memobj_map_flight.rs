@@ -29,8 +29,14 @@ use azos_mm::vmm;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 
 const CLONES: u32 = 300;
-/// A user address the record names; no leaf is made, no one walks it.
-const VA: usize = 0x4000_0000;
+/// A user address the records name and the fork test maps, far from every
+/// kernel mapping (the `tlb_probe` choice): on aarch64 QEMU virt 0x4000_0000
+/// is in the slot of the kernel's map of RAM, and on x86_64 PML4 slot 0 is
+/// the kernel's.
+#[cfg(not(target_arch = "x86_64"))]
+const VA: usize = 0x20_0000_0000;
+#[cfg(target_arch = "x86_64")]
+const VA: usize = 0x80_0000_0000;
 
 static OBJECT: AtomicU32 = AtomicU32::new(0);
 static STORES: AtomicU32 = AtomicU32::new(0);
