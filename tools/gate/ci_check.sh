@@ -22922,7 +22922,7 @@ PYEOF
                 bad; echo "      the estop-latch-smoke aarch64 kernel did not build"; return
             fi
             kern="$CI_LOG_DIR/kernel-${tag}.img"; cp "$A64_IMG" "$kern"
-            vm=(qemu-system-aarch64 -M "virt,gic-version=3" -cpu max,pauth=on -smp 2 -nographic
+            vm=("$QEMU_A64" -M "virt,gic-version=3" -cpu max,pauth=on -smp 2 -nographic
                 -kernel "$kern" -global virtio-mmio.force-legacy=false)
         else
             if ! kbuild "qemu,use-robot,estop-latch-smoke"; then return; fi
