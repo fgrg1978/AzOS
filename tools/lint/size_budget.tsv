@@ -6,18 +6,18 @@
 # 512 B): a commit that grows the image updates this file with a reason,
 # make size-update REASON=".." (one that shrinks it, to lock the gain in).
 # label	group	bytes   |   label	reason	text
-aarch64-microvm	.text	2893552
-aarch64-microvm	.rodata	356416
+aarch64-microvm	.text	2894688
+aarch64-microvm	.rodata	357440
 aarch64-microvm	.data	465704
 aarch64-microvm	.bss	1078824
-aarch64-microvm	reason	durable logger: LOG_QUEUES 16 (min with NR_CPUS) per-CPU Queues of 128 entries in .bss, each on its own cache line; .data shrinks with the old pinned-ring state
+aarch64-microvm	reason	ext4 ring-3 seam: the [volume] ext4 format row, the EXT4D topology row and the ext4-call task's strings
 riscv64-qemu	.text	2948738
 riscv64-qemu	.rodata	498336
 riscv64-qemu	.data	577040
 riscv64-qemu	.bss	2379496
 riscv64-qemu	reason	durable logger: LOG_QUEUES 16 (min with NR_CPUS) per-CPU Queues of 128 entries in .bss, each on its own cache line; .data shrinks with the old pinned-ring state
-x86_64-microvm	.text	2750121
-x86_64-microvm	.rodata	179160
-x86_64-microvm	.data	624888
+x86_64-microvm	.text	2751241
+x86_64-microvm	.rodata	180184
+x86_64-microvm	.data	625144
 x86_64-microvm	.bss	1056848
-x86_64-microvm	reason	durable logger: LOG_QUEUES 16 (min with NR_CPUS) per-CPU Queues of 128 entries in .bss, each on its own cache line; .data shrinks with the old pinned-ring state
+x86_64-microvm	reason	ext4 ring-3 seam: the [volume] ext4 format row, the EXT4D topology row and the ext4-call task's strings
