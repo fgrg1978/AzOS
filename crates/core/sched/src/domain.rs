@@ -461,6 +461,23 @@ fn with<R>(key: Key, f: impl FnOnce(&Domain, &mut State) -> R) -> Option<R> {
     Some(f(d, unsafe { &mut *d.state.get() }))
 }
 
+/// The root of `key`'s tree: the Domain a topology row or the kernel made,
+/// whose spawned children (and theirs) are beneath it. [`NONE`] for a key
+/// that names no live Domain. At most [`WALK_MAX`] steps: the tree is no
+/// deeper.
+pub fn root_of(key: Key) -> Key {
+    let mut k = key;
+    for _ in 0..=WALK_MAX {
+        let Some(d) = get(k) else { return NONE };
+        let p = d.parent.load(Ordering::Acquire);
+        if p == NONE {
+            return k;
+        }
+        k = p;
+    }
+    k
+}
+
 /// Create a root domain with one member (the creator of the task that will
 /// hold the key): a kernel task's. `None` when every slot is in use.
 pub fn create() -> Option<Key> {

@@ -825,8 +825,8 @@ pkgd's journal, not here.
 
 **The rate cap.** Every copy passes a bucket of `SEC_LOG_PER_S` records a
 second; capability denials and their reports take at most a quarter of it each,
-egress and logins at most half each and a quarter for any one Domain (however
-many tasks an application runs), so a flood of one class cannot push a microphone
+egress and logins at most half each and a quarter for any one application (its
+root Domain, with every task and child Domain it spawns), so a flood of one class cannot push a microphone
 record out of the ring and one application cannot spend its class's share to hide
 another's. The refill keeps what an integer
 division would drop, so calls microseconds apart refill at the rate too. An egress

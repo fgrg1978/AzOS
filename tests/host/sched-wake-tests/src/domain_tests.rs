@@ -132,6 +132,21 @@ fn the_hook_fields_are_kept() {
 /// one is the same user's, a root is the system's, and a slot that is reused
 /// by a Domain of another lineage starts from 0 again.
 ///
+/// The root of a subtree is what its spawned children (and theirs) name as
+/// their root: one key per application, however many it spawns; a key that
+/// names no live Domain has none.
+#[test]
+fn a_subtree_names_its_root() {
+    let _s = serial();
+    let app = domain::create().unwrap();
+    let child = domain::create_child(app).unwrap();
+    let grandchild = domain::create_child(child).unwrap();
+    let other = domain::create().unwrap();
+    assert_eq!((domain::root_of(app), domain::root_of(child), domain::root_of(grandchild)), (app, app, app));
+    assert_eq!(domain::root_of(other), other);
+    assert_eq!(domain::root_of(NONE), NONE);
+}
+
 /// **Canary.** Delete the inheritance in `create_child`: the child reads 0 and
 /// the first assertion fails.
 #[test]

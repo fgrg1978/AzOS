@@ -90,9 +90,11 @@ fn egress_gate(owner: u32, class: DestClass, dest: u32, port: u16) -> bool {
     };
     let ok = effect_gate::record(&e).is_ok();
     if ok && azos_records::SECURITY {
-        // The rate cap's share is the owner's Domain's: one application's
-        // tasks share one.
-        let domain = azos_sched::idx_for_tid(owner).map_or(owner, azos_sched::task_domain);
+        // The rate cap's share is the owner's root Domain's: one
+        // application's tasks and the children it spawns share one. A task
+        // already gone is no Domain's (`NONE`, which no live Domain is).
+        let domain = azos_sched::idx_for_tid(owner)
+            .map_or(azos_sched::domain::NONE, |i| azos_sched::domain::root_of(azos_sched::task_domain(i)));
         azos_decision::record_keyed(
             azos_decision::Rule::EnvelopeEgress,
             azos_decision::Verdict::Admit,
