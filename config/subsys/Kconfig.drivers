@@ -789,9 +789,9 @@ config FRAME_POOL_SLOTS
     help
       The frame class (crates/drivers/cam-ring, azos_syscall::frame_host): the
       capture task (or a USB camera's class driver) captures and encodes each
-      camera frame once into one of these buffers; the brain link's sender
-      (camera-tx, or the behavior task's inline path) and every ring-3 reader
-      of the Frame interface take a reference on the same buffer. The JPEG is
+      camera frame once into one of these buffers; every ring-3 reader of the
+      Frame interface (the behaviour engine sends the frame on the brain
+      link) takes a reference on the same buffer. The JPEG is
       encoded once per frame, however many readers there are.
 
       Each buffer is a kernel-owned contiguous memory object of FRAME_BYTES
@@ -801,10 +801,10 @@ config FRAME_POOL_SLOTS
       than the readers need refuse the pool: a cam-capture decision record
       says so, the objects it had made are given back, and the camera has no
       readers. The pool needs FRAME_READERS + 3 buffers (a reference per
-      reader, the sender's, the newest frame, the one being written and one
-      spare), which the range enforces. More buffers only matter under
-      FRAME_POOL_BACKPRESSURE, where they are the frames the sender may fall
-      behind by before capture stops. The same on every ISA.
+      reader, the in-order reader's, the newest frame, the one being written
+      and one spare), which the range enforces. More buffers only matter
+      under FRAME_POOL_BACKPRESSURE, where they are the frames the in-order
+      reader may fall behind by before capture stops. The same on every ISA.
 
 config FRAME_BYTES
     int "Frame class: bytes of a frame buffer"
@@ -817,8 +817,7 @@ config FRAME_BYTES
     help
       The biggest frame a buffer holds: a JPEG up to csi::JPEG_MAX_SIZE
       (19,200 B, the floor of the range) and, with USB_UVC, a raw YUY2 frame
-      of the JPEG path's capture size (38,400 B, its floor), which the sender
-      converts to the JPEG the link carries. A bigger number only costs memory
+      of the JPEG path's capture size (38,400 B, its floor). A bigger number only costs memory
       (FRAME_POOL_SLOTS x this, rounded up to pages). The most one memory
       object holds is 64 pages, and an embedded class, whose memory-object
       table is small, stops at 64 KiB. A ring-3 reader's buffer is this size at
@@ -833,41 +832,39 @@ config FRAME_READERS
       (Frame::next) together; each needs the `cam` effect of its scheduler
       class, which is asked once, at its first read. Another one is answered
       BUSY until a reader closes or exits. Each costs the pool one more buffer
-      (FRAME_POOL_SLOTS' range rises with it) and one cursor. The brain link's
-      sender is a reader of its own and not counted. A reader that exits
+      (FRAME_POOL_SLOTS' range rises with it) and one cursor. A reader that exits
       without closing is detached by the kernel's task-exit hook.
 
 choice FRAME_POOL_POLICY
-    prompt "Frame class: when the brain link's sender lags"
+    prompt "Frame class: when the in-order reader lags"
     default FRAME_POOL_OVERWRITE_OLDEST
     help
       What the capture task does when every free buffer of the frame pool holds
-      a frame the brain link's sender has not taken yet. Ring-3 readers never
+      a frame the pool's in-order reader (reader 0) has not taken yet. Ring-3 readers never
       hold capture back, whatever the policy: they take the newest frame, and
       a reader that stops reading costs nobody a frame.
 
 config FRAME_POOL_OVERWRITE_OLDEST
     bool "Overwrite the oldest frame (the latest frame wins)"
     help
-      Capture never waits on a reader: a slow TCP sender loses the frames
+      Capture never waits on a reader: a lagging reader loses the frames
       overwritten meanwhile (counted) and takes the newest one next, with
       its own acquisition stamp.
 
 config FRAME_POOL_BACKPRESSURE
-    bool "Back-pressure (capture waits for the brain link's sender)"
+    bool "Back-pressure (capture waits for the in-order reader)"
     help
       The producer refuses a frame (counted, no capture) rather than
-      overwrite one the sender has not taken, and the sender takes every frame
-      in order. A sender stuck behind a closed TCP window then holds back
-      capture. Only for a brain that must see every frame. Ring-3 readers are
-      not held back by it and see the newest frame.
+      overwrite one the in-order reader has not taken, and that reader takes
+      every frame in order; a reader stuck then holds back capture. Ring-3
+      readers are not held back by it and see the newest frame.
 
 endchoice
 
 endmenu # Frame class
 
 config BRAIN_CAMERA_PERIOD_MS
-    int "Frame class: camera period of the brain link (ms)"
+    int "Frame class: capture period while a reader is attached (ms)"
     default 250
     range 10 1000
     help
@@ -1151,7 +1148,7 @@ config IMU_SAMPLE_QUEUED
       the QEMU simulation the read completes at submit.
 
 config IMU_SAMPLE_POLLED
-    bool "Synchronous read in the task (before wave 15)"
+    bool "Synchronous read in the task"
     help
       The task does a synchronous transfer and sleeps until it is done
       (~1.35 ms per read at 100 kHz on the real bus): the RT task waits

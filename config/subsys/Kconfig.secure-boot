@@ -33,14 +33,14 @@ config SECURE_BOOT_ENFORCED
 
 config LINK_PROVISIONING_ENFORCED
     # cargo-feature: link-provisioning-enforced
-    bool "Brain link provisioning: no boot without a link key, no UART bridge" if !BUILD_TYPE_CERTIFIABLE
+    bool "Brain link provisioning: no boot without a link key" if !BUILD_TYPE_CERTIFIABLE
     default y if !BUILD_TYPE_DEV
     default n
     depends on USE_ROBOT
     help
-      Robot domain only (wave 11): the brain link exists only there.
-      Default: y on every build except BUILD_TYPE_DEV (owner decision
-      2026-10-23: the link fails closed), as SECURE_BOOT_ENFORCED: the
+      Robot domain only: the brain link exists only there.
+      Default: y on every build except BUILD_TYPE_DEV (the link fails
+      closed), as SECURE_BOOT_ENFORCED: the
       release robot images (vf2, k1, rpi5, robot-embedded, robot-fleet)
       need a provisioned link key, a development build keeps a keyless
       boot going with the link down. A BUILD_TYPE_CERTIFIABLE build has it
@@ -55,8 +55,6 @@ config LINK_PROVISIONING_ENFORCED
           of going on with the link down;
         * the handshake is refused while the entropy pool is unseeded, so
           no session is ever keyed from timing alone;
-        * the UART bridge, which carries brain-protocol frames (including
-          motion commands) outside any session, is down in both directions.
       A keyless encrypted-only robot can never talk, so the failure
       surfaces at provisioning, not in the field. The refusal is a `login`
       decision record (method 5, the brain link; reason 4, no key to

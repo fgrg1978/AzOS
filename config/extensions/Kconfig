@@ -12,13 +12,13 @@ menu "Extensions"
 
 config EXT_ROBOT
     # cargo-feature: use-robot
-    bool "Robot: motors, sensors, safety envelope and the brain link"
+    bool "Robot: motors, sensors, safety envelope and enforcer"
     default y if PRESET_ROBOT
     imply BOARD_IO
     help
       The robot extension (USE_ROBOT, kernel feature `use-robot`): the
-      crates under crates/domains/robot (behavior and the brain link, the
-      motor control loop and its per-robot-type envelope, IMU / barometer /
+      crates under crates/domains/robot (the safety layer and the
+      enforcer, the motor control loop and its per-robot-type envelope, IMU / barometer /
       GPS / AHRS, flight, navigation, telemetry, the ESC and RC drivers),
       the board's sensors (BOARD_IO) and the camera frame pool. Its effect
       provider (`azos_safety_core::actuation::ROBOT`) stops the wheels, the

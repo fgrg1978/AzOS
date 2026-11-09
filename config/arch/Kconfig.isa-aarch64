@@ -205,8 +205,7 @@ config A64_BTI_ENFORCE
       context switch resumes through `ret`, which is not checked. Where the CPU
       has no FEAT_BTI, or A64_BTI is n, nothing changes. Cost: none on the hot
       paths (the pads are no-ops and the check is in the branch unit); 4 KiB
-      pages for the text, as W^X already needs. Default n: it has never run on
-      a core; an arm-phase boot row proves it. y: enforce where the CPU has it.
+      pages for the text, as W^X already needs. Default n. y: enforce where the CPU has it.
 
 choice
     prompt "Guarded control stack (FEAT_GCS)"
@@ -252,8 +251,7 @@ choice
       whose stage 2 protects the pool, and not selectable with the
       hypervisor (HV): its world switch does not save TCR2_EL1 and POR_EL1, so
       a guest could rewrite the host's overlay and the host's would apply to the
-      guest. Never run on a core: default n until
-      the arm-phase rows boot it.
+      guest. Default n.
       n: nothing built. probe: use it where the CPU has it, else the tables stay
       writable (PT_PROTECTION_SOFT is the fallback window). require: the boot
       refuses a CPU without it.
@@ -290,7 +288,7 @@ choice
       hypervisor (HV) or the split monitor (HYP_MONITOR): the stub's world
       switch does not save TCR2_EL1 and the PIR registers, and the monitor
       zeroes TCR2_EL1 and refuses DBM in the descriptors it checks.
-      Default n: it has never run on a core; the arm-phase rows boot it.
+      Default n.
       n: the leaf encoding is unchanged and PIE stays off. probe: use it where
       the CPU has it. require: the boot refuses a CPU without it.
     config A64_S1PIE_NEVER

@@ -469,7 +469,7 @@ The index lists every declared option: 1323.
 | `BOOT_INI_MAX_KB` | `config/subsys/Kconfig.topology` | Largest CONFIG.INI the boot reads (KiB) |
 | `BOOT_SELFTESTS` | `config/axes/Kconfig.build` | Boot self-tests: start the demo, stress and probe work at boot |
 | `BOOT_SLOTS` | `config/subsys/Kconfig.ota` | A/B boot slots: slot validation, boot counter, recovery mode, boot confirmation |
-| `BRAIN_CAMERA_PERIOD_MS` | `config/subsys/Kconfig.drivers` | Frame class: camera period of the brain link (ms) |
+| `BRAIN_CAMERA_PERIOD_MS` | `config/subsys/Kconfig.drivers` | Frame class: capture period while a reader is attached (ms) |
 | `BUILD_TYPE_CERTIFIABLE` | `config/axes/Kconfig.build` | Certifiable: release, with secure boot and signed OTA forced on |
 | `BUILD_TYPE_DEV` | `config/axes/Kconfig.build` | Development: test machinery and the TEST key allowed |
 | `BUILD_TYPE_RELEASE` | `config/axes/Kconfig.build` | Release: test machinery forced off, TEST key refused |
@@ -580,7 +580,7 @@ The index lists every declared option: 1323.
 | `ENTROPY_TPM_SOURCE_MIX` | `config/subsys/Kconfig.entropy` | mix-only: mix, never credit |
 | `ENTROPY_TPM_SOURCE_OFF` | `config/subsys/Kconfig.entropy` | off: never ask the TPM for random bytes |
 | `EXEC_IMAGE_CACHE_KB` | `config/limits/Kconfig.limits` | Verified exec image cache (KiB of frames; 0 = off) |
-| `EXT_ROBOT` | `config/extensions/Kconfig` | Robot: motors, sensors, safety envelope and the brain link |
+| `EXT_ROBOT` | `config/extensions/Kconfig` | Robot: motors, sensors, safety envelope and enforcer |
 | `FAIR_SLICE_US` | `config/kernel/Kconfig.sched` | Fair class: slice (us) |
 | `FAT32_SECTOR_CLAIM_SLOTS` | `config/limits/Kconfig.limits` | FAT32 FAT-sector claim slots (1-64; concurrent FAT updates) |
 | `FAT_PI_IO_SITES` | `config/limits/Kconfig.limits` | FAT32 F1 probe: distinct (task, lock) sites recorded (diagnostics) |
@@ -601,7 +601,7 @@ The index lists every declared option: 1323.
 | `FP_RVV` | `config/arch/Kconfig.isa` | RISC-V V extension (32 × vlen-bit + control regs) |
 | `FP_SVE` | `config/arch/Kconfig.isa` | Aarch64 SVE (variable-length, up to 2048-bit per reg) |
 | `FRAME_BYTES` | `config/subsys/Kconfig.drivers` | Frame class: bytes of a frame buffer |
-| `FRAME_POOL_BACKPRESSURE` | `config/subsys/Kconfig.drivers` | Back-pressure (capture waits for the brain link's sender) |
+| `FRAME_POOL_BACKPRESSURE` | `config/subsys/Kconfig.drivers` | Back-pressure (capture waits for the in-order reader) |
 | `FRAME_POOL_OVERWRITE_OLDEST` | `config/subsys/Kconfig.drivers` | Overwrite the oldest frame (the latest frame wins) |
 | `FRAME_POOL_SLOTS` | `config/subsys/Kconfig.drivers` | Frame class: buffers in the pool |
 | `FRAME_READERS` | `config/subsys/Kconfig.drivers` | Frame class: most ring-3 readers at once |
@@ -668,7 +668,7 @@ The index lists every declared option: 1323.
 | `IGC_RX_DESCS` | `config/limits/Kconfig.limits` | igc receive ring entries (a multiple of 8) |
 | `IGC_TX_DESCS` | `config/limits/Kconfig.limits` | igc transmit ring entries (a multiple of 8) |
 | `IMAGE_TRUST_LOADER` | `config/subsys/Kconfig.ota` | The loader vouches for the kernel image (no slot image check) |
-| `IMU_SAMPLE_POLLED` | `config/subsys/Kconfig.drivers` | Synchronous read in the task (before wave 15) |
+| `IMU_SAMPLE_POLLED` | `config/subsys/Kconfig.drivers` | Synchronous read in the task |
 | `IMU_SAMPLE_QUEUED` | `config/subsys/Kconfig.drivers` | Queued read, re-armed from the task's tick (no wait) |
 | `INFER_MODEL_SIG_REQUIRED` | `config/axes/Kconfig.security` | Require an Ed25519 signature on the inference service's model data files |
 | `INFSRV_BLOB_KIB` | `config/limits/Kconfig.limits` | Inference service: blob arena (KiB) |
@@ -772,7 +772,7 @@ The index lists every declared option: 1323.
 | `KTRACE_TS_TIMEBASE` | `config/kernel/Kconfig.trace` | The monotonic timebase (the clock vDSO's) |
 | `LAT_FAT_SMOKE` | `config/axes/Kconfig.build` | Gate kernel: the latency smoke with its disk load through FAT32 |
 | `LAT_TRACE` | `config/kernel/Kconfig.trace` | Interrupts-masked / preemption-disabled window tracer |
-| `LINK_PROVISIONING_ENFORCED` | `config/subsys/Kconfig.secure-boot` | Brain link provisioning: no boot without a link key, no UART bridge |
+| `LINK_PROVISIONING_ENFORCED` | `config/subsys/Kconfig.secure-boot` | Brain link provisioning: no boot without a link key |
 | `LINUX_ABI` | `config/axes/Kconfig.personality` | Linux syscall personality (static Linux binaries) |
 | `LINUX_DRIVERS` | `config/axes/Kconfig.personality` | Linux driver support (ring-3 servers) |
 | `LINUX_IO_MAX` | `config/axes/Kconfig.personality` | Linux personality: bytes one read/write/readv/writev moves at most |

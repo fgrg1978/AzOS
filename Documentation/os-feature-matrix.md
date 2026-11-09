@@ -778,7 +778,7 @@ Options and choices: 888. Defconfigs: 27.
 
 | Symbol | Prompt | generic-embedded-riscv64+board-generic | generic-embedded-riscv64-dev+board-generic+micro | generic-sbc-aarch64-dev+qemu+hv-guest | generic-sbc-aarch64-dev+qemu+linux+gui | generic-sbc-aarch64-dev+qemu+reclaim | generic-sbc-riscv64-dev+qemu+hv-guest | generic-sbc-riscv64-dev+qemu+linux+gui | generic-sbc-riscv64-dev+qemu+reclaim | generic-sbc-riscv64-dev | generic-sbc-x86_64-dev+qemu+linux+gui | generic-sbc-x86_64-dev+qemu+reclaim | generic-server-riscv64+board-generic | microvm-sbc-aarch64-dev+qemu | microvm-sbc-riscv64-dev+qemu | microvm-sbc-x86_64-dev+qemu | robot-embedded-riscv64+board-generic | robot-sbc-aarch64+rpi5 | robot-sbc-aarch64-dev+qemu+linux+gui | robot-sbc-aarch64-dev+qemu+linux+hv-host+hv-example-guest | robot-sbc-riscv64+k1 | robot-sbc-riscv64+vf2 | robot-sbc-riscv64-dev+qemu+linux+gui | robot-sbc-riscv64-dev+qemu+linux+hv-host+hv-example-guest | robot-sbc-x86_64-dev+qemu+linux+gui | robot-sbc-x86_64-dev+qemu+linux+limine | robot-sbc-x86_64-dev+qemu+linux+pci | robot-server-riscv64+board-generic |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| `EXT_ROBOT` | Robot: motors, sensors, safety envelope and the brain link | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | y | y | y | y | y | y | y | y | y | y | y | y |
+| `EXT_ROBOT` | Robot: motors, sensors, safety envelope and enforcer | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | y | y | y | y | y | y | y | y | y | y | y | y |
 
 ## config/kernel/Kconfig.decisions
 
@@ -1110,9 +1110,9 @@ Options and choices: 888. Defconfigs: 27.
 
 | Symbol | Prompt | generic-embedded-riscv64+board-generic | generic-embedded-riscv64-dev+board-generic+micro | generic-sbc-aarch64-dev+qemu+hv-guest | generic-sbc-aarch64-dev+qemu+linux+gui | generic-sbc-aarch64-dev+qemu+reclaim | generic-sbc-riscv64-dev+qemu+hv-guest | generic-sbc-riscv64-dev+qemu+linux+gui | generic-sbc-riscv64-dev+qemu+reclaim | generic-sbc-riscv64-dev | generic-sbc-x86_64-dev+qemu+linux+gui | generic-sbc-x86_64-dev+qemu+reclaim | generic-server-riscv64+board-generic | microvm-sbc-aarch64-dev+qemu | microvm-sbc-riscv64-dev+qemu | microvm-sbc-x86_64-dev+qemu | robot-embedded-riscv64+board-generic | robot-sbc-aarch64+rpi5 | robot-sbc-aarch64-dev+qemu+linux+gui | robot-sbc-aarch64-dev+qemu+linux+hv-host+hv-example-guest | robot-sbc-riscv64+k1 | robot-sbc-riscv64+vf2 | robot-sbc-riscv64-dev+qemu+linux+gui | robot-sbc-riscv64-dev+qemu+linux+hv-host+hv-example-guest | robot-sbc-x86_64-dev+qemu+linux+gui | robot-sbc-x86_64-dev+qemu+linux+limine | robot-sbc-x86_64-dev+qemu+linux+pci | robot-server-riscv64+board-generic |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| `FRAME_POOL_BACKPRESSURE` | Back-pressure (capture waits for the brain link's sender) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| `FRAME_POOL_BACKPRESSURE` | Back-pressure (capture waits for the in-order reader) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
 | `FRAME_POOL_OVERWRITE_OLDEST` | Overwrite the oldest frame (the latest frame wins) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | y | y | y | y | y | y | y | y | y | y | y | y |
-| choice `FRAME_POOL_POLICY` | Frame class: when the brain link's sender lags | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST |
+| choice `FRAME_POOL_POLICY` | Frame class: when the in-order reader lags | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST | OVERWRITE_OLDEST |
 
 ### Drivers / I2C bus transactions
 
@@ -1120,7 +1120,7 @@ Options and choices: 888. Defconfigs: 27.
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | `I2C_DESIGNWARE` | I2C: Synopsys DesignWare controllers (VisionFive 2, Raspberry Pi 5 RP1, Intel LPSS) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | y | n | n | n | y | n | n | n | n | n | n |
 | `I2C_K1_FAST_MODE` | I2C: SpacemiT K1 controllers in fast mode (400 kHz) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | y | n | n | n | n | n | n | n |
-| `IMU_SAMPLE_POLLED` | Synchronous read in the task (before wave 15) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
+| `IMU_SAMPLE_POLLED` | Synchronous read in the task | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n |
 | `IMU_SAMPLE_QUEUED` | Queued read, re-armed from the task's tick (no wait) | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y |
 | choice | IMU sample source | QUEUED | QUEUED | QUEUED | QUEUED | QUEUED | QUEUED | QUEUED | QUEUED | QUEUED | QUEUED | QUEUED | QUEUED | QUEUED | QUEUED | QUEUED | QUEUED | QUEUED | QUEUED | QUEUED | QUEUED | QUEUED | QUEUED | QUEUED | QUEUED | QUEUED | QUEUED | QUEUED |
 
@@ -1271,7 +1271,7 @@ Options and choices: 888. Defconfigs: 27.
 
 | Symbol | Prompt | generic-embedded-riscv64+board-generic | generic-embedded-riscv64-dev+board-generic+micro | generic-sbc-aarch64-dev+qemu+hv-guest | generic-sbc-aarch64-dev+qemu+linux+gui | generic-sbc-aarch64-dev+qemu+reclaim | generic-sbc-riscv64-dev+qemu+hv-guest | generic-sbc-riscv64-dev+qemu+linux+gui | generic-sbc-riscv64-dev+qemu+reclaim | generic-sbc-riscv64-dev | generic-sbc-x86_64-dev+qemu+linux+gui | generic-sbc-x86_64-dev+qemu+reclaim | generic-server-riscv64+board-generic | microvm-sbc-aarch64-dev+qemu | microvm-sbc-riscv64-dev+qemu | microvm-sbc-x86_64-dev+qemu | robot-embedded-riscv64+board-generic | robot-sbc-aarch64+rpi5 | robot-sbc-aarch64-dev+qemu+linux+gui | robot-sbc-aarch64-dev+qemu+linux+hv-host+hv-example-guest | robot-sbc-riscv64+k1 | robot-sbc-riscv64+vf2 | robot-sbc-riscv64-dev+qemu+linux+gui | robot-sbc-riscv64-dev+qemu+linux+hv-host+hv-example-guest | robot-sbc-x86_64-dev+qemu+linux+gui | robot-sbc-x86_64-dev+qemu+linux+limine | robot-sbc-x86_64-dev+qemu+linux+pci | robot-server-riscv64+board-generic |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| `LINK_PROVISIONING_ENFORCED` | Brain link provisioning: no boot without a link key, no UART bridge | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | y | y | n | n | y | y | n | n | n | n | n | y |
+| `LINK_PROVISIONING_ENFORCED` | Brain link provisioning: no boot without a link key | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | y | y | n | n | y | y | n | n | n | n | n | y |
 | `SECURE_BOOT_ENFORCED` | Enforce Ed25519 signature verification at boot | y | n | n | n | n | n | n | n | n | n | n | y | n | n | n | y | y | n | n | y | y | n | n | n | n | n | y |
 
 ## config/subsys/Kconfig.storage
