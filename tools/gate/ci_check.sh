@@ -9440,9 +9440,9 @@ a64_kbuild "qemu" >/dev/null 2>&1 || true
 # INFER_MODEL_SIG_REQUIRED, default y. The behavior loop's model, the bundle
 # `/fat/BEHAVIOR.MBL`, carries its signature inside (over its manifest, which
 # holds the cost table the admission believes) and is verified whatever the
-# switch says. The service is started by its own row (`start`, the robot
-# preset's USERSPACE_MLSRV), so the rows boot `qemu,use-robot` kernels, built
-# from the robot cell, one fresh disk copy per boot.
+# switch says. The service has no client yet, so these rows start it
+# (runtime `canary=ml-service`, a `qemu,use-robot` kernel built from the robot
+# cell), one fresh disk copy per boot.
 #
 #   signed:   the disk as `make` builds it -- the bundle loaded "(signature
 #             verified)", GGUF self-test 3/3.
@@ -9501,14 +9501,14 @@ ml_data_sig_row() { # <label> <isa: rv|arm> <mode: signed|tampered|nosig>
     rm -f "$tmp"
     if [ "$isa" = "rv" ]; then
         par_ready
-        "$QEMU" -machine virt -nographic -bios default -kernel "$kimg" -smp 4 \
+        "$QEMU" -machine virt -nographic -bios default -kernel "$kimg" -append canary=ml-service -smp 4 \
             -global virtio-mmio.force-legacy=false \
             -drive file="$img",if=none,format=raw,id=hd0 \
             -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
     else
         par_ready
         "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
-            -kernel "$kimg" \
+            -kernel "$kimg" -append canary=ml-service \
             -global virtio-mmio.force-legacy=false \
             -drive file="$img",if=none,format=raw,id=hd0 \
             -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
@@ -22633,14 +22633,14 @@ PYEOF
     # `estop_release_authority_run <label> <features> <tag>`: the same
     # script and the same assertions on any kernel build — the enforced-link
     # row below runs it again with `link-provisioning-enforced`, whose boot gate
-    # needs the image's key and whose UART bridge is down, and must change
-    # nothing about the release authority.
+    # needs the image's key, and must change nothing about the release
+    # authority.
     estop_release_authority_run() {
         brain_peer_required || return 0
         local label="$1" features="$2" tag="$3"
-        # The kernel's handshake needs a seeded entropy pool (the enforced
-        # build refuses it otherwise, `refuse_unseeded`), and QEMU's pool is
-        # seeded by virtio-rng.
+        # The link's handshake needs a seeded entropy pool (the `entropy`
+        # endpoint refuses an unseeded one), and QEMU's pool is seeded by
+        # virtio-rng.
         local PEER_BOOT_QEMU_EXTRA="-device virtio-rng-device"
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
@@ -26933,20 +26933,20 @@ cat /ext4/link"
             make "$AZOS_OUT/build/image_hashes_aarch64.rs" >/dev/null 2>&1 || true
         fi
         # The images that ask for more stack than a task gets by default, run:
-        # MLSRV.ELF (64 KiB for its main thread, started by its own row,
+        # MLSRV.ELF (64 KiB for its main thread, started by `canary=ml-service`,
         # steady when it serves the Infer interface) and TOOLBOX.ELF's `ps`
         # beside it. Each died on a write fault below a 16 KiB stack: MLSRV at
         # every start (given up after three), `ps` on its first walk. The
         # canary kernel maps the default stack whatever the image asks
         # (`user-stack-request-canary`): MLSRV.ELF dies again, never serves,
         # and the row must not see its line. The static half is `ring-3 stacks`.
-        USH_FORBID="$RECOVERY_PROMPT_RE|PAGE FAULT|Killing user task" par_row ushell_row "sh: ps and the inference service ($ush_isa)" "$ush_isa" "$ush_feat,use-robot" PASS \
+        USH_QEMU_EXTRA="-append canary=ml-service" USH_FORBID="$RECOVERY_PROMPT_RE|PAGE FAULT|Killing user task" par_row ushell_row "sh: ps and the inference service ($ush_isa)" "$ush_isa" "$ush_feat,use-robot" PASS \
             "#wait \[infsrv\] serving the Infer interface
 ps
 #sleep 2" 240 \
             "[infsrv] serving the Infer interface on endpoint.infer" \
             "  TID  PPID PRI S NAME" " S MLSRV.ELF" " TOOLBOX.ELF"
-        USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "sh: ps and the inference service canary ($ush_isa)" "$ush_isa" "$ush_feat,use-robot,user-stack-request-canary" FAIL \
+        USH_QEMU_EXTRA="-append canary=ml-service" USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "sh: ps and the inference service canary ($ush_isa)" "$ush_isa" "$ush_feat,use-robot,user-stack-request-canary" FAIL \
             "#wait \[infsrv\] serving the Infer interface
 ps
 #sleep 2" 120 \

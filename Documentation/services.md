@@ -77,7 +77,7 @@ Source: `crates/core/topology/src/builder.rs` (the `*_CAPS` constants and the `p
 | `AUDIOD.ELF` | `userspace/services/audiod` | Kconfig `AUDIOD` | `endpoint.audio` (`Sound`) | `sound.0` | R `endpoint.audio`, RW `sound.0`, W `time` (the mixer thread's own deadline reservation, Kconfig `AUDIOD_PUMP_*`); the row itself is best effort, its calls served on `azos_srv` |
 | `VMMD.ELF` | `userspace/services/vmmd` | wherever the hypervisor core is built (Kconfig `HV`) | `endpoint.vmctl` (`VmCtl`) | `Vm`, `Vcpu` | RX `vm.0`, RWX `vcpu.0.k`, R `endpoint.vmctl`, RW `/fat/VM`, `ROOT_RO` |
 | `LXSRV.ELF` | `userspace/services/lxsrv` | `lx-server` builds | nothing | | R `entropy`, `ROOT_RO` |
-| `MLSRV.ELF` | `userspace/services/infsrv` | by its row (`start`) | `Infer`, `Decisions` (its receipts) and the verdict-log lease on `endpoint.infer` | | READ `endpoint.infer`, `WRITE` `memctl`, `ROOT_RO` |
+| `MLSRV.ELF` | `userspace/services/infsrv` | not started: no client yet (QEMU rows: `canary=ml-service`) | `Infer`, `Decisions` (its receipts) and the verdict-log lease on `endpoint.infer` | | READ `endpoint.infer`, `WRITE` `memctl`, `ROOT_RO` |
 | lxrt | `userspace/services/lxrt` | mapped into each Linux process | the Linux system-call surface | | no row |
 | `BRAINCLI.ELF`, `REFLEX.ELF` | `userspace/services/brain_client`, `userspace/services/reflex` | the `autorun` choice | | | `BRAINCLI.ELF` `ROOT_RO` only; `REFLEX.ELF` none; the grant a running one gets is the `autorun` row's |
 
@@ -1019,7 +1019,7 @@ The latest verdict of each context (`azos_rings::Log<Verdict, 1>`) is published 
 object the service makes; `InferLog::log` lends it read-only and names the caller's cell, and a
 real-time reader polls it with no call (`infsrv::verdict::LogReader`).
 
-**Started by its own row** (`start`, Kconfig `USERSPACE_MLSRV`), by the component manager.
+**Not started while it has no client.** The behaviour engine's L1 does not ask it yet, so its row does not start it; the QEMU rows that test the service start it with `canary=ml-service`.
 The start-up self-test classifies the policy file
 `/fat/POLICY.GGF` once its signature `/fat/POLICY.SIG` (a `DSIG`) verifies (Kconfig
 `INFER_MODEL_SIG_REQUIRED`, default y; with it off the file is classified unchecked). Its row is `soft_rt` at priority 16 and grants `READ` on

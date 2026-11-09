@@ -233,10 +233,8 @@ const ABICHILD_MIN_FRAMES: u64 = 16;
 #[cfg(feature = "ipc-endpoint-canary")]
 const ABICHILD_INSTANCES: u16 = 8;
 /// Room for the autorun row's grants: its fixed list, which depends on the
-/// features. The widest QEMU gate build fills about 39 (the drivetrain, the
-/// base list with every canary's grants, five launch grants, the inspect
-/// regions, the behaviour engine's two); the margin keeps an index past the
-/// end, a panic at boot, out of reach of the next grant.
+/// features. A build whose grants do not fit fails its const assertion
+/// (`fill_default_minimal`), so the index never runs past the end at boot.
 const AUTORUN_CAPS_MAX: usize = 48;
 /// The buzzer's PWM channel: free of both motors (channels 0 and 1) and of
 /// `autorun`'s `pwm.4`.
@@ -858,7 +856,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     // comes back. Every image without a row of its own (VSBENCH, ABITEST,
     // CAPTEST, IPCTEST, UHELLO…) runs under this one, so it states what they
     // have always run at: 16, the scheduler's default.
-    let autorun_base: &[CapSpec] = &[
+    const AUTORUN_BASE: &[CapSpec<'static>] = &[
             // The three hardware families — see the resource constants above
             // for why each target was chosen, and why the two motor-bound ones
             // are declared only under `cap-refusal-canary`.
@@ -1060,6 +1058,19 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
             // trees above (`cap-refusal-canary`) are what lets one change any.
             ROOT_RO,
     ];
+    // Every grant the row can get, counted where the build decides them: the
+    // drivetrain, this list, the launch grants, the inspect regions and the
+    // behaviour engine's two. A config that overflows does not build.
+    #[cfg(feature = "ipc-endpoint-canary")]
+    const LAUNCH_IMAGES: [&[u8]; 5] = [TASK_TOOLBOX_IMAGE, TASK_ABICHILD_IMAGE, TASK_UHELLO_IMAGE, TASK_EPSRV_IMAGE, TASK_VSSRV_IMAGE];
+    #[cfg(feature = "ipc-endpoint-canary")]
+    const LAUNCH: usize = LAUNCH_IMAGES.len();
+    #[cfg(not(feature = "ipc-endpoint-canary"))]
+    const LAUNCH: usize = 0;
+    const INSPECT: usize = if azos_limits::INSPECT { 2 + (azos_limits::INSPECT_ADMIN_PAGES != 0) as usize } else { 0 };
+    const _: () = assert!(DRIVETRAIN_CAPS.len() + AUTORUN_BASE.len() + LAUNCH + INSPECT + 2 <= AUTORUN_CAPS_MAX,
+        "the autorun row's grants do not fit AUTORUN_CAPS_MAX");
+    let autorun_base = AUTORUN_BASE;
     let mut autorun_caps = [CapSpec::empty(); AUTORUN_CAPS_MAX];
     // The drivetrain, first, and ONLY when `DRIVETRAIN`. Without it this row
     // grants no way to move anything — the point of the generic-microkernel
@@ -1085,7 +1096,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     // so no earlier slot moves. A child runs under its image's own row and
     // profile, which grant it nothing of this row's.
     #[cfg(feature = "ipc-endpoint-canary")]
-    for image in [TASK_TOOLBOX_IMAGE, TASK_ABICHILD_IMAGE, TASK_UHELLO_IMAGE, TASK_EPSRV_IMAGE, TASK_VSSRV_IMAGE] {
+    for image in LAUNCH_IMAGES {
         autorun_caps[n] = CapSpec {
             kind: CapKind::Node,
             perms: CapPerms::EXEC,
@@ -1461,9 +1472,6 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
         )
         .expect("default_minimal_topology: MLSRV.ELF push failed");
         topo.set_last_task_mem_pages(MLSRV_MEM_PAGES);
-        // Started by its own row, whoever calls it (the component manager or,
-        // without one, the kernel's supervisor).
-        topo.set_last_task_start(true);
     }
 
     // Wave 9 (DRV1) — the ring-3 drivers; see `TASK_BUZZDRV_IMAGE`. After the
