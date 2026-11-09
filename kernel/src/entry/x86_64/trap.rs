@@ -20,6 +20,8 @@ pub static KERNEL_BREAKPOINTS: AtomicU64 = AtomicU64::new(0);
 
 /// #PF error code bit 1: the access was a write.
 const PF_WRITE: u64 = 1 << 1;
+/// #PF error code bit 4: the access was an instruction fetch.
+const PF_FETCH: u64 = 1 << 4;
 
 impl Frame for TrapFrame {
     const ISA: &'static str = "x86_64";
@@ -61,6 +63,11 @@ impl Frame for TrapFrame {
     #[inline]
     fn fault_is_write(&self) -> bool {
         self.error_code & PF_WRITE != 0
+    }
+
+    #[inline]
+    fn fault_is_fetch(&self) -> bool {
+        self.error_code & PF_FETCH != 0
     }
 
     #[inline]

@@ -518,22 +518,24 @@ fn a_kernel_copy_waits_out_a_fork_hold() {
 /// Two threads touch one fresh page; one installs it, the other's fault is
 /// handled after: the page is mapped and allows the access, so that access
 /// retries instead of the thread dying. A store to a read-only page is still
-/// the task's fault.
+/// the task's fault, and so is a fetch from a mapped page that is not
+/// executable (retried, it would fault forever).
 /// **Canary** `spurious-fault-canary`: the second faulter is killed.
 #[test]
 fn a_fault_another_install_resolved_is_spurious() {
-    use azos_mm::vmm::{handle_user_fault, UserFault};
+    use azos_mm::vmm::{handle_user_fault, Access, UserFault};
     let _g = serial();
     let pt = space();
     let base = map(2);
     let s = azos_sched::shim_space(pt);
-    assert_eq!(handle_user_fault(s, base, true), UserFault::Resolved, "the first faulter installs");
-    assert_eq!(handle_user_fault(s, base, true), UserFault::Spurious, "the second one retries");
-    assert_eq!(handle_user_fault(s, base, false), UserFault::Spurious);
+    assert_eq!(handle_user_fault(s, base, Access::Write), UserFault::Resolved, "the first faulter installs");
+    assert_eq!(handle_user_fault(s, base, Access::Write), UserFault::Spurious, "the second one retries");
+    assert_eq!(handle_user_fault(s, base, Access::Read), UserFault::Spurious);
+    assert_eq!(handle_user_fault(s, base, Access::Fetch), UserFault::No, "a fetch from a data page is the task's");
     let ro = sys_mmap(0, PAGE_SIZE as u64, 1, 0, ANON, 0) as usize;
-    assert_eq!(handle_user_fault(s, ro, false), UserFault::Resolved);
-    assert_eq!(handle_user_fault(s, ro, true), UserFault::No, "a store to a read-only page is the task's");
-    assert_eq!(handle_user_fault(s, base + 64 * PAGE_SIZE, false), UserFault::No, "and so is a hole");
+    assert_eq!(handle_user_fault(s, ro, Access::Read), UserFault::Resolved);
+    assert_eq!(handle_user_fault(s, ro, Access::Write), UserFault::No, "a store to a read-only page is the task's");
+    assert_eq!(handle_user_fault(s, base + 64 * PAGE_SIZE, Access::Read), UserFault::No, "and so is a hole");
     azos_sched::shim_forget_space(pt);
     azos_sched::set_current_user_pt(0);
 }
@@ -611,7 +613,7 @@ fn a_kernel_copy_reaches_a_page_a_sibling_installed_after_its_miss() {
 /// after its tries, and the store is "resolved".
 #[test]
 fn a_refusing_leaf_the_slot_does_not_name_is_the_tasks_fault() {
-    use azos_mm::vmm::{handle_user_fault, UserFault};
+    use azos_mm::vmm::{handle_user_fault, Access, UserFault};
     let _g = serial();
     let pt = space();
     let base = map(2);
@@ -619,7 +621,7 @@ fn a_refusing_leaf_the_slot_does_not_name_is_the_tasks_fault() {
     let frame = azos_mm::pmm::alloc_page().expect("arena exhausted").as_usize();
     let ro = azos_arch_api::PagePerms { accessed: true, dirty: false, write: false, ..azos_arch_api::PagePerms::USER_RW };
     azos_mm::vmm::map(pt, base, frame, ro).unwrap();
-    assert_eq!(handle_user_fault(s, base, true), UserFault::No, "a store to it is the task's");
+    assert_eq!(handle_user_fault(s, base, Access::Write), UserFault::No, "a store to it is the task's");
     assert_eq!(azos_mm::vmm::translate(pt, base), Some(frame), "and the leaf is left as it was");
     azos_mm::vmm::unmap(pt, base);
     let _ = azos_mm::pmm::free_page(azos_mm::addr::PhysAddr::new(frame));

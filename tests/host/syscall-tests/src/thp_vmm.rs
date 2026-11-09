@@ -200,7 +200,7 @@ fn a_fault_on_a_promoted_block_leaves_its_leaf_alone() {
     // At trap time, the late faulter's fault is spurious: the block allows the
     // access, which retries (canary `spurious-fault-canary`: it is killed).
     let s = azos_sched::shim_space(pt);
-    assert_eq!(azos_mm::vmm::handle_user_fault(s, BLOCK_A + PAGE_SIZE, true), azos_mm::vmm::UserFault::Spurious);
+    assert_eq!(azos_mm::vmm::handle_user_fault(s, BLOCK_A + PAGE_SIZE, azos_mm::vmm::Access::Write), azos_mm::vmm::UserFault::Spurious);
 }
 
 /// The space whose fault is held at its install.

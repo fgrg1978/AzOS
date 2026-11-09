@@ -6,3 +6,5 @@
 //! `tests/host/sched-wake-tests` uses, for the same file.
 #[path = "../../../../../../crates/core/mm/src/budget.rs"]
 pub mod budget;
+#[path = "../../../../../../crates/core/mm/src/access.rs"]
+pub mod access;

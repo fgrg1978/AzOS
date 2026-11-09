@@ -78,6 +78,8 @@ pub mod pte_install;
 // FX8: vmm.rs walks the merged-root roster through roster.rs.
 #[path = "../../../../../../crates/core/mm/src/roster.rs"]
 mod roster;
+#[path = "../../../../../../crates/core/mm/src/access.rs"]
+pub mod access;
 #[path = "../../../../../../crates/core/mm/src/vmm.rs"]
 pub mod vmm;
 

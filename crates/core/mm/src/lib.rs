@@ -13,6 +13,7 @@ pub mod buddy;
 /// Type zones for physical frames (Kconfig `PMM_TYPE_ZONES`).
 pub mod zone;
 pub mod pmm;
+pub mod access;
 pub mod vmm;
 /// The funnel every page-table word goes through (host-tested, `#[path]`).
 pub mod pt;

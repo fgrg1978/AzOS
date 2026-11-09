@@ -220,7 +220,7 @@ impl<F: Frame> FaultServices<F> for Fake {
         log(format!("cow {pt:#x} {va:#x}"));
         with(|s| if s.cow.is_empty() { Cow::No } else { s.cow.remove(0) })
     }
-    fn demand(pt: usize, va: u64, _write: bool) -> Demand {
+    fn demand(pt: usize, va: u64, _access: azos_mm::access::Access) -> Demand {
         log(format!("demand {pt:#x} {va:#x}"));
         with(|s| if s.demand_quota { Demand::QuotaRefused } else if s.demand_ok { Demand::Resolved } else { Demand::No })
     }
@@ -394,6 +394,9 @@ impl Frame for RvFrame {
     fn fault_is_write(&self) -> bool {
         self.scause == 15
     }
+    fn fault_is_fetch(&self) -> bool {
+        self.scause == 12
+    }
     fn pc(&self) -> u64 {
         self.sepc
     }
@@ -467,6 +470,9 @@ impl Frame for ArmFrame {
     }
     fn fault_is_write(&self) -> bool {
         self.esr & (1 << 6) != 0
+    }
+    fn fault_is_fetch(&self) -> bool {
+        matches!(self.esr >> 26, 0x20 | 0x21)
     }
     fn pc(&self) -> u64 {
         self.elr
@@ -549,6 +555,9 @@ impl Frame for X86Frame {
     }
     fn fault_is_write(&self) -> bool {
         self.error_code & 2 != 0
+    }
+    fn fault_is_fetch(&self) -> bool {
+        self.error_code & (1 << 4) != 0
     }
     fn pc(&self) -> u64 {
         self.rip

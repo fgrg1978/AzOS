@@ -3206,6 +3206,7 @@ pub fn enable_paging() {
 
 // COW (AQ9) lives in the sibling module `cow`; its public API is re-exported
 // here for the callers that reach it through `vmm::`.
+pub use crate::access::Access;
 pub use crate::cow::{fork_cow, fork_cow_shared_held, handle_cow_fault, page_addref, page_decref, page_getref};
 
 /// Resolve a fault on a page of a mapping of `space` (`crate::pager`: a first
@@ -3239,31 +3240,38 @@ pub enum UserFault {
     No,
 }
 
-/// [`handle_demand_fault`] for the trap, which also knows whether the access
-/// was a `write`: a fault that lost the race to another install finds the
-/// page mapped and is not the task's fault.
+/// [`handle_demand_fault`] for the trap, which also knows what the `access`
+/// was: a fault that lost the race to another install finds the page mapped
+/// and is not the task's fault.
 ///
 /// Canary `spurious-fault-canary`: such a fault is the task's, which dies.
-pub fn handle_user_fault(space: crate::aspace::SpaceRef, fault_addr: usize, write: bool) -> UserFault {
+pub fn handle_user_fault(space: crate::aspace::SpaceRef, fault_addr: usize, access: Access) -> UserFault {
     match handle_demand_fault(space, fault_addr) {
         Ok(()) => UserFault::Resolved,
         Err(KernelError::QuotaRefused) => UserFault::QuotaRefused,
-        Err(_) if !cfg!(feature = "spurious-fault-canary") && access_allowed(space.root(), fault_addr, write) => {
+        Err(_) if !cfg!(feature = "spurious-fault-canary") && access_allowed(space.root(), fault_addr, access) => {
             UserFault::Spurious
         }
         Err(_) => UserFault::No,
     }
 }
 
-/// Does the leaf that maps `va` in `pt_phys` now, at any level, allow a user
-/// access (`write` or a read) without faulting? Its Accessed bit (and Dirty for
-/// a write) must be set where the CPU does not set them itself, or the access
-/// faults again and is the aging path's to resolve.
-fn access_allowed(pt_phys: usize, va: usize, write: bool) -> bool {
+/// Does the leaf that maps `va` in `pt_phys` now, at any level, allow the user
+/// `access` without faulting? A fetch needs an executable leaf: a readable one
+/// that is not would fault again on every retry. Its Accessed bit (and Dirty
+/// for a write) must be set where the CPU does not set them itself, or the
+/// access faults again and is the aging path's to resolve.
+fn access_allowed(pt_phys: usize, va: usize, access: Access) -> bool {
     let Some((w, _)) = user_leaf(pt_phys, va) else { return false };
     let p = ARCH.pte_perms(w);
     let hw = ARCH.accessed_in_hardware();
-    p.user && p.read && (!write || p.write) && (hw || p.accessed) && (hw || !write || p.dirty)
+    let write = access == Access::Write;
+    let kind = match access {
+        Access::Read => p.read,
+        Access::Write => p.read && p.write,
+        Access::Fetch => p.exec,
+    };
+    p.user && kind && (hw || p.accessed) && (hw || !write || p.dirty)
 }
 
 /// [`handle_demand_fault`] under `pt`, whose records are `space`'s (none: the

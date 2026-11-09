@@ -216,6 +216,11 @@ impl Frame for TrapFrame {
     }
 
     #[inline]
+    fn fault_is_fetch(&self) -> bool {
+        matches!((self.esr_el1 >> ESR_EC_SHIFT) & ESR_EC_MASK, EC_INSTR_ABORT_EL0 | EC_INSTR_ABORT_EL1)
+    }
+
+    #[inline]
     fn pc(&self) -> u64 {
         self.elr_el1
     }

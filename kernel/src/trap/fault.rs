@@ -16,6 +16,7 @@
 //! transactional rollback of an EL1 Alignment fault, which arrives as a data
 //! abort) and the register dump of its frame ([`Frame::print`]).
 
+use azos_mm::access::Access;
 use core::fmt;
 
 use azos_abi::exit_status as es;
@@ -177,7 +178,14 @@ pub fn page_fault<S: FaultServices<F>, F: Frame>(frame: &mut F) {
                     Cow::No => {}
                 }
             }
-            match S::demand(space, va, write) {
+            let access = if write {
+                Access::Write
+            } else if frame.fault_is_fetch() {
+                Access::Fetch
+            } else {
+                Access::Read
+            };
+            match S::demand(space, va, access) {
                 Demand::Resolved => return,
                 // The task is at its Domain's limit, not at a bad pointer: a
                 // record of its own and SIGKILL's status, as an out-of-memory

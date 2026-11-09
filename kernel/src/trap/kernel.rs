@@ -291,8 +291,8 @@ impl<F: ArchFrame> FaultServices<F> for Kernel {
         }
     }
 
-    fn demand(space: Self::Space, va: u64, write: bool) -> Demand {
-        match azos_mm::vmm::handle_user_fault(space, va as usize, write) {
+    fn demand(space: Self::Space, va: u64, access: azos_mm::access::Access) -> Demand {
+        match azos_mm::vmm::handle_user_fault(space, va as usize, access) {
             azos_mm::vmm::UserFault::Resolved => {
                 azos_mm::vmm::note_demand_resolved();
                 Demand::Resolved

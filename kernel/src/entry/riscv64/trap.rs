@@ -149,6 +149,11 @@ impl Frame for TrapFrame {
     }
 
     #[inline]
+    fn fault_is_fetch(&self) -> bool {
+        self.scause as usize == trap::TRAP_INSTR_PAGE_FAULT
+    }
+
+    #[inline]
     fn pc(&self) -> u64 {
         self.sepc as u64
     }

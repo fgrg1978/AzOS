@@ -82,6 +82,9 @@ pub trait Frame {
     /// Was the faulting access a write?
     fn fault_is_write(&self) -> bool;
 
+    /// Was the faulting access an instruction fetch?
+    fn fault_is_fetch(&self) -> bool;
+
     /// The program counter of the trapped instruction.
     fn pc(&self) -> u64;
 
@@ -224,10 +227,10 @@ pub trait FaultServices<F: Frame> {
     fn user_space() -> Option<Self::Space>;
     /// Break copy-on-write at `va`; counts a resolved fault.
     fn cow(space: Self::Space, va: u64) -> Cow;
-    /// Demand-page `va` (`write`: the access was a store); counts a resolved
-    /// fault. `Resolved` also for a fault another install already resolved
-    /// (the page is mapped with the access allowed): the access retries.
-    fn demand(space: Self::Space, va: u64, write: bool) -> Demand;
+    /// Demand-page `va` for `access`; counts a resolved fault. `Resolved`
+    /// also for a fault another install already resolved (the page is mapped
+    /// with the access allowed): the access retries.
+    fn demand(space: Self::Space, va: u64, access: azos_mm::access::Access) -> Demand;
     /// Page aging's software half: set the Accessed bit the CPU did not set
     /// itself on the user leaf of `va`, so the access can be retried. Asked
     /// last, after COW and demand paging declined (a leaf this resolves is
