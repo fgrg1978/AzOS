@@ -807,11 +807,11 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     }
 
     // The privacy effects are default-deny: a class has `cam` or `mic` only
-    // where a row says so. `cam` is the autorun class's (CAPTEST.ELF is the one
-    // image that reads the camera; the seccomp row and the `frame.0` grant
-    // narrow it to that image); `mic` is the best-effort class's (the toolbox's
+    // where a row says so. `cam` is the autorun class's (the images that read
+    // the camera are CAPTEST.ELF and BRAINCLI.ELF; the seccomp row and the
+    // `frame.0` grant narrow it to them); `mic` is the best-effort class's (the toolbox's
     // `beep`, and the audio server's clients). The brain link's own camera
-    // sender is the kernel's and asks for no effect.
+    // sender is BRAINCLI.ELF, an autorun image.
     for (name, kind, class) in [
         (&b"dev_cam_soft_rt"[..], crate::types::EffectKind::Cam, NAME_SOFT_RT),
         (&b"dev_mic_best_effort"[..], crate::types::EffectKind::Mic, NAME_BEST_EFFORT),

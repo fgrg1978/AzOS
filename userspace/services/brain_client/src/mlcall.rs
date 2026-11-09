@@ -162,10 +162,11 @@ pub enum Link {
 
 /// Look up the endpoint and start the helper.
 pub fn start() -> Link {
-    let ep = sys::cap_lookup_endpoint(ml::INFER_ENDPOINT, azos_abi::cap::CapPerms::WRITE.bits() as u8, 0);
-    if ep <= 0 {
-        return Link::Off;
-    }
+    let ep = match ml::grant_of(sys::cap_lookup_endpoint(ml::INFER_ENDPOINT, azos_abi::cap::CapPerms::WRITE.bits() as u8, 0)) {
+        ml::Grant::None => return Link::Off,
+        ml::Grant::Unheld => return Link::Down,
+        ml::Grant::Held(h) => h as isize,
+    };
     let (Some(input), Some(output)) = (Page::new(), Page::new()) else { return Link::Down };
     // SAFETY: single-threaded until the thread below starts; written once.
     unsafe { CLIENT = Some(Client { ep: ep as u32, input, output }) };

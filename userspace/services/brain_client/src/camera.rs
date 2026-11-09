@@ -12,8 +12,9 @@
 //! A frame is kilobytes among 70-byte sensor frames: on one TCP connection a
 //! stalled window holds every sensor frame behind it. So the sealed frame is
 //! sent a piece per cycle without waiting (`link::pump`), sensor frames wait
-//! until it is out, and a session whose window stays shut for [`STALL_MS`] is
-//! ended instead of holding the engine.
+//! until it is out (a sensor frame offered meanwhile is dropped and counted,
+//! never waited for), and a message owed for [`STALL_MS`] ends the session
+//! instead of holding the engine.
 
 use crate::wire::{self, FRAME_OVERHEAD, PAYLOAD_AT};
 
@@ -27,7 +28,7 @@ pub const MSG_MAX: usize = azos_crypto::secure_channel::MAX_MESSAGE_BYTES;
 /// The largest JPEG one camera message carries.
 pub const JPEG_MAX: usize = MSG_MAX - FRAME_OVERHEAD - CAMERA_HDR_SIZE;
 
-/// A send that has made no progress for this long ends the session (ms).
+/// A queued message not out after this long ends the session (ms).
 pub const STALL_MS: u64 = 2_000;
 
 /// Paces the frames: one per `period_ms`.
@@ -60,9 +61,53 @@ impl Pacer {
     }
 }
 
-/// Has a send that began making no progress at `since_ms` stalled by `now_ms`?
-pub fn stalled(since_ms: u64, now_ms: u64) -> bool {
-    now_ms.saturating_sub(since_ms) >= STALL_MS
+/// The message the socket still owes: a sealed message is sent whole and in
+/// order, a piece per cycle, and nothing waits for it. Pure bookkeeping; the
+/// bytes are in the link's transmit buffer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Tx {
+    pub off: usize,
+    pub len: usize,
+    since_ms: u64,
+    /// Frames offered while one was owed, and so dropped.
+    pub dropped: u32,
+}
+
+impl Tx {
+    pub const fn new() -> Tx {
+        Tx { off: 0, len: 0, since_ms: 0, dropped: 0 }
+    }
+
+    pub fn pending(&self) -> bool {
+        self.off < self.len
+    }
+
+    /// A sealed message of `len` bytes was queued at `now_ms`.
+    pub fn queue(&mut self, len: usize, now_ms: u64) {
+        self.off = 0;
+        self.len = len;
+        self.since_ms = now_ms;
+    }
+
+    /// The socket took `n` bytes. Progress does not restart the clock: a
+    /// message owed for [`STALL_MS`] is a stall however slowly it drains.
+    pub fn advance(&mut self, n: usize) {
+        self.off = (self.off + n).min(self.len);
+        if self.off == self.len {
+            self.off = 0;
+            self.len = 0;
+        }
+    }
+
+    /// A frame was offered while one was owed and dropped.
+    pub fn dropped(&mut self) {
+        self.dropped = self.dropped.saturating_add(1);
+    }
+
+    /// Has the owed message been waiting [`STALL_MS`] since it was queued?
+    pub fn stalled(&self, now_ms: u64) -> bool {
+        self.pending() && now_ms.saturating_sub(self.since_ms) >= STALL_MS
+    }
 }
 
 /// The pixel size a baseline or progressive JPEG states (its first SOF

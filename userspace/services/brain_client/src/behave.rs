@@ -23,6 +23,8 @@ pub const TURN: (i32, i32) = (60, 20);
 pub const EXPLORE: (i32, i32) = (30, 30);
 /// The brain's command drives for this long after it arrives (ms).
 pub const REMOTE_MAX_AGE_MS: u64 = 2_000;
+/// The actuator type of a differential drive (`brain_protocol::ACT_DIFF_DRIVE`).
+pub const ACTUATOR_DIFF_DRIVE: u8 = 0;
 /// A prediction is of the next command: it biases L1 for this long (ms).
 pub const PREDICT_MAX_AGE_MS: u64 = 500;
 /// A prediction the brain is less sure of than this is ignored.
@@ -108,7 +110,7 @@ impl Predict {
     pub fn decode(payload: &[u8], now_ms: u64) -> Option<Predict> {
         let n = *payload.get(1)? as usize;
         let flags = *payload.get(2)?;
-        if n < 2 || payload.len() != 3 + 2 * n + 1 || flags & 0x01 != 0 {
+        if payload[0] != ACTUATOR_DIFF_DRIVE || n < 2 || payload.len() != 3 + 2 * n + 1 || flags & 0x01 != 0 {
             return None;
         }
         let wheel = |k: usize| i16::from_le_bytes([payload[3 + 2 * k], payload[4 + 2 * k]]) as i32;
@@ -156,14 +158,24 @@ pub enum Winner {
 /// layers chose, wheel by wheel: it never makes a cycle drive that would not
 /// have, and never raises a wheel.
 pub fn arbitrate(layers: Layers, i: &Inputs) -> Option<((i32, i32), Winner)> {
-    let (plain, winner) = choose(layers, i, Bias::None)?;
+    // What the layers choose without the model's turn: the verdict may brake
+    // or limit that choice, never start motion or raise a wheel.
+    let floor = Inputs { ml: if i.ml == Ml::Turn { Ml::Go } else { i.ml }, predict: None, ..*i };
+    let (base, base_winner) = choose(layers, &floor, Bias::None)?;
     let bias = if layers.avoid { i.predict.map_or(Bias::None, |p| p.bias(i.now_ms)) } else { Bias::None };
-    if bias == Bias::None {
-        return Some((plain, winner));
+    let (full, full_winner) = choose(layers, i, bias).unwrap_or((base, base_winner));
+    let cmd = bounded(full, base);
+    Some((cmd, if cmd == base { base_winner } else { full_winner }))
+}
+
+/// `full` bounded by `base`, wheel by wheel. A wheel that would turn the other
+/// way stops the whole command: a spin must not become motion forward.
+fn bounded(full: (i32, i32), base: (i32, i32)) -> (i32, i32) {
+    let reverses = |f: i32, b: i32| f != 0 && b != 0 && (f > 0) != (b > 0);
+    if reverses(full.0, base.0) || reverses(full.1, base.1) {
+        return (0, 0);
     }
-    let (hinted, hinted_winner) = choose(layers, i, bias).unwrap_or((plain, winner));
-    let cmd = (under(hinted.0, plain.0), under(hinted.1, plain.1));
-    Some((cmd, if cmd == plain { winner } else { hinted_winner }))
+    (under(full.0, base.0), under(full.1, base.1))
 }
 
 /// `hinted` bounded by `plain`: the same direction and no faster.
@@ -211,4 +223,14 @@ fn avoid(i: &Inputs, bias: Bias) -> Option<(i32, i32)> {
         return Some(TURN);
     }
     None
+}
+
+/// A rangefinder reading the engine may act on: this cycle's read succeeded
+/// (a failed read leaves the last distance in place, which is not a reading)
+/// and the sensor gave a distance (0 is none).
+pub fn range_reading(raw: u16, fresh: bool) -> Option<u16> {
+    if cfg!(feature = "range-stale-canary") {
+        return (raw != 0).then_some(raw);
+    }
+    (fresh && raw != 0).then_some(raw)
 }

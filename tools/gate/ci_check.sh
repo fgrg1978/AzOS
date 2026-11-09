@@ -12367,6 +12367,16 @@ host_job host_canary_row "sensor: vdso bind canary" syscall-tests virtio-snd,lin
 # The native basic utilities (userspace/lib/coreutils): each canary puts one bug back, and the
 # named test of coreutils-tests must be the one that goes red.
 host_job host_canary_row "coreutils: the tool image holds no write tree canary" topology-tests toolbox-write-canary toolbox_holds_no_write_tree
+# The behaviour engine's inference client and L1 (userspace/services/brain_client):
+# a refusal passes as a class; the answering model is not compared; a timeout
+# passes as a class; a grant the task does not hold counts as none; a missing
+# distance turns the model off; a failed range read counts as a reading.
+host_job host_canary_row "engine: refusal passes as a class canary" behavior-tests infer-refusal-canary a_refusal_is_never_a_class
+host_job host_canary_row "engine: other model's reply canary" behavior-tests infer-model-canary a_reply_of_another_model_is_malformed
+host_job host_canary_row "engine: a timeout passes canary" behavior-tests ml-timeout-canary a_reply_that_does_not_come_stops_the_robot
+host_job host_canary_row "engine: unheld grant is off canary" behavior-tests ml-grant-canary a_grant_the_task_does_not_hold_is_not_off
+host_job host_canary_row "engine: no distance, no stop canary" behavior-tests ml-unaskable-canary a_missing_distance_stops_the_robot
+host_job host_canary_row "engine: stale range canary" behavior-tests range-stale-canary a_failed_range_read_is_no_reading
 host_job host_canary_row "coreutils: the utilities' image holds only files canary" topology-tests coreutil-grant-canary coreutil_holds_files_and_nothing_else
 host_job host_canary_row "coreutils: the utilities' image holds the write trees canary" topology-tests coreutil-write-canary coreutil_holds_files_and_nothing_else
 host_job host_canary_row "coreutils: argument parser, bundled flags canary" coreutils-tests args-bundle-canary argp_bundles_flags
@@ -22073,7 +22083,7 @@ PY
         local v_line d_line
         v_line=$(grep -an "\[brain_client\] ML: verdict, class 0" "$log" 2>/dev/null | sed -n 1p | cut -d: -f1)
         d_line=$(grep -an "\[behave\] remote drives (60,60)" "$log" 2>/dev/null | sed -n 1p | cut -d: -f1)
-        if [ -z "$v_line" ] || [ "$v_line" -gt "$d_line" ]; then
+        if [ -z "$v_line" ] || [ -z "$d_line" ] || [ "$v_line" -gt "$d_line" ]; then
             bad; echo "      the brain's command drove before the inference service gave L1 a"
             echo "      verdict (or it never did): ML must be asked every cycle and a missing"
             echo "      verdict holds a stop."

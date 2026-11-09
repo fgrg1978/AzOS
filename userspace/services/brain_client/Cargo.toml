@@ -24,6 +24,9 @@ azos_crypto = { path = "../../../crates/core/crypto" }
 infer-refusal-canary = []
 infer-model-canary = []
 ml-timeout-canary = []
+ml-grant-canary = []
+ml-unaskable-canary = []
+range-stale-canary = []
 
 [profile.release]
 opt-level = "s"

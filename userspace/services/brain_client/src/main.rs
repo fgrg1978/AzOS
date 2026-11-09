@@ -632,6 +632,8 @@ struct SensorData {
     enc_right: i64,
     range_front: u16,
     range_right: u16,
+    /// This cycle's range read succeeded: a failed read leaves the last distance.
+    range_fresh: bool,
     sensor_flags: u16,
 }
 
@@ -647,6 +649,7 @@ impl SensorData {
             enc_right: 0,
             range_front: 0,
             range_right: 0,
+            range_fresh: false,
             sensor_flags: 0,
         }
     }
@@ -698,7 +701,8 @@ impl SensorData {
 
         // Rangefinder: 4 bytes = front_mm(u16) + right_mm(u16)
         let mut range_buf = [0u8; 4];
-        if readings.get(3, &mut range_buf) >= 4 {
+        self.range_fresh = readings.get(3, &mut range_buf) >= 4;
+        if self.range_fresh {
             self.range_front = u16::from_le_bytes([range_buf[0], range_buf[1]]);
             self.range_right = u16::from_le_bytes([range_buf[2], range_buf[3]]);
         }
@@ -836,10 +840,11 @@ fn exchange(sock: u32, sensors: &SensorData, remote: &mut Option<behave::Remote>
     let mut frame = [0u8; SENSOR_FRAME_SIZE];
     build_sensor_payload(&mut payload, sensors);
     let frame_len = build_frame(&mut frame, PKT_SENSOR, &payload);
-    // A camera frame still on the wire goes first: a sealed message is never
-    // dropped or reordered. The sensor frame of this cycle is not sent.
-    if !link::tx_pending() && !link::seal_frame(sock, &frame[..frame_len]) {
-        sys::print(b"[brain_client] Send failed, disconnecting\n");
+    // The send never waits: a camera frame still owed goes first, and this
+    // cycle's sensor frame is then dropped and counted, not queued behind it.
+    // What the engine reads below is never held back by a send.
+    if link::queue_frame(&frame[..frame_len], now_ms).is_err() || link::pump(sock, now_ms) == link::Pump::Failed {
+        sys::print(b"[brain_client] Send failed or stalled, disconnecting\n");
         return false;
     }
     // Frames are opened in `link::feed` BEFORE this client's own
@@ -1002,7 +1007,7 @@ impl Camera {
             }
             return true;
         };
-        if !link::queue_frame(&msg[..n], now_ms) {
+        if link::queue_frame(&msg[..n], now_ms).is_err() {
             return false;
         }
         self.pacer.sent(now_ms);
@@ -1087,6 +1092,13 @@ fn engine(brain: Option<([u8; 4], u16)>, rekey_secs: u64) -> ! {
                 up = c.step(s, now);
             }
             if !up {
+                if link::tx_dropped() > 0 {
+                    let mut line = Line::new();
+                    line.push(b"[brain_client] link busy: frames dropped ");
+                    line.push_i64(link::tx_dropped() as i64);
+                    line.push(b"\n");
+                    sys::print(line.bytes());
+                }
                 link::end();
                 sys::close_typed(s);
                 if let Some(c) = camera.as_mut() {
@@ -1099,14 +1111,13 @@ fn engine(brain: Option<([u8; 4], u16)>, rekey_secs: u64) -> ! {
                 sys::print(b"[brain_client] Disconnected, reconnecting...\n");
             }
         }
-        let nz = |mm: u16| (mm != 0).then_some(mm);
-        let (front_mm, right_mm) = (nz(sensors.range_front), nz(sensors.range_right));
-        // L1 asks the model only while it is on and there is a reading to
-        // build the input from.
-        let (ml, ml_outcome) = match (layers.avoid, front_mm, right_mm) {
-            (true, Some(f), Some(r)) => mlcall::ask(ml_link, f, r),
-            _ => (behave::Ml::Off, None),
-        };
+        let (front_mm, right_mm) = (
+            behave::range_reading(sensors.range_front, sensors.range_fresh),
+            behave::range_reading(sensors.range_right, sensors.range_fresh),
+        );
+        // L1 asks the model on two fresh distances; without them the verdict is
+        // missing and L1 stops.
+        let (ml, ml_outcome) = ml::verdict_for(layers.avoid, front_mm, right_mm, |f, r| mlcall::ask(ml_link, f, r));
         if ml_outcome.is_some() && last_ml != Some(ml_outcome) {
             report_ml(ml_outcome);
             last_ml = Some(ml_outcome);

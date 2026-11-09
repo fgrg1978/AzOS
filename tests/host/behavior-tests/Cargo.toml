@@ -55,6 +55,9 @@ estop-unrecorded-canary = []
 infer-refusal-canary = []
 infer-model-canary = []
 ml-timeout-canary = []
+ml-grant-canary = []
+ml-unaskable-canary = []
+range-stale-canary = []
 # Wave 15: `safety.rs`'s E03 section is the `geofence` feature and `rc_link.rs`
 # exists only under `rc-input` in the real crate; on here so the suite tests
 # both (the files are pulled in by `#[path]`).

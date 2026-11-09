@@ -86,6 +86,52 @@ impl MlOutcome {
     }
 }
 
+/// What the topology's grant of the inference endpoint is, from the return of
+/// `cap_lookup_endpoint`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Grant {
+    /// The row grants none: no model is asked.
+    None,
+    /// The task holds it.
+    Held(u32),
+    /// The row grants it and the task does not hold it (or the lookup failed
+    /// some other way): a model was meant to run and cannot, so every verdict
+    /// is missing.
+    Unheld,
+}
+
+/// Only `-ENOENT` is "granted none"; every other failure is [`Grant::Unheld`].
+pub fn grant_of(ret: isize) -> Grant {
+    if ret > 0 {
+        Grant::Held(ret as u32)
+    } else if ret == Errno::ENOENT.to_syscall_ret() as isize || cfg!(feature = "ml-grant-canary") {
+        Grant::None
+    } else {
+        Grant::Unheld
+    }
+}
+
+/// This cycle's verdict. With L1 on, the model is asked only on two fresh
+/// distances, and a cycle without them has no verdict to wait for: it is
+/// missing, so the robot stops (a dead rangefinder is the case where the floor
+/// is gone, and the model must not turn itself off there). `ask` is the call.
+pub fn verdict_for(
+    avoid: bool,
+    front_mm: Option<u16>,
+    right_mm: Option<u16>,
+    ask: impl FnOnce(u16, u16) -> (crate::behave::Ml, Option<MlOutcome>),
+) -> (crate::behave::Ml, Option<MlOutcome>) {
+    use crate::behave::Ml;
+    if !avoid {
+        return (Ml::Off, None);
+    }
+    match (front_mm, right_mm) {
+        (Some(f), Some(r)) => ask(f, r),
+        _ if cfg!(feature = "ml-unaskable-canary") => (Ml::Off, None),
+        _ => (Ml::Missing, Some(MlOutcome::Unavailable)),
+    }
+}
+
 /// The verdict L1 acts on for `outcome`.
 pub fn verdict_of(outcome: MlOutcome) -> crate::behave::Ml {
     use crate::behave::Ml;

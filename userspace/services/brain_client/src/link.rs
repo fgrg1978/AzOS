@@ -64,11 +64,8 @@ struct Session {
     carry: [u8; RX_CARRY_MAX],
     carry_len: usize,
     wire: [u8; TX_WIRE_MAX],
-    /// The part of `wire` a queued message still owes the socket.
-    tx_off: usize,
-    tx_len: usize,
-    /// When the queued message last made progress, ms.
-    tx_since_ms: u64,
+    /// The queued message and how much of it the socket still owes.
+    tx: crate::camera::Tx,
     /// Next wall-clock rekey, in `vdso_now_ns` nanoseconds (0: no clock).
     rekey_at_ns: u64,
     rekey_interval_ns: u64,
@@ -81,9 +78,7 @@ impl Session {
             carry: [0; RX_CARRY_MAX],
             carry_len: 0,
             wire: [0; TX_WIRE_MAX],
-            tx_off: 0,
-            tx_len: 0,
-            tx_since_ms: 0,
+            tx: crate::camera::Tx::new(),
             rekey_at_ns: 0,
             rekey_interval_ns: 0,
         }
@@ -265,8 +260,8 @@ pub fn handshake(sock: u32, entropy_cap: u32, psk: &[u8; sc::PSK_BYTES],
 /// message cannot be dropped: the peer takes the next record counter only).
 fn seal(frame: &[u8]) -> Option<usize> {
     let s = session();
-    let Session { link, wire, rekey_at_ns, rekey_interval_ns, tx_len, .. } = s;
-    if *tx_len != 0 {
+    let Session { link, wire, rekey_at_ns, rekey_interval_ns, tx, .. } = s;
+    if tx.pending() {
         return None;
     }
     let l = link.as_mut()?;
@@ -298,20 +293,27 @@ pub fn seal_frame(sock: u32, frame: &[u8]) -> bool {
     }
 }
 
-/// Seal `frame` and queue it for [`pump`], which sends it without waiting.
-/// `false` ends the session.
-pub fn queue_frame(frame: &[u8], now_ms: u64) -> bool {
-    let Some(w) = seal(frame) else { return false };
-    let s = session();
-    s.tx_off = 0;
-    s.tx_len = w;
-    s.tx_since_ms = now_ms;
-    true
+/// Seal `frame` and queue it for [`pump`]. A frame offered while another is
+/// still owed is dropped and counted, never waited for: `Ok(false)`. `Err`
+/// ends the session.
+pub fn queue_frame(frame: &[u8], now_ms: u64) -> Result<bool, ()> {
+    if session().tx.pending() {
+        session().tx.dropped();
+        return Ok(false);
+    }
+    let Some(w) = seal(frame) else { return Err(()) };
+    session().tx.queue(w, now_ms);
+    Ok(true)
 }
 
 /// Does a queued message still owe the socket bytes?
 pub fn tx_pending() -> bool {
-    session().tx_len != 0
+    session().tx.pending()
+}
+
+/// Frames dropped since the session began because the link was busy.
+pub fn tx_dropped() -> u32 {
+    session().tx.dropped
 }
 
 /// Where a queued message stands after [`pump`].
@@ -321,37 +323,27 @@ pub enum Pump {
     Idle,
     /// The socket took what it could.
     Pending,
-    /// The socket took nothing for `camera::STALL_MS`, or refused.
+    /// The message has been owed for `camera::STALL_MS`, or the socket refused.
     Failed,
 }
 
 /// Offer the queued message to the socket, as much as it takes now.
 pub fn pump(sock: u32, now_ms: u64) -> Pump {
     let s = session();
-    if s.tx_len == 0 {
-        return Pump::Idle;
-    }
-    let mut progress = false;
-    while s.tx_off < s.tx_len {
-        let n = sys::send_typed(sock, &s.wire[s.tx_off..s.tx_len]);
+    while s.tx.pending() {
+        let n = sys::send_typed(sock, &s.wire[s.tx.off..s.tx.len]);
         if n < 0 {
             return Pump::Failed;
         }
         if n == 0 {
             break;
         }
-        s.tx_off += n as usize;
-        progress = true;
+        s.tx.advance(n as usize);
     }
-    if s.tx_off == s.tx_len {
-        s.tx_off = 0;
-        s.tx_len = 0;
+    if !s.tx.pending() {
         return Pump::Idle;
     }
-    if progress {
-        s.tx_since_ms = now_ms;
-    }
-    if crate::camera::stalled(s.tx_since_ms, now_ms) { Pump::Failed } else { Pump::Pending }
+    if s.tx.stalled(now_ms) { Pump::Failed } else { Pump::Pending }
 }
 
 /// Feed received wire bytes: open every whole frame in place and hand each
@@ -398,8 +390,7 @@ pub fn end() {
     let s = session();
     s.link = None;
     s.carry_len = 0;
-    s.tx_off = 0;
-    s.tx_len = 0;
+    s.tx = crate::camera::Tx::new();
 }
 
 /// Name a transport error for the console.

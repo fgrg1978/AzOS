@@ -124,7 +124,7 @@ config PID_DT_MS
 
 config ML_REPLY_TIMEOUT_US
     int "Behaviour engine: inference service reply budget (us)"
-    range 2000 100000
+    range 2000 40000
     default 10000
     help
       userspace/services/brain_client/src/mlcall.rs: how long one engine
@@ -134,8 +134,8 @@ config ML_REPLY_TIMEOUT_US
       cycle's Infer call carries, so the service refuses at once a call
       whose signed worst case (the cost row of BEHAVIOR.MBL, 1000 us)
       does not fit it, which is why the range starts above that cost row.
-      10 % of the 100 ms behaviour period at the default; the engine runs
-      every 50 ms, so keep it well below that.
+      The engine runs every 50 ms and the call is waited for inside that
+      cycle, so the range stops below it.
 
 config MOTOR_COMMANDER_EXIT_STOP
     bool "A dead motor commander's wheels go to a safe stop"

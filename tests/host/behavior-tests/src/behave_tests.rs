@@ -167,7 +167,7 @@ fn a_prediction_never_raises_speed() {
 /// short channel list and a wrong length are not predictions.
 #[test]
 fn a_prediction_decodes_from_its_payload() {
-    let mut p = vec![0x01, 2, 0];
+    let mut p = vec![ACTUATOR_DIFF_DRIVE, 2, 0];
     p.extend_from_slice(&(-20i16).to_le_bytes());
     p.extend_from_slice(&45i16.to_le_bytes());
     p.push(200);
@@ -176,6 +176,55 @@ fn a_prediction_decodes_from_its_payload() {
     emergency[2] = 1;
     assert_eq!(Predict::decode(&emergency, 7), None);
     assert_eq!(Predict::decode(&p[..p.len() - 1], 7), None);
-    assert_eq!(Predict::decode(&[0x01, 1, 0, 5, 0, 200], 7), None);
+    assert_eq!(Predict::decode(&[ACTUATOR_DIFF_DRIVE, 1, 0, 5, 0, 200], 7), None);
+    let mut quad = p.clone();
+    quad[0] = 1;
+    assert_eq!(Predict::decode(&quad, 7), None, "a command for another kind of machine");
     assert_eq!(Predict::decode(&[], 7), None);
+}
+
+/// **The model's turn never starts motion or raises a wheel**: with no layer
+/// driving, a `Turn` verdict publishes nothing; with the brain at (20,20) it
+/// stays at (20,20) or below, wheel by wheel; and over a sweep it never exceeds
+/// what the layers chose without it.
+///
+/// **Canary.** Return `TURN` for `Ml::Turn` before the layers are asked (the
+/// old `avoid`): the first assertion drives, red.
+#[test]
+fn a_model_turn_only_limits() {
+    let silent = Inputs { front_mm: Some(3_000), right_mm: Some(3_000), ml: Ml::Turn, ..at(1_000) };
+    assert_eq!(arbitrate(Layers::AVOID_ONLY, &silent), None, "no session and nothing else drives");
+    assert_eq!(arbitrate(Layers::ALL, &silent), None);
+    let brain = Some(Remote { left: 20, right: 20, at_ms: 1_000 });
+    let slow = Inputs { remote: brain, session_up: true, ..silent };
+    assert_eq!(arbitrate(Layers::ALL, &slow), Some(((20, 20), Winner::Remote)));
+    let fast = Inputs { remote: Some(Remote { left: 80, right: 80, at_ms: 1_000 }), ..slow };
+    assert_eq!(arbitrate(Layers::ALL, &fast), Some((TURN, Winner::Avoid)), "it limits a faster command");
+    for remote in [None, brain, Some(Remote { left: -30, right: -30, at_ms: 1_000 }), Some(Remote { left: 100, right: -100, at_ms: 1_000 })] {
+        for front in [None, Some(100), Some(300), Some(900)] {
+            let off = Inputs { front_mm: front, remote, session_up: remote.is_some(), ml: Ml::Go, ..at(1_000) };
+            let on = Inputs { ml: Ml::Turn, ..off };
+            match (arbitrate(Layers::ALL, &off), arbitrate(Layers::ALL, &on)) {
+                (None, got) => assert_eq!(got, None),
+                (Some(((wl, wr), _)), Some(((gl, gr), _))) => {
+                    for (g, w) in [(gl, wl), (gr, wr)] {
+                        assert!(g == 0 || (g > 0) == (w > 0), "{g} turns {w} round");
+                        assert!(g.abs() <= w.abs(), "{g} is faster than {w}");
+                    }
+                }
+                (some, none) => panic!("{some:?} became {none:?}"),
+            }
+        }
+    }
+}
+
+/// **A prediction never turns a spin into motion forward**: (100,-100) with a
+/// predicted stop stops the command instead of (60,0).
+///
+/// **Canary.** Drop the reversal rule from `bounded`: (60,0) drives, red.
+#[test]
+fn a_prediction_never_turns_a_spin_into_forward_motion() {
+    let spin = Some(Remote { left: 100, right: -100, at_ms: 1_000 });
+    let i = Inputs { front_mm: Some(500), remote: spin, session_up: true, predict: predicted(0, 0, 255, 1_000), ..at(1_000) };
+    assert_eq!(arbitrate(Layers::ALL, &i), Some(((0, 0), Winner::Avoid)));
 }

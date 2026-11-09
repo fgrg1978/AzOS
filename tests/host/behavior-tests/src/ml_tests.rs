@@ -525,3 +525,46 @@ fn an_outcome_survives_the_word() {
     }
     assert_eq!(MlOutcome::from_word(0x777), MlOutcome::Malformed);
 }
+
+/// **A grant the task does not hold is not "no grant"**: only `-ENOENT` runs the
+/// engine without a model; a stale or failed lookup leaves a model that was
+/// meant to run unreachable, and that is a stop.
+///
+/// **Canary `ml-grant-canary`**: every failure counts as no grant, red.
+#[test]
+fn a_grant_the_task_does_not_hold_is_not_off() {
+    assert_eq!(grant_of(Errno::ENOENT.to_syscall_ret() as isize), Grant::None);
+    assert_eq!(grant_of(7), Grant::Held(7));
+    for ret in [Errno::ECAPSTALE.to_syscall_ret() as isize, Errno::ENOMEM.to_syscall_ret() as isize, -1, 0] {
+        assert_eq!(grant_of(ret), Grant::Unheld, "{ret}");
+    }
+}
+
+/// **A cycle without two distances stops**: the model cannot be asked, and
+/// that is a missing verdict on every board, with the brain driving and the
+/// session up. With L1 off nothing is asked.
+///
+/// **Canary `ml-unaskable-canary`**: a missing distance turns the model off, red.
+#[test]
+fn a_missing_distance_stops_the_robot() {
+    let remote = Some(crate::behave::Remote { left: 80, right: 80, at_ms: 1_000 });
+    for (f, r) in [(None, None), (Some(900), None), (None, Some(900))] {
+        let (ml, why) = verdict_for(true, f, r, |_, _| panic!("no call without two distances"));
+        assert_eq!((ml, why), (Ml::Missing, Some(MlOutcome::Unavailable)));
+        let i = Inputs { now_ms: 1_000, front_mm: f, right_mm: r, remote, session_up: true, ml, ..Inputs::default() };
+        assert_eq!(arbitrate(Layers::ALL, &i), Some(((0, 0), Winner::Avoid)));
+    }
+    assert_eq!(verdict_for(false, None, None, |_, _| panic!()), (Ml::Off, None));
+    assert_eq!(verdict_for(true, Some(900), Some(900), |f, r| (if (f, r) == (900, 900) { Ml::Go } else { Ml::Missing }, None)).0, Ml::Go);
+}
+
+/// **A read that failed is no reading**: the last distance stays in the engine's
+/// buffer, and it is not a sample. A zero is none either.
+///
+/// **Canary `range-stale-canary`**: freshness ignored, red.
+#[test]
+fn a_failed_range_read_is_no_reading() {
+    assert_eq!(crate::behave::range_reading(900, true), Some(900));
+    assert_eq!(crate::behave::range_reading(900, false), None);
+    assert_eq!(crate::behave::range_reading(0, true), None);
+}

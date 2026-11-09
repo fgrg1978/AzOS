@@ -87,13 +87,12 @@ fn a_frame_that_does_not_fit_or_is_not_a_jpeg_is_not_framed() {
     assert_eq!(frame_message(&mut vec![0u8; 100], &j), None, "a buffer too small for it");
 }
 
-/// A send that makes no progress is a stall once the limit is reached, not
-/// before.
+/// A clock that moved back is not a stall.
 #[test]
-fn a_send_that_makes_no_progress_stalls() {
-    assert!(!stalled(10_000, 10_000 + STALL_MS - 1));
-    assert!(stalled(10_000, 10_000 + STALL_MS));
-    assert!(!stalled(10_000, 5_000), "a clock that moved back is not a stall");
+fn a_clock_that_moved_back_is_not_a_stall() {
+    let mut tx = Tx::new();
+    tx.queue(10, 10_000);
+    assert!(!tx.stalled(10_000 + STALL_MS - 1) && tx.stalled(10_000 + STALL_MS) && !tx.stalled(5_000));
 }
 
 /// The JPEG's size comes from its first frame header, past other segments.
@@ -103,4 +102,32 @@ fn the_size_is_read_from_the_frame_header() {
     assert_eq!(jpeg_size(&[0xFF, 0xD8]), None);
     let truncated = &jpeg(160, 120, 200)[..14];
     assert_eq!(jpeg_size(truncated), None);
+}
+
+/// **A slow drain is still a stall, and a frame offered meanwhile is dropped,
+/// not waited for**: the owed message is timed from when it was queued, so a
+/// peer taking a few bytes per cycle cannot hold the link for ever, and the
+/// engine's sensor frame is counted as dropped while it drains.
+///
+/// **Canary.** Restart the clock in `advance`: the slow drain never stalls, red.
+#[test]
+fn a_slow_drain_stalls_and_a_frame_offered_meanwhile_is_dropped() {
+    let mut tx = Tx::new();
+    assert!(!tx.pending());
+    tx.queue(16_000, 10_000);
+    let mut now = 10_000;
+    while now < 10_000 + STALL_MS - 100 {
+        tx.advance(10);
+        now += 100;
+        assert!(tx.pending() && !tx.stalled(now), "still draining at {now}");
+        tx.dropped();
+    }
+    tx.advance(10);
+    assert!(tx.stalled(10_000 + STALL_MS), "progress did not restart the clock");
+    assert_eq!(tx.dropped as u64, (STALL_MS - 100) / 100);
+    let mut done = Tx::new();
+    done.queue(100, 0);
+    done.advance(100);
+    assert!(!done.pending() && !done.stalled(u64::MAX), "a message that went out is no stall");
+    assert_eq!((done.off, done.len), (0, 0));
 }
