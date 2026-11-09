@@ -193,6 +193,22 @@ config TPM_PCR_BASE
       firmware; 8 is where the OS-defined range starts, and a verifier
       that quotes PCRs 8-10 sees all three stages.
 
+config TPM_CREATE_UNDELETABLE
+    bool "Create the undeletable TPM indexes in the platform hierarchy (development)"
+    depends on TPM && BUILD_TYPE_DEV
+    default y
+    help
+      A development kernel that finds the TPM's platform hierarchy open (no
+      firmware closed it, as with swtpm under QEMU) defines the OTA floor's
+      and the sealed security log's NV indexes there itself, undeletable
+      (TPMA_NV_PLATFORMCREATE | TPMA_NV_POLICY_DELETE and a policy nothing
+      satisfies), so the test rows run the whole defence. On a real board
+      that means permanent indexes on that TPM, which no one can delete:
+      turn this off to keep a development kernel from making them there.
+      Off, or in any release or certifiable build, the kernel only adopts
+      indexes a provisioning step made, and defines owner-hierarchy ones
+      otherwise.
+
 config TPM_SPI_BUS
     int "SPI bus the device-tree TPM sits on"
     depends on TPM && !ARCH_X86_64

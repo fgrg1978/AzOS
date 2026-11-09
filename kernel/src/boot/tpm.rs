@@ -612,10 +612,10 @@ pub(crate) fn install_keystore_root() -> bool {
 /// undeletable one.
 const FLOOR_ADVISORY: u32 = 4;
 
-/// May this kernel create an index in the platform hierarchy itself? A
-/// development build or a QEMU kernel, so the test rows have the whole
-/// defence; a release kernel only adopts what provisioning made.
-const CREATE_UNDELETABLE: bool = azos_limits::BUILD_TYPE_DEV || cfg!(feature = "qemu");
+/// May this kernel create an index in the platform hierarchy itself? Kconfig
+/// `TPM_CREATE_UNDELETABLE`, development builds only; a release kernel only
+/// adopts what provisioning made.
+const CREATE_UNDELETABLE: bool = azos_limits::TPM_CREATE_UNDELETABLE;
 
 /// Define index `index` (or adopt the one there): the undeletable variant in
 /// the platform hierarchy when this kernel may create one and the hierarchy

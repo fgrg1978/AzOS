@@ -418,9 +418,9 @@ the platform hierarchy with `TPMA_NV_PLATFORMCREATE | TPMA_NV_POLICY_DELETE` and
 policy nothing satisfies, by a provisioning step before the OS runs, with the
 platform hierarchy then disabled or its password set (the requirement is in
 "Sealed security log" in [security.md](security.md)). A development build
-(`BUILD_TYPE_DEV`) or a QEMU kernel creates that index itself when the platform
-hierarchy is open, so the test rows exercise the whole defence; a release kernel
-only adopts one. With an owner index the boot warns and writes a security record
+with Kconfig `TPM_CREATE_UNDELETABLE` (development builds only) creates that index
+itself when the platform hierarchy is open, so the test rows exercise the whole
+defence; a release kernel only adopts one. With an owner index the boot warns and writes a security record
 (`hardening-fallback`), so the export says the floor was advisory. The floor tops out at 64 (`FLOOR_MAX`; a higher
 epoch is refused, not wrapped), and `sign_ota.py bundle` refuses to sign an `--epoch` above it when
 the `.config` has `OTA_FLOOR_TPM_NV` (`--kconfig`, default `$KCONFIG_CONFIG`, then `.config`). An index left by an earlier build (ordinary, 4

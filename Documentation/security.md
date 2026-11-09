@@ -870,12 +870,16 @@ it was. A claim of records still in the ring waits until the ring drops them.
 
 A declaration is itself a record anyone who can write the log volume can add,
 so the verifier takes one only when a seal confirms it: the `sink-loss` records
-before a seal must add up to what its `sink_lost` (in the data the anchor commits)
-says the kernel declared since the seal before, and a boot whose first records
-are gone is explained only by a seal's `sink_start`. A declaration no seal covers
-(after the boot's last seal) is evidence; the sealer seals within
-`SEC_LOG_SEAL_URGENT_S` of a declaration, so on an honest device that window is
-seconds (a crash in it shows as evidence). The orderly power-off seals and gives
+before a seal must add up to what its `sink_lost` says the kernel declared since
+the seal before, and their ranges and classes to its running digest
+`sink_digest` (both in the data the anchor commits), so a declaration can be
+neither added nor edited; and a boot whose first records are gone is explained
+only by a seal's `sink_start`. A declaration no seal covers (after the boot's
+last seal) is evidence. The sealer seals a declaration within
+`SEC_LOG_SEAL_URGENT_S` while the day's `SEC_LOG_DECLARATION_SEALS_PER_DAY` lasts
+(a budget no high-value trigger spends), and within `SEC_LOG_SEAL_S` past it: a
+crash, or an export taken live, inside that window shows as evidence, which the
+tool labels as such when it is at the export's very end. The orderly power-off seals and gives
 `logd` what is left of `POWER_OFF_STEP_TIMEOUT_MS`, at most two of its periods, to
 have the seal on the volume (the page's `next` past it), unless `logd`'s heartbeat
 on the page stopped; a thermal critical shutdown skips both.
@@ -911,9 +915,11 @@ attributes, not whether its policy can be satisfied: with the platform hierarchy
 open, an attacker could undefine the owner's index and define a platform one with
 a policy of their own, which the kernel would take for undeletable). The kernel
 adopts such indexes and flags the records `undeletable` only when both are. A
-development build (`BUILD_TYPE_DEV`) or a QEMU kernel creates them itself when the
-platform hierarchy is open (its policy `azos_tpm::tpm::UNDELETABLE_POLICY`), so the
-test rows run the whole defence; a release kernel only adopts. The same holds for
+development build with Kconfig `TPM_CREATE_UNDELETABLE` (on by default there, and
+only there) creates them itself when the platform hierarchy is open (its policy
+`azos_tpm::tpm::UNDELETABLE_POLICY`), so the test rows run the whole defence; on a
+real board that makes permanent indexes on its TPM. A release or certifiable
+kernel never creates them: it only adopts. The same holds for
 the OTA floor (`0x01500001`): with an owner-hierarchy floor the boot warns and
 writes a `hardening-fallback` record (class `hardening`), the floor being
 advisory. A PCR-bound policy would also keep other software from extending the
@@ -926,9 +932,9 @@ seal, whose extend the TPM may have taken with its answer lost). After each
 extend the kernel reads the index back: a value its extend does not give
 (something else extended it) becomes the seal's anchor, flagged `diverged`,
 which the verifier tells apart from a rewritten record. Each seal is one NV
-write to each index: at most `86400 / SEC_LOG_SEAL_S + SEC_LOG_URGENT_PER_DAY`
-seals a day under any load (1728 at the defaults: an index rated for 100 000
-writes lasts at least 57 days), and an idle system seals nothing. A panic seals
+write to each index: at most `86400 / SEC_LOG_SEAL_S + SEC_LOG_URGENT_PER_DAY +
+SEC_LOG_DECLARATION_SEALS_PER_DAY` seals a day under any load (1824 at the
+defaults: an index rated for 100 000 writes lasts at least 54 days), and an idle system seals nothing. A panic seals
 nothing more: the records written since the last seal, up to `SEC_LOG_SEAL_S`
 of them (`SEC_LOG_SEAL_URGENT_S` for the high-value ones), are the window anyone
 who can write the volume can delete unseen.
