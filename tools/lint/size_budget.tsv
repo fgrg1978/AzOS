@@ -6,18 +6,18 @@
 # 512 B): a commit that grows the image updates this file with a reason,
 # make size-update REASON=".." (one that shrinks it, to lock the gain in).
 # label	group	bytes   |   label	reason	text
-aarch64-microvm	.text	2894688
-aarch64-microvm	.rodata	357440
-aarch64-microvm	.data	465704
+aarch64-microvm	.text	2923968
+aarch64-microvm	.rodata	358224
+aarch64-microvm	.data	497352
 aarch64-microvm	.bss	1078824
-aarch64-microvm	reason	ext4 ring-3 seam: the [volume] ext4 format row, the EXT4D topology row and the ext4-call task's strings
+aarch64-microvm	reason	sealed security log: the early records image gains the security ring (SEC_LOG_ENTRIES entries, about 30 KiB of .data like the decisions ring), the sealer task and pass, the security decision copy and the TPM counter/anchor code
 riscv64-qemu	.text	2948738
 riscv64-qemu	.rodata	498336
 riscv64-qemu	.data	577040
 riscv64-qemu	.bss	2379496
 riscv64-qemu	reason	durable logger: LOG_QUEUES 16 (min with NR_CPUS) per-CPU Queues of 128 entries in .bss, each on its own cache line; .data shrinks with the old pinned-ring state
-x86_64-microvm	.text	2751241
-x86_64-microvm	.rodata	180184
-x86_64-microvm	.data	625144
-x86_64-microvm	.bss	1056848
-x86_64-microvm	reason	ext4 ring-3 seam: the [volume] ext4 format row, the EXT4D topology row and the ext4-call task's strings
+x86_64-microvm	.text	2775881
+x86_64-microvm	.rodata	180216
+x86_64-microvm	.data	657600
+x86_64-microvm	.bss	1060944
+x86_64-microvm	reason	sealed security log: the early records image gains the security ring (SEC_LOG_ENTRIES entries, about 30 KiB of .data like the decisions ring), the sealer task and pass, the security decision copy and the TPM counter/anchor code
