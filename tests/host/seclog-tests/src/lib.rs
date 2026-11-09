@@ -942,3 +942,33 @@ fn verify_v7_an_honest_boot_whose_first_seal_logd_lost_is_not_evidence() {
     let (found, _) = verify(&lines);
     assert_eq!(evidence(&found), vec![], "{found:?}");
 }
+
+/// Proof of round 3: the export's first boot cut by rotation, and its first
+/// kept seal covers an honest sink-loss: no base to check it against, so it
+/// explains nothing and is no evidence; the next seal is checked from this one.
+#[test]
+fn verify_r3_a_rotated_first_boot_whose_first_kept_seal_covers_a_declaration_is_not_evidence() {
+    let mut b = tpm_boot([0; 32], 1);
+    let cut = b.recs.len() as u64;
+    b.event(Class::Camera, 5);
+    let lost = b.recs.len() as u64 - 1;
+    b.sink_loss(lost, 1);
+    b.event(Class::Usb, 6);
+    b.seal();
+    b.event(Class::Login, 7);
+    b.seal();
+    let lines: Vec<_> = b.recs.iter().filter(|r| r.env.seq >= cut && r.env.seq != lost).map(line).collect();
+    let (found, _) = verify(&lines);
+    assert_eq!(evidence(&found), vec![], "{found:?}");
+    // The base is taken from that seal: a declaration forged before the next
+    // one is still a mismatch.
+    let mut b2 = tpm_boot([0; 32], 1);
+    b2.event(Class::Camera, 5);
+    b2.seal();
+    b2.forged_sink_loss(3, 1);
+    b2.event(Class::Login, 7);
+    b2.seal();
+    let lines: Vec<_> = b2.recs.iter().filter(|r| r.env.seq >= cut).map(line).collect();
+    let (found, _) = verify(&lines);
+    assert!(found.iter().any(|f| matches!(f, Finding::DeclarationMismatch { .. })), "{found:?}");
+}
