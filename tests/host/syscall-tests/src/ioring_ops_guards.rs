@@ -195,6 +195,8 @@ fn wheels() {
     crate::motor_host::set_provider_check(served);
     azos_robot::motor::set_motor_halt(test_halt);
     azos_robot::motor::set_motor_gate(test_gate);
+    // The safety layer's live cap: nothing found (the cap's tests are motor_guards').
+    azos_robot::motor::set_motor_cap(|| 100);
     set_gpio_probe(Some(gpio_probe));
     set_pwm_probe(Some(pwm_probe));
     for id in 0..2 {

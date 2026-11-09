@@ -88,6 +88,10 @@ mod providers;
 #[path = "../../../../crates/core/actuation/src/effect.rs"]
 mod effect;
 #[allow(dead_code)]
+#[path = "../../../../crates/core/actuation/src/verdict.rs"]
+mod verdict;
+#[cfg(test)]
+mod verdict_tests;
 #[path = "../../../../crates/core/actuation/src/estop_pin.rs"]
 mod estop_pin;
 #[cfg(test)]

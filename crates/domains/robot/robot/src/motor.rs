@@ -170,6 +170,20 @@ azos_common::ro_hook! {
     /// mapper rather than into `sys_munmap`.
     static MOTOR_GATE: fn(u32, u32) -> u32;
 }
+azos_common::ro_hook! {
+    /// The safety layer's live cap on every motor write, in percent: the robot
+    /// enforcer's L0 verdict while it is fresh, 0 once it is stale. Applied
+    /// after [`MOTOR_GATE`] to every write, whoever issues it (the drivetrain
+    /// loop, a ring-3 per-wheel op, a driver), so nothing drives past L0. Unset:
+    /// 0, fail closed.
+    static MOTOR_CAP: fn() -> u32;
+}
+
+/// Install the live cap (`azos_safety_core::actuation::install`, once).
+pub fn set_motor_cap(f: fn() -> u32) {
+    MOTOR_CAP.set(f);
+}
+
 /// Install the actuation gate. Called once at boot from
 /// `azos_safety_core::actuation::install`, which sees both the motors and
 /// the safety layer.
@@ -185,8 +199,8 @@ pub fn set_motor_gate(f: fn(id: u32, speed_pct: u32) -> u32) {
 /// why the fail-closed default is the correct one here.
 #[inline]
 fn gate_speed(id: u32, speed_pct: u32) -> u32 {
-    let g = MOTOR_GATE.get();
-    match g { Some(f) => f(id, speed_pct), None => 0 }
+    let gated = match MOTOR_GATE.get() { Some(f) => f(id, speed_pct), None => 0 };
+    match MOTOR_CAP.get() { Some(cap) => gated.min(cap()), None => 0 }
 }
 
 /// Whether [`set_motor_gate`] has been called. `false` for a kernel that has
@@ -646,6 +660,12 @@ pub fn with_motor_table_held_for_test<R>(f: impl FnOnce() -> R) -> R {
 #[cfg(any(test, feature = "test-util"))]
 pub fn clear_motor_gate_for_test() {
     MOTOR_GATE.clear_for_tests();
+}
+
+/// Reset the installed cap to `None`, for the same reason.
+#[cfg(any(test, feature = "test-util"))]
+pub fn clear_motor_cap_for_test() {
+    MOTOR_CAP.clear_for_tests();
 }
 
 /// Reset the installed recorder to `None`, for the same reason as

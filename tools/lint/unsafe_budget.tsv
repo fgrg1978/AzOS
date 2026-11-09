@@ -63,7 +63,7 @@ crates/domains/robot/bench	0	0	0	0	1	0
 crates/domains/robot/degrade-policy	0	0	0	0	1	0
 crates/domains/robot/flight	0	0	0	0	1	0
 crates/domains/robot/nav	0	0	0	0	1	0
-crates/domains/robot/robot	1	0	0	0	0	47
+crates/domains/robot/robot	1	0	0	0	0	48
 crates/domains/robot/safety-core	0	0	0	0	1	0
 crates/domains/robot/sensors	0	0	0	0	1	0
 crates/domains/robot/telemetry	0	0	0	0	1	0

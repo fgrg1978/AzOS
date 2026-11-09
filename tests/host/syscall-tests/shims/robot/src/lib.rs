@@ -111,7 +111,7 @@ pub mod motor {
     use core::sync::atomic::{AtomicU32, Ordering};
 
     /// The real hooks, at the path the kernel installs them through.
-    pub use super::motor_real::{set_motor_gate, set_motor_halt};
+    pub use super::motor_real::{set_motor_cap, set_motor_gate, set_motor_halt};
 
     static MOTOR_CHANNELS: AtomicU32 = AtomicU32::new(0);
 

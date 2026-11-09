@@ -9,7 +9,8 @@
 //! breach latch (Kconfig `GEOFENCE`). Each latches the e-stop and records
 //! why; none chooses a motion.
 
-use core::sync::atomic::{AtomicI32, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, Ordering};
+use azos_actuation::verdict::Stamped;
 use azos_behavior::safety::SafetyAction;
 use azos_behavior::types::SensorState;
 
@@ -25,13 +26,21 @@ pub static ROBOT_ENFORCER: azos_ext_api::Enforcer = azos_ext_api::Enforcer {
 /// No cap: the safety layer found nothing.
 const NO_CAP: i32 = i32::MAX;
 
+/// How long a published verdict holds: two enforcer periods. Past it the
+/// enforcer has stalled, and what it guards is stopped.
+fn fresh_ticks() -> u64 {
+    2 * PERIOD_MS as u64 * azos_drv_sys::timebase::freq() / 1000
+}
+
 /// The safety layer's latest cap on a wheel's command, in percent: 0 stops,
 /// [`NO_CAP`] leaves the command alone.
-static L0_CAP: AtomicI32 = AtomicI32::new(NO_CAP);
+static L0: Stamped = Stamped::new();
 
-/// The cap the drivetrain loop applies to each wheel's command magnitude.
-pub fn l0_cap() -> i32 {
-    L0_CAP.load(Ordering::Acquire)
+/// The cap every motor write gets at tick `now`, whoever issued it: the
+/// safety layer's verdict while it is fresh, 0 (stop) before the first one and
+/// once the enforcer has stalled.
+pub fn l0_cap(now: u64) -> i32 {
+    L0.fresh(now, fresh_ticks()).unwrap_or(0)
 }
 
 /// `action` as a cap: a stop, a landing and a return all stop the wheels, a
@@ -45,23 +54,17 @@ pub fn cap_of(action: SafetyAction) -> i32 {
 }
 
 /// The operator's sticks while the RC receiver is in manual override, packed
-/// `(left << 16) | right` as two `i16`, and the tick they were read at (0:
-/// no override).
-static RC_OVERRIDE: AtomicU32 = AtomicU32::new(0);
-static RC_OVERRIDE_AT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+/// `(left << 16) | right` as two `i16`.
+static RC_OVERRIDE: Stamped = Stamped::new();
 
 /// The operator's override, while the RC receiver says so and the reading is
-/// fresh (two enforcer periods): the drive the sticks ask, which the
-/// drivetrain loop applies in place of the behaviour engine's command and
-/// without its command watchdog, so the operator keeps control when the
-/// engine dies. A human override is enforcement, like the e-stop.
+/// fresh: the drive the sticks ask, which the drivetrain loop applies in place
+/// of the behaviour engine's command and without its command watchdog, so the
+/// operator keeps control when the engine dies. A human override is
+/// enforcement, like the e-stop; the safety layer's cap and the envelope still
+/// bound it.
 pub fn rc_override(now: u64) -> Option<(i32, i32)> {
-    let at = RC_OVERRIDE_AT.load(Ordering::Acquire);
-    let fresh = 2 * PERIOD_MS as u64 * azos_drv_sys::timebase::freq() / 1000;
-    if at == 0 || now.saturating_sub(at) > fresh {
-        return None;
-    }
-    let v = RC_OVERRIDE.load(Ordering::Acquire);
+    let v = RC_OVERRIDE.fresh(now, fresh_ticks())? as u32;
     Some(((v >> 16) as u16 as i16 as i32, v as u16 as i16 as i32))
 }
 
@@ -78,7 +81,7 @@ fn tick(now: u64) {
     let mut state = SensorState::new();
     azos_behavior::sensor_bus::SENSOR_BUS.snapshot(&mut state);
     state.timestamp = now;
-    L0_CAP.store(cap_of(azos_behavior::safety::safety_check(&state).action), Ordering::Release);
+    L0.publish(cap_of(azos_behavior::safety::safety_check(&state).action), now);
     #[cfg(feature = "rc-input")]
     {
         rc_enforce(now);
@@ -86,10 +89,9 @@ fn tick(now: u64) {
         let mut manual = MANUAL.load(Ordering::Relaxed);
         match rc_sticks(now, &mut manual) {
             Some((l, r)) => {
-                RC_OVERRIDE.store(((l as i16 as u16 as u32) << 16) | r as i16 as u16 as u32, Ordering::Release);
-                RC_OVERRIDE_AT.store(now.max(1), Ordering::Release);
+                RC_OVERRIDE.publish((((l as i16 as u16 as u32) << 16) | r as i16 as u16 as u32) as i32, now);
             }
-            None => RC_OVERRIDE_AT.store(0, Ordering::Release),
+            None => RC_OVERRIDE.withdraw(),
         }
         MANUAL.store(manual, Ordering::Relaxed);
     }

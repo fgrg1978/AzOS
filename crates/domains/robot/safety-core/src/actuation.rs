@@ -302,6 +302,11 @@ pub fn install() {
     // else `install` wires.
     #[cfg(not(feature = "gate-skip-smoke"))]
     azos_robot::motor::set_motor_gate(actuation_gate);
+    // The safety layer's verdict on every write, aged: a stale one is a stop.
+    fn l0_motor_cap() -> u32 {
+        crate::enforce::l0_cap(azos_drv_sys::timebase::now()).clamp(0, 100) as u32
+    }
+    azos_robot::motor::set_motor_cap(l0_motor_cap);
     #[cfg(feature = "gate-skip-smoke")]
     kprintln!("[SAFETY] actuation gate SKIPPED (gate-skip-smoke) — motor writes must clamp to 0");
 

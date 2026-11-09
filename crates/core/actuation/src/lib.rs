@@ -61,6 +61,7 @@ pub mod providers;
 #[cfg(feature = "effect-gate")]
 pub mod safe_state;
 pub mod sys_wdt;
+pub mod verdict;
 pub mod watchdog;
 
 /// Does the kernel hold `subject` of effect kind `kind` in its safe state

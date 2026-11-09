@@ -57,6 +57,14 @@ fn test_gate(_id: u32, speed_pct: u32) -> u32 {
     if test_halt() { 0 } else { speed_pct }
 }
 
+/// The safety layer's live cap the motor layer applies after the gate: 100
+/// (no cap) unless a test sets [`L0_CAP`].
+static L0_CAP: AtomicU32 = AtomicU32::new(100);
+
+fn test_cap() -> u32 {
+    L0_CAP.load(SeqCst)
+}
+
 /// A gate that allows everything, to show the halt zeroes the duty alone.
 fn open_gate(_id: u32, speed_pct: u32) -> u32 {
     speed_pct
@@ -168,6 +176,7 @@ impl Drop for Scene {
         set_effect_gate(pass_gate);
         GATE_REFUSES.store(false, SeqCst);
         ESTOP.store(false, SeqCst);
+        L0_CAP.store(100, SeqCst);
         azos_ipc::cap::degraded_set(false);
         set_gpio_probe(None);
         set_pwm_probe(None);
@@ -194,6 +203,7 @@ fn scene() -> Scene {
     azos_ipc::cap::degraded_set(false);
     azos_robot::motor::set_motor_halt(test_halt);
     azos_robot::motor::set_motor_gate(test_gate);
+    azos_robot::motor::set_motor_cap(test_cap);
     set_gpio_probe(Some(gpio_probe));
     set_pwm_probe(Some(pwm_probe));
     for (id, (ch, a, b)) in WHEELS.iter().enumerate() {
@@ -1156,4 +1166,33 @@ fn a_dead_commanders_drivetrain_command_is_stopped() {
     assert_eq!(taken, if on { 0b11 } else { 0 });
     let want = if on { vec![Some((40, 40)), None] } else { vec![Some((40, 40))] };
     assert_eq!(azos_robot::shim_take_motor_cmds(), want);
+}
+
+// ── The safety layer's live cap on every write ─────────────────────────────
+
+/// **A per-wheel op cannot drive past L0.** With the safety layer's cap at 0
+/// (a fall, an obstacle, or a stale verdict from a stalled enforcer) a
+/// `drive(FORWARD, 100)` and a `speed(80)` write duty 0; at a cap of 30 they
+/// write 30; a stop is a stop. The per-wheel ops write the wheel once and
+/// leave the drivetrain loop out, so the cap must be the motor layer's.
+///
+/// **Canary.** Skip the cap in `gate_speed`: the forward drive writes 100.
+#[test]
+fn a_per_wheel_op_is_capped_by_the_safety_layer() {
+    let _g = serial();
+    let s = scene();
+    azos_robot::motor::set_motor_gate(open_gate);
+    let mut w0 = who(&s, 0, CapPerms::RW);
+    let mut w1 = who(&s, 1, CapPerms::RW);
+    L0_CAP.store(0, SeqCst);
+    let _ = w0.drive(DIR_FORWARD, 100);
+    let _ = w1.speed(80);
+    assert_eq!(pwm_calls().iter().filter(|c| c.0 == PwmOp::SetDutyPct).map(|c| c.2).collect::<Vec<_>>(),
+               vec![0, 0], "a capped write drove a wheel");
+    clear_probes();
+    L0_CAP.store(30, SeqCst);
+    let _ = w0.drive(DIR_FORWARD, 100);
+    assert_eq!(pwm_calls().iter().filter(|c| c.0 == PwmOp::SetDutyPct).map(|c| c.2).collect::<Vec<_>>(),
+               vec![30], "the cap did not bound the write");
+    azos_robot::motor::set_motor_gate(test_gate);
 }
