@@ -877,3 +877,61 @@ fn a_forged_sink_loss_a_seal_does_not_count_is_evidence() {
     let unv = found.iter().any(|f| matches!(f, Finding::Unverifiable { declared: false, .. }));
     assert!(unv, "the seal over the deleted record stays unverified: {found:?}");
 }
+
+// Proofs of round 2 of the verification.
+
+/// V6: logd started late and the kernel declared the boot's first records
+/// lost (honest, counted by the seals). A volume writer deletes a microphone
+/// record and moves the honest declaration's range onto it, count kept.
+#[test]
+fn verify_v6_a_rewritten_honest_declaration_hides_a_record() {
+    let b1 = tpm_boot([0; 32], 2);
+    let mut b2 = Boot::new(Backend::TpmNv, b1.tpm);
+    let start = b2.recs.len() as u64;
+    b2.sink_loss(0, start);
+    let decl = b2.recs.len() as u64 - 1;
+    b2.event(Class::Microphone, 66);
+    let mic = b2.recs.len() as u64 - 1;
+    b2.event(Class::Camera, 67);
+    b2.seal();
+    b2.event(Class::Egress, 68);
+    b2.seal();
+    let export = |b2: &Boot| {
+        let mut lines = b1.lines();
+        lines.push(seam());
+        lines.extend(b2.recs.iter().filter(|r| r.env.seq >= start && r.env.seq != mic).map(line));
+        lines
+    };
+    // The control: the deletion with the declaration left alone.
+    assert!(!evidence(&verify(&export(&b2)).0).is_empty());
+    // The forgery: the declaration's range moved onto the deleted record.
+    let r = &mut b2.recs[decl as usize];
+    let mut l = Loss::decode(&r.payload).unwrap();
+    l.first = mic;
+    let mut by_class = [0u32; CLASSES];
+    by_class[Class::CapDenial as usize] = l.count as u32;
+    l.by_class = by_class;
+    r.payload[..Loss::LEN].copy_from_slice(&l.encode());
+    let (found, _) = verify(&export(&b2));
+    assert!(!evidence(&found).is_empty(), "a rewritten honest declaration hides a deleted record: {found:?}");
+}
+
+/// V7: the kernel sealed at its first pass and the ring lapped before logd
+/// started, so the boot's first seal is not in the export (declared, and
+/// counted by the next seal): an honest boot, no counter gap.
+#[test]
+fn verify_v7_an_honest_boot_whose_first_seal_logd_lost_is_not_evidence() {
+    let b1 = tpm_boot([0; 32], 2);
+    let mut b2 = Boot::new(Backend::TpmNv, b1.tpm);
+    b2.seal();
+    b2.event(Class::ImageLoad, 3);
+    let start = b2.recs.len() as u64;
+    b2.sink_loss(0, start);
+    b2.event(Class::Login, 4);
+    b2.seal();
+    let mut lines = b1.lines();
+    lines.push(seam());
+    lines.extend(b2.recs.iter().filter(|r| r.env.seq >= start).map(line));
+    let (found, _) = verify(&lines);
+    assert_eq!(evidence(&found), vec![], "{found:?}");
+}
