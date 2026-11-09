@@ -22,7 +22,7 @@ crates/core/azos-config	0	0	0	0	1	-
 crates/core/bytepipe	4	4	0	0	0	100
 crates/core/channel	0	0	0	0	1	0
 crates/core/chaos	0	0	0	0	1	0
-crates/core/common	4	0	0	0	0	37
+crates/core/common	4	0	0	0	0	35
 crates/core/config	8	0	0	0	0	75
 crates/core/crypto	15	2	1	0	0	26
 crates/core/decision	2	0	2	0	0	63
@@ -109,7 +109,7 @@ crates/drivers/usb-hid	0	0	0	0	1	0
 crates/drivers/virtio	156	45	8	0	0	91
 crates/drivers/virtio-proto	0	0	0	0	1	0
 crates/drivers/virtio-rng	0	0	0	0	1	-
-crates/fs	29	3	5	0	0	57
+crates/fs	29	3	5	0	0	56
 crates/lib/bench	0	0	0	0	1	0
 crates/lib/control/ahrs	0	0	0	0	1	0
 crates/lib/control/flight-math	0	0	0	0	1	0
@@ -117,7 +117,7 @@ crates/net/ethercat	0	0	0	0	1	-
 crates/net/multi-stream	0	0	0	0	1	0
 crates/net/stack	20	0	2	0	0	58
 crates/net/tftp	0	0	0	0	1	-
-kernel	419	15	13	53	0	61
+kernel	420	15	13	53	0	61
 micro	20	4	0	0	0	67
 tools/bench/linux_seccomp_launch	11	2	0	2	0	-
 tools/bench/linux_seccomp_launch/host-tests	0	0	0	0	1	-
@@ -127,6 +127,7 @@ userspace/drivers/rng_drv	3	0	0	0	0	-
 userspace/lib/compose	0	0	0	0	1	-
 userspace/lib/compositor	1	0	0	0	0	-
 userspace/lib/decisions	0	0	0	0	1	-
+userspace/lib/ext4	0	0	0	0	1	-
 userspace/lib/inspect	2	1	0	0	0	-
 userspace/lib/linux_rt	12	2	1	0	0	-
 userspace/lib/login	0	0	0	0	1	-
@@ -150,6 +151,7 @@ userspace/services/compmgr	1	0	0	0	0	-
 userspace/services/compositor	4	0	2	0	0	-
 userspace/services/coreutil	1	0	0	0	0	-
 userspace/services/decisd	1	0	0	0	0	-
+userspace/services/ext4d	2	0	0	0	0	-
 userspace/services/infsrv	11	2	0	0	0	-
 userspace/services/inputd	2	0	0	0	0	-
 userspace/services/logd	1	0	0	0	0	-
