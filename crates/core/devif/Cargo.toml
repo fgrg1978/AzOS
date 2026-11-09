@@ -15,3 +15,10 @@ azos_rings = { path = "../rings" }
 # Canary: `gpio::badge` drops the controller, so a capability on controller
 # 1's pin names controller 0's (the cross-controller refusal tests go red).
 badge-without-controller-canary = []
+# Canary: `call_slot::park_until` sleeps for ever, so a wake lost between the
+# call task's look at the slot and its sleep is never made up (the host test
+# `a_wake_lost_before_the_sleep_costs_a_bounded_wait` goes red).
+call-slot-park-canary = []
+# Canary: a client that joins a call posted and not yet taken does not wake the
+# call task (`a_client_that_joins_a_posted_call_wakes_the_task` goes red).
+call-slot-joiner-canary = []

@@ -27,6 +27,8 @@
 
 pub use azos_idl::{Cap, IdlError, Lent, MsgDesc, Reader, Result as IdlResult, Transport, Wire, Writer};
 
+pub mod call_slot;
+
 pub mod outcome;
 pub use outcome::Out;
 
