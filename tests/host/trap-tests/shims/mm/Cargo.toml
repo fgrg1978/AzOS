@@ -14,3 +14,6 @@ storm-ignore-locked-canary = []
 budget-ceiling-ignored-canary = []
 budget-pool-ignored-canary = []
 budget-keep-grown-canary = []
+
+[dependencies]
+azos_abi = { path = "../../../../../crates/core/abi" }

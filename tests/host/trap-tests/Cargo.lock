@@ -145,6 +145,9 @@ dependencies = [
 [[package]]
 name = "trap_test_mm"
 version = "0.1.0"
+dependencies = [
+ "azos_abi",
+]
 
 [[package]]
 name = "trap_test_sync"
