@@ -2966,10 +2966,10 @@ fn check_user_shell_calls_refuse() {
     // 608: a request block of an unknown version, and an image this task holds
     // no launch grant for.
     let mut req = [0u8; 184];
-    req[0] = 2; // version 2
+    req[0] = (sys::SPAWN_REQ_VERSION + 1) as u8;
     let path = sys::cstr!(b"/fat/REFLEX.ELF");
     expect_eq(
-        b"spawn_ex(request version 2) -> EINVAL",
+        b"spawn_ex(an unknown request version) -> EINVAL",
         issue_nr4(5, path.as_ptr() as u64, req.as_ptr() as u64, 0, 0),
         EINVAL,
     );
@@ -3645,10 +3645,15 @@ fn check_inline_dispatch_arms_refuse() {
     // the interrupt controller or the bind table is touched (0 / a CPU
     // otherwise). The handle carries the line's type in its top six bits
     // (`CapHandle::KIND_SHIFT` = 26) and names a slot this image never granted.
+    // The bind is a `PORT_BIND` on a port: a real one, so the refusal is the line's.
     let forged_irq = (sys::ty::IRQ.raw() as u32) << 26 | 0x1FF;
     expect_eq(b"irq_ack(forged Irq handle) -> ECAPSTALE", sys::irq_ack(forged_irq), -202);
+    let port = sys::port_create_typed();
     expect_eq(b"irq_bind(forged Irq handle) -> ECAPSTALE",
-              sys::irq_bind(forged_irq, 0, 0, sys::DEVICE_IRQ_CPU_ANY), -202);
+              if port > 0 { sys::irq_bind(forged_irq, port as u32, 0, sys::DEVICE_IRQ_CPU_ANY) } else { port }, -202);
+    if port > 0 {
+        let _ = sys::close_typed(port as u32);
+    }
 }
 
 #[panic_handler]
