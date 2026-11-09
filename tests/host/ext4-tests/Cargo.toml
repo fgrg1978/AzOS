@@ -31,6 +31,9 @@ stale-completion-canary = []
 #   dirent-name-canary: a name that is not one component is listed
 #     (`refuse::a_name_that_is_not_one_component_is_refused`)
 dirent-name-canary = ["azos_ext4/dirent-name-canary"]
+#   escape-canary: a path resolved beneath a directory may leave it
+#     (`protocol::a_link_out_of_the_callers_directory_is_refused`)
+escape-canary = ["azos_ext4/escape-canary"]
 
 [dependencies]
 azos_ext4 = { path = "../../../userspace/lib/ext4" }

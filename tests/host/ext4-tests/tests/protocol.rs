@@ -105,7 +105,7 @@ fn name(s: &RefCell<Svc>, n: &str) -> Extent {
 
 fn open(s: &RefCell<Svc>, path: &str) -> Result<u32, u32> {
     let n = name(s, path);
-    let lent = outcome::served(DirClient::new(Loop(s, DIR_BADGE)).openat(n, 0))?;
+    let lent = outcome::served(DirClient::new(Loop(s, DIR_BADGE)).openat(n, 0, 0))?;
     Ok(lent.get().expect("a served open lends a node").raw())
 }
 
@@ -155,7 +155,7 @@ fn stat_list_and_statfs_answer_the_records() {
     let mut dir = DirClient::new(Loop(&s, DIR_BADGE));
     let out = Extent { off: OUT, len: STAT_BYTES as u32 };
     let n = name(&s, "big.bin");
-    assert_eq!(outcome::served(dir.statat(n, out)), Ok(()));
+    assert_eq!(outcome::served(dir.statat(n, 0, out)), Ok(()));
     let r = s.borrow().host.region[OUT as usize..OUT as usize + 16].to_vec();
     assert_eq!(u64::from_le_bytes(r[..8].try_into().unwrap()), big().len() as u64);
     assert_eq!(u32::from_le_bytes(r[8..12].try_into().unwrap()) & 0o170000, 0o100000);
@@ -173,7 +173,7 @@ fn stat_list_and_statfs_answer_the_records() {
         names.push((String::from_utf8(r[..len].to_vec()).unwrap(), e.is_dir, e.size));
     }
     names.sort();
-    let want = ["abs", "big.bin", "deep", "dirlink", "empty.txt", "esc", "fast", "hello.txt", "loop1", "loop2", "lost+found", "many", "slow", "sparse.bin"];
+    let want = ["abs", "big.bin", "deep", "dirlink", "empty.txt", "esc", "fast", "hello.txt", "jail", "loop1", "loop2", "lost+found", "many", "slow", "sparse.bin"];
     assert_eq!(names.iter().map(|n| n.0.as_str()).collect::<Vec<_>>(), want);
     let get = |n: &str| names.iter().find(|e| e.0 == n).unwrap().clone();
     assert!(get("deep").1 && get("dirlink").1, "a link to a directory lists as one");
@@ -203,8 +203,8 @@ fn every_change_is_refused_read_only() {
     let s = service();
     let mut dir = DirClient::new(Loop(&s, DIR_BADGE));
     let n = name(&s, "hello.txt");
-    assert_eq!(outcome::served(dir.openat(n, 0x1)).map(|_| ()), Err(READ_ONLY));
-    assert_eq!(outcome::served(dir.openat(n, 0x40)).map(|_| ()), Err(READ_ONLY));
+    assert_eq!(outcome::served(dir.openat(n, 0x1, 0)).map(|_| ()), Err(READ_ONLY));
+    assert_eq!(outcome::served(dir.openat(n, 0x40, 0)).map(|_| ()), Err(READ_ONLY));
     assert_eq!(outcome::served(dir.mkdirat(n)), Err(READ_ONLY));
     assert_eq!(outcome::served(dir.unlinkat(n, 0)), Err(READ_ONLY));
     assert_eq!(outcome::served(dir.renameat(n, n)), Err(READ_ONLY));
@@ -222,25 +222,25 @@ fn names_outside_the_directory_and_extents_outside_the_region_are_refused() {
     let out = Extent { off: OUT, len: STAT_BYTES as u32 };
     for bad in ["/hello.txt", "../hello.txt", "deep/../../hello.txt"] {
         let n = name(&s, bad);
-        assert_eq!(outcome::served(dir.statat(n, out)), Err(outcome::BAD_ARGUMENT), "{bad}");
+        assert_eq!(outcome::served(dir.statat(n, 0, out)), Err(outcome::BAD_ARGUMENT), "{bad}");
     }
     let n = name(&s, "deep/a/../a/b/c/leaf.txt");
-    assert_eq!(outcome::served(dir.statat(n, out)), Ok(()), "a .. that stays beneath");
+    assert_eq!(outcome::served(dir.statat(n, 0, out)), Ok(()), "a .. that stays beneath");
     let n = name(&s, "nope");
-    assert_eq!(outcome::served(dir.statat(n, out)), Err(NOT_FOUND));
+    assert_eq!(outcome::served(dir.statat(n, 0, out)), Err(NOT_FOUND));
     let n = name(&s, "deep");
-    assert_eq!(outcome::served(dir.openat(n, 0)).map(|_| ()), Err(IS_DIR));
+    assert_eq!(outcome::served(dir.openat(n, 0, 0)).map(|_| ()), Err(IS_DIR));
     let region = s.borrow().host.region.len() as u64;
     let n = name(&s, "hello.txt");
-    assert_eq!(outcome::served(dir.statat(Extent { off: region - 2, len: 8 }, out)), Err(outcome::BAD_ARGUMENT));
-    assert_eq!(outcome::served(dir.statat(n, Extent { off: region - 8, len: 64 })), Err(outcome::BAD_ARGUMENT));
-    assert_eq!(outcome::served(dir.statat(n, Extent { off: u64::MAX, len: 64 })), Err(outcome::BAD_ARGUMENT));
+    assert_eq!(outcome::served(dir.statat(Extent { off: region - 2, len: 8 }, 0, out)), Err(outcome::BAD_ARGUMENT));
+    assert_eq!(outcome::served(dir.statat(n, 0, Extent { off: region - 8, len: 64 })), Err(outcome::BAD_ARGUMENT));
+    assert_eq!(outcome::served(dir.statat(n, 0, Extent { off: u64::MAX, len: 64 })), Err(outcome::BAD_ARGUMENT));
     let h = open(&s, "hello.txt").unwrap();
     let mut node = NodeClient::new(Loop(&s, badge(&s, h)));
     assert_eq!(outcome::served(node.read(Extent { off: region, len: 1 })), Err(outcome::BAD_ARGUMENT));
     // A node's capability is no directory, and the directory is no node.
     let mut as_dir = DirClient::new(Loop(&s, badge(&s, h)));
-    assert_eq!(outcome::served(as_dir.statat(n, out)), Err(outcome::DENIED));
+    assert_eq!(outcome::served(as_dir.statat(n, 0, out)), Err(outcome::DENIED));
     let mut as_node = NodeClient::new(Loop(&s, DIR_BADGE));
     assert_eq!(outcome::served(as_node.fsync()), Err(outcome::DENIED));
 }
@@ -265,6 +265,9 @@ fn an_open_past_the_slots_revokes_the_oldest() {
 /// **An open's capability names that open and no other, across a restart
 /// of the server**: a badge an earlier server lent reaches nothing in the
 /// next one, even when the next one has the slot in use for another file.
+/// The two runs here have different incarnations; two with the same one
+/// number their opens alike, and what stops a stale badge then is the kernel's
+/// epoch (the owner of the endpoint), not this server.
 ///
 /// **Canary.** `badge-slot-canary`: the badge is the slot, as before.
 #[test]
@@ -298,7 +301,7 @@ fn a_slot_whose_revoke_failed_is_not_reused() {
     for _ in 1..NODES {
         open(&s, "fast").unwrap();
     }
-    let n = DirClient::new(Loop(&s, DIR_BADGE)).openat(name(&s, "big.bin"), 0);
+    let n = DirClient::new(Loop(&s, DIR_BADGE)).openat(name(&s, "big.bin"), 0, 0);
     assert_eq!(outcome::served(n).map(|_| ()), Err(outcome::BUSY), "no slot can be freed");
     let mut node = NodeClient::new(Loop(&s, badge(&s, first)));
     let got = read_checked(&mut node, Extent { off: DATA, len: READ_MAX }).unwrap();
@@ -313,8 +316,8 @@ fn a_dir_call_without_the_kernels_badge_is_denied() {
     let s = service();
     let out = Extent { off: OUT, len: STAT_BYTES as u32 };
     let n = name(&s, "hello.txt");
-    assert_eq!(outcome::served(DirClient::new(Loop(&s, 0)).statat(n, out)), Err(outcome::DENIED));
-    assert_eq!(outcome::served(DirClient::new(Loop(&s, DIR_BADGE)).statat(n, out)), Ok(()));
+    assert_eq!(outcome::served(DirClient::new(Loop(&s, 0)).statat(n, 0, out)), Err(outcome::DENIED));
+    assert_eq!(outcome::served(DirClient::new(Loop(&s, DIR_BADGE)).statat(n, 0, out)), Ok(()));
 }
 
 /// **A completion that comes after its waiter gave up is dropped, not taken
@@ -340,4 +343,38 @@ fn a_late_completion_is_dropped() {
     }
     assert_eq!(got, Some(1024));
     assert_eq!(completion(8, 9, 0), Completion::Stray, "a tag not yet given");
+}
+
+fn open_beneath(s: &RefCell<Svc>, path: &str, floor: u32) -> Result<Vec<u8>, u32> {
+    let n = name(s, path);
+    let lent = outcome::served(DirClient::new(Loop(s, DIR_BADGE)).openat(n, 0, floor))?;
+    let h = lent.get().expect("a served open lends a node").raw();
+    let mut node = NodeClient::new(Loop(s, badge(s, h)));
+    let got = read_checked(&mut node, Extent { off: DATA, len: READ_MAX })?;
+    Ok(s.borrow().host.region[DATA as usize..DATA as usize + got as usize].to_vec())
+}
+
+/// **A link cannot take the caller out of the directory its authority is
+/// rooted at**: `floor` components of the name are that directory, and a `..`
+/// past it or an absolute target is refused (`DENIED`, EACCES), where the
+/// same names from the mount's root are the files they name. A link that stays
+/// inside still works, and a deeper floor shrinks what is inside.
+///
+/// **Canary.** `escape-canary`: the resolution may leave the directory, and the
+/// refusals below turn into reads of `hello.txt`.
+#[test]
+fn a_link_out_of_the_callers_directory_is_refused() {
+    let s = service();
+    assert_eq!(open_beneath(&s, "jail/in", 1).unwrap(), b"jail data\n");
+    assert_eq!(open_beneath(&s, "jail/sub/up_in", 1).unwrap(), b"jail data\n");
+    assert_eq!(open_beneath(&s, "jail/data.txt", 1).unwrap(), b"jail data\n");
+    for out in ["jail/out", "jail/sub/out2", "jail/abs", "jail/../hello.txt"] {
+        assert_eq!(open_beneath(&s, out, 1), Err(outcome::DENIED), "{out}");
+        assert_eq!(open_beneath(&s, out, 0).unwrap(), b"hello ext4\n", "{out} from the root");
+    }
+    assert_eq!(open_beneath(&s, "jail/sub/up_in", 2), Err(outcome::DENIED), "rooted at jail/sub, ../data.txt is outside");
+    let n = name(&s, "jail/out");
+    let out = Extent { off: OUT, len: STAT_BYTES as u32 };
+    assert_eq!(outcome::served(DirClient::new(Loop(&s, DIR_BADGE)).statat(n, 1, out)), Err(outcome::DENIED));
+    assert_eq!(outcome::served(DirClient::new(Loop(&s, DIR_BADGE)).statat(n, 0, out)), Ok(()));
 }

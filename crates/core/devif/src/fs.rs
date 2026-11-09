@@ -233,14 +233,17 @@ pub trait Dir {
     /// Open the name `name` with `flags` (`O_*`): the file's capability,
     /// `READ` and `WRITE` as the access mode asks. Needs `READ` on the
     /// directory; an open that changes the tree also needs write authority
-    /// over it.
+    /// over it. The first `floor` components of `name` are the directory the
+    /// caller's authority is rooted at: a symlink met below it that leads out of
+    /// it is refused (`DENIED`), whatever the volume holds above.
     #[op = NODE_OPENAT]
     #[at_most_once]
-    fn openat(&mut self, name: Extent, flags: u32) -> Out<Lent<OpenNode>>;
-    /// The record of `name` (`azos_abi::syscall_nr::STAT_BYTES`) into `out`.
+    fn openat(&mut self, name: Extent, flags: u32, floor: u32) -> Out<Lent<OpenNode>>;
+    /// The record of `name` (`azos_abi::syscall_nr::STAT_BYTES`) into `out`;
+    /// `floor` as for [`Dir::openat`].
     #[op = NODE_STATAT]
     #[idempotent]
-    fn statat(&mut self, name: Extent, out: Extent) -> Out<()>;
+    fn statat(&mut self, name: Extent, floor: u32, out: Extent) -> Out<()>;
     /// Entry `index` of the directory `name`: its name into `out`
     /// (`READDIR_NAME_BYTES`, zero-padded).
     #[op = NODE_READDIR]

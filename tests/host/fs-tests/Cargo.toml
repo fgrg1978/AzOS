@@ -180,6 +180,8 @@ endpoint-short-read-canary = []
 endpoint-eof-canary = []
 endpoint-name-canary = []
 endpoint-epoch-canary = []
+# A key forgets the directory its opener is rooted at (endpoint_fs).
+endpoint-floor-canary = []
 
 [dependencies]
 # Kconfig CHAOS / DECISION_RECORDS_DEV sites in the #[path]-pulled sources

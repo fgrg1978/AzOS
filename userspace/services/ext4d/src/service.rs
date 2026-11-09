@@ -14,7 +14,9 @@
 //!
 //! Every change of the tree is refused [`READ_ONLY`]: this is the read-only
 //! stage of the format. Symlinks are followed beneath the volume's root, so a
-//! client sees the file a link names, as on a file system without links.
+//! client sees the file a link names, as on a file system without links; an
+//! open or a stat that names a `floor` is rooted at the directory its first
+//! components make, and a link that leads out of it is refused `DENIED`.
 //!
 //! The slots are few ([`NODES`]); an open past them takes the slot used
 //! longest ago and revokes what was lent from it, so a client that kept a
@@ -127,6 +129,7 @@ pub fn code(e: Error) -> u32 {
         Error::NameTooLong => NAME_TOO_LONG,
         Error::NotFile => IS_DIR,
         Error::Loop | Error::BadName => outcome::BAD_ARGUMENT,
+        Error::Escape => outcome::DENIED,
         Error::Unread(_) => outcome::UNSUPPORTED,
         Error::Io | Error::Corrupt(_) => outcome::FAULT,
     }
@@ -163,6 +166,23 @@ fn name_of(region: &[u8], e: Extent, out: &mut [u8; PATH_MAX]) -> Result<usize, 
     Ok(n)
 }
 
+/// Where the `n`th component of `name` ends (empty components do not count),
+/// `None` when it has fewer.
+fn components_end(name: &[u8], n: usize) -> Option<usize> {
+    let mut seen = 0;
+    let mut start = 0;
+    for c in name.split(|&b| b == b'/') {
+        if !c.is_empty() {
+            seen += 1;
+            if seen == n {
+                return Some(start + c.len());
+            }
+        }
+        start += c.len() + 1;
+    }
+    None
+}
+
 impl<S: BlockSource, H: Host> Service<S, H> {
     pub fn new(vol: Volume<S>, mut host: H) -> Self {
         let seq = host.incarnation();
@@ -184,12 +204,25 @@ impl<S: BlockSource, H: Host> Service<S, H> {
 
     /// The inode `e` names beneath the root, symlinks followed.
     fn resolve(&mut self, e: Extent) -> Result<Inode, u32> {
+        self.resolve_beneath(e, 0)
+    }
+
+    /// [`Service::resolve`] with the first `floor` components of the name as
+    /// the directory the caller is rooted at: what is below it is resolved
+    /// beneath it, and no symlink leads out.
+    fn resolve_beneath(&mut self, e: Extent, floor: u32) -> Result<Inode, u32> {
         if self.badge != DIR_BADGE {
             return Err(outcome::DENIED);
         }
         let mut buf = [0u8; PATH_MAX];
         let n = name_of(self.host.region(), e, &mut buf)?;
-        self.vol.resolve(&buf[..n], true).map_err(code)
+        let name = &buf[..n];
+        if floor == 0 {
+            return self.vol.resolve(name, true).map_err(code);
+        }
+        let end = components_end(name, floor as usize).ok_or(outcome::BAD_ARGUMENT)?;
+        let base = self.vol.resolve(&name[..end], true).map_err(code)?;
+        self.vol.resolve_beneath(&base, &name[end..], true).map_err(code)
     }
 
     /// The open file of the call's badge.
@@ -288,11 +321,11 @@ fn done<T: Default>(r: Result<T, u32>) -> Out<T> {
 }
 
 impl<S: BlockSource, H: Host> Dir for Service<S, H> {
-    fn openat(&mut self, name: Extent, flags: u32) -> Out<Lent<OpenNode>> {
+    fn openat(&mut self, name: Extent, flags: u32, floor: u32) -> Out<Lent<OpenNode>> {
         if flags & WRITE_FLAGS != 0 {
             return Out::new(READ_ONLY, Lent::none());
         }
-        let ino = match self.resolve(name) {
+        let ino = match self.resolve_beneath(name, floor) {
             Ok(i) if i.is_dir() => return Out::new(IS_DIR, Lent::none()),
             Ok(i) => i,
             Err(c) => return Out::new(c, Lent::none()),
@@ -330,8 +363,8 @@ impl<S: BlockSource, H: Host> Dir for Service<S, H> {
         Out::ok(Lent::dup(handle, NODE_RIGHTS))
     }
 
-    fn statat(&mut self, name: Extent, out: Extent) -> Out<()> {
-        let r = self.resolve(name).and_then(|i| self.put(out, &stat_bytes(&i)));
+    fn statat(&mut self, name: Extent, floor: u32, out: Extent) -> Out<()> {
+        let r = self.resolve_beneath(name, floor).and_then(|i| self.put(out, &stat_bytes(&i)));
         done(r)
     }
 

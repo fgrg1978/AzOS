@@ -168,6 +168,22 @@ impl<S: BlockSource> Volume<S> {
     /// target starts again at the root, and `..` never climbs above it. The
     /// last component's symlink is followed only with `follow_last`.
     pub fn resolve(&mut self, path: &[u8], follow_last: bool) -> Result<Inode, Error> {
+        self.resolve_in(ROOT_INO, false, path, follow_last)
+    }
+
+    /// [`Volume::resolve`] beneath the directory `base`, which is where the
+    /// path starts and, for a `strict` resolution, where it ends: a `..` at
+    /// `base` and a symlink with an absolute target are [`Error::Escape`], as
+    /// `openat2`'s `RESOLVE_BENEATH` refuses them. Not strict, `base` is the
+    /// volume's root and both are what `resolve` does.
+    pub fn resolve_beneath(&mut self, base: &Inode, path: &[u8], follow_last: bool) -> Result<Inode, Error> {
+        if !base.is_dir() {
+            return Err(Error::NotDir);
+        }
+        self.resolve_in(base.ino, !cfg!(feature = "escape-canary"), path, follow_last)
+    }
+
+    fn resolve_in(&mut self, base: u32, strict: bool, path: &[u8], follow_last: bool) -> Result<Inode, Error> {
         let mut work = [0u8; PATH_MAX];
         if path.len() > PATH_MAX {
             return Err(Error::NameTooLong);
@@ -175,9 +191,9 @@ impl<S: BlockSource> Volume<S> {
         work[..path.len()].copy_from_slice(path);
         let mut wlen = path.len();
         let mut at = 0usize;
-        let mut stack = [ROOT_INO; DEPTH_MAX];
+        let mut stack = [base; DEPTH_MAX];
         let mut depth = 0usize;
-        let mut cur = self.inode(ROOT_INO)?;
+        let mut cur = self.inode(base)?;
         let mut links = 0u32;
         loop {
             while at < wlen && work[at] == b'/' {
@@ -203,6 +219,9 @@ impl<S: BlockSource> Volume<S> {
                 continue;
             }
             if comp == b".." {
+                if strict && depth == 0 {
+                    return Err(Error::Escape);
+                }
                 depth = depth.saturating_sub(1);
                 cur = self.inode(stack[depth])?;
                 continue;
@@ -231,8 +250,11 @@ impl<S: BlockSource> Volume<S> {
                 wlen = tlen + rest;
                 at = 0;
                 if target[0] == b'/' {
+                    if strict {
+                        return Err(Error::Escape);
+                    }
                     depth = 0;
-                    cur = self.inode(ROOT_INO)?;
+                    cur = self.inode(base)?;
                 }
                 continue;
             }

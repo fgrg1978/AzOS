@@ -25,7 +25,7 @@ fn big() -> Vec<u8> {
     (0..10_000u32).map(|i| (i * 13 % 251) as u8).collect()
 }
 
-const FILES: &[(&str, &[u8])] = &[("hello.txt", b"hello from ring 3\n"), ("dir/a.txt", b"a\n")];
+const FILES: &[(&str, &[u8])] = &[("hello.txt", b"hello from ring 3\n"), ("dir/a.txt", b"a\n"), ("dir/link", b"outside\n")];
 
 fn file(name: &str) -> Option<Vec<u8>> {
     if name == "big.bin" {
@@ -50,13 +50,20 @@ impl Server {
 }
 
 impl Dir for Server {
-    fn openat(&mut self, name: Extent, _flags: u32) -> Out<Lent<OpenNode>> {
+    fn openat(&mut self, name: Extent, _flags: u32, floor: u32) -> Out<Lent<OpenNode>> {
+        FLOORS.lock().unwrap().push(floor);
+        if floor > 0 && self.name(name).ends_with("link") {
+            return Out::new(outcome::DENIED, Lent::none());
+        }
         let Some(data) = file(&self.name(name)) else { return Out::new(NOT_FOUND, Lent::none()) };
         self.open.push(Some((data, 0)));
         Out::ok(Lent::dup(BASE + self.open.len() as u32 - 1, 2))
     }
-    fn statat(&mut self, name: Extent, out: Extent) -> Out<()> {
+    fn statat(&mut self, name: Extent, floor: u32, out: Extent) -> Out<()> {
         let n = self.name(name);
+        if floor > 0 && n.ends_with("link") {
+            return Out::err(outcome::DENIED);
+        }
         let (size, mode) = match file(&n) {
             Some(d) => (d.len() as u64, 0o100644u32),
             None if n.is_empty() || n == "dir" => (0, 0o040755),
@@ -154,6 +161,8 @@ static EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1
 /// Ops that would change the tree, as the server saw them.
 static CHANGES: AtomicU32 = AtomicU32::new(0);
 static CLOSED: AtomicU32 = AtomicU32::new(0);
+/// The floor of every open the server saw.
+static FLOORS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
 
 struct TestLink(Mutex<Server>);
 
@@ -383,4 +392,52 @@ fn a_restarted_server_is_opened_again() {
     }
     EPOCH.fetch_add(1, Ordering::SeqCst);
     assert_eq!(read_path("/ep/hello.txt", 64).unwrap(), b"hello from ring 3\n");
+}
+
+/// **An open through a directory capability tells the server where the
+/// caller is rooted**: the components of the path that the capability's
+/// directory covers, so the server can refuse a link that leads out of it.
+///
+/// **Canary.** `endpoint-floor-canary`: every key is rooted at the mount, and
+/// both opens below say 0.
+#[test]
+fn an_open_beneath_a_directory_names_its_floor_to_the_server() {
+    let _g = serial();
+    mounted();
+    let mut t = vfs::ScratchFds::new();
+    FLOORS.lock().unwrap().clear();
+    let mut b = [0u8; 8];
+    let fd = vfs::vfs_open_at(&mut t, b"/ep/dir", b"a.txt", vfs::O_RDONLY);
+    assert!(fd >= 0);
+    assert!(vfs::vfs_read(&mut t, fd, b.as_mut_ptr(), 8) > 0);
+    vfs::vfs_close(&mut t, fd);
+    let fd = vfs::vfs_open_at(&mut t, b"/ep", b"hello.txt", vfs::O_RDONLY);
+    assert!(fd >= 0);
+    assert!(vfs::vfs_read(&mut t, fd, b.as_mut_ptr(), 8) > 0);
+    vfs::vfs_close(&mut t, fd);
+    let fd = vfs::vfs_open_at(&mut t, b"/", b"ep/dir/a.txt", vfs::O_RDONLY);
+    assert!(fd >= 0);
+    assert!(vfs::vfs_read(&mut t, fd, b.as_mut_ptr(), 8) > 0);
+    vfs::vfs_close(&mut t, fd);
+    let seen = FLOORS.lock().unwrap().clone();
+    assert!(seen.contains(&1), "an open beneath /ep/dir is rooted one component down: {seen:?}");
+    assert!(seen.contains(&0), "an open beneath the mount or above it is rooted at the mount: {seen:?}");
+}
+
+/// **A server's refusal of a link that leaves the caller's directory is an
+/// open that fails, with the refusal's own code from the mount**: no
+/// descriptor, and nothing of the target's size. The same link opened by a
+/// caller rooted at the mount is the file it names.
+///
+/// **Canary.** `endpoint-floor-canary`: the server is never told the floor, and
+/// the first open succeeds.
+#[test]
+fn a_link_out_of_the_callers_directory_is_not_opened() {
+    let _g = serial();
+    mounted();
+    let mut t = vfs::ScratchFds::new();
+    assert!(vfs::vfs_open_at(&mut t, b"/ep/dir", b"link", vfs::O_RDONLY) < 0);
+    let fd = vfs::vfs_open_at(&mut t, b"/ep", b"dir/link", vfs::O_RDONLY);
+    assert!(fd >= 0);
+    vfs::vfs_close(&mut t, fd);
 }

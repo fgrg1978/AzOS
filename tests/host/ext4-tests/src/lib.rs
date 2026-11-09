@@ -77,6 +77,13 @@ pub fn fixture(root: &Path) {
     symlink("/hello.txt", root.join("abs")).unwrap();
     symlink("../../../hello.txt", root.join("esc")).unwrap();
     symlink("deep/a", root.join("dirlink")).unwrap();
+    fs::create_dir_all(root.join("jail/sub")).unwrap();
+    fs::write(root.join("jail/data.txt"), b"jail data\n").unwrap();
+    symlink("data.txt", root.join("jail/in")).unwrap();
+    symlink("../data.txt", root.join("jail/sub/up_in")).unwrap();
+    symlink("../hello.txt", root.join("jail/out")).unwrap();
+    symlink("../../hello.txt", root.join("jail/sub/out2")).unwrap();
+    symlink("/hello.txt", root.join("jail/abs")).unwrap();
     symlink("loop2", root.join("loop1")).unwrap();
     symlink("loop1", root.join("loop2")).unwrap();
 }

@@ -154,6 +154,9 @@ pub enum Error {
     BadName,
     /// Not a regular file or symlink where its data was asked for.
     NotFile,
+    /// A `..` or an absolute symlink target that leaves the directory a path is
+    /// resolved beneath.
+    Escape,
     Corrupt(Corrupt),
     Unread(Unread),
 }

@@ -325,6 +325,15 @@ pub trait FileSystem: Sync {
     /// limits, how deep a path may go. They used to live in this file.
     fn key_for(&self, name: &[u8]) -> Option<InodeKey>;
 
+    /// [`FileSystem::key_for`] for a caller whose authority is rooted at the
+    /// directory the first `floor` components of `name` make: a backend that
+    /// follows links itself keeps the floor in the key and refuses a link that
+    /// leads out of it. One that has no links ignores it.
+    fn key_for_beneath(&self, name: &[u8], floor: usize) -> Option<InodeKey> {
+        let _ = floor;
+        self.key_for(name)
+    }
+
     /// Size and locator for an existing file, or `None` if it does not exist.
     fn stat(&self, key: &InodeKey) -> Option<FileStat>;
 
@@ -1460,12 +1469,13 @@ fn try_backend_create(path: &[u8]) -> Option<u32> {
 fn try_backend_stream_open_at(
     (backend, sub): (&'static dyn FileSystem, &[u8]),
     flags: u32,
+    floor: usize,
 ) -> Option<u32> {
     let writes = flags & (O_WRONLY | O_RDWR | O_CREAT | O_TRUNC | O_APPEND) != 0;
     if !backend.streaming() || (!writes && backend.ro_handles()) {
-        return try_backend_ro_stream_open(backend, sub, flags);
+        return try_backend_ro_stream_open(backend, sub, flags, floor);
     }
-    let mut key = match backend.key_for(sub) {
+    let mut key = match backend.key_for_beneath(sub, floor) {
         Some(k) => k,
         None => return Some(NO_IDX),
     };
@@ -1476,7 +1486,7 @@ fn try_backend_stream_open_at(
             if flags & O_CREAT == 0 { return Some(NO_IDX); }
             if backend.create(&key).is_err() { return Some(NO_IDX); }
             // The file is there now, under the key it keeps.
-            key = match backend.key_for(sub) {
+            key = match backend.key_for_beneath(sub, floor) {
                 Some(k) => k,
                 None => return Some(NO_IDX),
             };
@@ -1506,13 +1516,13 @@ fn try_backend_stream_open_at(
 /// costs the directory lookup and the bytes read, not a load of the whole
 /// file into the heap. `None` (the proxy path, as before) for any flag that
 /// may write, a directory, or a name the backend does not have.
-fn try_backend_ro_stream_open(backend: &'static dyn FileSystem, sub: &[u8], flags: u32) -> Option<u32> {
+fn try_backend_ro_stream_open(backend: &'static dyn FileSystem, sub: &[u8], flags: u32, floor: usize) -> Option<u32> {
     if cfg!(feature = "ro-stream-off-canary") { return None; }
     if flags & (O_WRONLY | O_RDWR | O_CREAT | O_TRUNC | O_APPEND) != 0 || !backend.stream_reads() {
         return None;
     }
     let t_k = crate::census::now();
-    let key = backend.key_for(sub)?;
+    let key = backend.key_for_beneath(sub, floor)?;
     let t_stat = crate::census::now();
     crate::census::add(crate::census::KEY, t_k, t_stat);
     let (size, is_dir, cookie) = backend.stat_brief(&key)?;
@@ -1934,9 +1944,17 @@ pub fn join_beneath(root: &[u8], rel: &[u8], out: &mut [u8; MAX_PATH]) -> Result
 pub fn vfs_open_at<const N: usize>(table: &mut FdTableN<N>, root: &[u8], rel: &[u8], flags: u32) -> i32 {
     let mut joined = [0u8; MAX_PATH];
     match join_beneath(root, rel, &mut joined) {
-        Ok(n) => open_resolved(table, &joined[..n], flags),
+        Ok(n) => open_resolved(table, &joined[..n], flags, root),
         Err(_) => -1,
     }
+}
+
+/// The components of `sub` (the path below its mount) that the directory
+/// `root` covers: how far down the caller's authority is rooted at.
+fn floor_in(root: &[u8], path: &[u8], sub: &[u8]) -> usize {
+    let n = |p: &[u8]| trim_nul(p).split(|&c| c == b'/').filter(|c| !c.is_empty()).count();
+    let mount = n(path).saturating_sub(n(sub));
+    n(root).saturating_sub(mount).min(n(sub))
 }
 
 /// Open `path` from the kernel's own root ([`ROOT_DIR`]): `vfs_open_at` with
@@ -1955,12 +1973,12 @@ pub fn vfs_open<const N: usize>(table: &mut FdTableN<N>, path: &[u8], flags: u32
 }
 
 /// Open the resolved absolute path. Returns fd on success, -1 on error.
-fn open_resolved<const N: usize>(table: &mut FdTableN<N>, path: &[u8], flags: u32) -> i32 {
+fn open_resolved<const N: usize>(table: &mut FdTableN<N>, path: &[u8], flags: u32, root: &[u8]) -> i32 {
     if !cfg!(feature = "file-census") {
-        return vfs_open_inner(table, path, flags);
+        return vfs_open_inner(table, path, flags, root);
     }
     let t0 = crate::census::now();
-    let fd = vfs_open_inner(table, path, flags);
+    let fd = vfs_open_inner(table, path, flags, root);
     if census_backend_fd(table, fd) {
         crate::census::add(crate::census::OPEN, t0, crate::census::now());
         crate::census::open_done();
@@ -1975,7 +1993,7 @@ fn census_backend_fd<const N: usize>(table: &FdTableN<N>, fd: i32) -> bool {
     idx != NO_IDX && FS.lock().inodes[idx as usize].backing.fs.is_some()
 }
 
-fn vfs_open_inner<const N: usize>(table: &mut FdTableN<N>, path: &[u8], flags: u32) -> i32 {
+fn vfs_open_inner<const N: usize>(table: &mut FdTableN<N>, path: &[u8], flags: u32, root: &[u8]) -> i32 {
     // A read is the set's; a write to a root name stays at the root, where it
     // cannot rewrite a file the set signed.
     let writes = flags & (O_WRONLY | O_RDWR | O_CREAT | O_TRUNC | O_APPEND) != 0;
@@ -1991,7 +2009,8 @@ fn vfs_open_inner<const N: usize>(table: &mut FdTableN<N>, path: &[u8], flags: u
     // A streaming backend is opened in place, whatever the flags: no
     // proxy load, and `O_CREAT`/`O_TRUNC` are the backend's own
     // `create`/`truncate`, so none of the proxy-path hazards below apply.
-    if let Some(idx) = try_backend_stream_open_at(mounted, flags) {
+    let floor = floor_in(root, path, mounted.1);
+    if let Some(idx) = try_backend_stream_open_at(mounted, flags, floor) {
         if idx == NO_IDX { return -1; }
         let t_fd = crate::census::now();
         let fd = fd_alloc(table, idx, flags);

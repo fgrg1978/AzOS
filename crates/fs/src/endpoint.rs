@@ -131,10 +131,18 @@ fn fs_err(code: u32) -> FsErr {
     }
 }
 
-/// The name a key carries (the path beneath the mount, zero-padded).
+/// The name a key carries (the path beneath the mount, zero-padded). Its last
+/// byte is the floor ([`floor_of`]).
 fn name_of(key: &InodeKey) -> &[u8] {
-    let n = key.bytes.iter().position(|&c| c == 0).unwrap_or(INODE_KEY_LEN);
-    &key.bytes[..n]
+    let room = &key.bytes[..INODE_KEY_LEN - 1];
+    let n = room.iter().position(|&c| c == 0).unwrap_or(room.len());
+    &room[..n]
+}
+
+/// How many leading components of the key's name are the directory its opener's
+/// authority is rooted at: the server refuses a link that leads out of it.
+fn floor_of(key: &InodeKey) -> u32 {
+    u32::from(key.bytes[INODE_KEY_LEN - 1])
 }
 
 fn u32_at(b: &[u8], o: usize) -> u32 {
@@ -187,7 +195,7 @@ impl EndpointFs {
     /// Open `key` on the server: the capability it lent.
     fn open(link: &dyn Link, key: &InodeKey) -> Result<u32, FsErr> {
         let n = Self::name(link, name_of(key))?;
-        let lent = Self::served(DirClient::new(Via(link, None)).openat(n, 0))?;
+        let lent = Self::served(DirClient::new(Via(link, None)).openat(n, 0, floor_of(key)))?;
         lent.get().map(|c| c.raw()).ok_or(FsErr::Io)
     }
 
@@ -293,7 +301,7 @@ impl EndpointFs {
         let link = self.link()?;
         let _one = self.state.acquire();
         let n = Self::name(link, name_of(key))?;
-        Self::served(DirClient::new(Via(link, None)).statat(n, Extent { off: OUT_OFF as u64, len: STAT_BYTES as u32 }))?;
+        Self::served(DirClient::new(Via(link, None)).statat(n, floor_of(key), Extent { off: OUT_OFF as u64, len: STAT_BYTES as u32 }))?;
         let mut b = [0u8; STAT_BYTES];
         if !link.get(OUT_OFF, &mut b) {
             return Err(FsErr::Io);
@@ -328,11 +336,17 @@ impl FileSystem for EndpointFs {
     }
 
     fn key_for(&self, name: &[u8]) -> Option<InodeKey> {
-        if name.len() > INODE_KEY_LEN || name.contains(&0) {
+        self.key_for_beneath(name, 0)
+    }
+
+    fn key_for_beneath(&self, name: &[u8], floor: usize) -> Option<InodeKey> {
+        if name.len() >= INODE_KEY_LEN || name.contains(&0) {
             return None;
         }
         let mut k = InodeKey { bytes: [0; INODE_KEY_LEN] };
         k.bytes[..name.len()].copy_from_slice(name);
+        // Canary `endpoint-floor-canary`: every key is rooted at the mount.
+        k.bytes[INODE_KEY_LEN - 1] = if cfg!(feature = "endpoint-floor-canary") { 0 } else { u8::try_from(floor).ok()? };
         Some(k)
     }
 
