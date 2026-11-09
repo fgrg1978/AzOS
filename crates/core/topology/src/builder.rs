@@ -124,12 +124,12 @@ const TASK_REFLEX_IMAGE: &[u8] = b"REFLEX.ELF";
 const TASK_BRAINCLI_IMAGE: &[u8] = b"BRAINCLI.ELF";
 
 /// The ring-3 inference service. Unlike the three rows above it is NOT an
-/// `autorun` choice: the kernel's behavior task spawns it on every boot with
-/// ML enabled (`kernel/src/behavior_ml.rs`), through the same path as
-/// `SYS_SPAWN_EX`, so its capabilities come from THIS row, by image name. The
-/// behavior task is also its client: it calls the `Infer` interface on
-/// `endpoint.infer` with a capability the kernel mints for it
-/// (`azos_syscall::kcall::endpoint_handle_badged`), not one a row grants.
+/// `autorun` choice: the supervisor starts it on every boot of a build that
+/// has it (`USERSPACE_MLSRV`), through the same path as `SYS_SPAWN_EX`, so its
+/// capabilities come from THIS row, by image name. The behaviour engine
+/// (BRAINCLI.ELF, the autorun row) is its client: it calls the `Infer`
+/// interface on `endpoint.infer` with the badged calling grant of the autorun
+/// row ([`INFER_CALL_CAP`]).
 const TASK_MLSRV_IMAGE: &[u8] = b"MLSRV.ELF";
 
 // Wave 9 (DRV1): the ring-3 buzzer and INA219 drivers.
@@ -375,6 +375,15 @@ const AUTHORITY_CAP: CapSpec<'static> = CapSpec {
     kind: CapKind::Endpoint,
     perms: CapPerms::WRITE,
     target: MaybeStr::from_bytes(b"authority"), transfer: false, ops: 0,
+};
+/// The calling grant of the inference service's endpoint
+/// (`azos_devif::infer::grant_badge`): the behaviour engine asks the model for
+/// L1's verdict there. Granted only where the service starts, and only to the
+/// image whose profile lists `azos_devif::key::INFER`.
+const INFER_CALL_CAP: CapSpec<'static> = CapSpec {
+    kind: CapKind::Endpoint,
+    perms: CapPerms::WRITE,
+    target: MaybeStr::from_bytes(RESOURCE_ENDPOINT_INFER), transfer: false, ops: 0,
 };
 // ── The three hardware families, granted per RESOURCE ────────────────────
 //
@@ -1068,7 +1077,8 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     #[cfg(not(feature = "ipc-endpoint-canary"))]
     const LAUNCH: usize = 0;
     const INSPECT: usize = if azos_limits::INSPECT { 2 + (azos_limits::INSPECT_ADMIN_PAGES != 0) as usize } else { 0 };
-    const _: () = assert!(DRIVETRAIN_CAPS.len() + AUTORUN_BASE.len() + LAUNCH + INSPECT + 2 <= AUTORUN_CAPS_MAX,
+    const ENGINE: usize = 2 + azos_limits::USERSPACE_MLSRV as usize;
+    const _: () = assert!(DRIVETRAIN_CAPS.len() + AUTORUN_BASE.len() + LAUNCH + INSPECT + ENGINE <= AUTORUN_CAPS_MAX,
         "the autorun row's grants do not fit AUTORUN_CAPS_MAX");
     let autorun_base = AUTORUN_BASE;
     let mut autorun_caps = [CapSpec::empty(); AUTORUN_CAPS_MAX];
@@ -1120,13 +1130,18 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
         }
     }
     // The drivetrain's commander is the behaviour engine: it hands the brain's
-    // authority frames to the kernel (`endpoint.authority`, `WRITE`) and reads
-    // the layer switches (`endpoint.behavior`, `READ`). Last, so no earlier
+    // authority frames to the kernel (`endpoint.authority`, `WRITE`), reads
+    // the layer switches (`endpoint.behavior`, `READ`) and asks the inference
+    // service for L1's verdict (`endpoint.infer`, `WRITE`). Last, so no earlier
     // slot moves.
     if DRIVETRAIN && !cfg!(feature = "flight-tool-drivetrain") {
         autorun_caps[n] = AUTHORITY_CAP;
         autorun_caps[n + 1] = BEHAVIOR_SWITCHES_CAP;
         n += 2;
+        if azos_limits::USERSPACE_MLSRV {
+            autorun_caps[n] = INFER_CALL_CAP;
+            n += 1;
+        }
     }
     topo.push_task(
         MaybeStr::from_bytes(TASK_AUTORUN),
@@ -1472,6 +1487,9 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
         )
         .expect("default_minimal_topology: MLSRV.ELF push failed");
         topo.set_last_task_mem_pages(MLSRV_MEM_PAGES);
+        // Started by its own row, whoever calls it (the component manager or,
+        // without one, the kernel's supervisor).
+        topo.set_last_task_start(true);
     }
 
     // Wave 9 (DRV1) — the ring-3 drivers; see `TASK_BUZZDRV_IMAGE`. After the

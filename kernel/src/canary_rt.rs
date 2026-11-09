@@ -233,10 +233,6 @@ pub(crate) const NAMES: &[&str] = &[
     // volume mounted, so it is not marked clean and the next boot checks it
     // (gate row `boot count: orderly reboot`).
     "power-off-unmount-skip",
-    // tasks/create.rs: start the inference service, which has no client, so
-    // the rows that test the service itself have one to talk to (`ml data
-    // signed`, `sh: ps and the inference service`).
-    "ml-service",
     // smokes/mod.rs: start the probe of the ring-3 behaviour engine's choice
     // (gate row `robot: ring-3 engine chooses`).
     "behave-smoke",

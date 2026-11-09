@@ -539,11 +539,17 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             // record nonce seed from `entropy` (wave 9, P3/P9). Without it the
             // encrypted link cannot start and the client refuses to run.
             SYS_IPC_CALL,
+            // The inference call: a helper thread makes it (a blocked call has
+            // no timeout) and the engine waits for it on a futex with one.
+            SYS_THREAD_CREATE, SYS_FUTEX_WAIT, SYS_FUTEX_WAKE,
+            // The camera's frame buffer, a memory object like the io_ring's
+            // page, is given back when it drops.
+            SYS_MO_UNMAP,
         ],
         audit: false,
         ops: inv_ops![LOG_CONSOLE_WRITE, NODE_OPENAT, DOMAIN_SOCKET, NODE_READ, NODE_SEND, DOMAIN_UPTIME, MEMOBJ_ACQUIRE],
         ifaces: &[azos_devif::key::ENTROPY, azos_devif::key::LINK_KEY, azos_devif::key::MOTOR, azos_devif::key::SENSOR,
-                  azos_devif::key::AUTHORITY, azos_devif::key::BEHAVIOR],
+                  azos_devif::key::AUTHORITY, azos_devif::key::BEHAVIOR, azos_devif::key::INFER, azos_devif::key::FRAME],
     },
     // AUDIT MODE. captest issues capability calls it expects the kernel to
     // refuse, so every one of them is in the row and reaches the gate under

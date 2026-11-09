@@ -508,18 +508,8 @@ pub(crate) fn create_service_tasks(hart_id: usize) {
     // A row that may move between hosts needs the supervisor task even if
     // nothing else does: it does the moves, and supervises the kernel host.
     let elastic_rows = azos_topology::get().is_some_and(|t| t.tasks().iter().any(|r| r.place.elastic()));
-    // The inference service has no client yet, so nothing starts it; a QEMU
-    // robot boot that tests the service itself starts it supervised (runtime
-    // `ml-service`).
-    #[cfg(all(feature = "qemu", feature = "use-robot"))]
-    let ml = canary!("ml-service");
-    #[cfg(not(all(feature = "qemu", feature = "use-robot")))]
-    let ml = false;
-    if start_rows || elastic_rows || ml {
+    if start_rows || elastic_rows {
         drv_supervisor::start();
-    }
-    if ml {
-        let _ = drv_supervisor::spawn_supervised(b"/fat/MLSRV.ELF");
     }
 
     // Kconfig FS_EXT4_RING3: the task that makes the ext4 mount's calls.

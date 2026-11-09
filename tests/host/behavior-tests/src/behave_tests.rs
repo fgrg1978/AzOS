@@ -83,3 +83,99 @@ fn the_fallback_layers_only_stop_or_turn_away() {
     let blocked = Inputs { front_mm: Some(100), ..clear };
     assert_eq!(arbitrate(Layers::AVOID_ONLY, &blocked), Some(((0, 0), Winner::Avoid)));
 }
+
+fn predicted(left: i32, right: i32, confidence: u8, at_ms: u64) -> Option<Predict> {
+    Some(Predict { left, right, confidence, at_ms })
+}
+
+/// **A prediction changes L1's choice**: a predicted stop widens the
+/// turn-away distance by [`PREDICT_OBSTACLE_MARGIN_MM`] and a predicted turn
+/// by [`PREDICT_TURN_MARGIN_MM`], so the robot turns away from an obstacle
+/// the rangefinders do not yet call close, and a prediction the brain is not
+/// sure of, or that went stale, changes nothing.
+///
+/// **Canary.** Ignore the prediction's confidence: the unsure one turns.
+#[test]
+fn a_prediction_biases_l1() {
+    let remote = Some(Remote { left: 80, right: 80, at_ms: 1_000 });
+    let base = Inputs { front_mm: Some(OBSTACLE_TURN_MM + 100), remote, session_up: true, ..at(1_100) };
+    assert_eq!(arbitrate(Layers::ALL, &base), Some(((80, 80), Winner::Remote)));
+
+    let stop = Inputs { predict: predicted(0, 0, 200, 1_050), ..base };
+    assert_eq!(arbitrate(Layers::ALL, &stop), Some((TURN, Winner::Avoid)), "a predicted stop turns the robot away early");
+    let turn = Inputs { predict: predicted(70, 20, 200, 1_050), front_mm: Some(OBSTACLE_TURN_MM + PREDICT_TURN_MARGIN_MM), ..base };
+    assert_eq!(arbitrate(Layers::ALL, &turn), Some(((80, 80), Winner::Remote)), "a predicted turn reaches less far than a predicted stop");
+    let turn = Inputs { front_mm: Some(OBSTACLE_TURN_MM + PREDICT_TURN_MARGIN_MM - 1), ..turn };
+    assert_eq!(arbitrate(Layers::ALL, &turn), Some((TURN, Winner::Avoid)));
+
+    let unsure = Inputs { predict: predicted(0, 0, PREDICT_MIN_CONFIDENCE - 1, 1_050), ..base };
+    assert_eq!(arbitrate(Layers::ALL, &unsure), Some(((80, 80), Winner::Remote)));
+    let stale = Inputs { predict: predicted(0, 0, 255, 1_100 - PREDICT_MAX_AGE_MS - 1), ..base };
+    assert_eq!(arbitrate(Layers::ALL, &stale), Some(((80, 80), Winner::Remote)));
+    let off = Layers { avoid: false, ..Layers::ALL };
+    assert_eq!(arbitrate(off, &stop), Some(((80, 80), Winner::Remote)), "with L1 off there is nothing to bias");
+}
+
+/// **A prediction never raises speed**: over every prediction, every distance
+/// and every driver, each wheel of the command is in the direction of, and no
+/// faster than, what the layers chose without it; a cycle that would not
+/// drive still does not, and a stop stays a stop. (The kernel's cap and the
+/// envelope sit under whatever this publishes either way.)
+///
+/// **Canary.** Return the hinted wheel as it is from `under`: the turn at 60
+/// replaces a brain command of 30, red.
+#[test]
+fn a_prediction_never_raises_speed() {
+    let drivers = [
+        (None, false),
+        (Some(Remote { left: 30, right: 30, at_ms: 1_000 }), true),
+        (Some(Remote { left: 100, right: -100, at_ms: 1_000 }), true),
+        (Some(Remote { left: -40, right: -40, at_ms: 1_000 }), true),
+        (Some(Remote { left: 0, right: 0, at_ms: 1_000 }), true),
+    ];
+    let mut changed = false;
+    for (remote, session_up) in drivers {
+        for front in [None, Some(50), Some(100), Some(300), Some(500), Some(650), Some(900)] {
+            for ml in [Ml::Off, Ml::Go, Ml::Turn, Ml::Stop, Ml::Missing] {
+                let plain = Inputs { front_mm: front, remote, session_up, ml, ..at(1_100) };
+                let want = arbitrate(Layers::ALL, &plain);
+                for l in (-200..=200).step_by(20) {
+                    for r in (-200..=200).step_by(20) {
+                        for conf in [0u8, 127, 128, 255] {
+                            let i = Inputs { predict: predicted(l, r, conf, 1_100), ..plain };
+                            let got = arbitrate(Layers::ALL, &i);
+                            let Some(((wl, wr), _)) = want else {
+                                assert_eq!(got, None, "a prediction made a silent cycle drive");
+                                continue;
+                            };
+                            let ((gl, gr), _) = got.expect("a driving cycle keeps driving");
+                            for (g, w) in [(gl, wl), (gr, wr)] {
+                                assert!(g == 0 || (g > 0) == (w > 0), "{g} turns the wheel round from {w}");
+                                assert!(g.abs() <= w.abs(), "{g} is faster than {w}: hint ({l},{r}) {conf}, front {front:?}");
+                            }
+                            changed |= (gl, gr) != (wl, wr);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(changed, "the sweep never exercised a changing prediction");
+}
+
+/// The payload: an actuator command and a confidence byte; an emergency, a
+/// short channel list and a wrong length are not predictions.
+#[test]
+fn a_prediction_decodes_from_its_payload() {
+    let mut p = vec![0x01, 2, 0];
+    p.extend_from_slice(&(-20i16).to_le_bytes());
+    p.extend_from_slice(&45i16.to_le_bytes());
+    p.push(200);
+    assert_eq!(Predict::decode(&p, 7), predicted(-20, 45, 200, 7));
+    let mut emergency = p.clone();
+    emergency[2] = 1;
+    assert_eq!(Predict::decode(&emergency, 7), None);
+    assert_eq!(Predict::decode(&p[..p.len() - 1], 7), None);
+    assert_eq!(Predict::decode(&[0x01, 1, 0, 5, 0, 200], 7), None);
+    assert_eq!(Predict::decode(&[], 7), None);
+}

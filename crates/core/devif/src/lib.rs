@@ -291,6 +291,11 @@ pub mod key {
     pub const VOLUME: u16 = 28;
     pub const FRAME: u16 = 29;
     pub const AUTHORITY: u16 = 30;
+    /// The inference service's `Infer` endpoint (`endpoint.infer`): served by
+    /// a ring-3 task, so it is in no [`super::IFACES`] row. It is a key only
+    /// so that an image's profile can list the call, and the grant of the
+    /// endpoint follows the profile like a kernel-hosted one does.
+    pub const INFER: u16 = 31;
 }
 
 /// Every interface the kernel can host, by host key (`IFACES[key - 1]`).

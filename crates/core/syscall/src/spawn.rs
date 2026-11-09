@@ -679,8 +679,14 @@ pub(crate) fn withheld(spec: &azos_topology::CapSpec, f: &azos_sched::filter::Sy
     }
     match azos_devif::parse_target(spec.target.as_str()) {
         Some((iface, _)) => !f.iface_listed(iface.key),
-        None => false,
+        None => infer_call_withheld(spec) && !f.iface_listed(azos_devif::key::INFER),
     }
+}
+
+/// Is `spec` the calling grant of the inference service's endpoint, which
+/// goes only to an image whose profile lists `azos_devif::key::INFER`?
+fn infer_call_withheld(spec: &azos_topology::CapSpec) -> bool {
+    spec.target.as_str() == azos_devif::infer::ENDPOINT && azos_devif::infer::grant_badge(spec.perms.bits()).is_some()
 }
 
 /// [`withheld`] for the autorun loader, which has the image's profile and no
@@ -691,7 +697,7 @@ pub fn withheld_by_profile(spec: &azos_topology::CapSpec, p: &azos_sched::seccom
     }
     match azos_devif::parse_target(spec.target.as_str()) {
         Some((iface, _)) => !p.ifaces.contains(&iface.key),
-        None => false,
+        None => infer_call_withheld(spec) && !p.ifaces.contains(&azos_devif::key::INFER),
     }
 }
 

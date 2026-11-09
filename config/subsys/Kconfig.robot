@@ -122,6 +122,21 @@ config PID_DT_MS
       board in the tree this value changes the init line and nothing else.
       Wave 11: the file used its own literal 10 before.
 
+config ML_REPLY_TIMEOUT_US
+    int "Behaviour engine: inference service reply budget (us)"
+    range 2000 100000
+    default 10000
+    help
+      userspace/services/brain_client/src/mlcall.rs: how long one engine
+      cycle waits for the ring-3 inference service's verdict before it
+      counts as missing for that cycle, and L1 holds a stop (a missing
+      verdict never lets the robot drive). It is also the deadline the
+      cycle's Infer call carries, so the service refuses at once a call
+      whose signed worst case (the cost row of BEHAVIOR.MBL, 1000 us)
+      does not fit it, which is why the range starts above that cost row.
+      10 % of the 100 ms behaviour period at the default; the engine runs
+      every 50 ms, so keep it well below that.
+
 config MOTOR_COMMANDER_EXIT_STOP
     bool "A dead motor commander's wheels go to a safe stop"
     default y if USE_ROBOT

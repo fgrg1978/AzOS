@@ -677,7 +677,7 @@ mod host {
             let want = Want {
                 width: azos_drv_sensor::csi::JPEG_CAP_W as u16,
                 height: azos_drv_sensor::csi::JPEG_CAP_H as u16,
-                fps: (1000 / azos_limits::CAMERA_TX_CAPTURE_PERIOD_MS.max(1)).max(1) as u16,
+                fps: (1000 / azos_limits::BRAIN_CAMERA_PERIOD_MS.max(1)).max(1) as u16,
                 max_frame: Pool::slot_size(),
                 max_jpeg: Pool::slot_size(),
             };

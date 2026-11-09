@@ -37,11 +37,19 @@ use sys::dev::{BehaviorCall, MotorCall, MotorClient, MotorIdl, Regs, Sample, Sen
 // (wave 9, owner decision P3; Noise since D9). Every frame this client sends
 // or receives is a message of that session, so there is no second MAC.
 mod link;
+// The brain protocol's frame around a payload (pure, host-tested).
+mod wire;
+use wire::{build_frame, crc8, put_u16_le, FRAME_OVERHEAD, MAGIC};
+// The camera on the brain link: pacing and framing (pure, host-tested).
+mod camera;
 // The behaviour engine's choice of layer and speed (pure, host-tested).
 mod behave;
+// Its inference client: the policy (pure, host-tested) and the helper thread
+// that makes the call.
+mod ml;
+mod mlcall;
 
 // ── Protocol constants (must match brain_protocol.rs + protocol.py) ──────────
-const MAGIC: [u8; 2] = *b"BR";
 const PKT_SENSOR: u8 = 0x01;
 const PKT_ACTUATOR: u8 = 0x80;
 const PKT_STATUS: u8 = 0x03;
@@ -55,7 +63,6 @@ const LAYERS_POLL_MS: u64 = 1_000;
 const ROBOT_TYPE_UNREPORTED: u8 = 0xFF;
 
 const SENSOR_PAYLOAD_SIZE: usize = 64;
-const FRAME_OVERHEAD: usize = 6;        // MAGIC(2) + TYPE(1) + LEN(2) + CRC(1)
 const SENSOR_FRAME_SIZE: usize = SENSOR_PAYLOAD_SIZE + FRAME_OVERHEAD; // 70
 
 // Sensor types — re-exported from libsys
@@ -67,9 +74,6 @@ use sys::{
 // Actuator command layout
 const ACT_HDR_SIZE: usize = 3;          // type(1) + n_channels(1) + flags(1)
 const FLAG_EMERGENCY: u8 = 0x01;
-
-// CRC-8/MAXIM polynomial
-const CRC8_POLY: u8 = 0x31;
 
 // Network
 const AF_INET: u64 = 2;
@@ -595,30 +599,7 @@ impl SockAddr {
     }
 }
 
-// ── CRC-8/MAXIM ─────────────────────────────────────────────────────────────
-
-fn crc8(data: &[u8]) -> u8 {
-    let mut crc: u8 = 0;
-    for &byte in data {
-        crc ^= byte;
-        for _ in 0..8 {
-            if crc & 0x80 != 0 {
-                crc = (crc << 1) ^ CRC8_POLY;
-            } else {
-                crc <<= 1;
-            }
-        }
-    }
-    crc
-}
-
 // ── Little-endian helpers ────────────────────────────────────────────────────
-
-fn put_u16_le(buf: &mut [u8], off: usize, v: u16) {
-    let b = v.to_le_bytes();
-    buf[off] = b[0];
-    buf[off + 1] = b[1];
-}
 
 fn put_i32_le(buf: &mut [u8], off: usize, v: i32) {
     let b = v.to_le_bytes();
@@ -764,28 +745,6 @@ fn build_sensor_payload(buf: &mut [u8; SENSOR_PAYLOAD_SIZE], sensors: &SensorDat
     put_u16_le(buf, 62, sensors.sensor_flags);     // sensor_flags
 }
 
-/// Frame a payload: MAGIC(2) + TYPE(1) + LEN(2 LE) + PAYLOAD + CRC8(1).
-fn build_frame(
-    frame: &mut [u8],
-    pkt_type: u8,
-    payload: &[u8],
-) -> usize {
-    let payload_len = payload.len();
-    let total = FRAME_OVERHEAD + payload_len;
-
-    frame[0] = MAGIC[0];
-    frame[1] = MAGIC[1];
-    frame[2] = pkt_type;
-    put_u16_le(frame, 3, payload_len as u16);
-
-    frame[5..5 + payload_len].copy_from_slice(payload);
-
-    let crc = crc8(&frame[..5 + payload_len]);
-    frame[5 + payload_len] = crc;
-
-    total
-}
-
 /// Parse a received frame. Returns (pkt_type, payload_start, payload_len) or None.
 fn parse_frame(buf: &[u8], len: usize) -> Option<(u8, usize, usize)> {
     if len < FRAME_OVERHEAD {
@@ -870,14 +829,16 @@ fn connect_to_brain(ip: [u8; 4], port: u16) -> isize {
 
 /// One exchange with the brain: the sensor frame out, every frame in. A drive
 /// command updates `remote`; a frame asking for authority goes to the kernel;
-/// the predictive channel is printed. `false` when the session ended.
-fn exchange(sock: u32, sensors: &SensorData, remote: &mut Option<behave::Remote>, now_ms: u64,
-            recv_raw: &mut [u8; RECV_RAW_SIZE]) -> bool {
+/// the predictive channel updates `predict`. `false` when the session ended.
+fn exchange(sock: u32, sensors: &SensorData, remote: &mut Option<behave::Remote>,
+            predict: &mut Option<behave::Predict>, now_ms: u64, recv_raw: &mut [u8; RECV_RAW_SIZE]) -> bool {
     let mut payload = [0u8; SENSOR_PAYLOAD_SIZE];
     let mut frame = [0u8; SENSOR_FRAME_SIZE];
     build_sensor_payload(&mut payload, sensors);
     let frame_len = build_frame(&mut frame, PKT_SENSOR, &payload);
-    if !link::seal_frame(sock, &frame[..frame_len]) {
+    // A camera frame still on the wire goes first: a sealed message is never
+    // dropped or reordered. The sensor frame of this cycle is not sent.
+    if !link::tx_pending() && !link::seal_frame(sock, &frame[..frame_len]) {
         sys::print(b"[brain_client] Send failed, disconnecting\n");
         return false;
     }
@@ -907,10 +868,12 @@ fn exchange(sock: u32, sensors: &SensorData, remote: &mut Option<behave::Remote>
                     *remote = Some(r);
                 }
             }
-            PKT_PREDICT => sys::print(b"[brain_client] predictive command received\n"),
+            PKT_PREDICT => *predict = behave::Predict::decode(body, now_ms),
             PKT_ESTOP => {
-                // The brain's standing command does not survive its e-stop.
+                // The brain's standing command and prediction do not survive
+                // its e-stop.
                 *remote = Some(behave::Remote::stop(now_ms));
+                *predict = None;
                 // An e-stop the kernel did not take is still carried out here.
                 if !authority_submit(PKT_ESTOP, body) {
                     // SAFETY: written once by `motor_caps_init`; read by value.
@@ -984,6 +947,97 @@ fn layers_now(last: behave::Layers) -> behave::Layers {
 /// The `behavior` endpoint, 0 for none.
 static mut CAP_BEHAVIOR: u32 = 0;
 
+// ── The camera on the brain link ────────────────────────────────────────────
+
+/// The camera message in progress, sealed from here into the link's transmit
+/// buffer. In .bss, not on the 16 KiB user stack.
+static mut CAMERA_MSG: [u8; camera::MSG_MAX] = [0; camera::MSG_MAX];
+
+/// The engine's reading of the camera: the frame endpoint, the buffer the
+/// kernel copies a frame into and the pace.
+struct Camera {
+    ep: u32,
+    buf: sys::dev::FrameBuffer,
+    pacer: camera::Pacer,
+    first_said: bool,
+    skipped_said: bool,
+}
+
+impl Camera {
+    /// `None` when the topology grants no camera or the buffer cannot be made.
+    fn open() -> Option<Camera> {
+        let ep = sys::dev::lookup(sys::dev::key::FRAME, 0)?;
+        let bytes = sys::dev::frame_buffer_bytes(ep).ok()? as usize;
+        let buf = sys::dev::frame_buffer(bytes).ok()?;
+        Some(Camera {
+            ep,
+            buf,
+            pacer: camera::Pacer::new(azos_limits::BRAIN_CAMERA_PERIOD_MS as u64),
+            first_said: false,
+            skipped_said: false,
+        })
+    }
+
+    /// One engine cycle on a session: send what the socket owes, and when a
+    /// frame is due and nothing is owed, take the newest and queue it. `false`
+    /// ends the session.
+    fn step(&mut self, sock: u32, now_ms: u64) -> bool {
+        if link::pump(sock, now_ms) == link::Pump::Failed {
+            sys::println(b"[brain_client] camera: the socket took nothing, ending the session");
+            return false;
+        }
+        if link::tx_pending() || !self.pacer.due(now_ms) {
+            return true;
+        }
+        let Ok(meta) = sys::dev::frame_next(self.ep, &mut self.buf) else { return true };
+        let jpeg = self.buf.bytes(meta.len as usize);
+        // SAFETY: single-threaded; the buffer is used only here and sealed
+        // before this returns.
+        let msg = unsafe { &mut *core::ptr::addr_of_mut!(CAMERA_MSG) };
+        let n = if meta.format == sys::dev::frame::format::JPEG { camera::frame_message(msg, jpeg) } else { None };
+        let Some(n) = n else {
+            if !self.skipped_said {
+                self.skipped_said = true;
+                sys::println(b"[brain_client] camera: a frame is not a JPEG that fits one message, skipped");
+            }
+            return true;
+        };
+        if !link::queue_frame(&msg[..n], now_ms) {
+            return false;
+        }
+        self.pacer.sent(now_ms);
+        if !self.first_said {
+            self.first_said = true;
+            sys::println(b"[brain_client] camera: first frame sent on the brain link");
+        }
+        link::pump(sock, now_ms) != link::Pump::Failed
+    }
+
+    /// The session ended: stop reading, so the kernel stops capturing, and
+    /// start the next one with a frame due.
+    fn end_session(&mut self) {
+        let _ = sys::dev::frame_close(self.ep);
+        self.pacer.reset();
+    }
+}
+
+/// One line when the kind of the model's answer changes, not one per cycle.
+fn report_ml(o: Option<ml::MlOutcome>) {
+    let Some(o) = o else { return };
+    let mut line = Line::new();
+    match o {
+        ml::MlOutcome::Verdict(c) => {
+            line.push(b"[brain_client] ML: verdict, class ");
+            line.push_i64(c as i64);
+        }
+        ml::MlOutcome::Late => line.push(b"[brain_client] ML: no verdict in time (late or refused): L1 holds stop"),
+        ml::MlOutcome::Unavailable => line.push(b"[brain_client] ML: no verdict (service or model unavailable): L1 holds stop"),
+        ml::MlOutcome::Malformed => line.push(b"[brain_client] ML: no verdict (reply is not a class): L1 holds stop"),
+    }
+    line.push(b"\n");
+    sys::print(line.bytes());
+}
+
 fn layer_name(w: behave::Winner) -> &'static [u8] {
     match w {
         behave::Winner::Avoid => b"avoid",
@@ -1003,6 +1057,15 @@ fn engine(brain: Option<([u8; 4], u16)>, rekey_secs: u64) -> ! {
     let mut recv_raw = [0u8; RECV_RAW_SIZE];
     let mut sock: Option<u32> = None;
     let mut remote: Option<behave::Remote> = None;
+    let mut predict: Option<behave::Predict> = None;
+    let ml_link = mlcall::start();
+    match ml_link {
+        mlcall::Link::Off => sys::println(b"[brain_client] ML: no inference endpoint granted, L1 runs on the rangefinders"),
+        mlcall::Link::Down => sys::println(b"[brain_client] ML: FAILED to set up the inference client, L1 holds stop"),
+        mlcall::Link::Up => {}
+    }
+    let mut camera = Camera::open();
+    let mut last_ml: Option<Option<ml::MlOutcome>> = None;
     let mut next_dial = 0u64;
     let mut last: Option<behave::Winner> = None;
     let mut layers = layers_now(behave::Layers::AVOID_ONLY);
@@ -1019,22 +1082,43 @@ fn engine(brain: Option<([u8; 4], u16)>, rekey_secs: u64) -> ! {
             next_dial = now + CONNECT_RETRY_MS;
         }
         if let Some(s) = sock {
-            if !exchange(s, &sensors, &mut remote, now, &mut recv_raw) {
+            let mut up = exchange(s, &sensors, &mut remote, &mut predict, now, &mut recv_raw);
+            if let (true, Some(c)) = (up, camera.as_mut()) {
+                up = c.step(s, now);
+            }
+            if !up {
                 link::end();
                 sys::close_typed(s);
+                if let Some(c) = camera.as_mut() {
+                    c.end_session();
+                }
                 sock = None;
                 remote = None;
+                predict = None;
                 next_dial = now + CONNECT_RETRY_MS;
                 sys::print(b"[brain_client] Disconnected, reconnecting...\n");
             }
         }
         let nz = |mm: u16| (mm != 0).then_some(mm);
+        let (front_mm, right_mm) = (nz(sensors.range_front), nz(sensors.range_right));
+        // L1 asks the model only while it is on and there is a reading to
+        // build the input from.
+        let (ml, ml_outcome) = match (layers.avoid, front_mm, right_mm) {
+            (true, Some(f), Some(r)) => mlcall::ask(ml_link, f, r),
+            _ => (behave::Ml::Off, None),
+        };
+        if ml_outcome.is_some() && last_ml != Some(ml_outcome) {
+            report_ml(ml_outcome);
+            last_ml = Some(ml_outcome);
+        }
         let inputs = behave::Inputs {
             now_ms: now,
-            front_mm: nz(sensors.range_front),
-            right_mm: nz(sensors.range_right),
+            front_mm,
+            right_mm,
             remote,
             session_up: sock.is_some(),
+            ml,
+            predict,
         };
         let chosen = behave::arbitrate(layers, &inputs);
         if let Some(((l, r), w)) = chosen {

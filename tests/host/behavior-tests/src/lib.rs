@@ -27,6 +27,24 @@ extern crate beh_test_drivers as azos_drv_sys;
 #[cfg(test)]
 #[path = "../../../../userspace/services/brain_client/src/behave.rs"]
 mod behave;
+// The camera on its brain link, and the frame around a payload.
+#[allow(dead_code)]
+#[cfg(test)]
+#[path = "../../../../userspace/services/brain_client/src/wire.rs"]
+mod wire;
+#[allow(dead_code)]
+#[cfg(test)]
+#[path = "../../../../userspace/services/brain_client/src/camera.rs"]
+mod camera;
+#[cfg(test)]
+mod camera_tests;
+// Its inference client.
+#[allow(dead_code)]
+#[cfg(test)]
+#[path = "../../../../userspace/services/brain_client/src/ml.rs"]
+mod ml;
+#[cfg(test)]
+mod ml_tests;
 #[cfg(test)]
 mod behave_tests;
 

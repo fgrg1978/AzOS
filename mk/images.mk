@@ -167,9 +167,13 @@ $(OUT_BUILD)/disk-lxbench-base.img: AUTORUN_ELF := /fat/LXSRV.ELF
 CONFIG_SIG_TOOLS := tools/sign/gen_config_sig.py tools/sign/device_provision.py
 LINK_KEY_TOOL := tools/sign/link_key_provision.py
 
-# The behaviour model bundle (see its rule, below).
+# The behaviour model bundle (see its rule, below). The engine's client names it
+# by the first eight bytes of its manifest's digest (`BEHAVIOR_MODEL_REF`), and
+# the build fails until that constant says what the bundle is.
+BEHAVIOR_MBL_SRC  := userspace/services/brain_client/src/ml.rs
 BEHAVIOR_MBL_ARGS := --name behavior-mlp --in-bytes 16 --out-bytes 12 \
-	--variant gguf:1:$(OUT_BUILD)/policy.gguf:1000:20:4096
+	--variant gguf:1:$(OUT_BUILD)/policy.gguf:1000:20:4096 \
+	--expect-ref-from $(BEHAVIOR_MBL_SRC):BEHAVIOR_MODEL_REF
 
 # Images whose kernel brain link must come up (the link is always a Noise
 # session, so it needs the link key): a random 32-byte key, as a link-key
@@ -386,7 +390,7 @@ $(OUT_BUILD)/board_manifest.txt: $(OUT_BUILD)/board_elfs.list tools/image/gen_bo
 # The inference service's model files for the board volume: the same bytes as
 # the QEMU disks' BEHAVIOR.MBL and POLICY.GGF, signed with the board key (never
 # the test key).
-$(BOARD_DIR)/behavior.mbl: $(OUT_BUILD)/policy.gguf tools/image/make_mbl.py tools/sign/sigalg.py $(BOARD_PRIV_STAMP)
+$(BOARD_DIR)/behavior.mbl: $(OUT_BUILD)/policy.gguf tools/image/make_mbl.py tools/sign/sigalg.py $(BEHAVIOR_MBL_SRC) $(BOARD_PRIV_STAMP)
 	$(call require_board_priv,BOARD-SIG)
 	@mkdir -p $(BOARD_DIR)
 	python3 tools/image/make_mbl.py $(BEHAVIOR_MBL_ARGS) --priv "$(BOARD_SIGN_PRIV)" --out $@
@@ -829,7 +833,7 @@ $(OUT_BUILD)/policy.sig: $(OUT_BUILD)/policy.gguf tools/sign/gen_config_sig.py $
 # (3 x f32); the cost table is the figures the broker admits a call on: a run
 # measured in tens of microseconds is signed at 1 ms, inside the 10 ms the loop
 # gives a call. The file is found by its extension, so the name is free.
-$(OUT_BUILD)/behavior.mbl: $(OUT_BUILD)/policy.gguf tools/image/make_mbl.py tools/sign/sigalg.py $(TEST_PRIV_KEY)
+$(OUT_BUILD)/behavior.mbl: $(OUT_BUILD)/policy.gguf tools/image/make_mbl.py tools/sign/sigalg.py $(BEHAVIOR_MBL_SRC) $(TEST_PRIV_KEY)
 	python3 tools/image/make_mbl.py $(BEHAVIOR_MBL_ARGS) --priv $(TEST_PRIV_KEY) --out $@
 
 # The signed slot payload. Content is arbitrary as far as Ed25519 cares, so it

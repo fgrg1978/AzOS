@@ -866,21 +866,20 @@ endchoice
 
 endmenu # Frame class
 
-config CAMERA_TX_CAPTURE_PERIOD_MS
-    int "Frame class: capture period for the brain link's sender"
+config BRAIN_CAMERA_PERIOD_MS
+    int "Frame class: camera period of the brain link (ms)"
     default 250
     range 10 1000
     help
-      The capture period of the frame pool while the brain link's camera
-      sender is attached (with no sender attached nothing is captured).
-      The sender takes the newest frame at most every 500 ms
-      (azos_behavior::camera_tx::FRAME_PERIOD_MS, or the behavior task's
-      ~2 Hz inline path); capturing at half that period means each send
-      finds a frame no older than this. Cost: one capture + JPEG encode
-      per period. Raise it to save CPU; the frame it sends gets older by as
-      much. The same on every profile and ISA today: the sender's 500 ms
-      period is not per profile. With no sender attached the capture task
-      does not wake at all.
+      The period of the camera frames the behaviour engine
+      (userspace/services/brain_client) sends the brain, and the capture
+      period of the frame pool while the engine is attached as a reader
+      (with no reader attached nothing is captured). The engine takes the
+      newest frame at most once per period and sends it on the brain link;
+      the frame it sends is no older than this. Cost: one capture + JPEG
+      encode and one frame of link bandwidth per period. Raise it to save
+      CPU and bandwidth. The same on every profile and ISA today. With no
+      reader attached the capture task does not wake at all.
 
 config GPIO_CONTROLLERS
     int "GPIO: most controllers the Gpio interface serves"

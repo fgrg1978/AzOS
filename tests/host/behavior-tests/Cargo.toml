@@ -48,6 +48,13 @@ durable-full-mask-canary = []
 telemetry-ring-canary = []
 # estop.rs's unrecorded-release gate canary: a known value, never enabled by default.
 estop-unrecorded-canary = []
+# The behaviour engine's inference client (userspace/services/brain_client/src/ml.rs):
+# a refused call passes as a class, the model that answered is not compared
+# with the one asked for, a call that timed out passes as a class. Known
+# values, never enabled by default (the canary rows are in this suite).
+infer-refusal-canary = []
+infer-model-canary = []
+ml-timeout-canary = []
 # Wave 15: `safety.rs`'s E03 section is the `geofence` feature and `rc_link.rs`
 # exists only under `rc-input` in the real crate; on here so the suite tests
 # both (the files are pulled in by `#[path]`).

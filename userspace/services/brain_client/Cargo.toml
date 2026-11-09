@@ -7,12 +7,23 @@ publish = false
 
 [dependencies]
 azos_libsys = { path = "../../../crates/core/libsys" }
+azos_abi = { path = "../../../crates/core/abi" }
+# The Infer interface the engine calls (ml.rs) and the Kconfig numbers it uses.
+azos_devif = { path = "../../../crates/core/devif" }
+azos_limits = { path = "../../../crates/core/limits" }
 # brain_client runs the same Noise handshake and transport as the kernel's own
 # brain link (`azos_crypto::secure_channel`). `azos_crypto` is
 # already `#[no_std]`, `default-features = false` on its two dalek deps, and
 # already builds for this exact bare-metal target as a kernel dependency —
 # adding it here pulls in no new target requirement.
 azos_crypto = { path = "../../../crates/core/crypto" }
+
+# Host-suite canaries of ml.rs (tests/host/behavior-tests): known values that
+# break the inference policy on purpose, never enabled by a build.
+[features]
+infer-refusal-canary = []
+infer-model-canary = []
+ml-timeout-canary = []
 
 [profile.release]
 opt-level = "s"

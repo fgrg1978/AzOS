@@ -237,6 +237,10 @@ pub fn seed_one_cap_ops(
             // class the badge lacks, and the power service finds its endpoints
             // by the key. The serving grant (`READ`) is unbadged, like any.
             //
+            // The inference service's endpoint has one badged calling grant
+            // (`azos_devif::infer::grant_badge`): the context its caller is
+            // admitted and accounted as.
+            //
             // The input server's endpoint has one badged calling grant: with
             // `EXEC` beside the call right (and no `READ`) it is the trusted
             // surface's (`azos_devif::input::grant_badge`), the caller the
@@ -244,6 +248,8 @@ pub fn seed_one_cap_ops(
             None => match azos_devif::power::runtime::grant_badge(target, perms.bits()).or_else(|| {
                 if target == azos_devif::input::ENDPOINT {
                     azos_devif::input::grant_badge(perms.bits())
+                } else if target == azos_devif::infer::ENDPOINT {
+                    azos_devif::infer::grant_badge(perms.bits())
                 } else {
                     None
                 }
@@ -635,6 +641,28 @@ mod tests {
         assert!(crate::endpoint::endpoint_named_cap_badged(a, CapPerms::READ, b"fresh", 3).is_none());
         assert!(crate::endpoint::endpoint_named_cap_badged(a, CapPerms::RW, b"fresh", 3).is_none());
         assert!(crate::cap_store::grant_badged::<crate::cap::targets::Endpoint>(a, CapPerms::WRITE, 0, 0).is_none());
+    }
+
+    /// **The calling grant of `endpoint.infer` carries the kernel's badge**
+    /// (the context the broker admits and accounts the caller as); the serving
+    /// grant (`READ`) carries none, and neither does a grant of another
+    /// endpoint.
+    ///
+    /// **Canary.** Drop the `endpoint.infer` arm of the badge choice in
+    /// `seed_one_cap_outcome`: the caller's badge reads 0 and the test goes red.
+    #[test]
+    fn the_inference_call_grant_carries_the_callers_badge() {
+        let _g = crate::harness::serial();
+        crate::endpoint::__endpoint_reset_for_tests();
+        let tid = tests_support::fresh_tid();
+        let badge_of = |h: CapHandle| crate::cap_store::with_table(tid, |t| t.ext_of(h)).flatten().map(|e| e.badge);
+        let SeedOutcome::Minted(serving) = seed_one_cap_outcome(tid, CapKind::Endpoint, CapPerms::READ, "endpoint.infer")
+        else { panic!("the serving grant was refused") };
+        let SeedOutcome::Minted(calling) = seed_one_cap_outcome(tid, CapKind::Endpoint, CapPerms::WRITE, "endpoint.infer")
+        else { panic!("the calling grant was refused") };
+        assert_eq!(badge_of(serving), Some(0));
+        assert_eq!(badge_of(calling), Some(azos_devif::infer::CALLER_BADGE));
+        assert!(crate::endpoint::endpoint_dest_for(tid, calling.as_raw()).is_ok(), "the calling grant reaches the endpoint");
     }
 
     #[test]

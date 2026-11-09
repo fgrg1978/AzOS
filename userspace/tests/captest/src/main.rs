@@ -370,7 +370,7 @@ fn stamped_reads() {
 /// A camera frame reaches this task through the `frame` endpoint, into a
 /// buffer it made: the first call makes it a reader and the camera starts
 /// capturing, so a frame arrives within a few capture periods (the kernel's
-/// `CAMERA_TX_CAPTURE_PERIOD_MS`; polled for 5 s). The frame is a JPEG (SOI to
+/// `BRAIN_CAMERA_PERIOD_MS`; polled for 5 s). The frame is a JPEG (SOI to
 /// EOI), acquired before the call on the vDSO clock, and the next one is a
 /// later frame. A buffer smaller than the pool's buffer is refused and takes
 /// no frame. Where no camera is built the endpoint is not granted and nothing

@@ -39,8 +39,9 @@ const RX_BODY_MAX: usize = sc::max_body_for(RX_MSG_MAX);
 /// Bytes the receive side carries between `recv` calls: one whole frame plus a
 /// read's worth of the next.
 const RX_CARRY_MAX: usize = sc::FRAME_HEAD + RX_BODY_MAX + 512;
-/// Largest message this client seals: a sensor frame.
-const TX_WIRE_MAX: usize = sc::sealed_len_max(crate::SENSOR_FRAME_SIZE);
+/// Largest message this client seals: a camera frame (`camera::MSG_MAX`),
+/// which is larger than any other.
+const TX_WIRE_MAX: usize = sc::sealed_len_max(crate::camera::MSG_MAX);
 
 /// Polls of 10 ms the handshake waits for each peer message: 5 s, the
 /// kernel's own handshake deadline.
@@ -63,6 +64,11 @@ struct Session {
     carry: [u8; RX_CARRY_MAX],
     carry_len: usize,
     wire: [u8; TX_WIRE_MAX],
+    /// The part of `wire` a queued message still owes the socket.
+    tx_off: usize,
+    tx_len: usize,
+    /// When the queued message last made progress, ms.
+    tx_since_ms: u64,
     /// Next wall-clock rekey, in `vdso_now_ns` nanoseconds (0: no clock).
     rekey_at_ns: u64,
     rekey_interval_ns: u64,
@@ -75,6 +81,9 @@ impl Session {
             carry: [0; RX_CARRY_MAX],
             carry_len: 0,
             wire: [0; TX_WIRE_MAX],
+            tx_off: 0,
+            tx_len: 0,
+            tx_since_ms: 0,
             rekey_at_ns: 0,
             rekey_interval_ns: 0,
         }
@@ -250,11 +259,17 @@ pub fn handshake(sock: u32, entropy_cap: u32, psk: &[u8; sc::PSK_BYTES],
     true
 }
 
-/// Seal `frame` as one message and send it. `false` ends the session.
-pub fn seal_frame(sock: u32, frame: &[u8]) -> bool {
+/// Seal `frame` as one message into the transmit buffer: its length. `None`
+/// when the session cannot seal it, or the buffer still holds a message the
+/// socket has not taken (sealing again would overwrite it, and a sealed
+/// message cannot be dropped: the peer takes the next record counter only).
+fn seal(frame: &[u8]) -> Option<usize> {
     let s = session();
-    let Session { link, wire, rekey_at_ns, rekey_interval_ns, .. } = s;
-    let Some(l) = link.as_mut() else { return false };
+    let Session { link, wire, rekey_at_ns, rekey_interval_ns, tx_len, .. } = s;
+    if *tx_len != 0 {
+        return None;
+    }
+    let l = link.as_mut()?;
 
     // Wall-clock rekey: the module has no clock; this is the caller's half, as
     // `BRAIN_LINK_REKEY_SECS` is on the kernel's link.
@@ -267,14 +282,76 @@ pub fn seal_frame(sock: u32, frame: &[u8]) -> bool {
     }
 
     let gen = l.tx_generation();
-    let w = match l.seal_message(frame, wire) {
-        Ok(w) => w,
-        Err(_) => return false,
-    };
+    let w = l.seal_message(frame, wire).ok()?;
     if l.tx_generation() != gen {
         say_num(b"[brain_client] link: REKEY sent, tx generation ", l.tx_generation() as i64);
     }
-    send_all(sock, &wire[..w])
+    Some(w)
+}
+
+/// Seal `frame` as one message and send it, waiting out a full socket for a
+/// while. `false` ends the session.
+pub fn seal_frame(sock: u32, frame: &[u8]) -> bool {
+    match seal(frame) {
+        Some(w) => send_all(sock, &session().wire[..w]),
+        None => false,
+    }
+}
+
+/// Seal `frame` and queue it for [`pump`], which sends it without waiting.
+/// `false` ends the session.
+pub fn queue_frame(frame: &[u8], now_ms: u64) -> bool {
+    let Some(w) = seal(frame) else { return false };
+    let s = session();
+    s.tx_off = 0;
+    s.tx_len = w;
+    s.tx_since_ms = now_ms;
+    true
+}
+
+/// Does a queued message still owe the socket bytes?
+pub fn tx_pending() -> bool {
+    session().tx_len != 0
+}
+
+/// Where a queued message stands after [`pump`].
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Pump {
+    /// Nothing is queued, or it all went out.
+    Idle,
+    /// The socket took what it could.
+    Pending,
+    /// The socket took nothing for `camera::STALL_MS`, or refused.
+    Failed,
+}
+
+/// Offer the queued message to the socket, as much as it takes now.
+pub fn pump(sock: u32, now_ms: u64) -> Pump {
+    let s = session();
+    if s.tx_len == 0 {
+        return Pump::Idle;
+    }
+    let mut progress = false;
+    while s.tx_off < s.tx_len {
+        let n = sys::send_typed(sock, &s.wire[s.tx_off..s.tx_len]);
+        if n < 0 {
+            return Pump::Failed;
+        }
+        if n == 0 {
+            break;
+        }
+        s.tx_off += n as usize;
+        progress = true;
+    }
+    if s.tx_off == s.tx_len {
+        s.tx_off = 0;
+        s.tx_len = 0;
+        return Pump::Idle;
+    }
+    if progress {
+        s.tx_since_ms = now_ms;
+    }
+    if crate::camera::stalled(s.tx_since_ms, now_ms) { Pump::Failed } else { Pump::Pending }
 }
 
 /// Feed received wire bytes: open every whole frame in place and hand each
@@ -321,6 +398,8 @@ pub fn end() {
     let s = session();
     s.link = None;
     s.carry_len = 0;
+    s.tx_off = 0;
+    s.tx_len = 0;
 }
 
 /// Name a transport error for the console.

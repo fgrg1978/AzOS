@@ -61,6 +61,26 @@ use azos_idl::{azos_interface, Cap, Reader, Wire, Writer};
 /// The interface id (ASCII "INFR").
 pub const INFER_ID: u32 = 0x494E_4652;
 
+/// The topology target of the endpoint the service serves on.
+pub const ENDPOINT: &str = "endpoint.infer";
+
+/// The badge of the one calling grant of [`ENDPOINT`]: the context the broker
+/// admits, accounts and answers the grant's holder as, stamped by the kernel
+/// when the row's capability is minted.
+pub const CALLER_BADGE: u32 = 1;
+
+/// The badge of a grant of [`ENDPOINT`] with rights `perms` (`CapPerms` bits):
+/// [`CALLER_BADGE`] for a calling grant (`WRITE`, no `READ`), `None` for the
+/// serving one (`READ`), which is plain.
+pub const fn grant_badge(perms: u8) -> Option<u32> {
+    use azos_abi::cap::CapPerms;
+    if perms & CapPerms::WRITE.bits() != 0 && perms & CapPerms::READ.bits() == 0 {
+        Some(CALLER_BADGE)
+    } else {
+        None
+    }
+}
+
 /// What a `Cap<Tensor>` names: a memory object holding one tensor, laid out as
 /// the model's manifest says. The input is held with `READ`, the output with
 /// `READ | WRITE`.

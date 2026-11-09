@@ -43,6 +43,31 @@ fn pinned_ref() -> u64 {
     azos_devif::infer::model_ref(&d)
 }
 
+const ENGINE_CLIENT: &str = include_str!("../../../../userspace/services/brain_client/src/ml.rs");
+
+/// `const BEHAVIOR_MODEL_REF: u64 = 0x...;` of the engine's client.
+fn engine_ref() -> u64 {
+    let at = ENGINE_CLIENT.find("pub const BEHAVIOR_MODEL_REF: u64 = 0x").expect("the engine pins the model reference");
+    let hex: String =
+        ENGINE_CLIENT[at..].split("0x").nth(1).unwrap().chars().take_while(|c| c.is_ascii_hexdigit() || *c == '_').collect();
+    u64::from_str_radix(&hex.replace('_', ""), 16).unwrap()
+}
+
+/// **The engine asks for the bundle the build ships.**
+///
+/// **Canary.** Change one digit of `BEHAVIOR_MODEL_REF` in
+/// `userspace/services/brain_client/src/ml.rs`: red (and the build refuses
+/// the image, `tools/image/make_mbl.py --expect-ref-from`).
+#[test]
+fn the_engines_model_reference_is_the_bundles() {
+    assert_eq!(
+        engine_ref(),
+        pinned_ref(),
+        "userspace/services/brain_client/src/ml.rs BEHAVIOR_MODEL_REF is not the model_ref of the bundle the build \
+         ships (the build says the right value: tools/image/make_mbl.py --expect-ref-from)"
+    );
+}
+
 /// The three scenarios of `tools/image/make_gguf.py` and of the start-up self-test,
 /// through the service, inside the loop's deadline: the class, the model that
 /// ran and a cost the broker admitted.
@@ -101,4 +126,26 @@ fn another_model_reference_is_no_resource() {
         .infer(pinned_ref() ^ 1, Cap::<Tensor>::from_raw(caps.0), Cap::<Tensor>::from_raw(caps.1), 0)
         .expect("the call reached the service");
     assert_eq!(out.code, outcome::NO_RESOURCE);
+}
+
+/// The string literal of `const NAME: &[u8] = b"...";` in `src`.
+fn byte_const<'a>(src: &'a str, name: &str) -> &'a str {
+    let at = src.find(&format!("const {name}: &[u8] = b\"")).unwrap_or_else(|| panic!("no const {name}"));
+    let rest = &src[at..];
+    let start = rest.find("b\"").unwrap() + 2;
+    &rest[start..start + rest[start..].find('"').unwrap()]
+}
+
+/// The engine calls the endpoint the service serves. The topology names it by
+/// a target (`endpoint.infer`: the kind, a dot, the name) and the engine by the
+/// name alone; a name with the prefix on it would be another endpoint, never
+/// claimed, and every call would find nobody.
+///
+/// **Canary.** Write `b"endpoint.infer"` in `INFER_ENDPOINT` of `ml.rs`: red.
+#[test]
+fn the_engine_calls_the_endpoint_the_row_serves() {
+    let row = include_str!("../../../../crates/core/topology/src/builder.rs");
+    let target = byte_const(row, "RESOURCE_ENDPOINT_INFER");
+    assert_eq!(target.strip_prefix("endpoint."), Some(byte_const(ENGINE_CLIENT, "INFER_ENDPOINT")));
+    assert_eq!(azos_devif::infer::ENDPOINT.as_bytes(), target.as_bytes(), "the grant badge is keyed on the same target");
 }

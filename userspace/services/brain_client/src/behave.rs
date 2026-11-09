@@ -6,10 +6,12 @@
 //! The safety layer is not here: the kernel caps every command with its
 //! verdict on the sensor bus, the e-stop and the envelope, and the operator's
 //! RC override replaces the command outright. What is left to choose, in
-//! order: L1 avoids an obstacle the rangefinders see, L2 follows the brain's
-//! latest command while it is fresh, L3 explores while the brain's session is
-//! up. A cycle no layer wins publishes nothing, so the drivetrain's watchdog
-//! stops the wheels.
+//! order: L1 avoids an obstacle (the rangefinders are the floor, the model's
+//! verdict sits on top and a missing verdict is a stop), L2 follows the
+//! brain's latest command while it is fresh, L3 explores while the brain's
+//! session is up. A cycle no layer wins publishes nothing, so the drivetrain's
+//! watchdog stops the wheels. The brain's prediction only ever makes L1 more
+//! cautious: it can narrow what the layers chose, never widen it.
 
 /// A rangefinder reading closer than this stops the robot (mm).
 pub const OBSTACLE_STOP_MM: u16 = 150;
@@ -21,6 +23,17 @@ pub const TURN: (i32, i32) = (60, 20);
 pub const EXPLORE: (i32, i32) = (30, 30);
 /// The brain's command drives for this long after it arrives (ms).
 pub const REMOTE_MAX_AGE_MS: u64 = 2_000;
+/// A prediction is of the next command: it biases L1 for this long (ms).
+pub const PREDICT_MAX_AGE_MS: u64 = 500;
+/// A prediction the brain is less sure of than this is ignored.
+pub const PREDICT_MIN_CONFIDENCE: u8 = 128;
+/// A predicted stop or reverse widens the turn-away distance by this (mm).
+pub const PREDICT_OBSTACLE_MARGIN_MM: u16 = 300;
+/// A predicted turn (the wheels differ by at least [`PREDICT_TURN_DELTA`])
+/// widens it by this (mm).
+pub const PREDICT_TURN_MARGIN_MM: u16 = 150;
+/// Percent between the predicted wheels that makes the prediction a turn.
+pub const PREDICT_TURN_DELTA: i32 = 30;
 
 /// The layers CONFIG.INI enables (`behavior_l1_enabled` .. `_l3_`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -56,6 +69,66 @@ impl Remote {
     }
 }
 
+/// The inference service's verdict for this cycle, as L1 acts on it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Ml {
+    /// No model is asked: the topology grants no inference endpoint, or a
+    /// rangefinder gave no reading to build the input from.
+    #[default]
+    Off,
+    Go,
+    Turn,
+    Stop,
+    /// A verdict was due and none came (late, refused, unsigned model, a
+    /// reply that is not a class): L1 stops.
+    Missing,
+}
+
+/// The brain's prediction of its next command and how sure it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Predict {
+    pub left: i32,
+    pub right: i32,
+    pub confidence: u8,
+    pub at_ms: u64,
+}
+
+/// What a prediction asks of L1.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Bias {
+    None,
+    Obstacle,
+    Turn,
+}
+
+impl Predict {
+    /// A `PKT_PREDICT` payload: an actuator command (type, channels, flags,
+    /// one signed 16-bit percent per channel) and one confidence byte. `None`
+    /// for anything else, and for an emergency, which has its own frame.
+    pub fn decode(payload: &[u8], now_ms: u64) -> Option<Predict> {
+        let n = *payload.get(1)? as usize;
+        let flags = *payload.get(2)?;
+        if n < 2 || payload.len() != 3 + 2 * n + 1 || flags & 0x01 != 0 {
+            return None;
+        }
+        let wheel = |k: usize| i16::from_le_bytes([payload[3 + 2 * k], payload[4 + 2 * k]]) as i32;
+        Some(Predict { left: wheel(0), right: wheel(1), confidence: payload[payload.len() - 1], at_ms: now_ms })
+    }
+
+    fn bias(&self, now_ms: u64) -> Bias {
+        if self.confidence < PREDICT_MIN_CONFIDENCE || now_ms.saturating_sub(self.at_ms) > PREDICT_MAX_AGE_MS {
+            return Bias::None;
+        }
+        if self.left <= 0 && self.right <= 0 {
+            Bias::Obstacle
+        } else if self.left > 0 && self.right > 0 && (self.left - self.right).abs() >= PREDICT_TURN_DELTA {
+            Bias::Turn
+        } else {
+            Bias::None
+        }
+    }
+}
+
 /// What one cycle sees.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Inputs {
@@ -66,6 +139,8 @@ pub struct Inputs {
     pub remote: Option<Remote>,
     /// The brain's session is up.
     pub session_up: bool,
+    pub ml: Ml,
+    pub predict: Option<Predict>,
 }
 
 /// The layer that won.
@@ -77,14 +152,33 @@ pub enum Winner {
 }
 
 /// The command to publish this cycle, percent per wheel, and the layer that
-/// chose it; `None` when no layer drives.
+/// chose it; `None` when no layer drives. A prediction can only lower what the
+/// layers chose, wheel by wheel: it never makes a cycle drive that would not
+/// have, and never raises a wheel.
 pub fn arbitrate(layers: Layers, i: &Inputs) -> Option<((i32, i32), Winner)> {
+    let (plain, winner) = choose(layers, i, Bias::None)?;
+    let bias = if layers.avoid { i.predict.map_or(Bias::None, |p| p.bias(i.now_ms)) } else { Bias::None };
+    if bias == Bias::None {
+        return Some((plain, winner));
+    }
+    let (hinted, hinted_winner) = choose(layers, i, bias).unwrap_or((plain, winner));
+    let cmd = (under(hinted.0, plain.0), under(hinted.1, plain.1));
+    Some((cmd, if cmd == plain { winner } else { hinted_winner }))
+}
+
+/// `hinted` bounded by `plain`: the same direction and no faster.
+fn under(hinted: i32, plain: i32) -> i32 {
+    if hinted == 0 || plain == 0 || (hinted > 0) != (plain > 0) {
+        0
+    } else {
+        hinted.signum() * hinted.abs().min(plain.abs())
+    }
+}
+
+fn choose(layers: Layers, i: &Inputs, bias: Bias) -> Option<((i32, i32), Winner)> {
     if layers.avoid {
-        let near = [i.front_mm, i.right_mm].into_iter().flatten().min();
-        match (i.front_mm, near) {
-            (_, Some(d)) if d < OBSTACLE_STOP_MM => return Some(((0, 0), Winner::Avoid)),
-            (Some(f), _) if f < OBSTACLE_TURN_MM => return Some((TURN, Winner::Avoid)),
-            _ => {}
+        if let Some(cmd) = avoid(i, bias) {
+            return Some((cmd, Winner::Avoid));
         }
     }
     if layers.remote {
@@ -96,6 +190,25 @@ pub fn arbitrate(layers: Layers, i: &Inputs) -> Option<((i32, i32), Winner)> {
     }
     if layers.explore && i.session_up {
         return Some((EXPLORE, Winner::Explore));
+    }
+    None
+}
+
+/// L1: the rangefinders are the floor and the model's verdict sits on top; the
+/// more cautious of the two wins. A stop beats a turn.
+fn avoid(i: &Inputs, bias: Bias) -> Option<(i32, i32)> {
+    let near = [i.front_mm, i.right_mm].into_iter().flatten().min();
+    let margin = match bias {
+        Bias::None => 0,
+        Bias::Obstacle => PREDICT_OBSTACLE_MARGIN_MM,
+        Bias::Turn => PREDICT_TURN_MARGIN_MM,
+    };
+    let turn_below = OBSTACLE_TURN_MM.saturating_add(margin);
+    if matches!(i.ml, Ml::Stop | Ml::Missing) || near.is_some_and(|d| d < OBSTACLE_STOP_MM) {
+        return Some((0, 0));
+    }
+    if i.ml == Ml::Turn || i.front_mm.is_some_and(|f| f < turn_below) {
+        return Some(TURN);
     }
     None
 }

@@ -1333,9 +1333,12 @@ mod start_flag_tests {
         let logind: &[&str] = if azos_topology::builder::LOGIND_ROW { &["LOGIND.ELF"] } else { &[] };
         // The kernel log's sink starts with the log (Kconfig `KLOG`).
         let klog: &[&str] = if azos_limits::KLOG { &["LOGD.ELF"] } else { &[] };
+        // The inference service starts by its own row (Kconfig USERSPACE_MLSRV).
+        let mlsrv: &[&str] = if azos_limits::USERSPACE_MLSRV { &["MLSRV.ELF"] } else { &[] };
         #[cfg(not(feature = "ring3-driver-start"))]
         {
-            let mut want = shell.to_vec();
+            let mut want = mlsrv.to_vec();
+            want.extend_from_slice(shell);
             want.extend_from_slice(decisions);
             want.extend_from_slice(packages);
             want.extend_from_slice(rpc);
@@ -1368,6 +1371,7 @@ mod start_flag_tests {
             // kernel, and the component manager's like any other row.
             if azos_topology::builder::BUZZDRV_ROW { want.push("BUZZDRV.ELF"); }
             if azos_topology::builder::INADRV_ROW { want.push("INADRV.ELF"); }
+            want.extend_from_slice(mlsrv);
             want.extend_from_slice(shell);
             want.extend_from_slice(decisions);
             want.extend_from_slice(packages);

@@ -1179,6 +1179,7 @@ mod image_profiles {
         ("VOLUME", azos_devif::key::VOLUME),
         ("FRAME", azos_devif::key::FRAME),
         ("AUTHORITY", azos_devif::key::AUTHORITY),
+        ("INFER", azos_devif::key::INFER),
     ];
 
     /// The kernel-hosted interfaces the image's sources name (`dev::key::NAME`).
@@ -1206,6 +1207,11 @@ mod image_profiles {
                     .unwrap_or_else(|| panic!("{path}: names `dev::key::{name}`, which DEV_KEYS does not list"))
                     .1;
                 out.insert(key);
+            }
+            // A task-served interface has no `dev::key` call: its endpoint is
+            // looked up by name.
+            if code.contains("cap_lookup_endpoint(ml::INFER_ENDPOINT") {
+                out.insert(azos_devif::key::INFER);
             }
         }
         out
@@ -1366,6 +1372,10 @@ mod image_profiles {
             // The forward-secret link client session.
             src!("userspace/services/brain_client/src/link.rs"),
             src!("userspace/services/brain_client/src/behave.rs"),
+            src!("userspace/services/brain_client/src/ml.rs"),
+            src!("userspace/services/brain_client/src/mlcall.rs"),
+            src!("userspace/services/brain_client/src/camera.rs"),
+            src!("userspace/services/brain_client/src/wire.rs"),
         ]),
         ("CAPTEST.ELF", Lang::Rust, &[
             src!("userspace/tests/captest/src/main.rs"),
@@ -2352,6 +2362,9 @@ mod image_profiles {
     #[test]
     fn the_dev_keys_table_covers_the_registry() {
         let mut want: Vec<u16> = azos_devif::IFACES.iter().map(|i| i.key).collect();
+        // The keys of the interfaces a ring-3 task serves, which a profile
+        // may list too, are in no registry row.
+        want.push(azos_devif::key::INFER);
         let mut have: Vec<u16> = DEV_KEYS.iter().map(|k| k.1).collect();
         want.sort();
         have.sort();
