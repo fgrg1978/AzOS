@@ -9440,9 +9440,9 @@ a64_kbuild "qemu" >/dev/null 2>&1 || true
 # INFER_MODEL_SIG_REQUIRED, default y. The behavior loop's model, the bundle
 # `/fat/BEHAVIOR.MBL`, carries its signature inside (over its manifest, which
 # holds the cost table the admission believes) and is verified whatever the
-# switch says. The service has no client yet, so these rows start it
-# (runtime `canary=ml-service`, a `qemu,use-robot` kernel built from the robot
-# cell), one fresh disk copy per boot.
+# switch says. The service is started by its own row (`start`, the robot
+# preset's USERSPACE_MLSRV), so the rows boot `qemu,use-robot` kernels, built
+# from the robot cell, one fresh disk copy per boot.
 #
 #   signed:   the disk as `make` builds it -- the bundle loaded "(signature
 #             verified)", GGUF self-test 3/3.
@@ -9501,14 +9501,14 @@ ml_data_sig_row() { # <label> <isa: rv|arm> <mode: signed|tampered|nosig>
     rm -f "$tmp"
     if [ "$isa" = "rv" ]; then
         par_ready
-        "$QEMU" -machine virt -nographic -bios default -kernel "$kimg" -append canary=ml-service -smp 4 \
+        "$QEMU" -machine virt -nographic -bios default -kernel "$kimg" -smp 4 \
             -global virtio-mmio.force-legacy=false \
             -drive file="$img",if=none,format=raw,id=hd0 \
             -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
     else
         par_ready
         "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
-            -kernel "$kimg" -append canary=ml-service \
+            -kernel "$kimg" \
             -global virtio-mmio.force-legacy=false \
             -drive file="$img",if=none,format=raw,id=hd0 \
             -device virtio-blk-device,drive=hd0 >"$log" 2>&1 &
@@ -10245,8 +10245,7 @@ fi
 # 500 000 us / 1 ms = 500 (each wait lasts at least 1 ms of guest time).
 # Yield-polling it was 73,483-503,780 per dial (2026-09-28, both ISAs); the
 # same boots with the sleep read 200-308. Only behavior dials on this disk
-# (no `behavior_camera_port`, autorun does no networking), so every line is
-# behavior's. Canary, by hand: the behavior dial's closure put back to
+# (autorun does no networking), so every line is behavior's. Canary, by hand: the behavior dial's closure put back to
 # `azos_sched::task_yield`: FAIL on both ISAs (152,378-503,780 polls).
 #
 # Wave 15 (N7): the wait no longer polls at all. `resolve_peer_mac` registers
@@ -22025,7 +22024,8 @@ PY
     # (`[ACTSMOKE] kernel motor id=N duty=60`, printed by rt-motor on each
     # transition, out of the write itself). The kernel marker is the stronger
     # one: it proves the effect loop applied the command, not that a handler ran.
-    # Rewritten for the ring-3 engine; not run yet (BRAIN=1).
+    # Rewritten for the ring-3 engine, with the model's verdict ahead of the
+    # brain's command: NOT RUN YET (BRAIN=1), written without a QEMU run.
     ring3_actuation_scenario() {
         brain_peer_required || return 0
         local label="userspace: ring-3 drives motors"
@@ -22067,6 +22067,19 @@ PY
             echo "      peer said: $(tail -2 "$blog" 2>/dev/null | tr "\n" " ")"
             echo "      logs kept: $log $blog"; return
         fi
+        # L1 asks the inference service (MLSRV.ELF, started by its row) and holds
+        # a stop until it answers: the brain's 60 % drives only after the first
+        # verdict, and the verdict is a class (go forward on the clear road).
+        local v_line d_line
+        v_line=$(grep -an "\[brain_client\] ML: verdict, class 0" "$log" 2>/dev/null | sed -n 1p | cut -d: -f1)
+        d_line=$(grep -an "\[behave\] remote drives (60,60)" "$log" 2>/dev/null | sed -n 1p | cut -d: -f1)
+        if [ -z "$v_line" ] || [ "$v_line" -gt "$d_line" ]; then
+            bad; echo "      the brain's command drove before the inference service gave L1 a"
+            echo "      verdict (or it never did): ML must be asked every cycle and a missing"
+            echo "      verdict holds a stop."
+            grep -a -m4 "brain_client\] ML\|\[infsrv\]" "$log" | sed "s|^|      |"
+            echo "      logs kept: $log $blog"; return
+        fi
         # Both wheels, applied by the kernel's drivetrain loop (the command
         # goes through `Motor::command` to the effect loop, which writes them).
         local m=0
@@ -22083,6 +22096,58 @@ PY
         ok; rm -f "$log" "$blog"
     }
     par -s "userspace: ring-3 drives motors" ring3_actuation_scenario   # the brain peer on a host port of its own
+
+    # THE ENGINE NEVER DRIVES ON A MISSING VERDICT (owner decision 2026-09-28,
+    # fail closed). The same boot as above with BEHAVIOR.MBL's bytes changed on
+    # the disk: the service refuses the bundle (bad signature), has no model to
+    # run, and every Infer call is NO_RESOURCE. L1 then holds a stop, so the
+    # brain's 60 % command is never chosen and the wheels never move.
+    # NOT RUN YET: written without a QEMU run (BRAIN=1).
+    ring3_ml_fail_closed_scenario() {
+        brain_peer_required || return 0
+        local label="userspace: ring-3 holds stop w/o ML"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local log="$CI_LOG_DIR/ring3-ml-closed.log"
+        local blog="$CI_LOG_DIR/ring3-ml-closed-peer.log"
+        local img=$AZOS_OUT/build/disk-braincli-linkkey.img tmp
+        rm -f "$log" "$blog"
+
+        kbuild "qemu,actuation-smoke"
+        rm -f $AZOS_OUT/build/disk-braincli.img $img $AZOS_OUT/build/braincli_linkkey.bin
+        make_disk $img
+        tmp=$(mktemp)
+        if ! mcopy -n -i "$img" "::BEHAVIOR.MBL" "$tmp" 2>/dev/null \
+           || ! python3 -c 'import sys; p=sys.argv[1]; b=bytearray(open(p,"rb").read()); b[40]^=1; open(p,"wb").write(b)' "$tmp" \
+           || ! mcopy -o -i "$img" "$tmp" "::BEHAVIOR.MBL" 2>/dev/null; then
+            rm -f "$tmp"; bad; echo "      could not flip a byte of BEHAVIOR.MBL in $img"; return
+        fi
+        rm -f "$tmp"
+        PEER_BOOT_QEMU_EXTRA="-device virtio-rng-device" \
+        run_brain_peer_boot "$log" "$blog" $img 8 \
+            --serve --duration 40 --link-key $AZOS_OUT/build/braincli_linkkey.bin
+
+        if grep -aqiE "panic|\[FATAL\]" "$log" 2>/dev/null; then
+            bad; echo "      kernel panic or fatal exception:"; grep -aiE -m3 "panic|\[FATAL\]|\[PAGE FAULT\]" "$log" | sed "s|^|      |"
+            echo "      logs kept: $log $blog"; return
+        fi
+        if ! grep -aqE "\[infsrv\] BEHAVIOR.MBL REFUSED: bad signature" "$log" 2>/dev/null \
+           || ! grep -aq "\[brain_client\] ML: no verdict" "$log" 2>/dev/null \
+           || ! grep -aq "\[behave\] avoid drives (0,0)" "$log" 2>/dev/null; then
+            bad; echo "      with an unsigned model the engine did not hold a stop through L1:"
+            grep -a -m5 "infsrv\] BEHAVIOR\|brain_client\] ML\|\[behave\]" "$log" | sed "s|^|      |"
+            echo "      logs kept: $log $blog"; return
+        fi
+        if grep -aq "\[behave\] remote drives\|\[behave\] explore drives" "$log" 2>/dev/null \
+           || grep -aq "ACTSMOKE] kernel motor id=[01] duty=[1-9]" "$log" 2>/dev/null; then
+            bad; echo "      THE ENGINE DROVE ON A MISSING VERDICT: a layer below L1 won, or a wheel"
+            echo "      moved, with no model verdict."
+            grep -a -m4 "\[behave\]\|ACTSMOKE" "$log" | sed "s|^|      |"
+            echo "      logs kept: $log $blog"; return
+        fi
+        ok; rm -f "$log" "$blog"
+    }
+    par -s "userspace: ring-3 holds stop w/o ML" ring3_ml_fail_closed_scenario   # the brain peer on a host port of its own
 
     # A RING-3 CLIENT THAT RECONNECTS MUST GIVE ITS SOCKET BACK EVERY TIME.
     #
@@ -23701,15 +23766,13 @@ PYEOF
     # addition: QEMU starts only once the peer says `listening`, because the
     # peer reads LINK.KEY out of the image with mtools and QEMU locks it.
     #
-    # `link_peer_scenario <label> <camera 0|1>`: with a camera port (C1), the
-    # image's CONFIG.INI sets `behavior_camera_port` (a free port, as the
-    # control port is) and the peer also accepts the kernel's camera
-    # connections there; every assertion below still holds,
-    # and the camera connection adds its own.
+    # The engine also sends its camera frames on this connection (`PKT_CAMERA`,
+    # paced by BRAIN_CAMERA_PERIOD_MS, from the frame class's reader); the peer
+    # waits for one in phase 4 and this row asserts it. NOT RUN YET: written
+    # without a QEMU run (BRAIN=1).
     link_peer_scenario() {
         brain_peer_required || return 0
-        local label="$1" camera_port="$2" tag="link-peer"
-        if [ "$camera_port" != 0 ]; then tag="link-camera"; fi
+        local label="$1" tag="link-peer"
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
         local log="$CI_LOG_DIR/${tag}.log"
@@ -23739,9 +23802,7 @@ PYEOF
         # ports (`--port 0`, `--camera-port -1`) and prints them; this copy's
         # CONFIG.INI is pointed at them once it says `listening`, which it
         # prints after reading LINK.KEY, so the rewrite never races that read.
-        local cam_arg=0
-        [ "$camera_port" != 0 ] && cam_arg=-1
-        python3 tools/gate/link_peer.py --port 0 --camera-port "$cam_arg" --image "$img" \
+        python3 tools/gate/link_peer.py --port 0 --image "$img" \
             >>"$blog" 2>&1 &
         local bpid=$!
         local i=0
@@ -23752,17 +23813,11 @@ PYEOF
         done
         # The behaviour engine's wall-clock rekey, shortened so one boot sees
         # the client REKEY (`brain_client_rekey_secs` may only shorten it).
-        local port cport="" extra="brain_client_rekey_secs=5"
+        local port extra="brain_client_rekey_secs=5"
         port=$(sed -n 's/^\[link-peer\] listening on [0-9.]*:\([0-9][0-9]*\) .*/\1/p' "$blog" | sed -n 1p)
-        if [ "$camera_port" != 0 ]; then
-            cport=$(sed -n 's/^\[link-peer\] camera listener on [0-9.]*:\([0-9][0-9]*\)$/\1/p' "$blog" | sed -n 1p)
-            extra="$extra
-behavior_camera_port=${cport:-none}"
-        fi
-        if [ -z "$port" ] || { [ "$camera_port" != 0 ] && [ -z "$cport" ]; } \
-           || ! peer_port_image "$img" "$port" "$extra"; then
+        if [ -z "$port" ] || ! peer_port_image "$img" "$port" "$extra"; then
             kill "$bpid" 2>/dev/null; wait "$bpid" 2>/dev/null
-            bad; echo "      could not point $img at the peer's ports (${port:-none}/${cport:-none}):"
+            bad; echo "      could not point $img at the peer's port (${port:-none}):"
             grep -a "\[link-peer\] FAIL" "$blog" 2>/dev/null | sed -n "1,3p" | sed "s|^|      |"
             echo "      log kept: $blog"; return
         fi
@@ -23872,6 +23927,17 @@ behavior_camera_port=${cport:-none}"
             echo "      logs kept: $log $blog"; return
         fi
 
+        # The engine's camera frames travel on the control connection: the peer
+        # opened at least one, and the engine said it sent the first.
+        if ! grep -aq "\[link-peer\] camera frames on the control connection: [1-9]" "$blog" 2>/dev/null \
+           || ! grep -aq "\[brain_client\] camera: first frame sent on the brain link" "$log" 2>/dev/null; then
+            bad; echo "      no camera frame from the engine reached the peer on the control"
+            echo "      connection (the frame class's reader, BRAIN_CAMERA_PERIOD_MS):"
+            grep -a "\[link-peer\] FAIL" "$blog" 2>/dev/null | sed "s|^|      |"
+            grep -a -m3 "brain_client\] camera" "$log" | sed "s|^|      |"
+            echo "      logs kept: $log $blog"; return
+        fi
+
         # Phase 5: a tampered frame ends the session with a close (there is no
         # REJECT frame), and the kernel's next dial completes a NEW session.
         local sid2 est
@@ -23903,8 +23969,7 @@ behavior_camera_port=${cport:-none}"
         fi
         ok; mv -f "$log" "$log.green"; mv -f "$blog" "$blog.green"   # the last green pair, to diff a red one against
     }
-    par_row -s link_peer_scenario "link: encrypted end to end" 0   # the peer on a host port of its own
-    # C1: the same link with camera frames on a connection of their own.
+    par_row -s link_peer_scenario "link: encrypted end to end"   # the peer on a host port of its own
 
     # ── The userspace ELFs the gate never executed ─────────────────────
     #
@@ -26954,20 +27019,20 @@ cat /ext4/link"
             make "$AZOS_OUT/build/image_hashes_aarch64.rs" >/dev/null 2>&1 || true
         fi
         # The images that ask for more stack than a task gets by default, run:
-        # MLSRV.ELF (64 KiB for its main thread, started by `canary=ml-service`,
+        # MLSRV.ELF (64 KiB for its main thread, started by its own row,
         # steady when it serves the Infer interface) and TOOLBOX.ELF's `ps`
         # beside it. Each died on a write fault below a 16 KiB stack: MLSRV at
         # every start (given up after three), `ps` on its first walk. The
         # canary kernel maps the default stack whatever the image asks
         # (`user-stack-request-canary`): MLSRV.ELF dies again, never serves,
         # and the row must not see its line. The static half is `ring-3 stacks`.
-        USH_QEMU_EXTRA="-append canary=ml-service" USH_FORBID="$RECOVERY_PROMPT_RE|PAGE FAULT|Killing user task" par_row ushell_row "sh: ps and the inference service ($ush_isa)" "$ush_isa" "$ush_feat,use-robot" PASS \
+        USH_FORBID="$RECOVERY_PROMPT_RE|PAGE FAULT|Killing user task" par_row ushell_row "sh: ps and the inference service ($ush_isa)" "$ush_isa" "$ush_feat,use-robot" PASS \
             "#wait \[infsrv\] serving the Infer interface
 ps
 #sleep 2" 240 \
             "[infsrv] serving the Infer interface on endpoint.infer" \
             "  TID  PPID PRI S NAME" " S MLSRV.ELF" " TOOLBOX.ELF"
-        USH_QEMU_EXTRA="-append canary=ml-service" USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "sh: ps and the inference service canary ($ush_isa)" "$ush_isa" "$ush_feat,use-robot,user-stack-request-canary" FAIL \
+        USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "sh: ps and the inference service canary ($ush_isa)" "$ush_isa" "$ush_feat,use-robot,user-stack-request-canary" FAIL \
             "#wait \[infsrv\] serving the Infer interface
 ps
 #sleep 2" 120 \

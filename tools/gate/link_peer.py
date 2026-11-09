@@ -38,14 +38,9 @@ Phases, each ending in a `[link-peer] phase N done` line for
      is no REJECT frame), dial again, and complete a second handshake whose
      session id differs from the first.
 
-With `--camera-port` (CONFIG.INI `behavior_camera_port`), the peer also listens
-where the kernel's camera task dials, as AzOSRobotBrain's `camera_link.py` does: a
-handshake per camera connection, then frames it only reads. On top of the
-phases above, each step ending in a `[link-peer] camera ... done` line: the
-first camera connection carries sealed camera frames and a kernel REKEY; it
-closes when phase 5 ends the control session; the control session that
-replaces it gets a new camera connection; the four session ids differ; no
-camera frame travels on a control connection, and nothing else on a camera one.
+The robot sends its camera frames on this same connection (the engine's
+`PKT_CAMERA`, at most one per `BRAIN_CAMERA_PERIOD_MS`), so phase 4 also waits
+for a sealed camera frame among the control frames.
 
 Any failure prints `[link-peer] FAIL <what>` and exits non-zero; a complete
 script ends with `[link-peer] PASS`.
@@ -297,88 +292,6 @@ def non_camera_types(link) -> list:
     return sorted(t for t in link.types if t != brain_protocol.CAMERA_FRAME)
 
 
-class CameraSide:
-    """AzOSRobotBrain's camera listener (`camera_link.py`) for `--camera-port`:
-    accepts the kernel's camera connections one at a time on a thread of its
-    own, runs the brain-side handshake on each, and opens every frame the
-    kernel sends. It never writes after the handshake."""
-
-    def __init__(self, host: str, port: int, psk: bytes, timeout: float,
-                 static_key=None) -> None:
-        self.psk, self.timeout = psk, timeout
-        self.static_key = static_key
-        self.srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.srv.bind((host, max(port, 0)))  # -1: any free port
-        self.srv.listen(2)
-        self.srv.settimeout(0.5)
-        self._sessions: list = []  # (sid, Link) in accept order
-        self.failure = None
-        self._stop = threading.Event()
-        self._thread = threading.Thread(target=self._serve, daemon=True)
-
-    def start(self) -> None:
-        self._thread.start()
-
-    def stop(self) -> None:
-        self._stop.set()
-        self._thread.join(timeout=5.0)
-        self.srv.close()
-
-    def count(self) -> int:
-        return len(self._sessions)
-
-    def sid(self, n: int) -> str:
-        return self._sessions[n][0]
-
-    def link(self, n: int):
-        return self._sessions[n][1]
-
-    def frames(self, n: int) -> int:
-        if n >= len(self._sessions):
-            return 0
-        return self._sessions[n][1].types.get(brain_protocol.CAMERA_FRAME, 0)
-
-    def _serve(self) -> None:
-        try:
-            while not self._stop.is_set():
-                try:
-                    conn, addr = self.srv.accept()
-                except socket.timeout:
-                    continue
-                n = len(self._sessions) + 1
-                say(f"camera connection {n} from {addr[0]}")
-                link = Link(conn, self.psk, self.static_key)
-                sid = link.handshake(self.timeout)
-                self._sessions.append((sid, link))
-                say(f"camera session {n} established sid={sid}")
-                while not (link.eof or self._stop.is_set()):
-                    link.pump(0.25)
-                say(f"camera connection {n} ended: {self.frames(n - 1)} camera frames, "
-                    f"kernel_rekeys={link.kernel_rekeys} eof={link.eof}")
-                conn.close()
-        except (PeerFailure, OSError) as e:
-            self.failure = str(e)
-            say(f"camera side stopped: {e}")
-
-
-def wait_camera(cam: CameraSide, link, cond, timeout: float, what: str) -> None:
-    """Wait for `cond()` on the camera side, reading the control `link` (when
-    there is one) meanwhile: an undrained control socket backs TCP up."""
-    deadline = time.monotonic() + timeout
-    while not cond():
-        if cam.failure:
-            raise PeerFailure(f"{what} — {cam.failure}")
-        if link is not None and link.eof:
-            raise PeerFailure(f"{what} — the control connection ended first")
-        if time.monotonic() >= deadline:
-            raise PeerFailure(f"{what} — not within {timeout:.0f}s")
-        if link is not None:
-            link.pump(0.1)
-        else:
-            time.sleep(0.1)
-
-
 def run(args) -> None:
     psk = load_psk(args.image)
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -386,11 +299,6 @@ def run(args) -> None:
     srv.bind((args.host, args.port))
     srv.listen(2)
     static_key = bytes.fromhex(args.noise_sk) if args.noise_sk else None
-    cam = None
-    if args.camera_port:
-        cam = CameraSide(args.host, args.camera_port, psk, args.phase_timeout, static_key)
-        cam.start()
-        say(f"camera listener on {args.host}:{cam.srv.getsockname()[1]}")
     say(f"listening on {args.host}:{srv.getsockname()[1]} (LINK.KEY from {args.image})")
 
     link, sid1 = accept(srv, 1, args.wait, psk, args.phase_timeout, static_key)
@@ -398,11 +306,6 @@ def run(args) -> None:
     # Phase 1 — the kernel's first records open under the session keys.
     link.wait_for(lambda: link.sensors >= 1, args.phase_timeout, "phase 1: SensorPacket")
     say(f"phase 1 done: SensorPacket opened ({link.messages} kernel messages)")
-    if cam:
-        wait_camera(cam, link, lambda: cam.frames(0) >= 1, args.phase_timeout,
-                    "camera phase 1: a sealed camera frame on the first camera connection")
-        say(f"camera phase 1 done: camera session 1 sid={cam.sid(0)}, "
-            f"{cam.frames(0)} camera frames")
 
     # Phase 2 — commands the kernel acts on.
     sent = link.drive(args.drive_s, args.gap, "phase 2")
@@ -428,21 +331,9 @@ def run(args) -> None:
         f"rx_generation={link.sc.rx_generation} "
         f"after_kernel_rekey={link.since_kernel_rekey} "
         f"after_brain_rekey={link.since_brain_rekey}")
-    if not cam:
-        # No camera connection: camera frames travel inline, sealed as
-        # messages among the control frames.
-        link.wait_for(lambda: link.types.get(brain_protocol.CAMERA_FRAME, 0) >= 1,
-                      args.phase_timeout, "phase 4: a sealed camera frame on the control connection")
-        say(f"inline camera frames on the control connection: "
-            f"{link.types[brain_protocol.CAMERA_FRAME]}")
-    if cam:
-        wait_camera(cam, link, lambda: cam.link(0).kernel_rekeys >= 1, args.phase_timeout,
-                    "camera phase 4: a kernel REKEY on the first camera connection")
-        if cam.count() != 1 or cam.link(0).eof:
-            raise PeerFailure("camera phase 4 — the first camera connection ended while its "
-                              "control session was up")
-        say(f"camera phase 4 done: {cam.frames(0)} camera frames, "
-            f"kernel_rekeys={cam.link(0).kernel_rekeys}")
+    link.wait_for(lambda: link.types.get(brain_protocol.CAMERA_FRAME, 0) >= 1,
+                  args.phase_timeout, "phase 4: a sealed camera frame on the control connection")
+    say(f"camera frames on the control connection: {link.types[brain_protocol.CAMERA_FRAME]}")
 
     # Phase 5 — a tampered frame ends the session; a new one replaces it.
     link.send(fake_brain.PKT_ACTUATOR, DRIVE, tamper=True)
@@ -451,10 +342,6 @@ def run(args) -> None:
                   "phase 5: close after the tampered frame", end_ok=True)
     say("kernel closed the connection (no REJECT frame exists: a violation just closes)")
     link.conn.close()
-    if cam:
-        wait_camera(cam, None, lambda: cam.link(0).eof, args.phase_timeout,
-                    "camera phase 5: the first camera connection closing with its control session")
-        say("camera connection 1 closed with its control session")
 
     link2, sid2 = accept(srv, 2, args.reconnect_wait, psk, args.phase_timeout, static_key)
     if sid2 == sid1:
@@ -462,27 +349,8 @@ def run(args) -> None:
     link2.wait_for(lambda: link2.sensors >= 1, args.phase_timeout,
                    "phase 5: SensorPacket on the second session")
     say(f"phase 5 done: close, second session sid={sid2} differs from sid={sid1}")
-    if cam:
-        wait_camera(cam, link2, lambda: cam.frames(1) >= 1, args.reconnect_wait,
-                    "camera phase 5: a camera frame on a second camera connection")
-        sids = {sid1, sid2, cam.sid(0), cam.sid(1)}
-        if len(sids) != 4:
-            raise PeerFailure(f"camera phase 5 — session ids repeat: control {sid1} {sid2}, "
-                              f"camera {cam.sid(0)} {cam.sid(1)}")
-        for n, ctl in enumerate((link, link2), 1):
-            if ctl.types.get(brain_protocol.CAMERA_FRAME, 0):
-                raise PeerFailure(f"camera — {ctl.types[brain_protocol.CAMERA_FRAME]} camera "
-                                  f"frames on control connection {n}")
-        for n in range(cam.count()):
-            other = non_camera_types(cam.link(n))
-            if other:
-                raise PeerFailure(f"camera — packet types {other} on camera connection {n + 1}")
-        say(f"camera phase 5 done: camera session 2 sid={cam.sid(1)}, {cam.frames(1)} camera "
-            f"frames; four distinct session ids; no camera frame on a control connection")
     link2.pump(2.0)  # let the kernel log what it received before teardown
     link2.conn.close()
-    if cam:
-        cam.stop()
     srv.close()
     say("PASS")
 
@@ -581,9 +449,6 @@ def main() -> int:
     ap.add_argument("--host", default="0.0.0.0")
     ap.add_argument("--port", type=int, default=9000,
                     help="0: any free port; the bound one is printed on the 'listening on' line")
-    ap.add_argument("--camera-port", type=int, default=0,
-                    help="also accept the kernel's camera connections here (C1); -1: any "
-                         "free port, printed on the 'camera listener on' line; 0: none")
     ap.add_argument("--image", help="disk image the kernel boots; LINK.KEY is read from it")
     ap.add_argument("--wait", type=float, default=180.0,
                     help="seconds to wait for the kernel's first connection")

@@ -9,6 +9,19 @@ releases yet. The ABI crate keeps its own file,
 
 ### Added
 
+- The ring-3 behaviour engine (`BRAINCLI.ELF`) asks the inference service for
+  L1's verdict every cycle, within Kconfig `ML_REPLY_TIMEOUT_US`, and holds a
+  stop on any missing one (no reply in time, a refusal, an unsigned or
+  unknown model, a reply that is not a class); the rangefinders stay the floor
+  under the model. `MLSRV.ELF` starts by its own row again; the engine's
+  seccomp row gains `SYS_THREAD_CREATE`, the futex calls, `SYS_MO_UNMAP` and
+  the `frame` and `infer` interfaces, and the autorun row a badged `WRITE`
+  grant on `endpoint.infer`, withheld from every other image. The engine sends
+  the camera's frames on its brain link (`PKT_CAMERA`, Kconfig
+  `BRAIN_CAMERA_PERIOD_MS`, renamed from `CAMERA_TX_CAPTURE_PERIOD_MS`), and
+  the brain's `PKT_PREDICT` biases L1 towards turning away earlier, never
+  faster than the layers chose.
+
 - The flight recorder keeps its durable records (the e-stop latch and release,
   the release nonce floor and key pin, the write-ahead effect and stop records,
   every other safety record) in one single-producer queue per CPU instead of one
@@ -104,8 +117,7 @@ releases yet. The ABI crate keeps its own file,
   the robot-named priorities of `azos_sched` (the manifest declares each task's),
   the kernel-side brain link (`encrypt_link`), the frame handler's
   `PKT_PREDICT` arm, and the UART bridge's brain role.
-  The camera's frames reach ring 3 through the `Frame` interface only; the
-  engine's L1 does not ask the inference service yet.
+  The camera's frames reach ring 3 through the `Frame` interface only.
 
 - kibi, the ported terminal editor, is back as `KIBI.ELF` (Kconfig
   `USERSPACE_KIBI`, on for the desktop and server presets): the shell lends the
