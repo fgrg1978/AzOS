@@ -149,7 +149,8 @@ pub const PAYLOAD_ACTUATOR_TYPE_BASE: u8 = 0x10;
 /// HERE, the single chokepoint the brain's frames reach
 /// (`azos_safety_core::frames`, from the ring-3 behaviour engine through the
 /// `Authority` interface), the same way `motor_set_reporting` is the wheels'.
-/// While the machine is contained a payload frame needs the operator's signed
+/// While the machine is contained a payload frame that acts (anything but
+/// spray off) needs the operator's signed
 /// warrant before it gets here (`brain_protocol::relax_body_len`). There is no
 /// `Cap<Payload>` kind yet: the authority grant stands for it.
 pub fn payload_exec(cmd: PayloadCmd) -> bool {

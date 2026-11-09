@@ -11,8 +11,9 @@
 //! **Tightening is always admitted, relaxing needs the operator.** An e-stop,
 //! arming degraded mode, raising the semantic level and setting the
 //! low-confidence cap can only stop or slow the machine. Clearing degraded
-//! mode (which also lifts the low-confidence cap), lowering the level, and a
-//! payload or configuration effect while contained need the operator's
+//! mode (which also lifts the low-confidence cap), lowering the level, and,
+//! while contained, a payload or configuration frame that turns something on
+//! or moves it (spray, buzzer and camera power off stay unsigned) need the operator's
 //! warrant in the frame (`brain_protocol::relax_body_len`: the body, a nonce,
 //! the signature), verified like an e-stop release
 //! (`estop::verify_operator_relax`); without one the frame is refused with a

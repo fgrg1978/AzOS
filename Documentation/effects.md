@@ -148,8 +148,9 @@ shared by every domain with an actuator.
   payload and configuration effects and the confidence of an actuator
   command, and records every unknown frame type. **Tightening never needs a
   signature; relaxing always does**: clearing degraded mode (which also lifts
-  the low-confidence cap), lowering the semantic level, and a payload or
-  configuration frame while contained carry the operator's warrant after the
+  the low-confidence cap), lowering the semantic level, and, while contained,
+  a payload or configuration frame that turns something on or moves it (spray,
+  buzzer and camera power off stay unsigned) carry the operator's warrant after the
   body (nonce, Ed25519 signature over `RELAX_CONTEXT`, the device id, the frame
   kind and body; `estop::verify_operator_relax`, the release's key, nonce floor
   and durable record). An unsigned relaxation is refused with a

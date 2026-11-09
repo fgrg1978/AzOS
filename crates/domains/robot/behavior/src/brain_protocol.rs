@@ -796,18 +796,23 @@ fn get_i32(buf: &[u8], off: usize) -> i32 {
 /// then the signature), or `None` when it tightens or leaves the restrictions
 /// alone and needs no warrant. Relaxing is clearing degraded mode (which also
 /// lifts the low-confidence cap), lowering the semantic level toward full
-/// operation, and a payload or configuration effect while the machine is
-/// contained (`contained`); `level_now` is the semantic level in force.
-/// Tightening is always admitted: it can only stop or slow the machine.
+/// operation, and, while the machine is contained (`contained`), a payload or
+/// configuration frame that turns something on or moves it; `level_now` is the
+/// semantic level in force. Tightening is always admitted: it can only stop or
+/// slow the machine, and spray, buzzer and camera power off are tightening.
 pub fn relax_body_len(kind: u8, payload: &[u8], contained: bool, level_now: u8) -> Option<usize> {
+    let spray_off = || decode_payload_cmd(payload)
+        .is_some_and(|c| c.payload_type == PAYLOAD_TYPE_SPRAY && c.value == PAYLOAD_OFF);
+    let config_off = || decode_config_cmd(payload).is_some_and(|c| matches!((c.config_key, c.value),
+        (CFG_KEY_BUZZER, BUZZER_OFF) | (CFG_KEY_CAMERA, CAMERA_PWR_OFF)));
     match kind {
         PKT_DEGRADE => (payload.first() == Some(&DEGRADE_CLEAR)).then_some(1),
         PKT_SEMANTIC_LEVEL => match payload.first() {
             Some(&level) if level < level_now => Some(1),
             _ => None,
         },
-        PKT_PAYLOAD if contained => Some(PAYLOAD_PAYLOAD_SIZE),
-        PKT_CONFIG if contained => Some(CONFIG_PAYLOAD_SIZE),
+        PKT_PAYLOAD if contained && !spray_off() => Some(PAYLOAD_PAYLOAD_SIZE),
+        PKT_CONFIG if contained && !config_off() => Some(CONFIG_PAYLOAD_SIZE),
         _ => None,
     }
 }

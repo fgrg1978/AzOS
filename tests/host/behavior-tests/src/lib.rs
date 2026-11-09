@@ -178,9 +178,32 @@ mod relax_classification {
         assert_eq!(relax_body_len(PKT_SEMANTIC_LEVEL, &[0], false, 3), Some(1));
         assert_eq!(relax_body_len(PKT_SEMANTIC_LEVEL, &[], false, 3), None, "a missing level contains");
         assert_eq!(relax_body_len(PKT_PAYLOAD, &[0; 5], false, 0), None);
-        assert_eq!(relax_body_len(PKT_PAYLOAD, &[0; 5], true, 3), Some(PAYLOAD_PAYLOAD_SIZE));
-        assert_eq!(relax_body_len(PKT_CONFIG, &[0; 4], true, 0), Some(CONFIG_PAYLOAD_SIZE));
+        assert_eq!(relax_body_len(PKT_PAYLOAD, &[PAYLOAD_TYPE_SPRAY, 0, 1, 0, 0], true, 3), Some(PAYLOAD_PAYLOAD_SIZE));
+        assert_eq!(relax_body_len(PKT_CONFIG, &[CFG_KEY_BUZZER, BUZZER_BEEP, 0, 0], true, 0), Some(CONFIG_PAYLOAD_SIZE));
         assert_eq!(relax_body_len(PKT_ESTOP, &[], true, 3), None, "an e-stop is never a relaxation");
+    }
+
+    /// **Contained, only what acts asks for a warrant.** Spray on, a gripper
+    /// move, a camera trigger, a buzzer pattern and camera power on need the
+    /// operator; spray off, buzzer off and camera power off make the machine
+    /// safer and pass unsigned, so a contained brain can still stop its pump.
+    /// A frame too short to read asks, as one that acts.
+    ///
+    /// **Canary.** Count every payload and config frame as acting while
+    /// contained: spray off asks for a warrant.
+    #[test]
+    fn contained_an_off_frame_needs_no_warrant() {
+        let pl = |t: u8, v: u8| [t, 0, v, 0, 0];
+        let cf = |k: u8, v: u8| [k, v, 0, 0];
+        assert_eq!(relax_body_len(PKT_PAYLOAD, &pl(PAYLOAD_TYPE_SPRAY, PAYLOAD_OFF), true, 3), None, "spray off asked for a warrant");
+        assert_eq!(relax_body_len(PKT_CONFIG, &cf(CFG_KEY_BUZZER, BUZZER_OFF), true, 3), None, "buzzer off asked for a warrant");
+        assert_eq!(relax_body_len(PKT_CONFIG, &cf(CFG_KEY_CAMERA, CAMERA_PWR_OFF), true, 3), None, "camera power off asked for a warrant");
+        assert_eq!(relax_body_len(PKT_PAYLOAD, &pl(PAYLOAD_TYPE_SPRAY, 1), true, 3), Some(PAYLOAD_PAYLOAD_SIZE));
+        assert_eq!(relax_body_len(PKT_PAYLOAD, &pl(PAYLOAD_TYPE_GRIPPER, PAYLOAD_OFF), true, 3), Some(PAYLOAD_PAYLOAD_SIZE), "a gripper move is an act");
+        assert_eq!(relax_body_len(PKT_PAYLOAD, &pl(PAYLOAD_TYPE_CAM_TRIGGER, PAYLOAD_OFF), true, 3), Some(PAYLOAD_PAYLOAD_SIZE));
+        assert_eq!(relax_body_len(PKT_CONFIG, &cf(CFG_KEY_CAMERA, CAMERA_PWR_ON), true, 3), Some(CONFIG_PAYLOAD_SIZE));
+        assert_eq!(relax_body_len(PKT_PAYLOAD, &[PAYLOAD_TYPE_SPRAY, 0], true, 3), Some(PAYLOAD_PAYLOAD_SIZE), "a short frame passed unsigned");
+        assert_eq!(relax_body_len(PKT_PAYLOAD, &pl(PAYLOAD_TYPE_SPRAY, PAYLOAD_OFF), false, 0), None);
     }
 }
 
