@@ -616,6 +616,10 @@ const FLOOR_ADVISORY: u32 = 4;
 /// `TPM_CREATE_UNDELETABLE`, development builds only; a release kernel only
 /// adopts what provisioning made.
 const CREATE_UNDELETABLE: bool = azos_limits::TPM_CREATE_UNDELETABLE;
+const _: () = assert!(
+    !CREATE_UNDELETABLE || azos_limits::BUILD_TYPE_DEV,
+    "only a development kernel creates platform-hierarchy indexes (TPM_CREATE_UNDELETABLE)"
+);
 
 /// Define index `index` (or adopt the one there): the undeletable variant in
 /// the platform hierarchy when this kernel may create one and the hierarchy
