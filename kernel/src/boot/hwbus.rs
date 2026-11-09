@@ -777,7 +777,7 @@ pub(crate) fn enumerate_firmware(dtb_ptr: usize) {
                     .with_reg2(d.reg2)
                     .with_dma_mask(d.dma_mask)
                     .with_dma_offset(d.dma_offset)
-                    .with_dma_coherent(d.dma_coherent)
+                    .with_dma_coherence(d.dma_coherent, d.dma_coherent_own)
                     .with_dma_declared(d.dma_noncoherent, d.has_iommu)
                     .with_dt_node(d.dt_node));
             })

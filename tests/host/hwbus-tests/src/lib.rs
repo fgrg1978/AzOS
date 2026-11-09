@@ -317,6 +317,21 @@ fn a_peripheral_with_a_dma_property_is_a_master() {
     assert!(uart().with_dma_mask(0xffff_ffff).may_master_bus(), "dma-ranges that limits it");
 }
 
+/// **A `dma-coherent` only a bus above the node carries makes no master; the
+/// node's own does.** QEMU virt's root has `dma-coherent`: its pl031 RTC
+/// stays a peripheral, an unknown device stays a master, and a node with the
+/// property itself is a master.
+///
+/// **Canary.** `dt-inherited-coherent-canary`: the inherited flag makes a
+/// master of the pl031.
+#[test]
+fn a_dma_coherent_inherited_from_a_bus_makes_no_master() {
+    assert!(!dt(b"arm,pl031\0arm,primecell\0", "pl031@9010000").with_dma_coherence(true, false).may_master_bus());
+    assert!(dt(b"arm,pl031\0arm,primecell\0", "pl031@9010000").with_dma_coherence(true, true).may_master_bus());
+    assert!(dt(b"vendor,never-heard-of-it\0", "x@1").with_dma_coherence(true, false).may_master_bus());
+    assert!(dt(b"vendor,never-heard-of-it\0", "x@1").with_dma_coherent(true).may_master_bus());
+}
+
 // ── Tables ──────────────────────────────────────────────────────────────
 
 #[test]

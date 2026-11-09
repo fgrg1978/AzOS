@@ -21,6 +21,7 @@ unbind-canary = ["azos_hwbus/unbind-canary"]
 dt-unknown-peripheral-canary = ["azos_hwbus/dt-unknown-peripheral-canary"]
 dt-bare-token-canary = ["azos_hwbus/dt-bare-token-canary"]
 dt-fallback-canary = ["azos_hwbus/dt-fallback-canary"]
+dt-inherited-coherent-canary = ["azos_hwbus/dt-inherited-coherent-canary"]
 ports-claim-canary = ["azos_hwbus/ports-claim-canary"]
 # The fake virtio-blk record's unbind leaves its interrupt line bound: the
 # unbind/rebind rows must FAIL.

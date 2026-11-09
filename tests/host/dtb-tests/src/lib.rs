@@ -2402,6 +2402,22 @@ mod device_nodes {
         assert!(!flag("alone@4000"), "a sibling bus does not");
     }
 
+    /// QEMU virt's root carries `dma-coherent`: its pl031 inherits the
+    /// coherence and does not carry it itself.
+    #[test]
+    fn the_virt_pl031_inherits_coherence_from_the_root_and_has_none_of_its_own() {
+        let b = include_bytes!("../fixtures/qemu-aarch64-virt.dtb").to_vec();
+        let mut got = None;
+        unsafe {
+            dtb_devices(b.as_ptr(), &mut |d: &DtDevice<'_>| {
+                if d.name == b"pl031@9010000" {
+                    got = Some((d.dma_coherent, d.dma_coherent_own));
+                }
+            })
+        };
+        assert_eq!(got, Some((true, false)));
+    }
+
     #[test]
     fn dma_noncoherent_is_read_from_the_node_and_inherited_from_its_buses() {
         let mut b = B::new();

@@ -3078,6 +3078,8 @@ pub struct DtDevice<'a> {
     /// firmware declares its DMA cache-coherent with the CPU. `false` is
     /// "nothing declared", not "declared non-coherent".
     pub dma_coherent: bool,
+    /// The node itself carries `dma-coherent` (not only an ancestor).
+    pub dma_coherent_own: bool,
     /// The node, or an ancestor, carries `dma-noncoherent`: the firmware
     /// declares its DMA non-coherent, which says it does DMA.
     pub dma_noncoherent: bool,
@@ -3290,7 +3292,7 @@ pub unsafe fn dtb_devices(ptr: *const u8, f: &mut dyn FnMut(&DtDevice<'_>)) -> O
                         let dma_noncoherent = stack[1..=depth].iter().any(|a| a.dma_noncoherent);
                         // `iommus` of a bus node (a GENI wrapper's) names the IOMMU for the engines behind it.
                         let has_iommu = stack[1..=depth].iter().any(|a| a.has_iommu);
-                        f(&DtDevice { name: n.name, compatible, base, size, reg2: n.reg2, irq: n.irq, depth, dma_mask, dma_offset, dma_coherent, dma_noncoherent, has_iommu, pci_host: n.pci_bus, dt_node: n.at });
+                        f(&DtDevice { name: n.name, compatible, base, size, reg2: n.reg2, irq: n.irq, depth, dma_mask, dma_offset, dma_coherent, dma_coherent_own: n.dma_coherent, dma_noncoherent, has_iommu, pci_host: n.pci_bus, dt_node: n.at });
                         count += 1;
                     }
                 }
