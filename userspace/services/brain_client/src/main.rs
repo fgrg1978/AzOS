@@ -170,10 +170,29 @@ fn authority_init() {
 }
 
 /// Hand frame `kind` to the kernel. `false` when it did not reach it.
+static mut AUTHORITY_REFUSED_SAID: bool = false;
+
 fn authority_submit(kind: u8, payload: &[u8]) -> bool {
     // SAFETY: as in `motor_stop`.
     let cap = unsafe { CAP_AUTHORITY };
-    cap != 0 && sys::dev::authority::submit(&mut sys::dev::AuthorityClient::new(Regs(cap)), kind, payload).is_ok()
+    if cap == 0 {
+        return false;
+    }
+    match sys::dev::authority::submit(&mut sys::dev::AuthorityClient::new(sys::dev::Ep(cap)), kind, payload) {
+        Ok(()) => true,
+        Err(code) => {
+            // SAFETY: single-threaded; the flag only rate-limits the line.
+            if !unsafe { AUTHORITY_REFUSED_SAID } {
+                unsafe { AUTHORITY_REFUSED_SAID = true };
+                let mut line = Line::new();
+                line.push(b"[brain_client] authority frame refused, outcome ");
+                line.push_i64(code as i64);
+                line.push(b"\n");
+                sys::print(line.bytes());
+            }
+            false
+        }
+    }
 }
 
 // ── Sensor capabilities ─────────────────────────────────────────────────────
@@ -966,6 +985,8 @@ struct Camera {
     pacer: camera::Pacer,
     first_said: bool,
     skipped_said: bool,
+    refused_said: bool,
+    waited: u32,
 }
 
 impl Camera {
@@ -973,13 +994,19 @@ impl Camera {
     fn open() -> Option<Camera> {
         let ep = sys::dev::lookup(sys::dev::key::FRAME, 0)?;
         let bytes = sys::dev::frame_buffer_bytes(ep).ok()? as usize;
-        let buf = sys::dev::frame_buffer(bytes).ok()?;
+        let Ok(buf) = sys::dev::frame_buffer(bytes) else {
+            sys::println(b"[brain_client] camera: no buffer for a frame");
+            return None;
+        };
+        sys::println(b"[brain_client] camera: reading frames while a session is up");
         Some(Camera {
             ep,
             buf,
             pacer: camera::Pacer::new(azos_limits::BRAIN_CAMERA_PERIOD_MS as u64),
             first_said: false,
             skipped_said: false,
+            refused_said: false,
+            waited: 0,
         })
     }
 
@@ -994,7 +1021,27 @@ impl Camera {
         if link::tx_pending() || !self.pacer.due(now_ms) {
             return true;
         }
-        let Ok(meta) = sys::dev::frame_next(self.ep, &mut self.buf) else { return true };
+        let meta = match sys::dev::frame_next(self.ep, &mut self.buf) {
+            Ok(m) => m,
+            Err(sys::dev::outcome::NOT_READY) => {
+                self.waited += 1;
+                if self.waited == 40 {
+                    sys::println(b"[brain_client] camera: no frame after 40 cycles");
+                }
+                return true;
+            }
+            Err(code) => {
+                if !self.refused_said {
+                    self.refused_said = true;
+                    let mut line = Line::new();
+                    line.push(b"[brain_client] camera: frame refused, outcome ");
+                    line.push_i64(code as i64);
+                    line.push(b"\n");
+                    sys::print(line.bytes());
+                }
+                return true;
+            }
+        };
         let jpeg = self.buf.bytes(meta.len as usize);
         // SAFETY: single-threaded; the buffer is used only here and sealed
         // before this returns.

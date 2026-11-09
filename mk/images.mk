@@ -106,6 +106,12 @@ $(OUT_BUILD)/disk-braincli.img: AUTORUN_ELF := /fat/BRAINCLI.ELF
 # `brain_client_rekey_secs=10` shortens brain_client's wall-clock rekey so one
 # 40 s boot sees a client REKEY; the key can only shorten the interval.
 $(OUT_BUILD)/disk-braincli.img: CFG_EXTRA := brain_client_rekey_secs=10\n
+# The robot images start the inference service (MLSRV.ELF, a `start` row) through
+# the component manager: without one the engine's L1 never gets a verdict and
+# holds a stop.
+BRAIN_DISKS := $(OUT_BUILD)/disk.img $(OUT_BUILD)/disk-braincli.img $(OUT_BUILD)/disk-brainlies.img $(OUT_BUILD)/disk-brainrec.img $(OUT_BUILD)/disk-brainestop.img $(OUT_BUILD)/disk-estopgpio.img
+$(BRAIN_DISKS): DISK_EXTRA := $(COMPMGR_ELF)=COMPMGR.ELF
+$(BRAIN_DISKS): $(COMPMGR_ELF)
 $(OUT_BUILD)/disk-captest.img: AUTORUN_ELF := /fat/CAPTEST.ELF
 $(OUT_BUILD)/disk-latbench.img: AUTORUN_ELF := /fat/LATBENCH.ELF
 $(OUT_BUILD)/disk-abitest.img: AUTORUN_ELF := /fat/ABITEST.ELF

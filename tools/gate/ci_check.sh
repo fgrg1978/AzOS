@@ -22035,7 +22035,7 @@ PY
     # transition, out of the write itself). The kernel marker is the stronger
     # one: it proves the effect loop applied the command, not that a handler ran.
     # Rewritten for the ring-3 engine, with the model's verdict ahead of the
-    # brain's command: NOT RUN YET (BRAIN=1), written without a QEMU run.
+    # brain's command.
     ring3_actuation_scenario() {
         brain_peer_required || return 0
         local label="userspace: ring-3 drives motors"
@@ -22090,17 +22090,19 @@ PY
             grep -a -m4 "brain_client\] ML\|\[infsrv\]" "$log" | sed "s|^|      |"
             echo "      logs kept: $log $blog"; return
         fi
-        # Both wheels, applied by the kernel's drivetrain loop (the command
-        # goes through `Motor::command` to the effect loop, which writes them).
+        # Both wheels carry a non-zero duty the kernel recorded after the engine chose
+        # the brain's command (the command goes through `Motor::command` to the effect
+        # loop, which writes them). The duty's value is the loop's (the PID output),
+        # not the command's percent, so the record is read for "moving", not for 60.
         local m=0
         for id in 0 1; do
-            grep -aq "ACTSMOKE] kernel motor id=$id duty=60" "$log" 2>/dev/null \
+            awk -v n="$d_line" -v id="$id" 'NR > n && $0 ~ "\\[ACTREC\\] motor id=" id " " && $0 !~ "duty=0 " { f = 1 } END { exit !f }' "$log" 2>/dev/null \
                 && m=$((m + 1))
         done
         if [ "$m" -ne 2 ]; then
-            bad; echo "      the engine chose the command but the drivetrain loop did not"
-            echo "      drive both wheels at 60 % ($m/2 matched):"
-            grep -a -m4 "ACTSMOKE" "$log" | sed "s|^|      |"
+            bad; echo "      the engine chose the command but the kernel recorded no moving"
+            echo "      wheel after it ($m/2 matched):"
+            grep -a -m4 "ACTREC\|ACTSMOKE" "$log" | sed "s|^|      |"
             echo "      logs kept: $log $blog"; return
         fi
         ok; rm -f "$log" "$blog"
@@ -22112,7 +22114,6 @@ PY
     # the disk: the service refuses the bundle (bad signature), has no model to
     # run, and every Infer call is NO_RESOURCE. L1 then holds a stop, so the
     # brain's 60 % command is never chosen and the wheels never move.
-    # NOT RUN YET: written without a QEMU run (BRAIN=1).
     ring3_ml_fail_closed_scenario() {
         brain_peer_required || return 0
         local label="userspace: ring-3 holds stop w/o ML"
@@ -23778,8 +23779,7 @@ PYEOF
     #
     # The engine also sends its camera frames on this connection (`PKT_CAMERA`,
     # paced by BRAIN_CAMERA_PERIOD_MS, from the frame class's reader); the peer
-    # waits for one in phase 4 and this row asserts it. NOT RUN YET: written
-    # without a QEMU run (BRAIN=1).
+    # waits for one in phase 4 and this row asserts it.
     link_peer_scenario() {
         brain_peer_required || return 0
         local label="$1" tag="link-peer"
@@ -23797,8 +23797,7 @@ PYEOF
             grep -a "FAIL\|Error" "$blog" | sed -n "1,3p" | sed "s|^|      |"
             echo "      log kept: $blog"; return
         fi
-        if ! "$CARGO" build --release --select actuation-smoke \
-                >/dev/null 2>&1; then
+        if ! kbuild "qemu,use-robot,actuation-smoke" >/dev/null 2>&1; then
             bad; echo "      kernel build with actuation-smoke failed; not booting the"
             echo "      previous binary in its place."; return
         fi
@@ -23836,6 +23835,7 @@ PYEOF
             -drive file="$img",if=none,format=raw,id=hd0 \
             -device virtio-blk-device,drive=hd0 \
             -netdev user,id=net0 -device virtio-net-device,netdev=net0 \
+            -device virtio-rng-device \
             >"$log" 2>&1 &
         local qpid=$!
         i=0
