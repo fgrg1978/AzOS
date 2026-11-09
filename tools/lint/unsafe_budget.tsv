@@ -58,7 +58,7 @@ crates/core/syscall	37	2	1	0	0	38
 crates/core/topology	4	0	1	0	0	1
 crates/core/trace	26	0	1	0	0	30
 crates/core/wcet-macro	0	0	0	0	1	-
-crates/domains/robot/behavior	4	1	0	0	0	9
+crates/domains/robot/behavior	0	0	0	0	0	0
 crates/domains/robot/bench	0	0	0	0	1	0
 crates/domains/robot/degrade-policy	0	0	0	0	1	0
 crates/domains/robot/flight	0	0	0	0	1	0
@@ -72,7 +72,7 @@ crates/drivers/api	0	0	0	0	1	0
 crates/drivers/baro	0	0	0	0	1	0
 crates/drivers/base	0	0	0	0	1	0
 crates/drivers/block	84	6	1	0	0	91
-crates/drivers/bus	11	1	1	0	0	60
+crates/drivers/bus	11	1	1	0	0	61
 crates/drivers/buzzer	0	0	0	0	1	0
 crates/drivers/cam-ring	6	0	1	0	0	79
 crates/drivers/camera	0	0	0	0	1	0
@@ -115,10 +115,9 @@ crates/lib/bench	0	0	0	0	1	0
 crates/lib/control/ahrs	0	0	0	0	1	0
 crates/lib/control/flight-math	0	0	0	0	1	0
 crates/net/ethercat	0	0	0	0	1	-
-crates/net/multi-stream	0	0	0	0	1	0
 crates/net/stack	20	0	2	0	0	58
 crates/net/tftp	0	0	0	0	1	-
-kernel	421	15	13	53	0	61
+kernel	413	15	13	53	0	61
 micro	20	4	0	0	0	67
 tools/bench/linux_seccomp_launch	11	2	0	2	0	-
 tools/bench/linux_seccomp_launch/host-tests	0	0	0	0	1	-
@@ -147,7 +146,7 @@ userspace/lib/tls-probe	0	1	0	0	0	-
 userspace/lib/ualloc	10	5	2	0	0	-
 userspace/lib/zenoh	0	0	0	0	1	-
 userspace/services/audiod	4	0	1	0	0	-
-userspace/services/brain_client	23	0	0	0	0	-
+userspace/services/brain_client	28	0	0	0	0	-
 userspace/services/compmgr	1	0	0	0	0	-
 userspace/services/compositor	4	0	2	0	0	-
 userspace/services/coreutil	1	0	0	0	0	-
