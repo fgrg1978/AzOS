@@ -251,8 +251,9 @@ fn describe(f: &Finding) -> String {
         Finding::DeclarationMismatch { boot, seq } => format!(
             "boot {boot}: the sink-loss declarations before the seal at {seq} do not add up to what the seal says the kernel declared: one was added or removed"
         ),
-        Finding::UncoveredDeclaration { boot, seq } => format!(
-            "boot {boot}: the loss declared at {seq} is covered by no seal: anyone who can write the volume can add one, and it explains nothing"
+        Finding::UncoveredDeclaration { boot, seq, at_end } => format!(
+            "boot {boot}: the loss declared at {seq} is covered by no seal: anyone who can write the volume can add one, and it explains nothing{}",
+            if at_end { " (at the very end of the export: consistent with a crash or a live export, still not excused)" } else { "" }
         ),
     }
 }

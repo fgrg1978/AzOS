@@ -142,6 +142,7 @@ const CONFIG: Config = Config {
     seal_s: azos_limits::SEC_LOG_SEAL_S as u64,
     urgent_s: azos_limits::SEC_LOG_SEAL_URGENT_S as u64,
     urgent_per_day: azos_limits::SEC_LOG_URGENT_PER_DAY as u32,
+    declaration_per_day: azos_limits::SEC_LOG_DECLARATION_SEALS_PER_DAY as u32,
 };
 
 static STATE: azos_sync::kmutex::Mutex<Option<Pass<CLASS_LOG>>> = azos_sync::kmutex::Mutex::new(None);

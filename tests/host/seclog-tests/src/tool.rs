@@ -197,3 +197,17 @@ fn tool_lists_high_value_losses_by_class() {
     assert!(text.contains("high-value records declared lost:\n  microphone 2 (never sealed)"), "{text}");
     assert!(text.contains("owner hierarchy"), "{text}");
 }
+
+/// A declaration after the last boot's last seal: evidence, labelled as what
+/// a crash or a live export also gives.
+#[test]
+fn tool_labels_a_declaration_at_the_very_end() {
+    let mut b = tpm_boot([0; 32], 1);
+    b.event(Class::Camera, 3);
+    let lost = b.recs.len() as u64 - 1;
+    b.sink_loss(lost, 1);
+    let lines: Vec<_> = b.recs.iter().filter(|r| r.env.seq != lost).map(super::line).collect();
+    let r = verify(&[file(1, &lines)], &Options::default());
+    assert_eq!(r.verdict, Verdict::Evidence);
+    assert!(render(&r).contains("consistent with a crash or a live export"), "{}", render(&r));
+}

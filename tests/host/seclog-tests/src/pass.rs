@@ -127,7 +127,7 @@ impl Hw for FakeTpm {
     }
 }
 
-const CFG: Config = Config { hz: HZ, seal_s: 60, urgent_s: 5, urgent_per_day: 3 };
+const CFG: Config = Config { hz: HZ, seal_s: 60, urgent_s: 5, urgent_per_day: 3, declaration_per_day: 2 };
 
 fn pass(p: &mut Pass<LOG>, rig: &Rig, host: &mut FakeHost<'_>, tpm: Option<&mut FakeTpm>, page: Option<&Page>) -> Option<u64> {
     let ring = rig.region.ring(0).unwrap();
@@ -299,4 +299,30 @@ fn pass_a_refused_or_foreign_extend_is_said() {
     let hw: Vec<bool> = host.seals.iter().map(|s| s.1).collect();
     assert_eq!(hw, vec![true, false, false]);
     assert!(host.notes.contains(&Note::Refused));
+}
+
+/// The urgent seals of the day are spent by a trigger; a declared loss is
+/// still sealed, from a budget of its own.
+#[test]
+fn pass_a_declaration_has_its_own_seal_budget() {
+    let rig = Rig::new();
+    let mut host = FakeHost::new(&rig);
+    let mut tpm = FakeTpm { anchor: [0; 32], counter: 0, refuse: false, foreign: false };
+    let mut p = new_boot(&rig, &mut host, &tpm);
+    host.event(Class::Login, 1);
+    pass(&mut p, &rig, &mut host, Some(&mut tpm), None);
+    for _ in 0..8 {
+        host.now += 5000;
+        host.event(Class::Microphone, 2);
+        pass(&mut p, &rig, &mut host, Some(&mut tpm), None);
+    }
+    assert!(host.notes.contains(&Note::UrgentBudget), "the trigger spent the urgent seals");
+    let before = host.seals.len();
+    host.now += 5000;
+    for i in 0..(ENTRIES + 4) {
+        host.event(Class::CapDenial, 300 + i);
+    }
+    pass(&mut p, &rig, &mut host, Some(&mut tpm), None);
+    assert_eq!(host.seals.len(), before + 1, "the loss is sealed all the same");
+    assert!(!kinds(&rig.records(), kind::LOSS).is_empty());
 }

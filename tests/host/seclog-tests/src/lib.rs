@@ -156,7 +156,9 @@ impl Boot {
     /// the record, and the count the next seals carry.
     fn sink_loss(&mut self, first: u64, count: u64) {
         self.forged_sink_loss(first, count);
-        self.sealer.sink_lost(first, count);
+        let mut by_class = [0u32; CLASSES];
+        by_class[0] = count as u32;
+        self.sealer.sink_lost(first, count, &by_class);
     }
 
     /// A `sink-loss` record only: what whoever writes the volume can add.
@@ -176,7 +178,7 @@ impl Boot {
     }
 }
 
-fn line(r: &Rec) -> Vec<u8> {
+pub(crate) fn line(r: &Rec) -> Vec<u8> {
     let mut out = [0u8; text::MSG_MAX];
     let n = text::render(&r.env, &r.payload, &mut out);
     out[..n].to_vec()
@@ -643,12 +645,12 @@ fn unhex(s: &str) -> Vec<u8> {
     (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
 }
 
-/// Format version 3, byte for byte: the payloads, the canonical bytes, the
+/// Format version 4, byte for byte: the payloads, the canonical bytes, the
 /// genesis head, one fold, one seal's data and extend, and the line. The
 /// vectors were computed apart from this crate (Python's struct and hashlib);
 /// a change to any field is a new format version, never an edit of these.
 #[test]
-fn format_v3_is_frozen() {
+fn format_v4_is_frozen() {
     let e = Event {
         id: 0x0102_0304_0506_0708,
         subject: 0x1122_3344,
@@ -680,8 +682,9 @@ fn format_v3_is_frozen() {
         boot_anchor: [0xdd; 32],
         sink_lost: 11,
         sink_start: 4,
+        sink_digest: [0xee; 32],
     };
-    assert_eq!(seal.encode().to_vec(), unhex("0201000003000000090000000000000008000000000000009900000000000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd0b000000000000000400000000000000"));
+    assert_eq!(seal.encode().to_vec(), unhex("0201000003000000090000000000000008000000000000009900000000000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd0b000000000000000400000000000000eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"));
     let mut by_class = [0u32; CLASSES];
     by_class[Class::Egress as usize] = 2;
     assert_eq!(Loss { first: 5, count: 2, by_class }.encode().to_vec(), unhex("0500000000000000020000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000000000000"));
@@ -695,17 +698,20 @@ fn format_v3_is_frozen() {
     payload[..Event::LEN].copy_from_slice(&e.encode());
     let mut c = [0u8; azos_seclog::CANON_MAX];
     let n = azos_seclog::canon(&env, &payload, &mut c);
-    assert_eq!(c[..n].to_vec(), unhex("030400000000000000e803000000000000000100020134000807060504030201443322113b010100010000000000000002000000000000000300000000000000efcdab000000000007000000"));
+    assert_eq!(c[..n].to_vec(), unhex("040400000000000000e803000000000000000100020134000807060504030201443322113b010100010000000000000002000000000000000300000000000000efcdab000000000007000000"));
     let genesis = azos_seclog::chain::genesis(&[0xdd; 32], 0x99);
-    assert_eq!(genesis.to_vec(), unhex("e2e4e0e8a3f79d5a42a6138f871909dc5903d1cb440ce331f36bc2414e3052d0"));
+    assert_eq!(genesis.to_vec(), unhex("2ca2f2b2468d797ec1e3cdcd50330c3a672e8c940b521a6acd710ce523b3c904"));
     let head = azos_seclog::chain::fold(&genesis, &env, &payload);
-    assert_eq!(head.to_vec(), unhex("a0055624af540eb6c54661bac1979b88df8f4b6e48d99582872fb0f7d00e2c18"));
-    let n = azos_seclog::chain::SealNumbers { count: 1, counter: 8, through: 5, sink_lost: 0, sink_start: 0 };
+    assert_eq!(head.to_vec(), unhex("222cf2d00c4a03c1455a4ad7eac1af5e8cae21f36257420df50077640a88f7f9"));
+    let n = azos_seclog::chain::SealNumbers { count: 1, counter: 8, through: 5, sink_lost: 0, sink_start: 0, sink_digest: [0; 32] };
     let data = azos_seclog::chain::seal_data(&[0xdd; 32], 0x99, &n, &head);
-    assert_eq!(data.to_vec(), unhex("8e839dfd5f4eeabd65dd53372de2b26d40456f1fa8bd3a2d601e59e9056b1cb0"));
-    assert_eq!(extend(&[0xdd; 32], &data).to_vec(), unhex("fc036d7038259811f521c41e9ea523f87f7ee6d9dac7fdca74a58bfca4551d50"));
+    assert_eq!(data.to_vec(), unhex("9caeeb55de9e216f7bbdb5c677eb126ff5da6a7de3c391d1d230974dd915e0d0"));
+    assert_eq!(extend(&[0xdd; 32], &data).to_vec(), unhex("6c06ab1f5004c77fa0d3c59589563547f09ffee89229d7d289a55932dd0e29b2"));
+    let mut by_class = [0u32; CLASSES];
+    by_class[Class::Egress as usize] = 2;
+    assert_eq!(azos_seclog::chain::declaration(&[0; 32], 5, 2, &by_class).to_vec(), unhex("2c5389774abbd2c3ecf4ee5069c76e4f65950b9048cf0e718d2bcbb20ca47ddc"));
     let r = Rec { env, payload };
-    assert_eq!(String::from_utf8(line(&r)).unwrap(), format!("v3 4 1000 0 1 2 1 {ev} event microphone rule=59 verdict=1"));
+    assert_eq!(String::from_utf8(line(&r)).unwrap(), format!("v4 4 1000 0 1 2 1 {ev} event microphone rule=59 verdict=1"));
 }
 
 // Proofs of the review of the sealed security log: each asserts the right
@@ -743,6 +749,7 @@ fn review_p1b_a_forged_refused_seal_is_evidence() {
         boot_anchor: b1.tpm,
         sink_lost: 0,
         sink_start: 0,
+        sink_digest: [0; 32],
     };
     let mut payload = [0u8; PAYLOAD];
     payload[..Seal::LEN].copy_from_slice(&s.encode());

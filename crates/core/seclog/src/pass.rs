@@ -15,10 +15,12 @@
 //! still in the ring waits until the ring drops them.
 //!
 //! It seals at its first pass, every `seal_s`, `urgent_s` after a record of
-//! a high-value class, at once after it declared a loss (so the declaration
-//! is covered), and when forced. A seal that is not due by the period is
-//! urgent: at most `urgent_per_day` of them in any day, `urgent_s` apart, so
-//! no trigger can wear the TPM faster than `86400 / seal_s + urgent_per_day`
+//! a high-value class, after it declared a loss (so the declaration is
+//! covered), and when forced. A seal that is not due by the period is urgent,
+//! at most one every `urgent_s`: the high-value ones at most `urgent_per_day`
+//! in a day, the declarations' at most `declaration_per_day` from a budget of
+//! their own (what a trigger spends never delays a declaration's seal), so the
+//! TPM takes at most `86400 / seal_s + urgent_per_day + declaration_per_day`
 //! seals a day.
 
 use crate::ack::{Page, CLAIMS};
@@ -71,6 +73,7 @@ pub struct Config {
     pub seal_s: u64,
     pub urgent_s: u64,
     pub urgent_per_day: u32,
+    pub declaration_per_day: u32,
 }
 
 /// Passes a record may stay pending before the sealer declares it lost.
@@ -96,6 +99,7 @@ pub struct Pass<const LOG: usize> {
     /// The urgent seals of the day that began at `day`.
     day: u64,
     urgent_used: u32,
+    declaration_used: u32,
     sealed: bool,
     /// A declaration no seal covers yet.
     uncovered: bool,
@@ -126,6 +130,7 @@ impl<const LOG: usize> Pass<LOG> {
             urgent_since: None,
             day: now,
             urgent_used: 0,
+            declaration_used: 0,
             sealed: false,
             uncovered: false,
             hw_failed: false,
@@ -170,17 +175,22 @@ impl<const LOG: usize> Pass<LOG> {
         }
         if !(force || period) {
             if now.wrapping_sub(self.day) >= 86_400 * cfg.hz {
-                (self.day, self.urgent_used) = (now, 0);
+                (self.day, self.urgent_used, self.declaration_used) = (now, 0, 0);
             }
             let spaced = now.wrapping_sub(self.last_seal) >= cfg.urgent_s * cfg.hz;
             if !spaced {
                 return None;
             }
-            if self.urgent_used >= cfg.urgent_per_day {
+            let (used, budget) = if self.uncovered {
+                (&mut self.declaration_used, cfg.declaration_per_day)
+            } else {
+                (&mut self.urgent_used, cfg.urgent_per_day)
+            };
+            if *used >= budget {
                 host.note(Note::UrgentBudget);
                 return None;
             }
-            self.urgent_used += 1;
+            *used += 1;
         }
         Some(self.seal(hw, host, now))
     }
@@ -337,7 +347,7 @@ impl<const LOG: usize> Pass<LOG> {
             known += 1;
         }
         by_class[0] = by_class[0].saturating_add((count - known).min(u32::MAX as u64) as u32);
-        self.s.sink_lost(first, count);
+        self.s.sink_lost(first, count, &by_class);
         host.publish(kind::SINK_LOSS, &Loss { first, count, by_class }.encode());
     }
 

@@ -18,7 +18,7 @@
 //! the hardware holds now, or seals a receiver kept off the device, refute
 //! it; the tool compares those ([`Verifier::live`], [`Summary::seals`]).
 
-use crate::chain::{data_of, extend, fold_canon, genesis, seal_data, SealNumbers};
+use crate::chain::{data_of, declaration, extend, fold_canon, genesis, seal_data, SealNumbers};
 use crate::{
     canon, kind, Anchor, Backend, Class, Envelope, Hash, Held, Loss, Reason, Seal, CANON_MAX, CLASSES, FLAG_DIVERGED,
 };
@@ -101,8 +101,10 @@ pub enum Finding {
     DeclarationMismatch { boot: u32, seq: u64 },
     /// A loss declared at `seq` that no seal covers (after the boot's last
     /// seal): it explains nothing, and anyone who can write the volume can
-    /// add one.
-    UncoveredDeclaration { boot: u32, seq: u64 },
+    /// add one. `at_end`: it is in the export's last boot, after its last
+    /// seal, which a crash in the seconds before the next seal, or an export
+    /// taken from a live device, also gives; still not excused.
+    UncoveredDeclaration { boot: u32, seq: u64, at_end: bool },
 }
 
 impl Finding {
@@ -277,13 +279,13 @@ struct Boot {
     sink_loss: Ranges,
     /// Sink-loss declarations no seal has confirmed yet: `(seq, first,
     /// count)`, and whether more came than fit.
-    pending: [(u64, u64, u64); UNVERIFIED],
+    pending: [Declared; UNVERIFIED],
     npending: usize,
     pending_over: bool,
     /// The sealer-loss declaration no seal covers yet (its sequence number).
     loss_uncovered: Option<u64>,
     /// The sink's count of the last seal whose anchor checked out.
-    sink_lost: Option<u64>,
+    sink_lost: Option<(u64, Hash)>,
     /// Where the sink started this boot, from a seal whose anchor checked
     /// out and whose boot is linked.
     sink_start: u64,
@@ -301,6 +303,17 @@ struct Unverified {
     gaps: [Range; 8],
     n: usize,
 }
+
+/// A sink-loss declaration no seal has confirmed yet.
+#[derive(Clone, Copy)]
+struct Declared {
+    seq: u64,
+    first: u64,
+    count: u64,
+    by_class: [u32; CLASSES],
+}
+
+const NO_DECLARED: Declared = Declared { seq: 0, first: 0, count: 0, by_class: [0; CLASSES] };
 
 /// Seals pending a decision, and sink-loss declarations pending a seal.
 const UNVERIFIED: usize = 16;
@@ -322,7 +335,7 @@ const NEW_BOOT: Boot = Boot {
     recent: NO_RANGES,
     sealer_loss: NO_RANGES,
     sink_loss: NO_RANGES,
-    pending: [(0, 0, 0); UNVERIFIED],
+    pending: [NO_DECLARED; UNVERIFIED],
     npending: 0,
     pending_over: false,
     loss_uncovered: None,
@@ -344,6 +357,7 @@ struct Ended {
     counter: u64,
     sink_lost: u64,
     sink_start: u64,
+    sink_digest: Hash,
     /// The heads after each record past the boot's last seal: `(through, head)`.
     tail: [(u64, Hash); DUPS],
     ntail: usize,
@@ -475,7 +489,7 @@ impl Verifier {
         }
     }
 
-    fn end_boot(&mut self, out: &mut dyn FnMut(Finding)) {
+    fn end_boot(&mut self, at_end: bool, out: &mut dyn FnMut(Finding)) {
         if self.boot == 0 {
             return;
         }
@@ -492,9 +506,9 @@ impl Verifier {
         // A declaration no seal covers (after the last one, or more than
         // could be held) explains nothing: anyone who can write the volume
         // can add one.
-        let uncovered = if b.npending > 0 || b.pending_over { Some(b.pending[0].0) } else { b.loss_uncovered };
+        let uncovered = if b.npending > 0 || b.pending_over { Some(b.pending[0].seq) } else { b.loss_uncovered };
         if let Some(seq) = uncovered {
-            self.emit(Finding::UncoveredDeclaration { boot: self.boot, seq }, out);
+            self.emit(Finding::UncoveredDeclaration { boot: self.boot, seq, at_end }, out);
         }
         self.resolve(true, out);
         if b.since_seal > 0 {
@@ -513,7 +527,8 @@ impl Verifier {
         }
         let count = self.b.last_seal.map_or(0, |s| s.count);
         let prev = self.hw.unwrap_or(id.0);
-        let (sink_lost, sink_start) = self.b.last_seal.map_or((0, 0), |s| (s.sink_lost, s.sink_start));
+        let (sink_lost, sink_start, sink_digest) =
+            self.b.last_seal.map_or((0, 0, [0; 32]), |s| (s.sink_lost, s.sink_start, s.sink_digest));
         let mut e = Ended {
             id,
             prev,
@@ -521,6 +536,7 @@ impl Verifier {
             counter: self.hw_counter.unwrap_or(0),
             sink_lost,
             sink_start,
+            sink_digest,
             tail: [(0, [0; 32]); DUPS],
             ntail: 0,
         };
@@ -542,7 +558,14 @@ impl Verifier {
     /// whose anchor is `target`.
     fn crash_seal(e: &Ended, target: &Hash) -> Option<u64> {
         e.tail[..e.ntail].iter().find_map(|&(through, head)| {
-            let n = SealNumbers { count: e.count + 1, counter: e.counter + 1, through, sink_lost: e.sink_lost, sink_start: e.sink_start };
+            let n = SealNumbers {
+                count: e.count + 1,
+                counter: e.counter + 1,
+                through,
+                sink_lost: e.sink_lost,
+                sink_start: e.sink_start,
+                sink_digest: e.sink_digest,
+            };
             let data = seal_data(&e.id.0, e.id.1, &n, &head);
             (extend(&e.prev, &data) == *target).then_some(through)
         })
@@ -666,7 +689,8 @@ impl Verifier {
             }
         }
         if !self.b.linked && s.backend == Backend::TpmNv {
-            let counter = (s.counter != 0 && s.count == 1).then(|| s.counter - 1);
+            // The counter at boot: one increment per seal before this one.
+            let counter = (s.counter != 0).then(|| s.counter.saturating_sub(s.count as u64));
             self.link(&s.boot_anchor, counter, out);
         }
         // The anchor: from the one before, which the seal names and which
@@ -713,8 +737,11 @@ impl Verifier {
         self.confirm_declarations(seq, s, anchor_ok, out);
         // The counter: one increment per seal the hardware counted.
         if s.counter != 0 && s.backend == Backend::TpmNv {
+            // The boot's first seal in the export follows the counter at boot
+            // by its own number: the seals before it took one each.
+            let step = if self.b.last_seal.is_none() { s.count as u64 } else { 1 };
             if let Some(c) = self.hw_counter {
-                if s.counter != c + 1 && !cfg!(feature = "canary-no-anchor-check") {
+                if s.counter != c + step && !cfg!(feature = "canary-no-anchor-check") {
                     self.emit(Finding::CounterGap { boot, seq }, out);
                 }
             }
@@ -755,34 +782,39 @@ impl Verifier {
         }
         let base = match self.b.sink_lost {
             Some(v) => Some(v),
-            None if self.b.first == 0 || s.sink_start >= self.b.first => Some(0),
+            None if self.b.first == 0 || s.sink_start >= self.b.first => Some((0, [0; 32])),
             None => None,
         };
         let (mut sum, mut i) = (0u64, 0);
-        let covered: [(u64, u64, u64); UNVERIFIED] = self.b.pending;
-        let mut kept = [(0, 0, 0); UNVERIFIED];
+        let mut digest = base.map_or([0; 32], |b| b.1);
+        let covered: [Declared; UNVERIFIED] = self.b.pending;
+        let mut kept = [NO_DECLARED; UNVERIFIED];
         let mut nkept = 0;
-        for &(dseq, first, count) in &covered[..self.b.npending] {
-            if dseq < s.through {
-                sum += count;
+        for d in &covered[..self.b.npending] {
+            if d.seq < s.through {
+                sum += d.count;
+                digest = declaration(&digest, d.first, d.count, &d.by_class);
                 i += 1;
             } else {
-                kept[nkept] = (dseq, first, count);
+                kept[nkept] = *d;
                 nkept += 1;
             }
         }
-        let confirmed = !self.b.pending_over && base.is_some_and(|b| s.sink_lost.checked_sub(b) == Some(sum));
+        // The count and the digest of every declaration since the last seal
+        // that confirmed one: an edited range or class is not the kernel's.
+        let confirmed = !self.b.pending_over
+            && base.is_some_and(|b| s.sink_lost.checked_sub(b.0) == Some(sum) && s.sink_digest == digest);
         if confirmed || cfg!(feature = "canary-no-declaration-check") {
-            for &(dseq, first, count) in &covered[..self.b.npending] {
-                if dseq < s.through {
-                    self.b.sink_loss.add(first, count);
+            for d in &covered[..self.b.npending] {
+                if d.seq < s.through {
+                    self.b.sink_loss.add(d.first, d.count);
                 }
             }
-        } else if i > 0 || self.b.pending_over || base.is_some_and(|b| s.sink_lost != b) {
+        } else if i > 0 || self.b.pending_over || base.is_some_and(|b| s.sink_lost != b.0 || s.sink_digest != b.1) {
             self.emit(Finding::DeclarationMismatch { boot, seq }, out);
         }
         (self.b.pending, self.b.npending, self.b.pending_over) = (kept, nkept, false);
-        self.b.sink_lost = Some(s.sink_lost);
+        self.b.sink_lost = Some((s.sink_lost, s.sink_digest));
     }
 
     /// The boot's start became known: fold every held record from genesis.
@@ -897,7 +929,7 @@ impl Verifier {
             Some(last) => seq <= last && (self.seam || seq == 0),
         };
         if new_boot {
-            self.end_boot(out);
+            self.end_boot(false, out);
             self.start_boot(seq);
         } else if let Some(last) = self.b.last {
             if seq <= last {
@@ -941,7 +973,7 @@ impl Verifier {
                         if self.b.npending == UNVERIFIED {
                             self.b.pending_over = true;
                         } else {
-                            self.b.pending[self.b.npending] = (seq, l.first, l.count);
+                            self.b.pending[self.b.npending] = Declared { seq, first: l.first, count: l.count, by_class: l.by_class };
                             self.b.npending += 1;
                         }
                     } else {
@@ -990,7 +1022,7 @@ impl Verifier {
 
     /// The end of the export.
     pub fn finish(&mut self, out: &mut dyn FnMut(Finding)) -> Summary {
-        self.end_boot(out);
+        self.end_boot(true, out);
         self.sum.last_anchor = self.hw;
         self.sum.last_counter = self.hw_counter;
         self.sum

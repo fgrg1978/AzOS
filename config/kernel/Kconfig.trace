@@ -867,9 +867,23 @@ config SEC_LOG_URGENT_PER_DAY
       day may take, whatever triggers them (a task opening the microphone in a
       loop, a remote client failing SSH logins): with the periodic ones, at
       most 86400 / SEC_LOG_SEAL_S + SEC_LOG_URGENT_PER_DAY seals a day, each
-      two NV writes on a TPM. At the defaults that is 1728 a day: an index
-      rated for 100 000 writes lasts at least 57 days under any load. Past the
+      two NV writes on a TPM; the seals that cover a declared loss have
+      a budget of their own, SEC_LOG_DECLARATION_SEALS_PER_DAY. Past the
       budget a high-value record waits for the period's seal.
+
+config SEC_LOG_DECLARATION_SEALS_PER_DAY
+    int "Sealed security log: seals a day that cover a declared loss" if SEC_LOG
+    range 0 17280
+    default 96
+    help
+      Asked with SEC_LOG only. A loss the sealer or the sink declared is
+      evidence until a seal covers it, so the sealer seals it within
+      SEC_LOG_SEAL_URGENT_S, from this budget, which no high-value trigger
+      spends; past it the declaration waits for the period's seal
+      (SEC_LOG_SEAL_S). With the periodic and the urgent seals, at most
+      86400 / SEC_LOG_SEAL_S + SEC_LOG_URGENT_PER_DAY + this many seals a day,
+      one write to each TPM index each: 1824 at the defaults, so an index rated
+      for 100 000 writes lasts at least 54 days under any load.
 
 choice
     prompt "Sealed security log: where the seals are committed (SEC_LOG_SEAL)"

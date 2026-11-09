@@ -3,17 +3,18 @@
 //! The hash chain and the sealer's state: pure, so the kernel's pass and the
 //! host tests run the same code.
 
-use crate::{canon, kind, Backend, Envelope, Hash, Seal, CANON_MAX, FLAG_DIVERGED, FLAG_HARDWARE};
+use crate::{canon, kind, Backend, Envelope, Hash, Seal, CANON_MAX, CLASSES, FLAG_DIVERGED, FLAG_HARDWARE};
 use azos_crypto::sha256::Sha256;
 
 const TAG_FOLD: u8 = 1;
 const TAG_SEAL: u8 = 2;
+const TAG_DECLARATION: u8 = 3;
 
 /// The head before the first record of the boot whose anchor is
 /// `boot_anchor` and whose nonce is `nonce`.
 pub fn genesis(boot_anchor: &Hash, nonce: u64) -> Hash {
     let mut h = Sha256::new();
-    h.update(b"azos/seclog/v3");
+    h.update(b"azos/seclog/v4");
     h.update(boot_anchor);
     h.update(&nonce.to_le_bytes());
     h.finalize()
@@ -43,6 +44,21 @@ pub struct SealNumbers {
     pub through: u64,
     pub sink_lost: u64,
     pub sink_start: u64,
+    pub sink_digest: Hash,
+}
+
+/// The running digest of a boot's sink-loss declarations after `prev` and the
+/// one of `count` records from `first`, by class `by_class`.
+pub fn declaration(prev: &Hash, first: u64, count: u64, by_class: &[u32; CLASSES]) -> Hash {
+    let mut h = Sha256::new();
+    h.update(&[TAG_DECLARATION]);
+    h.update(prev);
+    h.update(&first.to_le_bytes());
+    h.update(&count.to_le_bytes());
+    for c in by_class {
+        h.update(&c.to_le_bytes());
+    }
+    h.finalize()
 }
 
 /// What a seal commits to the backend: the boot, the seal's number, the
@@ -58,13 +74,21 @@ pub fn seal_data(boot_anchor: &Hash, nonce: u64, n: &SealNumbers, head: &Hash) -
     h.update(&n.through.to_le_bytes());
     h.update(&n.sink_lost.to_le_bytes());
     h.update(&n.sink_start.to_le_bytes());
+    h.update(&n.sink_digest);
     h.update(head);
     h.finalize()
 }
 
 /// What a seal committed.
 pub fn data_of(s: &Seal) -> Hash {
-    let n = SealNumbers { count: s.count, counter: s.counter, through: s.through, sink_lost: s.sink_lost, sink_start: s.sink_start };
+    let n = SealNumbers {
+        count: s.count,
+        counter: s.counter,
+        through: s.through,
+        sink_lost: s.sink_lost,
+        sink_start: s.sink_start,
+        sink_digest: s.sink_digest,
+    };
     seal_data(&s.boot_anchor, s.nonce, &n, &s.head)
 }
 
@@ -91,6 +115,7 @@ pub struct Sealer {
     unsealed: u64,
     sink_lost: u64,
     sink_start: u64,
+    sink_digest: Hash,
 }
 
 impl Sealer {
@@ -108,6 +133,7 @@ impl Sealer {
             unsealed: 0,
             sink_lost: 0,
             sink_start: 0,
+            sink_digest: [0; 32],
         }
     }
 
@@ -170,15 +196,23 @@ impl Sealer {
     /// The kernel declared that the sink lost `count` records from `first`:
     /// the next seals say so. A loss from where the sink's start left off
     /// moves the start.
-    pub fn sink_lost(&mut self, first: u64, count: u64) {
+    pub fn sink_lost(&mut self, first: u64, count: u64, by_class: &[u32; CLASSES]) {
         self.sink_lost += count;
+        self.sink_digest = declaration(&self.sink_digest, first, count, by_class);
         if first <= self.sink_start {
             self.sink_start = self.sink_start.max(first + count);
         }
     }
 
     fn numbers(&self, counter: u64) -> SealNumbers {
-        SealNumbers { count: self.count + 1, counter, through: self.next, sink_lost: self.sink_lost, sink_start: self.sink_start }
+        SealNumbers {
+            count: self.count + 1,
+            counter,
+            through: self.next,
+            sink_lost: self.sink_lost,
+            sink_start: self.sink_start,
+            sink_digest: self.sink_digest,
+        }
     }
 
     /// What the next seal commits, under the backend's counter after its
@@ -222,6 +256,7 @@ impl Sealer {
             boot_anchor: self.boot_anchor,
             sink_lost: self.sink_lost,
             sink_start: self.sink_start,
+            sink_digest: self.sink_digest,
         }
     }
 }

@@ -29,12 +29,12 @@
 //!
 //! # The chain
 //!
-//! Per boot, in sequence order: `head_0 = SHA-256("azos/seclog/v3" ||
+//! Per boot, in sequence order: `head_0 = SHA-256("azos/seclog/v4" ||
 //! boot_anchor || nonce)`, `head_i = SHA-256(0x01 || head_{i-1} || canon_i)`,
 //! `canon` the record's [canonical bytes](canon) (every envelope field but the
 //! source, and the payload). Seal `k` commits `data_k = SHA-256(0x02 ||
 //! boot_anchor || nonce || k || counter_k || through_k || sink_lost_k ||
-//! sink_start_k || head)` to the
+//! sink_start_k || sink_digest_k || head)` to the
 //! backend, whose value becomes `anchor_k = SHA-256(anchor_{k-1} || data_k)`:
 //! the rule of a TPM 2.0 `NV_Extend` into a SHA-256 index, which the TPM
 //! computes itself. Every seal carries `anchor_{k-1}`, the boot anchor and the
@@ -69,9 +69,9 @@ pub use azos_rings::region::record::Envelope;
 
 /// The version of the format: the first byte of every record's canonical
 /// bytes and the first word of its line.
-pub const VERSION: u8 = 3;
+pub const VERSION: u8 = 4;
 /// Payload bytes a security ring slot holds: the largest kind's, a seal's.
-pub const PAYLOAD: usize = 176;
+pub const PAYLOAD: usize = 208;
 /// Class numbers a by-class count covers (index = the class's number).
 pub const CLASSES: usize = 13;
 /// SHA-256 digest bytes.
@@ -388,10 +388,13 @@ pub struct Seal {
     /// from 0; 0 if it started at the boot's first record): the records
     /// before it are gone honestly.
     pub sink_start: u64,
+    /// The running digest of those declarations (`chain::declaration`):
+    /// each one's range and classes, so one cannot be edited unseen.
+    pub sink_digest: Hash,
 }
 
 impl Seal {
-    pub const LEN: usize = 176;
+    pub const LEN: usize = 208;
 
     pub fn hardware(&self) -> bool {
         self.flags & FLAG_HARDWARE != 0
@@ -410,6 +413,7 @@ impl Seal {
         p[128..160].copy_from_slice(&self.boot_anchor);
         p[160..168].copy_from_slice(&self.sink_lost.to_le_bytes());
         p[168..176].copy_from_slice(&self.sink_start.to_le_bytes());
+        p[176..208].copy_from_slice(&self.sink_digest);
         p
     }
 
@@ -430,6 +434,7 @@ impl Seal {
             boot_anchor: hash_at(p, 128),
             sink_lost: le64(p, 160),
             sink_start: le64(p, 168),
+            sink_digest: hash_at(p, 176),
         })
     }
 }
