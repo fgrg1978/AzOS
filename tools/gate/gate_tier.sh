@@ -339,12 +339,13 @@ if [ "$lints" = 1 ]; then
     fi
 fi
 
-# The size budget (tools/lint/size_budget.py): the riscv64 QEMU defconfig kernel,
-# built by `make size-check` (build only), has the .text/.rodata/.data/.bss
+# The size budget (tools/lint/size_budget.py): the riscv64 QEMU defconfig kernel
+# (`make size-check`) and the x86_64 and aarch64 microvm kernels
+# (`make size-check-microvm`), build only, have the .text/.rodata/.data/.bss
 # tools/lint/size_budget.tsv says, within its tolerance.
 if [ "$tier" = n0 ]; then
     printf "  %-26s" "size budget..."
-    if out="$(make -s size-check 2>&1)"; then
+    if out="$(make -s size-check 2>&1 && make -s size-check-microvm 2>&1)"; then
         echo ok
     else
         echo FAIL; fail=1
