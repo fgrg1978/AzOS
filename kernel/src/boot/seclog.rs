@@ -89,17 +89,25 @@ fn publish(k: u16, payload: &[u8]) -> u64 {
     w.publish(&h, |p| p.bytes(0, payload))
 }
 
-struct KHw(&'static Hw);
+/// The TPM, with the time by which a command must start (the power-off's
+/// step budget): past it the seal is not the hardware's.
+struct KHw(&'static Hw, Option<u64>);
+
+impl KHw {
+    fn in_time(&self) -> bool {
+        self.1.is_none_or(|end| timebase::now() < end)
+    }
+}
 
 impl azos_seclog::pass::Hw for KHw {
     fn increment(&mut self) -> Option<u64> {
-        (self.0.increment)()
+        self.in_time().then(|| (self.0.increment)()).flatten()
     }
     fn extend(&mut self, data: &Hash) -> bool {
-        (self.0.extend)(data)
+        self.in_time() && (self.0.extend)(data)
     }
     fn read(&mut self) -> Option<Hash> {
-        (self.0.read)()
+        self.in_time().then(|| (self.0.read)()).flatten()
     }
 }
 
@@ -174,9 +182,9 @@ fn ring() -> Option<azos_records::record::Ring> {
 
 /// One pass under the state's lock: the seal's sequence number if one was
 /// taken.
-fn run(st: &mut Pass<CLASS_LOG>, force: bool) -> Option<u64> {
+fn run(st: &mut Pass<CLASS_LOG>, force: bool, deadline: Option<u64>) -> Option<u64> {
     let ring = ring()?;
-    let mut hw = HW.get().map(KHw);
+    let mut hw = HW.get().map(|h| KHw(h, deadline));
     st.run(&ring, SINK.get(), hw.as_mut().map(|h| h as &mut dyn azos_seclog::pass::Hw), &mut KHost, &CONFIG, force)
 }
 
@@ -212,7 +220,7 @@ fn seclog_task(_: usize) {
     *STATE.lock() = Some(Pass::new(Sealer::new(backend, anchor, nonce), flags & FLAG_UNDELETABLE, timebase::now()));
     loop {
         if let Some(st) = STATE.lock().as_mut() {
-            run(st, false);
+            run(st, false, None);
         }
         let end = timebase::now() + timebase::TIMER_FREQ;
         while timebase::now() < end {
@@ -253,7 +261,9 @@ pub(crate) fn seal_at_power_off() {
         azos_sched::task_block(azos_sched::WaitReason::Timer(timebase::now() + ms(1)));
     };
     let Some(st) = g.as_mut() else { return };
-    let seq = run(st, true);
+    // Each TPM command starts within the step's budget (the driver bounds
+    // each one by its own timeout).
+    let seq = run(st, true, Some(budget_end));
     let alive = timebase::now().wrapping_sub(st.sink_alive_at()) <= ms(2 * azos_limits::LOGD_POLL_MS as u64);
     drop(g);
     let (Some(seq), Some(page)) = (seq, SINK.get()) else { return };
