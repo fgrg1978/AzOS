@@ -16,7 +16,8 @@
 //! stage of the format. Symlinks are followed beneath the volume's root, so a
 //! client sees the file a link names, as on a file system without links; an
 //! open or a stat that names a `floor` is rooted at the directory its first
-//! components make, and a link that leads out of it is refused `DENIED`.
+//! components make, and a link that leads out of it, or that is one of those
+//! components, is refused `DENIED`.
 //!
 //! The slots are few ([`NODES`]); an open past them takes the slot used
 //! longest ago and revokes what was lent from it, so a client that kept a
@@ -204,7 +205,9 @@ impl<S: BlockSource, H: Host> Service<S, H> {
 
     /// The inode `e` names, symlinks followed, with the first `floor` components
     /// of the name as the directory the caller is rooted at: what is below it is
-    /// resolved beneath it, and no symlink leads out.
+    /// resolved beneath it, and no symlink leads out. A symlink among the
+    /// floor's own components is refused too, so a grant made through a link
+    /// (`lib` -> `usr/lib`) is refused rather than followed.
     fn resolve_beneath(&mut self, e: Extent, floor: u32) -> Result<Inode, u32> {
         if self.badge != DIR_BADGE {
             return Err(outcome::DENIED);
@@ -221,7 +224,7 @@ impl<S: BlockSource, H: Host> Service<S, H> {
             return self.vol.resolve(name, follow_last);
         }
         let end = components_end(name, floor as usize).ok_or(Error::BadName)?;
-        let base = self.vol.resolve(&name[..end], true)?;
+        let base = self.vol.resolve_plain(&name[..end])?;
         self.vol.resolve_beneath(&base, &name[end..], follow_last)
     }
 

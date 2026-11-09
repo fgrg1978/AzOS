@@ -52,6 +52,9 @@ azos_linux_abi = { workspace = true, optional = true }
 azos_crypto = { workspace = true }
 
 [features]
+# Gate canary (syscall-tests `fs_tree_caps`): a stat, listing or statfs through a directory
+# capability does not tell the filesystem the directory's root.
+beneath-root-canary = []
 # Canaries of `devices.rs` (built by tests/host/syscall-tests): a controller
 # that is not registered is answered by the board's; the safety core's lines
 # are not kept from an acting Gpio op.

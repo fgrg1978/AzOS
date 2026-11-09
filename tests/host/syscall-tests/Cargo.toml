@@ -9,6 +9,9 @@ description = "Host-side tests for crates/core/syscall/src/handlers.rs. Excluded
 # Run with:  cd tests/host/syscall-tests && cargo test --release
 
 [features]
+# Gate canary (syscall-tests `fs_tree_caps`): a stat, listing or statfs through a directory
+# capability does not tell the filesystem the directory's root.
+beneath-root-canary = []
 # The kernel's ring-3 IOMMU reuse rule broken to empty-only
 # (`behind_an_iommu_a_binding_ends_freed_and_the_device_binds_again` goes red).
 ring3-reuse-canary = ["azos_dma/ring3-reuse-canary"]

@@ -183,6 +183,26 @@ impl<S: BlockSource> Volume<S> {
         self.resolve_in(base.ino, !cfg!(feature = "escape-canary"), path, follow_last)
     }
 
+    /// The directory `path` names from the volume's root, a plain relative path
+    /// whose components are all directories and none a symlink: a symlink among
+    /// them is [`Error::Escape`], so a directory granted by name is the one the
+    /// image holds there and a link cannot move the grant.
+    pub fn resolve_plain(&mut self, path: &[u8]) -> Result<Inode, Error> {
+        let mut cur = self.inode(ROOT_INO)?;
+        for comp in path.split(|&c| c == b'/').filter(|c| !c.is_empty()) {
+            if !cur.is_dir() {
+                return Err(Error::NotDir);
+            }
+            let ino = self.lookup(&cur, comp)?;
+            let next = self.inode(ino)?;
+            if next.is_symlink() && !cfg!(feature = "escape-canary") {
+                return Err(Error::Escape);
+            }
+            cur = next;
+        }
+        if cur.is_dir() { Ok(cur) } else { Err(Error::NotDir) }
+    }
+
     fn resolve_in(&mut self, base: u32, strict: bool, path: &[u8], follow_last: bool) -> Result<Inode, Error> {
         let mut work = [0u8; PATH_MAX];
         if path.len() > PATH_MAX {

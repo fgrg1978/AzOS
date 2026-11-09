@@ -86,6 +86,9 @@ pub fn fixture(root: &Path) {
     symlink("/hello.txt", root.join("jail/abs")).unwrap();
     symlink("../deep/a", root.join("jail/outdir")).unwrap();
     symlink("sub", root.join("jail/indir")).unwrap();
+    fs::create_dir_all(root.join("private")).unwrap();
+    fs::write(root.join("private/secret.txt"), b"private\n").unwrap();
+    symlink("private", root.join("grant")).unwrap();
     symlink("loop2", root.join("loop1")).unwrap();
     symlink("loop1", root.join("loop2")).unwrap();
 }

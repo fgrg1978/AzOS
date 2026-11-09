@@ -173,7 +173,7 @@ fn stat_list_and_statfs_answer_the_records() {
         names.push((String::from_utf8(r[..len].to_vec()).unwrap(), e.is_dir, e.size));
     }
     names.sort();
-    let want = ["abs", "big.bin", "deep", "dirlink", "empty.txt", "esc", "fast", "hello.txt", "jail", "loop1", "loop2", "lost+found", "many", "slow", "sparse.bin"];
+    let want = ["abs", "big.bin", "deep", "dirlink", "empty.txt", "esc", "fast", "grant", "hello.txt", "jail", "loop1", "loop2", "lost+found", "many", "private", "slow", "sparse.bin"];
     assert_eq!(names.iter().map(|n| n.0.as_str()).collect::<Vec<_>>(), want);
     let get = |n: &str| names.iter().find(|e| e.0 == n).unwrap().clone();
     assert!(get("deep").1 && get("dirlink").1, "a link to a directory lists as one");
@@ -422,4 +422,25 @@ fn stat_listing_and_statfs_refuse_a_link_out_of_the_callers_directory() {
     assert!(get(&rooted, "indir").1 && get(&rooted, "in").2 == 10, "a link inside lists as its target");
     let whole = list(0);
     assert!(get(&whole, "outdir").1 && get(&whole, "out").2 == 11, "from the root the same links list as their targets");
+}
+
+/// **A link in the granted directory's own path does not move the grant**:
+/// rooted at `grant`, which the image makes a link to `private`, open, stat,
+/// listing and statfs are all refused, where from the root the link is the
+/// directory it names.
+///
+/// **Canary.** `escape-canary`: the grant's components are followed through
+/// links, and the refusals below become answers.
+#[test]
+fn a_link_in_the_granted_directorys_path_is_refused() {
+    let s = service();
+    assert_eq!(open_beneath(&s, "grant/secret.txt", 1), Err(outcome::DENIED));
+    assert_eq!(open_beneath(&s, "grant/secret.txt", 0).unwrap(), b"private\n");
+    let dir = || DirClient::new(Loop(&s, DIR_BADGE));
+    let n = name(&s, "grant/secret.txt");
+    assert_eq!(outcome::served(dir().statat(n, 1, Extent { off: OUT, len: STAT_BYTES as u32 })), Err(outcome::DENIED));
+    let n = name(&s, "grant");
+    assert_eq!(outcome::served(dir().readdir(n, 1, 0, Extent { off: OUT, len: READDIR_NAME_BYTES as u32 })).map(|_| ()), Err(outcome::DENIED));
+    assert_eq!(outcome::served(dir().statfs(n, 1, Extent { off: OUT, len: STATFS_BYTES as u32 })), Err(outcome::DENIED));
+    assert!(outcome::served(dir().readdir(n, 0, 0, Extent { off: OUT, len: READDIR_NAME_BYTES as u32 })).unwrap().present);
 }
