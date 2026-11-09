@@ -20643,7 +20643,7 @@ CPU 5 lacks hwcap bits"
             rm -f $AZOS_OUT/build/disk-aarch64-braincli.img
             make_disk $AZOS_OUT/build/disk-aarch64-braincli.img || return
             cp $AZOS_OUT/build/disk-aarch64-braincli.img "$disk"; cp "$A64_IMG" "$kimg"
-            qemu-system-aarch64 -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
+            "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
                 -kernel "$kimg" -append "canary=$can" -global virtio-mmio.force-legacy=false \
                 -drive file="$disk",if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 \
                 >"$log" 2>&1 &
