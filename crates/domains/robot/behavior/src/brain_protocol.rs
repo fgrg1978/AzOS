@@ -817,30 +817,42 @@ pub fn relax_body_len(kind: u8, payload: &[u8], contained: bool, level_now: u8) 
     }
 }
 
+/// The longest e-stop frame the UART scanner waits for: the header, a body of
+/// at most 8 bytes and the CRC. A header that claims more is not waited for, so
+/// bytes lost to an overrun cannot hold the line.
+pub const ESTOP_FRAME_MAX: usize = FRAME_OVERHEAD + 8;
+
 /// Scan the first `len` bytes of `buf` for whole frames and count the
 /// `PKT_ESTOP` frames among them; every other frame is dropped (the line that
-/// feeds this carries only the e-stop). Bytes that cannot start a frame are
-/// skipped to the next `MAGIC`; a frame still arriving (a header whose declared
-/// length runs past `len`) stays at the front of `buf` for the next read, as
-/// long as it fits. Returns the e-stop count and the bytes kept.
+/// feeds this carries only the e-stop). A frame is looked for at every byte, so
+/// a truncated header never hides the frames inside its claimed span. Only the
+/// start of an e-stop frame still arriving (at most [`ESTOP_FRAME_MAX`] bytes,
+/// after the last whole frame) is moved to the front of `buf` for the next
+/// read. Returns the e-stop count and the bytes kept.
 pub fn take_estop_frames(buf: &mut [u8], len: usize) -> (usize, usize) {
-    let (mut at, mut estops) = (0usize, 0usize);
+    let len = len.min(buf.len());
+    let (mut at, mut estops, mut consumed) = (0usize, 0usize, 0usize);
     while at < len {
-        let rest = &buf[at..len];
-        if let Some((kind, _, _, total)) = parse_packet(rest) {
+        if let Some((kind, _, _, total)) = parse_packet(&buf[at..len]) {
             estops += (kind == PKT_ESTOP) as usize;
             at += total;
-            continue;
+            consumed = at;
+        } else {
+            at += 1;
         }
-        let arriving = rest[0] == MAGIC[0]
-            && (rest.len() < 2 || rest[1] == MAGIC[1])
-            && (rest.len() < 5 || 6 + ((rest[3] as usize) | ((rest[4] as usize) << 8)) > rest.len());
-        if arriving && 6 + if rest.len() >= 5 { (rest[3] as usize) | ((rest[4] as usize) << 8) } else { 0 } <= buf.len() {
-            break;
-        }
-        at += 1 + rest[1..].iter().position(|&b| b == MAGIC[0]).unwrap_or(rest.len() - 1);
     }
-    let keep = len - at.min(len);
-    buf.copy_within(at.min(len)..len, 0);
-    (estops, keep)
+    let from = (consumed..len).find(|&p| estop_arriving(&buf[p..len])).unwrap_or(len);
+    buf.copy_within(from..len, 0);
+    (estops, len - from)
+}
+
+/// Whether `rest` can still become a whole e-stop frame of at most
+/// [`ESTOP_FRAME_MAX`] bytes.
+fn estop_arriving(rest: &[u8]) -> bool {
+    let claimed = |r: &[u8]| FRAME_OVERHEAD + ((r[3] as usize) | ((r[4] as usize) << 8));
+    rest.len() < ESTOP_FRAME_MAX
+        && rest[0] == MAGIC[0]
+        && rest.get(1).map_or(true, |&b| b == MAGIC[1])
+        && rest.get(2).map_or(true, |&k| k == PKT_ESTOP)
+        && (rest.len() < 5 || (claimed(rest) <= ESTOP_FRAME_MAX && claimed(rest) > rest.len()))
 }

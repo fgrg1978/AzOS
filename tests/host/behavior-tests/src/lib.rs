@@ -155,6 +155,36 @@ mod bridge_estop_frames {
         buf[..40].copy_from_slice(&junk);
         assert_eq!(take_estop_frames(&mut buf, 40), (0, 0), "noise was kept");
     }
+
+    /// **A truncated header never holds an e-stop back.** Bytes lost to an
+    /// overrun leave a header that claims 64 bytes; the brain's e-stop lands
+    /// inside that span and the line goes quiet. The e-stop counts on that read,
+    /// and nothing is kept for the claim. Only the start of an e-stop frame, no
+    /// longer than one can be, is kept for the next read.
+    ///
+    /// **Canary.** Stop the scan at the first frame start that does not parse
+    /// (wait for it, as before): the e-stop is held behind it and counts 0.
+    #[test]
+    fn a_truncated_header_does_not_hide_an_estop() {
+        let estop = frame(PKT_ESTOP, &[]);
+        let mut buf = [0u8; 256];
+        for kind in [PKT_ACTUATOR, PKT_ESTOP] {
+            let mut line = vec![MAGIC[0], MAGIC[1], kind, 64, 0];
+            line.extend(&estop);
+            buf[..line.len()].copy_from_slice(&line);
+            assert_eq!(take_estop_frames(&mut buf, line.len()), (1, 0), "kind {kind:#x}: an e-stop behind a truncated header");
+        }
+        let mut line = estop[..4].to_vec();
+        line.extend(&estop);
+        buf[..line.len()].copy_from_slice(&line);
+        assert_eq!(take_estop_frames(&mut buf, line.len()), (1, 0), "an e-stop behind a truncated e-stop header");
+        let line = [MAGIC[0], MAGIC[1], PKT_ACTUATOR, 7];
+        buf[..4].copy_from_slice(&line);
+        assert_eq!(take_estop_frames(&mut buf, 4), (0, 0), "the start of a frame that is not an e-stop was kept");
+        let line = [MAGIC[0], MAGIC[1], PKT_ESTOP, 200, 0];
+        buf[..5].copy_from_slice(&line);
+        assert_eq!(take_estop_frames(&mut buf, 5), (0, 0), "an e-stop header longer than an e-stop frame was kept");
+    }
 }
 
 #[cfg(test)]

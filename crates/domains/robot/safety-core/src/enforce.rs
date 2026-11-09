@@ -186,21 +186,32 @@ fn fence_tick(state: &SensorState) {
 
 /// The UART bridge's e-stop: every `PKT_ESTOP` frame on the line latches,
 /// straight in the kernel, with no ring-3 program and no TCP in the path. The
-/// line carries nothing else on a robot (`uart_bridge::bridge_claim_for_estop`).
+/// line is the kernel's from `actuation::install` on and carries nothing else
+/// on a robot: polled at the enforcer's period, its receive ring holds many
+/// e-stop frames between two reads, and each read drains it.
 fn bridge_estop() {
     use azos_drv_bus::uart_bridge as bridge;
+    use azos_behavior::brain_protocol::take_estop_frames;
     static LINE: azos_sync::SpinLock<([u8; 256], usize)> = azos_sync::SpinLock::new(([0; 256], 0));
     if !bridge::bridge_is_ready() {
         return;
     }
-    bridge::bridge_claim_for_estop();
     let estops = {
         let mut g = LINE.lock();
         let (buf, len) = &mut *g;
-        let n = bridge::bridge_recv(&mut buf[*len..]);
-        *len += n.max(0) as usize;
-        let (estops, keep) = azos_behavior::brain_protocol::take_estop_frames(buf, *len);
-        *len = if keep == buf.len() { 0 } else { keep };
+        let mut estops = 0;
+        // A read that leaves room has emptied the ring; the bound keeps a
+        // babbling line from holding the enforcer.
+        for _ in 0..16 {
+            let room = buf.len() - *len;
+            let n = (bridge::bridge_recv(&mut buf[*len..]).max(0) as usize).min(room);
+            let (found, keep) = take_estop_frames(buf, *len + n);
+            estops += found;
+            *len = keep;
+            if n < room {
+                break;
+            }
+        }
         estops
     };
     if estops > 0 {
