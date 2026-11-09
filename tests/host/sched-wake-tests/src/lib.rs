@@ -81,6 +81,8 @@ pub mod rt_core;
 pub mod wake_preempt;
 #[cfg(test)]
 mod wake_preempt_tests;
+#[cfg(test)]
+mod call_park_tests;
 #[path = "../../../../crates/core/sched/src/scheduler/wake/attrib.rs"]
 pub mod wake_attrib;
 #[cfg(test)]

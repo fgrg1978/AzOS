@@ -34,7 +34,7 @@
 //!   (`PROXY_REPLY_TIMEOUT_MS`), then `DeadlineExpired`, and while it waits
 //!   the call task runs at the reader's priority, back to its own after.
 //!   Runtime canaries `powermon-unbounded` (the read waits for the answer)
-//!   and `powermon-no-lend` (the reader lends nothing): `not ok`.
+//!   and `call-no-lend` (the reader lends nothing): `not ok`.
 
 use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
 

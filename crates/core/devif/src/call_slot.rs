@@ -13,17 +13,18 @@
 use azos_abi::ipc_msg::MsgDesc;
 use azos_idl::{IdlError, Result as IdlResult};
 
-/// How long a call task with nothing posted sleeps. A wake that comes between
-/// its look at the slot and its sleep finds it running and is not kept; the
-/// sleep ends by itself, so that wake costs a client at most this.
-pub const PARK_MS: u64 = 100;
-
-/// The absolute tick at which an idle call task wakes by itself.
-pub fn park_until(now: u64, freq: u64) -> u64 {
+/// The `Timer` value a call task with nothing posted sleeps on, and that a
+/// client's wake names. One value for every park, whatever the time: a wake
+/// names the value read before the task committed to sleep, and a task that
+/// parked on another by then is found asleep on a reason the wake does not
+/// match and is left asleep. With one value, a wake that comes before the sleep
+/// is kept by the scheduler (a stamp that the commit consumes) and one that
+/// comes after matches.
+pub fn park_reason(now: u64) -> u64 {
     if cfg!(feature = "call-slot-park-canary") {
-        return u64::MAX;
+        return now | 1;
     }
-    now.saturating_add(freq.saturating_mul(PARK_MS) / 1000)
+    u64::MAX
 }
 
 /// The absolute tick `ms` from `now`.
@@ -168,12 +169,18 @@ impl<const C: usize, const W: usize> CallSlot<C, W> {
     }
 
     /// A client stops waiting. The call it posted, if nobody took it and
-    /// nobody else waits for it, is withdrawn.
-    pub fn leave(&mut self, waiter: usize) {
-        let Some(w) = self.waiters[waiter].take() else { return };
+    /// nobody else waits for it, is withdrawn. The capabilities of an answer
+    /// that had come and that the client did not read are queued to close
+    /// (they are in the call task's table); `false`: the queue was full and
+    /// some stay there.
+    pub fn leave(&mut self, waiter: usize) -> bool {
+        let Some(w) = self.waiters[waiter].take() else { return true };
         let others = self.waiters.iter().flatten().any(|o| o.seq == w.seq);
         if !others && self.job.is_some_and(|j| j.seq == w.seq && !j.taken) {
             self.job = None;
         }
+        let Some((m, _)) = w.answer else { return true };
+        let n = (m.n_caps as usize).min(m.caps.len());
+        m.caps[..n].iter().fold(true, |all, c| self.queue_close(c.handle) && all)
     }
 }

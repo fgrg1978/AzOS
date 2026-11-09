@@ -39,6 +39,10 @@ mod drv_supervisor;
 // (behavior, sensors) are `use-robot`.
 #[cfg(feature = "board-io")]
 mod buzzer;
+// The task that makes a kernel component's calls to a ring-3 server (the power
+// monitor's, an ext4 volume's).
+#[cfg(any(feature = "board-io", feature = "fs-ext4-ring3"))]
+mod call_task;
 // Where the INA219 power monitor runs, read from its topology row.
 #[cfg(feature = "board-io")]
 mod powermon;

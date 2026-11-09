@@ -35,6 +35,9 @@ azos_mm = { path = "shims/mm", package = "sched_wake_test_mm" }
 # from the ABI crate.
 azos_abi = { path = "../../../crates/core/abi" }
 
+# `call_park_tests.rs`: the idle reason of a kernel call task.
+azos_devif = { path = "../../../crates/core/devif" }
+
 [dev-dependencies]
 
 [features]
@@ -76,3 +79,6 @@ wake-attrib-canary = []
 wake-ring-canary = []
 # `sc.rs` (pulled by path), declared for the lint, never enabled here.
 qos-rt-slack-canary = []
+# `azos_devif::call_slot::park_reason`'s canary: a park is on a value of its own time, and
+# `a_wake_after_the_commit_finds_the_task_parked_on_the_reason_it_names` must fail.
+call-slot-park-canary = ["azos_devif/call-slot-park-canary"]

@@ -12557,6 +12557,9 @@ host_job host_canary_row "port: calls binder canary" syscall-tests calls-any-bin
 # A gpio badge stamped without its controller: the spelling test and the
 # Gpio server's cross-controller refusal go red.
 host_job host_canary_row "gpio: badge controller canary (devif)" devif-tests badge-without-controller-canary a_gpio_badge_names_its_controller
+host_job host_canary_row "call task: an idle park on a value of its own time canary (devif)" devif-tests call-slot-park-canary every_park_is_on_the_one_reason_a_wake_names
+host_job host_canary_row "call task: a joiner of a posted call does not wake the task canary" devif-tests call-slot-joiner-canary a_client_that_joins_a_posted_call_wakes_the_task
+host_job host_canary_row "call task: a wake after the commit names another park canary (sched-wake)" sched-wake-tests call-slot-park-canary a_wake_after_the_commit_finds_the_task_parked_on_the_reason_it_names
 host_job host_canary_row "gpio: badge controller canary (endpoint)" syscall-tests gpio-badge-canary a_capability_on_controller_1_never_reaches_controller_0
 # The GPIO controller registry: a freed number goes to another device; an
 # unbind does not wait for the op inside the controller; a controller that is
@@ -17741,9 +17744,9 @@ CPU 5 lacks hwcap bits"
     # answer for as long as it takes (review R2-4).
     par "ktest powermon unbounded canary (rv)" ktest_row "ktest powermon unbounded canary (rv)" rv "" "a_power_read_of_a_hung_host_is_bounded" "canary=powermon-unbounded"
     par "ktest powermon unbounded canary (arm)" ktest_row "ktest powermon unbounded canary (arm)" arm "" "a_power_read_of_a_hung_host_is_bounded" "canary=powermon-unbounded"
-    # powermon-no-lend: a waiting reader lends the call task no priority (review F5).
-    par "ktest powermon no lend canary (rv)" ktest_row "ktest powermon no lend canary (rv)" rv "" "a_power_read_of_a_hung_host_is_bounded" "canary=powermon-no-lend"
-    par "ktest powermon no lend canary (arm)" ktest_row "ktest powermon no lend canary (arm)" arm "" "a_power_read_of_a_hung_host_is_bounded" "canary=powermon-no-lend"
+    # call-no-lend: a waiting reader lends the call task no priority (review F5).
+    par "ktest powermon no lend canary (rv)" ktest_row "ktest powermon no lend canary (rv)" rv "" "a_power_read_of_a_hung_host_is_bounded" "canary=call-no-lend"
+    par "ktest powermon no lend canary (arm)" ktest_row "ktest powermon no lend canary (arm)" arm "" "a_power_read_of_a_hung_host_is_bounded" "canary=call-no-lend"
     # arm-tpidr-all-tasks: only a Linux task's TPIDR_EL0 is kept, not a
     # native task's, the old rule (aarch64 only; riscv64's `tp` is in the trap
     # frame, x86_64's FS base is not EL0-writable).

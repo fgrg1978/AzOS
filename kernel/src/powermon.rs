@@ -13,15 +13,15 @@
 //! driver in the kernel only when the kernel was built for it
 //! (Kconfig `DRV_INA219_PLACEMENT = kernel`).
 
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use azos_devif::powermon::ENDPOINT_NAME;
 use azos_drv_sensor::ina219::{self, Placement};
 use azos_drv_sys::kprintln;
 use azos_devif::{IdlError, IdlResult, MsgDesc, Transport};
 use azos_syscall::kcall::{self, KernelEndpoint, KernelNamed, Purpose};
-use azos_sched::{BlockOutcome, WaitReason};
-use azos_sync::SpinLock;
+
+use crate::call_task::CallTask;
 use azos_topology::placement::Host;
 
 /// One call to the ring-3 host, made by the call task ([`call_task`]) as the
@@ -67,32 +67,14 @@ pub(crate) fn call_host(msg: &mut MsgDesc) -> IdlResult {
 const REPLY_TIMEOUT_MS: u64 = azos_limits::PROXY_REPLY_TIMEOUT_MS;
 /// Readers that can wait at once.
 const READERS: usize = 8;
-/// The call task parks on this; a reader wakes it with the same value.
-const PARK: u64 = u64::MAX;
 
-#[derive(Clone, Copy)]
-struct Reader {
-    tid: u32,
-    /// The `Timer` value it sleeps on, which its wake names.
-    deadline: u64,
-    /// The call it waits for.
-    seq: u32,
-    answer: Option<(MsgDesc, IdlResult)>,
-}
-
-struct Calls {
-    /// The call posted or under way: its number, its request, and whether
-    /// the call task took it.
-    job: Option<(u32, MsgDesc, bool)>,
-    last: u32,
-    readers: [Option<Reader>; READERS],
-}
-
-static CALLS: SpinLock<Calls> = SpinLock::new(Calls { job: None, last: 0, readers: [None; READERS] });
-static CALL_TASK: AtomicBool = AtomicBool::new(false);
-static CALL_TASK_TID: AtomicU32 = AtomicU32::new(0);
+static CALLS: CallTask<0, READERS> = CallTask::new("powermon-call", true, serve, |_| {});
 /// Reads that ended at `REPLY_TIMEOUT_MS` with no answer.
 static TIMED_OUT: AtomicU32 = AtomicU32::new(0);
+
+fn serve(_: Option<u32>, msg: &mut MsgDesc) -> IdlResult {
+    call_host(msg)
+}
 
 /// Reads that ended at the reply budget with no answer from the host.
 #[cfg(feature = "ktest")]
@@ -104,79 +86,13 @@ pub(crate) fn timed_out() -> u32 {
 /// (from `kernel_main`, so the task is a kernel root, not a child of a
 /// reader's Domain).
 pub(crate) fn start_call_task() {
-    if !CALL_TASK.swap(true, Ordering::AcqRel) {
-        azos_sched::task_create_affinity("powermon-call", call_task, 0, azos_sched::DEFAULT_PRIORITY, -1);
-    }
-}
-
-fn wake(tid: u32, deadline: u64) {
-    if tid != 0 {
-        let _ = azos_sched::scheduler::wake_task_by_tid(tid, &|r| matches!(r, WaitReason::Timer(d) if *d == deadline));
-    }
-}
-
-/// The call task: takes the posted call, makes it, hands every reader of it
-/// the answer, and parks until the next.
-fn call_task(_: usize) {
-    CALL_TASK_TID.store(azos_sched::current_task_tid(), Ordering::Release);
-    loop {
-        let job = match CALLS.lock().job.as_mut() {
-            Some((seq, req, taken)) if !*taken => {
-                *taken = true;
-                Some((*seq, *req))
-            }
-            _ => None,
-        };
-        let Some((seq, mut msg)) = job else {
-            let _ = azos_sched::task_block_outcome(WaitReason::Timer(PARK));
-            continue;
-        };
-        let res = call_host(&mut msg);
-        let mut woken = [(0u32, 0u64); READERS];
-        {
-            let mut c = CALLS.lock();
-            c.job = None;
-            for (r, w) in c.readers.iter_mut().flatten().filter(|r| r.seq == seq).zip(woken.iter_mut()) {
-                r.answer = Some((msg, res));
-                *w = (r.tid, r.deadline);
-            }
-        }
-        for &(tid, deadline) in &woken {
-            wake(tid, deadline);
-        }
-    }
-}
-
-/// A reader's priority lent to the call task (`azos_sched::boost_ready_task`,
-/// counted: the task's base priority comes back when the last lender leaves).
-/// Only a reader more urgent than the call task's own lends. Runtime canary
-/// `powermon-no-lend`: nobody lends, and the ktest
-/// `a_power_read_of_a_hung_host_is_bounded` goes red on the call task's
-/// priority.
-struct Lent(u32);
-
-impl Lent {
-    fn to_call_task(reader: u32) -> Option<Lent> {
-        let task = CALL_TASK_TID.load(Ordering::Acquire);
-        let prio = azos_sched::task_priority(reader)?;
-        if task == 0 || prio >= azos_sched::DEFAULT_PRIORITY || canary!("powermon-no-lend") {
-            return None;
-        }
-        azos_sched::boost_ready_task(task, prio);
-        Some(Lent(task))
-    }
-}
-
-impl Drop for Lent {
-    fn drop(&mut self) {
-        azos_sched::restore_ready_task(self.0);
-    }
+    CALLS.start();
 }
 
 /// The call task's TID, 0 before it ran.
 #[cfg(feature = "ktest")]
 pub(crate) fn call_task_tid() -> u32 {
-    CALL_TASK_TID.load(Ordering::Acquire)
+    CALLS.tid()
 }
 
 /// The transport the drivers crate calls (`ina219::Ring3`): the request in
@@ -184,65 +100,15 @@ pub(crate) fn call_task_tid() -> u32 {
 /// `REPLY_TIMEOUT_MS` or not at all (`IdlError::DeadlineExpired`). Blocks the
 /// reader: never from an interrupt handler or with a lock held.
 pub(crate) fn endpoint_call(msg: &mut MsgDesc) -> IdlResult {
-    const BUSY: IdlError = IdlError::Transport(-16);
-    // Where the reader may not block, refused before anything is posted, as
-    // `kcall::call` refuses (counted, `-EBUSY`): no host call nobody waits for.
-    kcall::admit_blocking().map_err(|e| IdlError::Transport(e as isize))?;
-    if !CALL_TASK.load(Ordering::Acquire) {
-        return Err(IdlError::Transport(-1));
-    }
-    let me = azos_sched::current_task_tid();
     // Runtime canary `powermon-unbounded`: the reader waits for the answer
     // however long it takes (the ktest `a_power_read_of_a_hung_host_is_bounded`
     // goes red).
-    let deadline = if canary!("powermon-unbounded") {
-        PARK
-    } else {
-        let freq = azos_drv_sys::timebase::freq();
-        azos_drv_sys::timebase::now().saturating_add(freq.saturating_mul(REPLY_TIMEOUT_MS) / 1000)
-    };
-    let (slot, post) = {
-        let mut c = CALLS.lock();
-        let Some(slot) = c.readers.iter().position(Option::is_none) else { return Err(BUSY) };
-        let (seq, post) = match c.job {
-            Some((seq, req, _)) if req == *msg => (seq, false),
-            Some(_) => return Err(BUSY),
-            None => {
-                let seq = c.last.wrapping_add(1);
-                c.last = seq;
-                c.job = Some((seq, *msg, false));
-                (seq, true)
-            }
-        };
-        c.readers[slot] = Some(Reader { tid: me, deadline, seq, answer: None });
-        (slot, post)
-    };
-    // The call task runs at the most urgent waiting reader's priority while
-    // it waits (as `ml-infer` runs at its one waiter's): each reader lends
-    // its own and takes it back however it leaves.
-    let _lent = Lent::to_call_task(me);
-    if post {
-        wake(CALL_TASK_TID.load(Ordering::Acquire), PARK);
+    let reply_ms = if canary!("powermon-unbounded") { u64::MAX } else { REPLY_TIMEOUT_MS };
+    let res = CALLS.call(None, msg, reply_ms);
+    if res == Err(IdlError::DeadlineExpired) {
+        TIMED_OUT.fetch_add(1, Ordering::Relaxed);
     }
-    loop {
-        {
-            let mut c = CALLS.lock();
-            if let Some((answer, res)) = c.readers[slot].as_mut().and_then(|r| r.answer.take()) {
-                c.readers[slot] = None;
-                *msg = answer;
-                return res;
-            }
-            if azos_drv_sys::timebase::now() >= deadline {
-                c.readers[slot] = None;
-                TIMED_OUT.fetch_add(1, Ordering::Relaxed);
-                return Err(IdlError::DeadlineExpired);
-            }
-        }
-        if azos_sched::task_block_killable(WaitReason::Timer(deadline)) == BlockOutcome::Refused {
-            CALLS.lock().readers[slot] = None;
-            return Err(BUSY);
-        }
-    }
+    res
 }
 
 /// Read the row, tell the drivers crate and say where the driver starts.

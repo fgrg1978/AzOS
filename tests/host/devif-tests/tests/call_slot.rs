@@ -4,7 +4,7 @@
 //! who joins it, what an abandoned call leaves behind, and how long an idle
 //! task may sleep through a wake that came too early.
 
-use azos_devif::call_slot::{park_until, CallSlot, Poll, BUSY, PARK_MS};
+use azos_devif::call_slot::{park_reason, CallSlot, Poll, BUSY};
 use azos_idl::{IdlError, MsgDesc};
 
 fn req(word: u64) -> MsgDesc {
@@ -52,17 +52,8 @@ fn no_place_to_wait_is_busy() {
 }
 
 #[test]
-fn a_wake_lost_before_the_sleep_costs_a_bounded_wait() {
-    let (freq, t0) = (1000u64, 10u64);
-    let mut s = CallSlot::<0, 1>::new(false);
-    // The task looks, finds nothing, and is about to sleep.
-    assert!(s.take().is_none());
-    let until = park_until(t0, freq);
-    // The client posts now; its wake finds the task running and is lost.
-    assert!(s.post(1, t0 + 5_000, None, &req(1)).unwrap().wake);
-    // The task sleeps, and wakes by itself no later than the bound.
-    assert!(until <= t0 + PARK_MS * freq / 1000, "the idle sleep is bounded");
-    assert!(s.take().is_some());
+fn every_park_is_on_the_one_reason_a_wake_names() {
+    assert_eq!(park_reason(10), park_reason(20_000));
 }
 
 #[test]
@@ -96,11 +87,37 @@ fn a_call_under_way_keeps_the_slot_busy_and_its_answer_has_no_taker() {
 }
 
 #[test]
+fn an_answer_the_client_never_read_queues_its_capabilities_to_close_when_it_leaves() {
+    let mut s = CallSlot::<2, 1>::new(false);
+    let p = s.post(1, 50, None, &req(1)).unwrap();
+    let t = s.take().unwrap();
+    let mut ans = req(1);
+    ans.n_caps = 2;
+    ans.caps[0].handle = 21;
+    ans.caps[1].handle = 22;
+    s.finish(t.seq, &ans, Ok(()));
+    assert!(s.leave(p.waiter));
+    let (c, n) = s.take_closes();
+    assert_eq!(&c[..n], &[21, 22]);
+}
+
+#[test]
+fn a_full_close_queue_is_said_when_an_answer_leaves_capabilities_behind() {
+    let mut s = CallSlot::<1, 1>::new(false);
+    let p = s.post(1, 50, None, &req(1)).unwrap();
+    let t = s.take().unwrap();
+    let mut ans = req(1);
+    ans.n_caps = 2;
+    s.finish(t.seq, &ans, Ok(()));
+    assert!(!s.leave(p.waiter));
+}
+
+#[test]
 fn the_deadline_expiry_is_not_an_answer_to_a_later_call() {
     let mut s = CallSlot::<0, 1>::new(false);
     let p = s.post(1, 50, None, &req(1)).unwrap();
     let t = s.take().unwrap();
-    s.leave(p.waiter);
+    assert!(s.leave(p.waiter));
     s.finish(t.seq, &req(1), Err(IdlError::DeadlineExpired));
     let q = s.post(2, 100, None, &req(2)).unwrap();
     assert!(matches!(s.poll(q.waiter, 0), Poll::Pending));

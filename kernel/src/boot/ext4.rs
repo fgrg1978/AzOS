@@ -11,7 +11,7 @@
 //! * the region the two share (`MemObj fs.share`, created here once and
 //!   granted to the server's row alone), read and written through the direct
 //!   map, and only between a call and its answer;
-//! * the calls, made by a kernel task of their own ([`call_task`]) with
+//! * the calls, made by a kernel task of their own ([`CallTask`]) with
 //!   capabilities in its own table: the one on `endpoint.ext4`
 //!   (`kcall::endpoint_handle`) and the open files' the server lends. A
 //!   client that reads the mount blocks in its own system call until the
@@ -24,78 +24,30 @@
 //! with it. One ext4 row is served per boot: there is one region and one
 //! endpoint.
 
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use azos_devif::{IdlError, IdlResult, MsgDesc, Transport};
 use azos_drv_sys::{kprintln, kwarn};
 use azos_fs::endpoint::{EndpointFs, Link, REGION_BYTES};
 use azos_ipc::memobj::{memobj_create_kernel, MemPerms, MemSpec};
-use azos_sched::{BlockOutcome, WaitReason};
-use azos_sync::SpinLock;
 use azos_syscall::kcall::{self, KernelEndpoint};
 use azos_topology::VolumeFormat;
+
+use crate::call_task::CallTask;
 
 /// The endpoint the server serves.
 const ENDPOINT: &[u8] = b"ext4";
 /// How long a client waits for the server: Kconfig `FS_EXT4_RING3_REPLY_MS`.
 const REPLY_MS: u64 = azos_limits::FS_EXT4_RING3_REPLY_MS as u64;
-/// The longest the call task sleeps with no call posted: a wake that came
-/// between its look at the job and its sleep costs a client at most this.
-const PARK_MS: u64 = 100;
-
-static FS: EndpointFs = EndpointFs::new(azos_fs::vfs::FS_TYPE_EXT4);
-static LINK: KernelLink = KernelLink;
-static REGION: AtomicUsize = AtomicUsize::new(0);
-static CALL_TASK: AtomicBool = AtomicBool::new(false);
-static CALL_TASK_TID: AtomicU32 = AtomicU32::new(0);
-/// The deadline the call task sleeps on now; a client's wake names it.
-static PARKED_UNTIL: AtomicU64 = AtomicU64::new(0);
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Phase {
-    Idle,
-    /// Posted by a client, not yet taken.
-    Posted,
-    /// The call task is making the call.
-    Taken,
-    /// Answered; the client has not read it yet.
-    Done,
-    /// The client stopped waiting: the answer is dropped when it comes.
-    Abandoned,
-}
-
 /// Lent capabilities the mount gave back, which the call task closes (they
 /// are in its table): the mount keeps 8 open files and gives back at most
 /// all of them, and one more, between two calls.
 const CLOSES: usize = 16;
 
-struct Job {
-    phase: Phase,
-    node: Option<u32>,
-    msg: Option<MsgDesc>,
-    res: IdlResult,
-    waiter: u32,
-    deadline: u64,
-    closes: [u32; CLOSES],
-    n_closes: usize,
-}
-
-static JOB: SpinLock<Job> = SpinLock::new(Job {
-    phase: Phase::Idle,
-    node: None,
-    msg: None,
-    res: Ok(()),
-    waiter: 0,
-    deadline: 0,
-    closes: [0; CLOSES],
-    n_closes: 0,
-});
-
-fn wake(tid: u32, deadline: u64) {
-    if tid != 0 {
-        let _ = azos_sched::scheduler::wake_task_by_tid(tid, &|r| matches!(r, WaitReason::Timer(d) if *d == deadline));
-    }
-}
+static FS: EndpointFs = EndpointFs::new(azos_fs::vfs::FS_TYPE_EXT4);
+static LINK: KernelLink = KernelLink;
+static REGION: AtomicUsize = AtomicUsize::new(0);
+static CALLS: CallTask<CLOSES, 1> = CallTask::new("ext4-call", false, serve, close);
 
 /// Close the capabilities an answer carries beyond the `keep` its request
 /// expects (an open lends one, nothing else lends any), and take them off the
@@ -114,63 +66,16 @@ fn lends(req: &MsgDesc) -> bool {
     (w >> 32) as u32 == azos_devif::fs::DIR_ID && w as u16 == azos_abi::invoke::NODE_OPENAT
 }
 
-/// The call task: takes the posted call, makes it through its own
-/// capabilities, hands the answer back (or drops it, and gives back what it
-/// lent, when nobody waits), and parks until the next.
-fn call_task(_: usize) {
-    CALL_TASK_TID.store(azos_sched::current_task_tid(), Ordering::Release);
-    loop {
-        let (job, closes, n) = {
-            let mut j = JOB.lock();
-            let n = core::mem::take(&mut j.n_closes);
-            let job = match (j.phase, j.msg) {
-                (Phase::Posted, Some(m)) => {
-                    j.phase = Phase::Taken;
-                    Some((j.node, m))
-                }
-                _ => None,
-            };
-            (job, j.closes, n)
-        };
-        for &h in &closes[..n] {
-            close(h);
-        }
-        let Some((node, mut msg)) = job else {
-            if n != 0 {
-                continue;
-            }
-            let freq = azos_drv_sys::timebase::freq();
-            let until = azos_drv_sys::timebase::now().saturating_add(freq.saturating_mul(PARK_MS) / 1000);
-            PARKED_UNTIL.store(until, Ordering::Release);
-            let _ = azos_sched::task_block_outcome(WaitReason::Timer(until));
-            continue;
-        };
-        let opens = lends(&msg);
-        // The directory is the server's to answer for this capability alone
-        // (`DIR_BADGE`); an open file is the capability it lent.
-        let res = match node.or_else(|| kcall::endpoint_handle_badged(ENDPOINT, azos_devif::fs::DIR_BADGE)) {
-            Some(h) => KernelEndpoint(h).call(&mut msg),
-            None => Err(IdlError::Transport(-1)),
-        };
-        close_extra(&mut msg, usize::from(opens && res.is_ok()));
-        let (waiter, deadline) = {
-            let mut j = JOB.lock();
-            if j.phase == Phase::Abandoned {
-                j.phase = Phase::Idle;
-                (0, 0)
-            } else {
-                j.phase = Phase::Done;
-                j.msg = Some(msg);
-                j.res = res;
-                (j.waiter, j.deadline)
-            }
-        };
-        if waiter == 0 {
-            close_extra(&mut msg, 0);
-        } else {
-            wake(waiter, deadline);
-        }
-    }
+/// One call of the call task: the directory is the server's to answer for
+/// this capability alone (`DIR_BADGE`); an open file is the capability it lent.
+fn serve(node: Option<u32>, msg: &mut MsgDesc) -> IdlResult {
+    let opens = lends(msg);
+    let res = match node.or_else(|| kcall::endpoint_handle_badged(ENDPOINT, azos_devif::fs::DIR_BADGE)) {
+        Some(h) => KernelEndpoint(h).call(msg),
+        None => Err(IdlError::Transport(-1)),
+    };
+    close_extra(msg, usize::from(opens && res.is_ok()));
+    res
 }
 
 /// Give back a capability of the call task's table.
@@ -208,66 +113,11 @@ impl KernelLink {
 
 impl Link for KernelLink {
     fn call(&self, node: Option<u32>, msg: &mut MsgDesc) -> IdlResult {
-        const BUSY: IdlError = IdlError::Transport(-16);
-        kcall::admit_blocking().map_err(|e| IdlError::Transport(e as isize))?;
-        if !CALL_TASK.load(Ordering::Acquire) {
-            return Err(IdlError::Transport(-1));
-        }
-        let me = azos_sched::current_task_tid();
-        let freq = azos_drv_sys::timebase::freq();
-        let deadline = azos_drv_sys::timebase::now().saturating_add(freq.saturating_mul(REPLY_MS) / 1000);
-        {
-            let mut j = JOB.lock();
-            if j.phase != Phase::Idle {
-                return Err(BUSY);
-            }
-            j.phase = Phase::Posted;
-            j.node = node;
-            j.msg = Some(*msg);
-            j.res = Ok(());
-            j.waiter = me;
-            j.deadline = deadline;
-        }
-        wake(CALL_TASK_TID.load(Ordering::Acquire), PARKED_UNTIL.load(Ordering::Acquire));
-        loop {
-            {
-                let mut j = JOB.lock();
-                if j.phase == Phase::Done {
-                    j.phase = Phase::Idle;
-                    if let Some(m) = j.msg.take() {
-                        *msg = m;
-                    }
-                    return j.res;
-                }
-                if azos_drv_sys::timebase::now() >= deadline {
-                    // Not yet taken: withdrawn. Taken: it runs to its end and
-                    // its answer is dropped.
-                    j.phase = if j.phase == Phase::Posted { Phase::Idle } else { Phase::Abandoned };
-                    return Err(IdlError::DeadlineExpired);
-                }
-            }
-            if azos_sched::task_block_killable(WaitReason::Timer(deadline)) == BlockOutcome::Refused {
-                let mut j = JOB.lock();
-                j.phase = if j.phase == Phase::Posted { Phase::Idle } else { Phase::Abandoned };
-                return Err(BUSY);
-            }
-        }
+        CALLS.call(node, msg, REPLY_MS)
     }
 
     fn close(&self, node: u32) {
-        // In the call task's table: it closes it before its next call.
-        let queued = {
-            let mut j = JOB.lock();
-            let n = j.n_closes;
-            if n < CLOSES {
-                j.closes[n] = node;
-                j.n_closes = n + 1;
-            }
-            n < CLOSES
-        };
-        if queued {
-            wake(CALL_TASK_TID.load(Ordering::Acquire), PARKED_UNTIL.load(Ordering::Acquire));
-        } else {
+        if !CALLS.close(node) {
             kwarn!("[EXT4] close queue full: a lent capability stays in the call task's table");
         }
     }
@@ -339,7 +189,7 @@ pub(crate) fn install_mounts() {
 
 /// Start the call task, once, from a kernel context (`tasks::create`).
 pub(crate) fn start_call_task() {
-    if REGION.load(Ordering::Acquire) != 0 && !CALL_TASK.swap(true, Ordering::AcqRel) {
-        azos_sched::task_create_affinity("ext4-call", call_task, 0, azos_sched::DEFAULT_PRIORITY, -1);
+    if REGION.load(Ordering::Acquire) != 0 {
+        CALLS.start();
     }
 }
