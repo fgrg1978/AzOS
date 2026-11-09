@@ -99,7 +99,7 @@ changelog is [`../../../CHANGELOG.md`](../../../CHANGELOG.md).
 
   | Module | Contents |
   |---|---|
-  | `syscall_nr` | The 33 native system-call numbers and their argument conventions |
+  | `syscall_nr` | The 30 native system-call numbers and their argument conventions |
   | `invoke` | The op numbers of `SYS_INVOKE`, by handle kind and op class |
   | `cap` | The capability handle wire format: `CapHandle`, `CapKind`, `CapType`, `CapPerms` |
   | `error` | Error codes returned across the system-call boundary |

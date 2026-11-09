@@ -9,6 +9,33 @@ releases yet. The ABI crate keeps its own file,
 
 ### Added
 
+- The sealed security log, format v4 (`crates/core/seclog`, `userspace/services/logd`):
+  records chained per boot and sealed, with a TPM counter and extend anchor where
+  a TPM exists and the OTA floor as the advisory fallback, and `make seclog-verify`
+  to check an export offline (`tools/forensic/seclog_verify`).
+
+- `make fetch`, `make fetch-check` and `make fetch-update`: the one target that
+  downloads (pinned source trees, toolchain, host tools; `make build` never does),
+  its read-only report, and a pin mover. Pins: BusyBox 1_38_0, Limine v11.4.1,
+  LVGL v9.6.0. `make ports` builds the ported rg, fd and kibi.
+
+- The shared kernel call task (`kernel/src/call_task.rs`) carries the calls the ext4
+  mount and the power monitor make to their ring-3 servers: one call in flight, a
+  bounded reply wait, the caller's priority lent while it waits.
+
+- Stat, listing and statfs on a directory handle keep to that directory like an open
+  (`stat_beneath`, `readdir_beneath`, `statfs_beneath`; the `Dir` operations carry a
+  `floor`), and `EXT4D.ELF` refuses a symlink among the components of the directory
+  a caller is rooted at.
+
+- An instruction fetch from a mapped page that is not executable is the task's
+  fault on every ISA (`azos_abi::fault::Access`: `Read`, `Write`, `Fetch`); a fault
+  that lost a race to another install is still retried.
+
+- The camera frame pool lends its buffers at the first `Frame::next` as well as at
+  attach, and a `dma-coherent` property inherited from a bus above a device-tree
+  node no longer makes the node a bus master (`azos_hwbus`).
+
 - The ring-3 behaviour engine (`BRAINCLI.ELF`) asks the inference service for
   L1's verdict every cycle, within Kconfig `ML_REPLY_TIMEOUT_US`, and holds a
   stop on any missing one (no reply in time, a refusal, an unsigned or
@@ -68,7 +95,6 @@ releases yet. The ABI crate keeps its own file,
   layer (L0) and the drivetrain loop applies the verdict as a cap on every
   command whoever chose it; it also retires the payload pulse, latches the
   e-stop on an RC link loss or kill switch, and arms and latches the geofence.
-  The behaviour loop keeps only the RC sticks.
 
 - The robot's sensor producers (imu, odom, sensor-slow, sensor-ahrs) are
   created by the robot manifest's task hook with the priorities it declares;
@@ -81,8 +107,8 @@ releases yet. The ABI crate keeps its own file,
   the brain protocol's authority frames there (e-stop, degraded mode,
   semantic level, the operator's e-stop and device-hold release, payload and
   configuration effects, an actuator command's confidence, unknown types
-  recorded): one handler, which the kernel's own brain link and its UART
-  bridge now call instead of two copies of the dispatch.
+  recorded): one handler, which the ring-3 engine (through `Authority`) and the kernel's
+  UART e-stop reader share.
 
 - `Motor::command(left, right)`: the drivetrain's command published to its
   effect loop, both wheels' effects through the gate, `(0, 0)` always carried
@@ -101,9 +127,7 @@ releases yet. The ABI crate keeps its own file,
   the envelope and the effect loops. Every motor write is capped by the
   safety layer's fresh verdict (a stale one stops); relaxing a restriction
   needs the operator's signed warrant; the UART bridge carries only the
-  e-stop, straight to the kernel. `MLSRV.ELF` is not started while it has no
-  client; the
-  `[BENCH-RES]` sweep and the WCET report are a QEMU boot task.
+  e-stop, straight to the kernel. 
 
 ### Removed
 
@@ -113,7 +137,7 @@ releases yet. The ABI crate keeps its own file,
   balance and ML-link modules of `azos_behavior`, the multi-stream framing
   (`crates/net/multi-stream`, `multi_stream=`), the brain-tx Kconfig
   (`config/subsys/Kconfig.brain`), `NO_ML`, `TASK_BEHAVIOR_PLACE`,
-  `ML_REPLY_TIMEOUT_US`, the `ml_enabled` and `behavior_camera_port` keys, and
+  the `ml_enabled` and `behavior_camera_port` keys, and
   the robot-named priorities of `azos_sched` (the manifest declares each task's),
   the kernel-side brain link (`encrypt_link`), the frame handler's
   `PKT_PREDICT` arm, and the UART bridge's brain role.
@@ -161,7 +185,7 @@ releases yet. The ABI crate keeps its own file,
   with their own cursor and an overrun count). The board's ten sensors keep the
   topology's `sensor.<n>` numbers; the IMU, odometry, encoders, rangefinders,
   battery, GPS and digital lines are streams their tasks publish into and the
-  behavior task's sensor bus reads whole; the thermal zones read their
+  robot enforcer's sensor bus reads whole; the thermal zones read their
   temperature from instances (`sfctemp`, the K1's channels, the Pi's firmware,
   the x86 package sensor). A reading that is not there is not published (the
   battery and rangefinder no longer answer an invented value), the GPS record is
@@ -278,8 +302,8 @@ releases yet. The ABI crate keeps its own file,
   - **Kernel:** `kernel/` (boot sequence, trap entry and boot hooks for
     riscv64, aarch64 and x86_64, kernel tasks, panic handler) over the core
     crates in `crates/core/`: the ABI (`abi`), the architecture API and one
-    implementation per ISA (`arch-api`, `arch-riscv64`, `arch-aarch64`,
-    `arch-x86_64`), the scheduler (`sched`), memory management (`mm`), IPC and
+    implementation per ISA (`arch/api`, `arch/riscv`, `arch/aarch64`,
+    `arch/x86_64`), the scheduler (`sched`), memory management (`mm`), IPC and
     capabilities (`ipc`), the system-call layer (`syscall`), the capability
     topology (`topology`), signed packages (`pkg`), the interface definition
     language (`idl`, `idl-macros`, `devif`), the introspection tree
@@ -288,8 +312,8 @@ releases yet. The ABI crate keeps its own file,
     OTA and secure boot (`ota`, `crypto`) and the hypervisor core (`hv`).
   - **Drivers, storage and network:** one crate per driver class under
     `crates/drivers/`; `crates/fs` (VFS, FAT32, tmpfs, azvol, page cache,
-    crash log); `crates/net/` (the TCP/IP stack, an encrypted link, a stream
-    multiplexer, a TFTP client).
+    crash log); `crates/net/` (the TCP/IP stack, an EtherCAT master, a TFTP
+    client).
   - **User space:** ring-3 services, drivers, libraries and test programs under
     `userspace/`; the native `std` SDK (`sdk/`); the relibc port
     (`userspace/lib/relibc-azos`); the optional Linux personality
