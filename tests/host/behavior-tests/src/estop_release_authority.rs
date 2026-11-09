@@ -828,3 +828,48 @@ fn no_device_identity_fails_closed_outside_a_development_build() {
             "a development build binds the zero id");
     super::logger::logger_shutdown();
 }
+
+/// The bytes an operator signs to relax `kind` with `body`, built from the
+/// crate's `pub` constants, not by calling its private `relax_message`.
+fn relax_message_for(kind: u8, body: &[u8], nonce: u64) -> [u8; RELAX_MSG_LEN] {
+    let c = RELAX_CONTEXT.len();
+    let mut msg = [0u8; RELAX_MSG_LEN];
+    msg[..c].copy_from_slice(RELAX_CONTEXT);
+    msg[c..c + 16].copy_from_slice(&DEVICE);
+    msg[c + 16] = kind;
+    msg[c + 17] = body.len() as u8;
+    msg[c + 18..c + 18 + body.len()].copy_from_slice(body);
+    msg[c + 18 + RELAX_BODY_MAX..].copy_from_slice(&nonce.to_be_bytes());
+    msg
+}
+
+/// **A relaxation needs the operator's warrant for exactly that relaxation.**
+/// A warrant for the frame kind and body verifies once; replayed, it is
+/// refused; one for another body, another kind, by another key, or a latch
+/// release warrant offered as a relaxation, never verifies.
+///
+/// **Canary.** Leave the body out of `relax_message`: the warrant for another
+/// body verifies.
+#[test]
+fn a_relaxation_needs_a_warrant_for_exactly_it() {
+    let _gl = reset();
+    let (signing, pubkey) = operator_keypair();
+    assert!(operator_authority_init(&pubkey));
+    // A semantic level (a non-zero body, so a body left out of the message
+    // is not hidden by its zero padding).
+    const LEVEL: u8 = 0x8B;
+    let sig = |key: &SigningKey, kind: u8, body: &[u8], nonce: u64| key.sign(&relax_message_for(kind, body, nonce)).to_bytes();
+
+    assert_eq!(verify_operator_relax_for(true, LEVEL, &[2], 1, &sig(&signing, LEVEL, &[2], 1)), Ok(()));
+    assert_eq!(verify_operator_relax_for(true, LEVEL, &[2], 1, &sig(&signing, LEVEL, &[2], 1)),
+               Err(ReleaseDenial::BadOrReplayedProof), "a replayed warrant verified");
+    assert_eq!(verify_operator_relax_for(true, LEVEL, &[2], 2, &sig(&signing, LEVEL, &[3], 2)),
+               Err(ReleaseDenial::BadOrReplayedProof), "a warrant for another body verified");
+    assert_eq!(verify_operator_relax_for(true, LEVEL, &[2], 3, &sig(&signing, 0x8A, &[2], 3)),
+               Err(ReleaseDenial::BadOrReplayedProof), "a warrant for another kind verified");
+    assert_eq!(verify_operator_relax_for(true, LEVEL, &[2], 4, &sig(&attacker_keypair(), LEVEL, &[2], 4)),
+               Err(ReleaseDenial::BadOrReplayedProof), "another key's warrant verified");
+    assert_eq!(verify_operator_relax_for(true, LEVEL, &[2], 5, &sign(&signing, 5)),
+               Err(ReleaseDenial::BadOrReplayedProof), "a latch release warrant relaxed");
+    assert_eq!(verify_operator_relax_for(true, LEVEL, &[2], 6, &sig(&signing, LEVEL, &[2], 6)), Ok(()));
+}

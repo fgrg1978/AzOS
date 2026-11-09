@@ -4,26 +4,25 @@
 //! an e-stop, degraded mode and the semantic level, a mode change (the
 //! operator's signed e-stop release and device-hold release), a payload or
 //! configuration effect, and the low-confidence flag of an actuator command.
-//! The behaviour engine parses the link and hands each such frame's payload
-//! here; the checks, the effects and their records are the kernel's. A frame
-//! of a type the protocol does not define is recorded here too.
+//! The ring-3 behaviour engine parses the link and hands each such frame's
+//! payload here (`Authority`); the UART bridge's e-stop comes here directly.
+//! The checks, the effects and their records are the kernel's.
+//!
+//! **Tightening is always admitted, relaxing needs the operator.** An e-stop,
+//! arming degraded mode, raising the semantic level and setting the
+//! low-confidence cap can only stop or slow the machine. Clearing degraded
+//! mode (which also lifts the low-confidence cap), lowering the level, and a
+//! payload or configuration effect while contained need the operator's
+//! warrant in the frame (`brain_protocol::relax_body_len`: the body, a nonce,
+//! the signature), verified like an e-stop release
+//! (`estop::verify_operator_relax`); without one the frame is refused with a
+//! decision record. A frame of a type the protocol does not define is
+//! recorded.
 
 use azos_behavior::brain_protocol::*;
 use azos_behavior::logger;
 use azos_behavior::safety;
 use azos_drv_sys::kprintln;
-
-/// What the kernel did with a frame.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Answer {
-    /// It was an authority frame and is answered.
-    Handled,
-    /// An actuator command: its confidence is noted, the motion is the
-    /// engine's to choose.
-    Actuator,
-    /// A frame the engine reads itself (`PKT_PREDICT`).
-    NotAuthority,
-}
 
 azos_common::ro_hook! {
     /// The board's buzzer as a configuration frame drives it, set by the
@@ -49,73 +48,83 @@ pub fn set_buzzer(beep: fn() -> bool, siren: fn() -> bool, off: fn() -> bool) {
 /// The `Authority` interface's handler: a frame the ring-3 behaviour engine
 /// submits (`azos_syscall::authority_host`).
 pub fn submitted(kind: u8, payload: &[u8], _tid: u32) {
-    let _ = authority_frame(kind, payload, "");
+    authority_frame(kind, payload);
 }
 
-/// Answer frame `pkt_type` with `payload`, which came over `link` (`""` for
-/// the network link, `" (UART)"` for the bridge: appended to each line).
-pub fn authority_frame(pkt_type: u8, payload: &[u8], link: &str) -> Answer {
-    match pkt_type {
-        PKT_ACTUATOR => {
-            if let Some(cmd) = decode_actuator_cmd(payload) {
-                safety::cmd_set_low_confidence(cmd.is_low_confidence());
-                #[cfg(feature = "actuation-smoke")]
-                if cmd.is_emergency() {
-                    kprintln!("[ACTSMOKE] brainlink emergency{}", if link.is_empty() { " (tcp)" } else { link });
-                }
+/// Answer frame `kind` with `payload`.
+pub fn authority_frame(kind: u8, payload: &[u8]) {
+    let contained = azos_ipc::cap::degraded_active();
+    let body = match relax_body_len(kind, payload, contained, azos_ipc::cap::degrade_level()) {
+        None => payload,
+        Some(n) => match warranted(kind, payload, n) {
+            Some(body) => body,
+            None => {
+                safety::record_unsigned_relax(kind, payload.first().copied().unwrap_or(0));
+                azos_drv_sys::kwarn!("[BRAIN] frame 0x{:02x} refused: relaxing needs the operator's warrant", kind);
+                return;
             }
-            Answer::Actuator
+        },
+    };
+    match kind {
+        PKT_ACTUATOR => {
+            // The brain's own doubt only ever tightens: it sets the cap, and
+            // only the operator's degrade clear lifts it.
+            if decode_actuator_cmd(body).is_some_and(|c| c.is_low_confidence()) {
+                safety::cmd_set_low_confidence(true);
+            }
         }
-        PKT_PREDICT => Answer::NotAuthority,
         PKT_CONFIG => {
-            if let Some(cfg) = decode_config_cmd(payload) {
+            if let Some(cfg) = decode_config_cmd(body) {
                 config(cfg);
             }
-            Answer::Handled
         }
         PKT_PAYLOAD => {
-            if let Some(cmd) = decode_payload_cmd(payload) {
+            if let Some(cmd) = decode_payload_cmd(body) {
                 azos_behavior::payload::payload_exec(cmd);
             }
-            Answer::Handled
         }
         PKT_ESTOP => {
             if !safety::estop_is_active() {
                 crate::actuation::latch_and_stop();
-                azos_drv_sys::kwarn!("[BRAIN] ESTOP received{} — motors stopped", link);
+                azos_drv_sys::kwarn!("[BRAIN] ESTOP received — motors stopped");
                 let _ = logger::log_safety_violation_durable(logger::SAFETY_ESTOP, 0, 0);
             }
-            Answer::Handled
         }
-        PKT_DEGRADE => {
-            degrade(payload, link);
-            Answer::Handled
-        }
+        PKT_DEGRADE => degrade(body),
         PKT_SEMANTIC_LEVEL => {
-            let malformed = payload.is_empty();
-            let level = payload.first().copied().unwrap_or(azos_ipc::cap::DEGRADE_LEVEL_CONTAINED);
+            let malformed = body.is_empty();
+            let level = body.first().copied().unwrap_or(azos_ipc::cap::DEGRADE_LEVEL_CONTAINED);
             let previous = azos_ipc::cap::degrade_level();
             azos_ipc::cap::degrade_level_set(level);
             let effective = azos_ipc::cap::degrade_level();
-            kprintln!("[BRAIN] semantic level set to {}{}", effective, link);
+            kprintln!("[BRAIN] semantic level set to {}", effective);
             if let Some((v, a, d)) = logger::semantic_level_record(malformed, effective, previous) {
                 logger::log_safety_violation(v, a, d);
             }
-            Answer::Handled
         }
         PKT_MODE => {
-            if !hold_release_frame(payload, link) {
-                if let Some(m) = decode_mode_cmd(payload) {
-                    mode(m, payload, link);
+            if !hold_release_frame(body) {
+                if let Some(m) = decode_mode_cmd(body) {
+                    mode(m, body);
                 }
             }
-            Answer::Handled
         }
-        _ => {
-            logger::log_safety_violation(logger::SAFETY_UNKNOWN_PKT, pkt_type, payload.len() as u32);
-            Answer::Handled
-        }
+        _ => logger::log_safety_violation(logger::SAFETY_UNKNOWN_PKT, kind, payload.len() as u32),
     }
+}
+
+/// The first `n` bytes of `payload` when the operator's warrant that follows
+/// them (nonce, signature) verifies for `kind` and exactly those bytes.
+fn warranted(kind: u8, payload: &[u8], n: usize) -> Option<&[u8]> {
+    if payload.len() < n + safety::RELEASE_PROOF_BYTES {
+        return None;
+    }
+    let (body, proof) = payload.split_at(n);
+    let mut nonce = [0u8; 8];
+    nonce.copy_from_slice(&proof[..8]);
+    let mut sig = [0u8; safety::RELEASE_SIG_BYTES];
+    sig.copy_from_slice(&proof[8..8 + safety::RELEASE_SIG_BYTES]);
+    safety::verify_operator_relax(kind, body, u64::from_be_bytes(nonce), &sig).ok().map(|_| body)
 }
 
 fn config(cfg: ConfigCmd) {
@@ -142,29 +151,32 @@ fn config(cfg: ConfigCmd) {
     }
 }
 
-/// Brain-triggered degraded mode: any reason arms it (a missing reason byte
-/// arms it as malformed), `DEGRADE_CLEAR` lifts it.
-fn degrade(payload: &[u8], link: &str) {
-    let malformed = payload.is_empty();
-    let reason = payload.first().copied().unwrap_or(DEGRADE_REASON_MALFORMED);
+/// Degraded mode: any reason arms it (a missing reason byte arms it as
+/// malformed); `DEGRADE_CLEAR`, which reaches here only with the operator's
+/// warrant, lifts it and the low-confidence cap.
+fn degrade(body: &[u8]) {
+    let malformed = body.is_empty();
+    let reason = body.first().copied().unwrap_or(DEGRADE_REASON_MALFORMED);
     if reason == DEGRADE_CLEAR {
         azos_ipc::cap::degraded_set(false);
-        azos_drv_sys::kwarn!("[BRAIN] degraded mode cleared{}", link);
+        safety::cmd_set_low_confidence(false);
+        azos_drv_sys::kwarn!("[BRAIN] degraded mode cleared by verified operator authority");
         logger::log_safety_violation(logger::SAFETY_DEGRADE, 0, 0);
     } else {
         azos_ipc::cap::degraded_set(true);
         if malformed {
-            azos_drv_sys::kwarn!("[BRAIN] degraded mode armed{} — reason byte missing", link);
+            azos_drv_sys::kwarn!("[BRAIN] degraded mode armed — reason byte missing");
         } else {
-            azos_drv_sys::kwarn!("[BRAIN] degraded mode armed{} — reason {}", link, reason);
+            azos_drv_sys::kwarn!("[BRAIN] degraded mode armed — reason {}", reason);
         }
         logger::log_safety_violation(logger::SAFETY_DEGRADE, 1, reason as u32);
     }
 }
 
 /// A mode change: the e-stop clears only with the operator's verified
-/// release proof, and the reset id also lifts degraded mode.
-fn mode(m: ModeCmd, payload: &[u8], link: &str) {
+/// release proof. A mode change never lifts degraded mode: that is the signed
+/// `PKT_DEGRADE` clear's alone, and the attempt is refused and recorded.
+fn mode(m: ModeCmd, payload: &[u8]) {
     if let Some((should_clear, action_code)) = mode_estop_record(m.mode_id, safety::estop_is_active()) {
         if should_clear {
             let proof = if payload.len() >= 1 + safety::RELEASE_PROOF_BYTES {
@@ -178,26 +190,27 @@ fn mode(m: ModeCmd, payload: &[u8], link: &str) {
             };
             if let Some(proof) = proof {
                 safety::estop_release(proof);
-                azos_drv_sys::kwarn!("[BRAIN] ESTOP cleared by verified operator authority{}", link);
+                azos_drv_sys::kwarn!("[BRAIN] ESTOP cleared by verified operator authority");
                 let _ = logger::log_safety_violation_durable(logger::SAFETY_ESTOP, action_code, m.mode_id as u32);
             } else if let Some(n) = safety::note_refused_estop_clear() {
                 azos_drv_sys::kwarn!("[BRAIN] ESTOP_RESET recorded as a REQUEST — no verified operator authority, \
-                    ESTOP stays armed{} (refusal #{})", link, n);
+                    ESTOP stays armed (refusal #{})", n);
                 let _ = logger::log_safety_violation_durable(
                     logger::SAFETY_ESTOP, safety::ESTOP_ACTION_REFUSED_MIRROR, (n << 8) | m.mode_id as u32);
             }
         } else if let Some(n) = safety::note_refused_estop_clear() {
-            azos_drv_sys::kwarn!("[BRAIN] MODE mode_id={} is not the reset id — ESTOP stays armed{} (refusal #{})",
-                m.mode_id, link, n);
+            azos_drv_sys::kwarn!("[BRAIN] MODE mode_id={} is not the reset id — ESTOP stays armed (refusal #{})",
+                m.mode_id, n);
             let _ = logger::log_safety_violation_durable(logger::SAFETY_ESTOP, action_code, (n << 8) | m.mode_id as u32);
         }
     }
     if let Some((should_clear, action_code, detail)) = mode_degrade_record(m.mode_id, azos_ipc::cap::degraded_active()) {
         if should_clear {
-            azos_ipc::cap::degraded_set(false);
-            azos_drv_sys::kwarn!("[BRAIN] degraded mode cleared by MODE command{}", link);
+            safety::record_unsigned_relax(PKT_MODE, m.mode_id);
+            azos_drv_sys::kwarn!("[BRAIN] MODE does not clear degraded mode: the operator's signed degrade clear does");
+        } else {
+            logger::log_safety_violation(logger::SAFETY_DEGRADE, action_code, detail);
         }
-        logger::log_safety_violation(logger::SAFETY_DEGRADE, action_code, detail);
     }
 }
 
@@ -208,7 +221,7 @@ fn mode(m: ModeCmd, payload: &[u8], link: &str) {
 /// release and each refusal are `Rule::SafeState` records; this only prints
 /// the outcome, a refusal metered like a refused e-stop clear.
 #[cfg(feature = "effect-gate")]
-fn hold_release_frame(payload: &[u8], link: &str) -> bool {
+fn hold_release_frame(payload: &[u8]) -> bool {
     use azos_actuation::safe_state::ReleaseError;
     let Some((&mode_id, body)) = payload.split_first() else { return false };
     if !mode_clears_containment(mode_id) {
@@ -217,7 +230,7 @@ fn hold_release_frame(payload: &[u8], link: &str) -> bool {
     match azos_actuation::safe_state::release_from_frame(body) {
         None => false,
         Some(Ok(())) => {
-            azos_drv_sys::kwarn!("[BRAIN] device hold released by verified operator authority ({})", link_name(link));
+            azos_drv_sys::kwarn!("[BRAIN] device hold released by verified operator authority");
             true
         }
         Some(Err(e)) => {
@@ -227,7 +240,7 @@ fn hold_release_frame(payload: &[u8], link: &str) -> bool {
                     ReleaseError::TooEarly { .. } => "inside the minimum hold",
                     ReleaseError::NoWarrant(_) => "no valid warrant",
                 };
-                azos_drv_sys::kwarn!("[BRAIN] device hold release refused: {} ({}, refusal #{})", why, link_name(link), n);
+                azos_drv_sys::kwarn!("[BRAIN] device hold release refused: {} (refusal #{})", why, n);
             }
             true
         }
@@ -235,11 +248,6 @@ fn hold_release_frame(payload: &[u8], link: &str) -> bool {
 }
 
 #[cfg(not(feature = "effect-gate"))]
-fn hold_release_frame(_payload: &[u8], _link: &str) -> bool {
+fn hold_release_frame(_payload: &[u8]) -> bool {
     false
-}
-
-#[cfg(feature = "effect-gate")]
-fn link_name(link: &str) -> &str {
-    if link.is_empty() { "TCP" } else { "UART" }
 }

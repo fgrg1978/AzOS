@@ -146,7 +146,25 @@ shared by every domain with an actuator.
   must still take). The kernel decides the e-stop, degraded mode, the
   semantic level, the operator's signed e-stop and device-hold release, the
   payload and configuration effects and the confidence of an actuator
-  command, and records every unknown frame type.
+  command, and records every unknown frame type. **Tightening never needs a
+  signature; relaxing always does**: clearing degraded mode (which also lifts
+  the low-confidence cap), lowering the semantic level, and a payload or
+  configuration frame while contained carry the operator's warrant after the
+  body (nonce, Ed25519 signature over `RELAX_CONTEXT`, the device id, the frame
+  kind and body; `estop::verify_operator_relax`, the release's key, nonce floor
+  and durable record). An unsigned relaxation is refused with a
+  `Rule::EstopRelease` receipt (cause `RELEASE_CAUSE_UNSIGNED_RELAX`). A mode
+  change never lifts degraded mode.
+- The UART bridge (VF2) is the brain's TCP-independent e-stop channel: the
+  robot enforcer reads the line and every `PKT_ESTOP` frame latches straight in
+  the kernel; it takes no other frame, and the `Uart` interface refuses to
+  attach the claimed line.
+- Every motor write is capped by the safety layer's fresh verdict
+  (`enforce::l0_cap`, two enforcer periods): the drivetrain loop's, a ring-3
+  per-wheel op's and a driver's alike (`motor::set_motor_cap`). A stale
+  verdict, or none yet, caps to 0, so a stalled enforcer stops the robot. The
+  operator's RC override outranks the behaviour engine and is bounded by the
+  same cap and the envelope.
 - Releasing the latch needs the operator's signed release proof
   (`estop::verify_operator_release`): an Ed25519 signature over a message that
   includes a nonce, which must be strictly newer than the last accepted one. The

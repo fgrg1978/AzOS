@@ -77,6 +77,7 @@ azos_gps      = { workspace = true }
 azos_nav      = { workspace = true }
 azos_drv_sensor = { workspace = true }
 azos_drv_gpio = { workspace = true }
+azos_drv_bus  = { workspace = true }
 azos_drv_base = { workspace = true }
 azos_abi      = { workspace = true }
 azos_percpu   = { workspace = true }

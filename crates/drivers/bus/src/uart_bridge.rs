@@ -12,9 +12,26 @@
 /// Architecture:
 ///   VF2 ──UART1 (TX/RX/GND)──→ ESP32-C3 ──WiFi/TCP──→ macOS (brain server)
 ///
-/// The VF2 sends/receives brain protocol packets (MAGIC "BR" framed) over
-/// UART1.  The ESP32 firmware is a transparent byte relay between its UART
-/// and a TCP socket to the brain server.
+/// On a robot the line is the brain's TCP-independent e-stop channel: the
+/// kernel reads it and takes only `PKT_ESTOP` frames (MAGIC "BR" framed;
+/// `azos_safety_core::enforce`). Otherwise it is the `Uart` interface's port 1.
+/// The ESP32 firmware is a transparent byte relay between its UART and a TCP
+/// socket to the brain server.
+
+use core::sync::atomic::AtomicBool;
+
+/// The line is the e-stop channel: a kernel reader takes every byte, and the
+/// `Uart` interface refuses to attach it.
+static ESTOP_LINE: AtomicBool = AtomicBool::new(false);
+
+/// Give the line to the kernel's e-stop reader (once, at its first read).
+pub fn bridge_claim_for_estop() {
+    ESTOP_LINE.store(true, core::sync::atomic::Ordering::Release);
+}
+
+fn claimed_for_estop() -> bool {
+    ESTOP_LINE.load(core::sync::atomic::Ordering::Acquire)
+}
 
 // ── QEMU / K1: no bridge hardware ───────────────────────────────────────────
 
@@ -397,7 +414,7 @@ impl azos_devif::Uart for BridgePort {
         if !bridge_is_ready() {
             return Out::err(outcome::NOT_READY);
         }
-        if self.rings.is_some() {
+        if self.rings.is_some() || claimed_for_estop() {
             return Out::err(outcome::BUSY);
         }
         self.losses_seen = Self::losses();

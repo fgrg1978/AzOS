@@ -78,14 +78,18 @@ use wcet_macro::wcet;
 // re-exported the levels and the speed ceilings from that leaf, so every image
 // linked a robot crate for five constants.
 //
-// The level is *sticky*: it stays until the brain sends a new `PKT_SEMANTIC_LEVEL`
-// or a `PKT_DEGRADE`/`MODE_CMD`. Fail-closed-on-link-loss is provided by the
+// The level is *sticky*: it stays until a `PKT_SEMANTIC_LEVEL` or a
+// `PKT_DEGRADE` changes it. Fail-closed-on-link-loss is provided by the
 // existing motor watchdog (500 ms), not by a TTL here — same pattern as
 // `CMD_LOW_CONF` in `safety.rs`.
 //
-// Constrain-only: this can only deny / slow, never grant — a hallucinating brain
-// can at worst over-contain (fail-safe). It is a global (set at packet ingest,
-// read at each chokepoint); coarse but correct and conservative.
+// Tightening is anyone's who holds the authority interface (a raise of the
+// level, arming containment); relaxing (a lower level, clearing degraded mode)
+// takes the operator's signed warrant, which the kernel verifies
+// (`azos_safety_core::frames`, `estop::verify_operator_relax`): a brain, or a
+// compromised parser in front of it, can at worst over-contain (fail-safe). It
+// is a global (set at packet ingest, read at each chokepoint); coarse but
+// correct and conservative.
 
 /// No extra restriction — normal operation.
 pub const DEGRADE_LEVEL_FULL: u8 = 0;

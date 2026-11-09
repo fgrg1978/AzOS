@@ -75,7 +75,7 @@ pub const GRIPPER_PWM_RANGE_NS: u32 = GRIPPER_PWM_OPEN_NS - GRIPPER_PWM_CLOSED_N
 /// raw `500_000` (10 MHz QEMU literal) — 125 ms on VF2 (4 MHz), 20.8 ms on
 /// K1 (24 MHz). Reachable: `payload_exec`'s shutter path is the one caller
 /// (`:169` in this file at the time of the audit), dispatched from both
-/// brain paths in `kernel/src/tasks/behavior.rs`.
+/// brain paths in `crates/domains/robot/safety-core/src/frames.rs`.
 pub const CAM_TRIGGER_PULSE_TICKS: u64 = azos_drv_sys::timebase::TIMER_FREQ / 20;
 
 // ── Runtime state (lock-free atomics) ────────────────────────────────────────
@@ -146,11 +146,12 @@ pub const PAYLOAD_ACTUATOR_TYPE_BASE: u8 = 0x10;
 /// function had no e-stop check at all, no capability, and wrote no record
 /// on success — a 12 V spray pump kept running through a latched e-stop,
 /// same class of gap `motor.rs`'s chokepoint closed for the wheels. Checked
-/// HERE, the single chokepoint both brain paths dispatch through
-/// (`kernel/src/tasks/behavior.rs`), the same way `motor_set_reporting` is the wheels'. Capability
-/// is not added here — there is no `Cap<Payload>` kind yet, and a ring-3
-/// caller cannot reach this function today (no syscall names it) — so this
-/// closes the e-stop and record halves of the finding, not the third.
+/// HERE, the single chokepoint the brain's frames reach
+/// (`azos_safety_core::frames`, from the ring-3 behaviour engine through the
+/// `Authority` interface), the same way `motor_set_reporting` is the wheels'.
+/// While the machine is contained a payload frame needs the operator's signed
+/// warrant before it gets here (`brain_protocol::relax_body_len`). There is no
+/// `Cap<Payload>` kind yet: the authority grant stands for it.
 pub fn payload_exec(cmd: PayloadCmd) -> bool {
     if crate::safety::estop_is_active() {
         crate::logger::log_safety_violation(

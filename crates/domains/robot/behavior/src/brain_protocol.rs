@@ -513,7 +513,7 @@ pub const MODE_PAYLOAD_SIZE: usize = 1;
 ///
 /// `PKT_ESTOP` only ever ARMS — grep its handlers — so `PKT_MODE` is the only
 /// rearm path in this tree. Before this constant existed, `decode_mode_cmd`
-/// handed back an unchecked byte and the two `kernel/src/tasks/behavior.rs` dispatch
+/// handed back an unchecked byte and the two `crates/domains/robot/safety-core/src/frames.rs` dispatch
 /// sites cleared on ANY value, with no `mode_id` defined anywhere to check
 /// against.
 ///
@@ -550,7 +550,7 @@ pub fn decode_mode_cmd(payload: &[u8]) -> Option<ModeCmd> {
 /// Whether a `PKT_MODE` mode id is the reserved one that is allowed to clear
 /// e-stop / degraded-mode containment.
 ///
-/// A pure predicate so the two `kernel/src/tasks/behavior.rs` dispatch sites — the TCP
+/// A pure predicate so the two `crates/domains/robot/safety-core/src/frames.rs` dispatch sites — the TCP
 /// brain link and the `feature = "vf2"` UART bridge, which is compiled out of
 /// every QEMU build — and the host tests all share one answer, instead of two
 /// (or three) copies of the same comparison that can silently drift apart.
@@ -575,7 +575,7 @@ pub fn mode_clears_containment(mode_id: u8) -> bool {
 /// live inside `kernel`'s `no_std` binary. A test that calls this function is
 /// pinning the actual decision the dispatch sites make; a test that
 /// re-derives the same `if` locally would still pass if a future edit
-/// deleted the gate from `kernel/src/tasks/behavior.rs` and left `mode_clears_containment`
+/// deleted the gate from `crates/domains/robot/safety-core/src/frames.rs` and left `mode_clears_containment`
 /// untouched.
 ///
 /// `action_code` 3 = cleared, 4 = refused (distinct from the 0/1/2 that the
@@ -600,7 +600,7 @@ pub fn mode_estop_record(mode_id: u8, estop_armed: bool) -> Option<(bool, u8)> {
 ///
 /// Same shape and same reasoning as [`mode_estop_record`], for the sibling
 /// piece of state this same handler touches — see the gate's doc comment in
-/// `kernel/src/tasks/behavior.rs` for why degraded-mode clearing is gated on the SAME reserved id.
+/// `crates/domains/robot/safety-core/src/frames.rs` for why degraded-mode clearing is gated on the SAME reserved id.
 /// Returns `None` when degraded mode is not currently active. Returns
 /// `Some((should_clear, action_code, detail))` when it is: the caller MUST
 /// call `degraded_set(false)` iff `should_clear` is true, and MUST pass
@@ -789,4 +789,53 @@ fn get_u16(buf: &[u8], off: usize) -> u16 {
 #[inline]
 fn get_i32(buf: &[u8], off: usize) -> i32 {
     i32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]])
+}
+
+/// How many bytes of a frame's body an operator's warrant must bind when the
+/// frame RELAXES the machine (`Some(n)`: the frame is `body[..n]`, the nonce,
+/// then the signature), or `None` when it tightens or leaves the restrictions
+/// alone and needs no warrant. Relaxing is clearing degraded mode (which also
+/// lifts the low-confidence cap), lowering the semantic level toward full
+/// operation, and a payload or configuration effect while the machine is
+/// contained (`contained`); `level_now` is the semantic level in force.
+/// Tightening is always admitted: it can only stop or slow the machine.
+pub fn relax_body_len(kind: u8, payload: &[u8], contained: bool, level_now: u8) -> Option<usize> {
+    match kind {
+        PKT_DEGRADE => (payload.first() == Some(&DEGRADE_CLEAR)).then_some(1),
+        PKT_SEMANTIC_LEVEL => match payload.first() {
+            Some(&level) if level < level_now => Some(1),
+            _ => None,
+        },
+        PKT_PAYLOAD if contained => Some(PAYLOAD_PAYLOAD_SIZE),
+        PKT_CONFIG if contained => Some(CONFIG_PAYLOAD_SIZE),
+        _ => None,
+    }
+}
+
+/// Scan the first `len` bytes of `buf` for whole frames and count the
+/// `PKT_ESTOP` frames among them; every other frame is dropped (the line that
+/// feeds this carries only the e-stop). Bytes that cannot start a frame are
+/// skipped to the next `MAGIC`; a frame still arriving (a header whose declared
+/// length runs past `len`) stays at the front of `buf` for the next read, as
+/// long as it fits. Returns the e-stop count and the bytes kept.
+pub fn take_estop_frames(buf: &mut [u8], len: usize) -> (usize, usize) {
+    let (mut at, mut estops) = (0usize, 0usize);
+    while at < len {
+        let rest = &buf[at..len];
+        if let Some((kind, _, _, total)) = parse_packet(rest) {
+            estops += (kind == PKT_ESTOP) as usize;
+            at += total;
+            continue;
+        }
+        let arriving = rest[0] == MAGIC[0]
+            && (rest.len() < 2 || rest[1] == MAGIC[1])
+            && (rest.len() < 5 || 6 + ((rest[3] as usize) | ((rest[4] as usize) << 8)) > rest.len());
+        if arriving && 6 + if rest.len() >= 5 { (rest[3] as usize) | ((rest[4] as usize) << 8) } else { 0 } <= buf.len() {
+            break;
+        }
+        at += 1 + rest[1..].iter().position(|&b| b == MAGIC[0]).unwrap_or(rest.len() - 1);
+    }
+    let keep = len - at.min(len);
+    buf.copy_within(at.min(len)..len, 0);
+    (estops, keep)
 }

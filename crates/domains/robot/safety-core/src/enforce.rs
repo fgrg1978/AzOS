@@ -3,7 +3,8 @@
 //! The robot's enforcer (`azos_ext_api::Enforcer`), run by the base's
 //! enforcement task: the safety layer's verdict on the sensor bus (L0: a fall,
 //! a spin, a flat battery, a latched e-stop), which the drivetrain loop applies
-//! as a cap on every command whoever chose it ([`l0_cap`]), the payload
+//! as a cap on every motor write whoever issued it ([`l0_cap`]; a stale
+//! verdict is a stop), the UART bridge's e-stop frames, the payload
 //! pulse's deadline, the RC receiver's link loss
 //! and kill switch (Kconfig `RC_INPUT`), and the geofence's home arm and
 //! breach latch (Kconfig `GEOFENCE`). Each latches the e-stop and records
@@ -78,6 +79,7 @@ pub fn passes() -> u32 {
 
 fn tick(now: u64) {
     azos_behavior::payload::payload_tick();
+    bridge_estop();
     let mut state = SensorState::new();
     azos_behavior::sensor_bus::SENSOR_BUS.snapshot(&mut state);
     state.timestamp = now;
@@ -178,5 +180,29 @@ fn fence_tick(state: &SensorState) {
             azos_behavior::logger::SAFETY_ESTOP, azos_behavior::safety::ESTOP_ACTION_GEOFENCE, overshoot_m);
         azos_drv_sys::kwarn!("[SAFETY] geofence breach — motors stopped, envelope latched ({} m beyond the fence)",
                              overshoot_m);
+    }
+}
+
+/// The UART bridge's e-stop: every `PKT_ESTOP` frame on the line latches,
+/// straight in the kernel, with no ring-3 program and no TCP in the path. The
+/// line carries nothing else on a robot (`uart_bridge::bridge_claim_for_estop`).
+fn bridge_estop() {
+    use azos_drv_bus::uart_bridge as bridge;
+    static LINE: azos_sync::SpinLock<([u8; 256], usize)> = azos_sync::SpinLock::new(([0; 256], 0));
+    if !bridge::bridge_is_ready() {
+        return;
+    }
+    bridge::bridge_claim_for_estop();
+    let estops = {
+        let mut g = LINE.lock();
+        let (buf, len) = &mut *g;
+        let n = bridge::bridge_recv(&mut buf[*len..]);
+        *len += n.max(0) as usize;
+        let (estops, keep) = azos_behavior::brain_protocol::take_estop_frames(buf, *len);
+        *len = if keep == buf.len() { 0 } else { keep };
+        estops
+    };
+    if estops > 0 {
+        crate::frames::authority_frame(azos_behavior::brain_protocol::PKT_ESTOP, &[]);
     }
 }

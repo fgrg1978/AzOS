@@ -73,7 +73,7 @@ pub fn estop_activate() {
 /// Every emergency stop in this kernel ends in these four calls, in this
 /// order. There were four hand-written copies of them until 2026-09-18 —
 /// ring 3 (`actuation::ring3_estop`), the GPIO kill switch
-/// (`sys_wdt`), and the two `PKT_ESTOP` handlers in `kernel/src/tasks/behavior.rs`
+/// (`sys_wdt`), and the two `PKT_ESTOP` handlers in `crates/domains/robot/safety-core/src/frames.rs`
 /// (TCP and UART) — and the cost of that is on the record: the GPIO copy
 /// *"used to stop the motors and nothing else — it never called
 /// `estop_activate()`"*, so the physical kill switch stopped the wheels once
@@ -199,7 +199,7 @@ pub fn estop_cleared_at() -> u64 {
 // "released", every other code (including 4, "refused") as "still latched".
 // A brain-only request that this module refuses MUST be recorded under 4,
 // never 3 — writing 3 without actually clearing would make a reboot replay
-// the latch as released when it was not. Callers in `kernel/src/tasks/behavior.rs` are
+// the latch as released when it was not. Callers in `crates/domains/robot/safety-core/src/frames.rs` are
 // responsible for this; see the two `PKT_MODE` dispatch sites.
 
 /// Proof that the caller holds authority to release the e-stop latch.
@@ -285,7 +285,29 @@ pub const RELEASE_DEVICE_ID_BYTES: usize = 16;
 /// ```
 pub const RELEASE_MSG_LEN: usize = RELEASE_CONTEXT.len() + 1 + RELEASE_DEVICE_ID_BYTES + 3 + 8;
 
-/// Ed25519 signature length, re-exported so callers (the two `kernel/src/tasks/behavior.rs`
+/// The context of a signed relaxation (the operator's warrant to make the
+/// machine less restricted: clear degraded mode, lower the semantic level, a
+/// payload or configuration effect while contained), apart from the release
+/// context so a warrant for one is never a warrant for the other.
+pub const RELAX_CONTEXT: &[u8] = b"AZOS-RELAX-v1";
+/// The most bytes of a frame's body a relaxation binds.
+pub const RELAX_BODY_MAX: usize = 8;
+/// Length in bytes of a signed relaxation:
+///
+/// ```text
+///   RELAX_CONTEXT
+///   16  device id
+///   1   kind (the protocol frame's type)
+///   1   body length (at most RELAX_BODY_MAX)
+///   8   body, zero-padded
+///   8   nonce, big-endian
+/// ```
+pub const RELAX_MSG_LEN: usize = RELAX_CONTEXT.len() + RELEASE_DEVICE_ID_BYTES + 2 + RELAX_BODY_MAX + 8;
+/// `Rule::EstopRelease` cause: a relaxation came without a valid warrant. The
+/// receipt's two words are the frame kind and its first body byte.
+pub const RELEASE_CAUSE_UNSIGNED_RELAX: u64 = 5;
+
+/// Ed25519 signature length, re-exported so callers (the two `crates/domains/robot/safety-core/src/frames.rs`
 /// dispatch sites) do not need to depend on `azos_crypto` directly just
 /// to size a buffer.
 pub const RELEASE_SIG_BYTES: usize = azos_crypto::ed25519::ED25519_SIGNATURE_SIZE;
@@ -524,7 +546,7 @@ pub fn release_nonce_floor_seed(floor: u64) {
 /// note above on why it must not be 3), which is the "shared error code" the
 /// gate rows check for: a forged proof, an absent key, and a durability
 /// failure are all indistinguishable from the flight recorder's point of
-/// view — the latch stayed armed either way. `kernel/src/tasks/behavior.rs`'s two dispatch sites
+/// view — the latch stayed armed either way. `crates/domains/robot/safety-core/src/frames.rs`'s two dispatch sites
 /// already `.ok()` the whole `Result`, so adding a variant here needs no
 /// change there.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -584,9 +606,59 @@ fn release_message(target: ReleaseTarget, device: &[u8; RELEASE_DEVICE_ID_BYTES]
     msg
 }
 
+/// The bytes an operator signs to relax `kind` with `body` on the robot
+/// `device` names (`body` at most [`RELAX_BODY_MAX`]).
+fn relax_message(device: &[u8; RELEASE_DEVICE_ID_BYTES], kind: u8, body: &[u8], nonce: u64) -> [u8; RELAX_MSG_LEN] {
+    let c = RELAX_CONTEXT.len();
+    let d = c + RELEASE_DEVICE_ID_BYTES;
+    let mut msg = [0u8; RELAX_MSG_LEN];
+    msg[..c].copy_from_slice(RELAX_CONTEXT);
+    msg[c..d].copy_from_slice(device);
+    msg[d] = kind;
+    msg[d + 1] = body.len() as u8;
+    msg[d + 2..d + 2 + body.len()].copy_from_slice(body);
+    msg[d + 2 + RELAX_BODY_MAX..].copy_from_slice(&nonce.to_be_bytes());
+    msg
+}
+
+/// Verify an operator's warrant to relax `kind` with `body`: the same key,
+/// device binding, strictly newer nonce and durable floor as a release
+/// ([`verify_operator_release_for`]), over the relaxation's own message.
+/// Tightening never needs one; every relaxation does.
+pub fn verify_operator_relax_for(
+    dev_build: bool,
+    kind: u8,
+    body: &[u8],
+    nonce: u64,
+    sig: &[u8; RELEASE_SIG_BYTES],
+) -> Result<(), ReleaseDenial> {
+    if body.len() > RELAX_BODY_MAX {
+        return Err(ReleaseDenial::BadOrReplayedProof);
+    }
+    let key = operator_pubkey().ok_or(ReleaseDenial::NoAuthorityKey)?;
+    let device = device_for(dev_build)?;
+    accept_signed(dev_build, &key, &relax_message(&device, kind, body, nonce), nonce, sig)
+}
+
+/// [`verify_operator_relax_for`] for this build.
+pub fn verify_operator_relax(kind: u8, body: &[u8], nonce: u64, sig: &[u8; RELEASE_SIG_BYTES]) -> Result<(), ReleaseDenial> {
+    verify_operator_relax_for(azos_limits::BUILD_TYPE_DEV, kind, body, nonce, sig)
+}
+
+/// Record a relaxation refused for want of a valid warrant (`Rule::EstopRelease`,
+/// [`RELEASE_CAUSE_UNSIGNED_RELAX`]).
+pub fn record_unsigned_relax(kind: u8, first: u8) {
+    azos_decision::record_receipt(
+        azos_decision::Rule::EstopRelease,
+        azos_decision::Verdict::Refuse,
+        0,
+        [RELEASE_CAUSE_UNSIGNED_RELAX, kind as u64, first as u64],
+    );
+}
+
 /// Mirrors `brain_protocol::mode_estop_record`'s refusal action code (4,
 /// "refused MODE clear"). That function already returns this exact value for
-/// "wrong mode id, still armed"; the two `kernel/src/tasks/behavior.rs` `PKT_MODE`
+/// "wrong mode id, still armed"; the two `crates/domains/robot/safety-core/src/frames.rs` `PKT_MODE`
 /// dispatch sites need the identical number for "right mode id, no valid
 /// release proof" — see [`ReleaseDenial`]'s doc for why both must be
 /// indistinguishable to the flight recorder. A frozen mirror, not a shared
@@ -673,13 +745,33 @@ pub fn verify_operator_release_for(
     sig: &[u8; RELEASE_SIG_BYTES],
 ) -> Result<ReleaseAuthority, ReleaseDenial> {
     let key = operator_pubkey().ok_or(ReleaseDenial::NoAuthorityKey)?;
-    let device = match *RELEASE_DEVICE_ID.lock() {
-        Some(id) => id,
-        None if dev_build => [0u8; RELEASE_DEVICE_ID_BYTES],
-        None => return Err(ReleaseDenial::NoDeviceIdentity),
-    };
-    let msg = release_message(target, &device, nonce);
-    if !azos_crypto::ed25519::sig_verify(&key, sig, &msg) {
+    let device = device_for(dev_build)?;
+    accept_signed(dev_build, &key, &release_message(target, &device, nonce), nonce, sig)?;
+    Ok(ReleaseAuthority(()))
+}
+
+/// This robot's identity for a warrant: its device record's id, or in a
+/// development build without one the all-zero id.
+fn device_for(dev_build: bool) -> Result<[u8; RELEASE_DEVICE_ID_BYTES], ReleaseDenial> {
+    match *RELEASE_DEVICE_ID.lock() {
+        Some(id) => Ok(id),
+        None if dev_build => Ok([0u8; RELEASE_DEVICE_ID_BYTES]),
+        None => Err(ReleaseDenial::NoDeviceIdentity),
+    }
+}
+
+/// The checks every warrant passes, in their order: the signature over `msg`
+/// first, then the nonce strictly newer than the floor, the floor written
+/// durably before it moves in memory, and the recorder required outside a
+/// development build.
+fn accept_signed(
+    dev_build: bool,
+    key: &[u8; 32],
+    msg: &[u8],
+    nonce: u64,
+    sig: &[u8; RELEASE_SIG_BYTES],
+) -> Result<(), ReleaseDenial> {
+    if !azos_crypto::ed25519::sig_verify(key, sig, msg) {
         return Err(ReleaseDenial::BadOrReplayedProof);
     }
     let prev = RELEASE_NONCE_FLOOR.load(Ordering::Acquire);
@@ -695,15 +787,15 @@ pub fn verify_operator_release_for(
         release_refused(RELEASE_CAUSE_NO_RECORDER, prev, nonce);
         return Err(ReleaseDenial::NoDurableRecorder);
     }
-    // A second release racing this one between the `load` above and this
+    // A second warrant racing this one between the `load` above and this
     // `fetch_max` is vanishingly unlikely (two operator signatures in the
-    // same instant) but must still be caught, not silently waved through
-    // with a nonce that is no longer the newest accepted.
+    // same instant) but must still be caught, not waved through with a nonce
+    // that is no longer the newest accepted.
     let advanced = RELEASE_NONCE_FLOOR.fetch_max(nonce, Ordering::AcqRel);
     if nonce <= advanced {
         return Err(ReleaseDenial::BadOrReplayedProof);
     }
-    Ok(ReleaseAuthority(()))
+    Ok(())
 }
 
 /// The receipt of a refused release (`Rule::EstopRelease`): the cause, the
@@ -865,7 +957,7 @@ pub fn safe_mode_active() -> bool {
 /// the wrong id while the e-stop is armed changes no state and is refused
 /// every time — and each refusal used to cost a synchronous flush plus a
 /// console line that busy-waits on the UART. `ring3_estop` in
-/// `kernel/src/tasks/behavior.rs` already carries the same argument for ring 3: an
+/// `crates/domains/robot/safety-core/src/frames.rs` already carries the same argument for ring 3: an
 /// unmetered record is a path to evict the real e-stop record from the
 /// recorder with copies of itself, and the attacker pays nothing because the
 /// machine is already stopped.

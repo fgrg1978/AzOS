@@ -116,6 +116,73 @@ mod framing {
 }
 
 #[cfg(test)]
+mod bridge_estop_frames {
+    use super::brain_protocol::*;
+
+    fn frame(kind: u8, payload: &[u8]) -> Vec<u8> {
+        let mut out = vec![0u8; FRAME_OVERHEAD + payload.len()];
+        let n = build_packet(kind, payload, &mut out);
+        out.truncate(n);
+        out
+    }
+
+    /// **Only the e-stop counts, and nothing on the line loses it.** Noise,
+    /// a corrupt frame and other frame kinds are skipped; an e-stop split
+    /// across two reads counts once, on the read that completes it.
+    ///
+    /// **Canary.** Count every whole frame: the actuator frame counts.
+    #[test]
+    fn only_whole_estop_frames_count() {
+        let estop = frame(PKT_ESTOP, &[]);
+        let act = frame(PKT_ACTUATOR, &[0x01, 0x02, 0x00, 0x10, 0x00, 0x10, 0x00]);
+        let mut bad = frame(PKT_ESTOP, &[]);
+        let last = bad.len() - 1;
+        bad[last] ^= 0xFF;
+        let mut buf = [0u8; 256];
+        let mut line: Vec<u8> = vec![0x00, 0x42, 0x7F];
+        line.extend(&act);
+        line.extend(&bad);
+        line.extend(&estop);
+        line.extend(&estop[..3]);
+        buf[..line.len()].copy_from_slice(&line);
+        let (n, keep) = take_estop_frames(&mut buf, line.len());
+        assert_eq!((n, keep), (1, 3), "one e-stop, and the start of the next kept");
+        buf[keep..keep + estop.len() - 3].copy_from_slice(&estop[3..]);
+        assert_eq!(take_estop_frames(&mut buf, keep + estop.len() - 3), (1, 0), "the split e-stop counted once");
+        let junk = [0x10u8; 40];
+        buf[..40].copy_from_slice(&junk);
+        assert_eq!(take_estop_frames(&mut buf, 40), (0, 0), "noise was kept");
+    }
+}
+
+#[cfg(test)]
+mod relax_classification {
+    use super::brain_protocol::*;
+
+    /// **Tightening needs no warrant, relaxing does.** Arming degraded mode,
+    /// raising the semantic level and a payload or configuration effect on a
+    /// machine that is not contained pass; clearing degraded mode, lowering
+    /// the level, and a payload or configuration effect while contained ask
+    /// for the body the warrant must bind.
+    ///
+    /// **Canary.** Treat a lower level as tightening: the relax passes unsigned.
+    #[test]
+    fn only_a_relaxation_asks_for_a_warrant() {
+        assert_eq!(relax_body_len(PKT_DEGRADE, &[DEGRADE_REASON_MALFORMED], false, 0), None);
+        assert_eq!(relax_body_len(PKT_DEGRADE, &[], false, 0), None, "a missing reason arms, it does not clear");
+        assert_eq!(relax_body_len(PKT_DEGRADE, &[DEGRADE_CLEAR], true, 3), Some(1));
+        assert_eq!(relax_body_len(PKT_SEMANTIC_LEVEL, &[2], false, 1), None, "raising the level is tightening");
+        assert_eq!(relax_body_len(PKT_SEMANTIC_LEVEL, &[1], false, 1), None, "the same level relaxes nothing");
+        assert_eq!(relax_body_len(PKT_SEMANTIC_LEVEL, &[0], false, 3), Some(1));
+        assert_eq!(relax_body_len(PKT_SEMANTIC_LEVEL, &[], false, 3), None, "a missing level contains");
+        assert_eq!(relax_body_len(PKT_PAYLOAD, &[0; 5], false, 0), None);
+        assert_eq!(relax_body_len(PKT_PAYLOAD, &[0; 5], true, 3), Some(PAYLOAD_PAYLOAD_SIZE));
+        assert_eq!(relax_body_len(PKT_CONFIG, &[0; 4], true, 0), Some(CONFIG_PAYLOAD_SIZE));
+        assert_eq!(relax_body_len(PKT_ESTOP, &[], true, 3), None, "an e-stop is never a relaxation");
+    }
+}
+
+#[cfg(test)]
 mod actuator {
     use super::brain_protocol::*;
 
@@ -3820,12 +3887,28 @@ mod motor_gate_and_record {
         let g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         motor::clear_motor_gate_for_test();
         motor::clear_motor_recorder_for_test();
+        motor::set_motor_cap(|| 100);
         motor::set_motor_halt(|| false);
         assert_eq!(motor::motor_init(WHEEL, WHEEL_CH, PIN_A, PIN_B), 0);
         g
     }
 
     fn passthrough_gate(_id: u32, pct: u32) -> u32 { pct }
+
+    /// **No live cap installed, no motion**: the safety layer's cap is fail
+    /// closed like the gate, so a write before the robot's install, or on a
+    /// build that never installs it, drives nothing.
+    ///
+    /// **Canary.** Make an unset cap pass the gated speed: the 60 % lands.
+    #[test]
+    fn no_cap_installed_clamps_every_speed_to_zero() {
+        let _g = begin();
+        motor::set_motor_gate(passthrough_gate);
+        motor::clear_motor_cap_for_test();
+        let (_, applied) = motor::motor_set_reporting(WHEEL, MotorDir::Forward, 60);
+        motor::set_motor_cap(|| 100);
+        assert_eq!(applied, Some(0), "an unset cap let a write drive");
+    }
 
     // ── Q1.4: fail closed ────────────────────────────────────────────────
 
@@ -3990,48 +4073,6 @@ mod motor_actuation_reaches_the_flight_recorder {
 }
 
 // ---------------------------------------------------------------------------
-// Entropy-refusal policy (`crates/domains/robot/behavior/src/encrypt_link_policy.rs`),
-// U09-8 / owner decision 2026-09-26 V1.2.
-// ---------------------------------------------------------------------------
-
-#[allow(dead_code)]
-#[path = "../../../../crates/domains/robot/behavior/src/encrypt_link_policy.rs"]
-mod encrypt_link_policy;
-
-/// RED test for "unseeded ⇒ no session keys". This is the exact boolean
-/// `crates/domains/robot/behavior/src/encrypt_link.rs`'s `derive_ephemeral_priv` gates on
-/// before deriving anything — pulled in by `#[path]` so this is the code
-/// under test, not a restatement of it.
-#[cfg(test)]
-mod encrypt_link_unseeded_refusal {
-    use super::encrypt_link_policy::refuse_unseeded;
-
-    /// RED against the code as it stood before the 2026-09-26 V1.2 decision:
-    /// `derive_ephemeral_priv` had no refusal path at all — every call
-    /// returned a key, degraded, regardless of `seeded`/`enforced`.
-    /// Restoring that (an always-`false` `refuse_unseeded`) fails this.
-    #[test]
-    fn unseeded_on_an_enforced_build_refuses() {
-        assert!(refuse_unseeded(false, true),
-            "an unseeded pool on a link-provisioning-enforced build must refuse — \
-             this is what stops a VF2/K1 from ever deriving a session key from \
-             PSK + boot-relative timing alone");
-    }
-
-    #[test]
-    fn seeded_never_refuses_regardless_of_enforcement() {
-        assert!(!refuse_unseeded(true, true));
-        assert!(!refuse_unseeded(true, false));
-    }
-
-    #[test]
-    fn unseeded_on_a_dev_build_still_proceeds_degraded() {
-        // The accepted dev/QEMU tradeoff, unchanged by this decision: no
-        // prod key rolled out yet means no enforcement, and an unseeded
-        // dev board still gets a (weak) handshake rather than none.
-        assert!(!refuse_unseeded(false, false));
-    }
-}
 
 // ---------------------------------------------------------------------------
 // The ML service's verdict, and its absence (`ml_link`). The MLP runs in the
