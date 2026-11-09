@@ -142,8 +142,7 @@ config LOG_FLUSHER_PRIORITY
       every other normal task.
 
 config KILL_SWITCH_PRIORITY
-    int "Kill-switch task priority (real-time band: 1..11)"
-    depends on BOARD_IO
+    int "Kill-switch task priority (real-time band: 1..11)" if BOARD_IO
     range 1 11
     default 7
     help
@@ -156,8 +155,7 @@ config KILL_SWITCH_PRIORITY
       KILL_SWITCH_RECHECK_MS, so its share of the band is negligible.
 
 config KILL_SWITCH_RECHECK_MS
-    int "Kill-switch re-check period (ms)"
-    depends on BOARD_IO
+    int "Kill-switch re-check period (ms)" if BOARD_IO
     range 10 1000
     default 500
     help

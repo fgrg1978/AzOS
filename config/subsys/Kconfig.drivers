@@ -985,8 +985,7 @@ config SENSOR_SLOW_HZ
       500 ms).
 
 config SENSOR_PIR_GPIO
-    int "Sensors: GPIO pin of the PIR motion sensor"
-    depends on USE_ROBOT
+    int "Sensors: GPIO pin of the PIR motion sensor" if USE_ROBOT
     range 0 63
     default 13
     help
@@ -994,16 +993,14 @@ config SENSOR_PIR_GPIO
       three lines to these pins.
 
 config SENSOR_IR_GPIO
-    int "Sensors: GPIO pin of the IR sensor"
-    depends on USE_ROBOT
+    int "Sensors: GPIO pin of the IR sensor" if USE_ROBOT
     range 0 63
     default 14
     help
       Bit 2 of the digital-line sensor.
 
 config SENSOR_SOUND_GPIO
-    int "Sensors: GPIO pin of the sound sensor"
-    depends on USE_ROBOT
+    int "Sensors: GPIO pin of the sound sensor" if USE_ROBOT
     range 0 63
     default 15
     help
