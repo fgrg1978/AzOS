@@ -25,7 +25,7 @@ crates/core/chaos	0	0	0	0	1	0
 crates/core/common	4	0	0	0	0	35
 crates/core/config	8	0	0	0	0	75
 crates/core/crypto	15	2	1	0	0	26
-crates/core/decision	2	0	2	0	0	63
+crates/core/decision	3	0	3	0	0	67
 crates/core/devif	0	0	0	0	1	0
 crates/core/energy	0	0	0	0	1	0
 crates/core/ext-api	0	0	0	0	1	0
@@ -51,6 +51,7 @@ crates/core/records	8	1	1	0	0	100
 crates/core/recovery	5	0	0	0	0	55
 crates/core/rings	45	14	8	0	0	99
 crates/core/sched	421	160	14	3	0	67
+crates/core/seclog	0	0	0	0	1	0
 crates/core/stdrt	48	1	5	0	0	-
 crates/core/sync	47	9	20	0	0	82
 crates/core/syscall	37	2	1	0	0	38
@@ -117,7 +118,7 @@ crates/net/ethercat	0	0	0	0	1	-
 crates/net/multi-stream	0	0	0	0	1	0
 crates/net/stack	20	0	2	0	0	58
 crates/net/tftp	0	0	0	0	1	-
-kernel	420	15	13	53	0	61
+kernel	421	15	13	53	0	61
 micro	20	4	0	0	0	67
 tools/bench/linux_seccomp_launch	11	2	0	2	0	-
 tools/bench/linux_seccomp_launch/host-tests	0	0	0	0	1	-
@@ -154,7 +155,7 @@ userspace/services/decisd	1	0	0	0	0	-
 userspace/services/ext4d	2	0	0	0	0	-
 userspace/services/infsrv	11	2	0	0	0	-
 userspace/services/inputd	2	0	0	0	0	-
-userspace/services/logd	1	0	0	0	0	-
+userspace/services/logd	2	0	0	0	0	-
 userspace/services/logind	1	0	0	0	0	-
 userspace/services/lxrt	17	3	1	3	0	-
 userspace/services/lxsrv	28	0	3	0	0	-
@@ -175,4 +176,4 @@ userspace/services/tracectl	2	0	2	0	0	-
 userspace/services/vmmd	22	5	2	0	0	-
 userspace/services/why	1	0	0	0	0	-
 userspace/services/zenohd	0	0	0	0	1	-
-@unsafe-share	505
+@unsafe-share	502
