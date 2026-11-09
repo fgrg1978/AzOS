@@ -5577,12 +5577,12 @@ seclog_row() { # seclog_row <riscv64|aarch64> <pass|tamper>
     if otae2e_trap "$log"; then bad; echo "      the boot trapped"; echo "      log kept: $log"; return; fi
     files="$work/export"; mkdir -p "$files"
     for n in 0 1 2 3 4 5 6 7 8 9 A B C D E F; do mtype -i "$disk" "::KLOG$n.TXT" 2>/dev/null | tr -d '\r' >"$files/KLOG$n.TXT"; done
-    if ! grep -aqE '^[0-9]+ [0-9]+ [0-9]+ I @security v3 [0-9]+ [0-9]+ 0 1 [0-9]+ [0-9]+ [0-9a-f]+ event cap-denial ' "$files"/KLOG*.TXT; then
+    if ! grep -aqE '^[0-9]+ [0-9]+ [0-9]+ I @security v4 [0-9]+ [0-9]+ 0 1 [0-9]+ [0-9]+ [0-9a-f]+ event cap-denial ' "$files"/KLOG*.TXT; then
         bad; echo "      the files hold no @security capability denial (log kept: $log, volume: $disk)"; return
     fi
     if [ "$mode" = tamper ]; then
-        local f; f="$(grep -alE ' @security v3 [0-9]+ [0-9]+ 0 1 ' "$files"/KLOG*.TXT | sed -n 1p)"
-        awk '!done && / @security v3 [0-9]+ [0-9]+ 0 1 / { n = split($0, t, " "); h = t[13]; c = substr(h, 1, 1); t[13] = (c == "0" ? "1" : "0") substr(h, 2); $0 = t[1]; for (i = 2; i <= n; i++) $0 = $0 " " t[i]; done = 1 } { print }' "$f" >"$f.t" && mv "$f.t" "$f"
+        local f; f="$(grep -alE ' @security v4 [0-9]+ [0-9]+ 0 1 ' "$files"/KLOG*.TXT | sed -n 1p)"
+        awk '!done && / @security v4 [0-9]+ [0-9]+ 0 1 / { n = split($0, t, " "); h = t[13]; c = substr(h, 1, 1); t[13] = (c == "0" ? "1" : "0") substr(h, 2); $0 = t[1]; for (i = 2; i <= n; i++) $0 = $0 " " t[i]; done = 1 } { print }' "$f" >"$f.t" && mv "$f.t" "$f"
     fi
     out="$(cd "$REPO_ROOT" && make -s seclog-verify SECLOG_EXPORT="$files" SECLOG_WITNESS="$log" 2>&1)"
     if [ "$mode" = pass ]; then

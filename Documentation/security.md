@@ -825,12 +825,14 @@ pkgd's journal, not here.
 
 **The rate cap.** Every copy passes a bucket of `SEC_LOG_PER_S` records a
 second; capability denials and their reports take at most a quarter of it each,
-egress and logins at most half each and a quarter for any one subject (task), so
-a flood of one class cannot push a microphone record out of the ring and one task
-cannot spend its class's share to hide another's. The refill keeps what an integer
+egress and logins at most half each and a quarter for any one Domain (however
+many tasks an application runs), so a flood of one class cannot push a microphone
+record out of the ring and one application cannot spend its class's share to hide
+another's. The refill keeps what an integer
 division would drop, so calls microseconds apart refill at the rate too. An egress
-admit to the destination a task was let out to last is no new destination and
-not recorded again. A capability denial also passes the per-Domain bucket of its
+admit to a destination the Domain's record was copied for last is no new
+destination and not recorded again; one the cap held back is recorded when there
+is room. A capability denial also passes the per-Domain bucket of its
 durable receipt: what that bucket holds back is not copied, and its
 `RefusalLimited` report is. What the cap holds back is counted by class, with the
 subjects it held most, and declared in the chain (a `held` record).
@@ -838,14 +840,14 @@ subjects it held most, and declared in the chain (a `held` record).
 **The chain.** Per boot, the `seclog` task folds every record of the ring, in
 sequence order, into `head_i = SHA-256(0x01 || head_{i-1} || canon_i)`
 (`canon`: the format version, every envelope field but the source, the
-payload), from `head_0 = SHA-256("azos/seclog/v3" || boot anchor || nonce)`.
+payload), from `head_0 = SHA-256("azos/seclog/v4" || boot anchor || nonce)`.
 It seals at its first pass, every `SEC_LOG_SEAL_S`, `SEC_LOG_SEAL_URGENT_S`
 after a record of a class whose loss hides what spyware does (every class but
 the denials and their reports) or after it declared a loss, and at an orderly
 power-off, when records came since the last seal. The urgent seals are at most
 `SEC_LOG_URGENT_PER_DAY` a day, `SEC_LOG_SEAL_URGENT_S` apart, whatever
 triggers them. Seal `k` commits `data_k = SHA-256(0x02 || boot anchor || nonce
-|| k || counter || through || sink_lost || sink_start || head)` to the backend,
+|| k || counter || through || sink_lost || sink_start || sink_digest || head)` to the backend,
 whose value becomes
 `anchor_k = SHA-256(anchor_{k-1} || data_k)` (what `TPM2_NV_Extend` computes),
 and a `seal` record carries the head, the first sequence number it does not

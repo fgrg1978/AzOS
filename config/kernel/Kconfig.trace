@@ -805,7 +805,7 @@ config SEC_LOG_ENTRIES
     range 32 256
     default 128
     help
-      Asked with SEC_LOG only. 208 bytes a slot (the envelope and a 176-byte
+      Asked with SEC_LOG only. 240 bytes a slot (the envelope and a 208-byte
       payload), in the shared region and again in the early region the boot
       writes before the region exists. More records between two passes of
       the sealer or of `logd` than the ring holds are lost: the sealer
@@ -867,9 +867,10 @@ config SEC_LOG_URGENT_PER_DAY
       day may take, whatever triggers them (a task opening the microphone in a
       loop, a remote client failing SSH logins): with the periodic ones, at
       most 86400 / SEC_LOG_SEAL_S + SEC_LOG_URGENT_PER_DAY seals a day, each
-      two NV writes on a TPM; the seals that cover a declared loss have
-      a budget of their own, SEC_LOG_DECLARATION_SEALS_PER_DAY. Past the
-      budget a high-value record waits for the period's seal.
+      two NV writes on a TPM; the seals that cover a declared loss have a
+      budget of their own (SEC_LOG_DECLARATION_SEALS_PER_DAY, which says the
+      wear of all three). Past the budget a high-value record waits for the
+      period's seal.
 
 config SEC_LOG_DECLARATION_SEALS_PER_DAY
     int "Sealed security log: seals a day that cover a declared loss" if SEC_LOG
