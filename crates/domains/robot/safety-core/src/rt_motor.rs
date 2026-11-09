@@ -168,7 +168,11 @@ pub fn rt_motor_task(_: usize) {
                 rt_watchdog_report(action, detail);
             }
             safe_mode = true;
-        } else if !fired {
+        } else if fired {
+            // Safe mode writes nothing, so a per-wheel holder's drive would
+            // keep its duty past a stop verdict without this.
+            azos_robot::motor::motor_recap();
+        } else {
             if safe_mode {
                 if let Some((action, detail)) = wd_reports.clear() {
                     rt_watchdog_report(action, detail);

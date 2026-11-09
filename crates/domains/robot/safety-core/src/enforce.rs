@@ -84,6 +84,7 @@ fn tick(now: u64) {
     azos_behavior::sensor_bus::SENSOR_BUS.snapshot(&mut state);
     state.timestamp = now;
     L0.publish(cap_of(azos_behavior::safety::safety_check(&state).action), now);
+    azos_robot::motor::motor_recap();
     #[cfg(feature = "rc-input")]
     {
         rc_enforce(now);
