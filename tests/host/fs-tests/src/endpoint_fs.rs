@@ -60,6 +60,7 @@ impl Dir for Server {
         Out::ok(Lent::dup(BASE + self.open.len() as u32 - 1, 2))
     }
     fn statat(&mut self, name: Extent, floor: u32, out: Extent) -> Out<()> {
+        FLOORS.lock().unwrap().push(floor);
         let n = self.name(name);
         if floor > 0 && n.ends_with("link") {
             return Out::err(outcome::DENIED);
@@ -168,7 +169,8 @@ static EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1
 /// Ops that would change the tree, as the server saw them.
 static CHANGES: AtomicU32 = AtomicU32::new(0);
 static CLOSED: AtomicU32 = AtomicU32::new(0);
-/// The floor of every open the server saw.
+/// The floor of every open and stat the server saw (an open whose file the mount
+/// already holds open reaches it as a stat only).
 static FLOORS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
 
 struct TestLink(Mutex<Server>);
