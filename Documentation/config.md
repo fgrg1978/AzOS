@@ -39,7 +39,6 @@ The topic files, in menu order:
 | `config/axes/Kconfig.build` | `BUILD_TYPE` and the test machinery (ktest, canaries, chaos, census, boot bench) |
 | `config/axes/Kconfig.use` | `USE`, derived from the preset |
 | `config/subsys/Kconfig.robot` | The robot domain: robot type, safety layer, RC input |
-| `config/subsys/Kconfig.brain` | The brain link |
 | `config/arch/Kconfig.isa` | ISA choice, FP state format, page size |
 | `config/arch/Kconfig.isa-riscv64`, `-aarch64`, `-x86_64` | Each ISA's baseline level and extensions (n / probe / require) |
 | `config/arch/Kconfig.platform` | Board, SoC frameworks, platform addresses |
