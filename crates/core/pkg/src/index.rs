@@ -1088,41 +1088,47 @@ impl<T: Tail> MarkStore<T> {
     /// provisioned, which nothing was written on. A sector that cannot be read
     /// makes its bank fail, and the boot write nothing.
     pub fn load(tail: T, sectors: usize, quota: usize) -> Self {
-        let empty = MarkTable::new(sectors, quota);
-        let n = empty.sectors();
-        let mut st = State { table: empty, gen: 0, bank: None, spare: 0, cond: Condition::default() };
+        let mut st = State { table: MarkTable::new(sectors, quota), gen: 0, bank: None, spare: 0, cond: Condition::default() };
+        let n = st.table.sectors();
         if tail.writable() {
-            let mut raw = [[[0u8; SECTOR]; BANK_SECTORS_MAX]; 2];
-            for (b, bank) in raw.iter_mut().enumerate() {
-                for (i, sec) in bank.iter_mut().enumerate().take(n) {
+            // One bank at a time, and the newest whole table straight into
+            // `st`: this runs on the kernel's boot stack. Per bank: all zero,
+            // how many sectors verify on their own, and whether it is whole.
+            let (mut blank, mut valid, mut whole, mut newest) = ([true; 2], [0usize; 2], [false; 2], 0);
+            let mut raw = [[0u8; SECTOR]; BANK_SECTORS_MAX];
+            for b in 0..2 {
+                for (i, sec) in raw.iter_mut().enumerate().take(n) {
                     if !tail.read(b * n + i, sec) {
                         st.cond.unreadable = true;
                         *sec = [0xFF; SECTOR];
                     }
                 }
+                blank[b] = raw[..n].iter().all(|s| s.iter().all(|&x| x == 0));
+                for g in raw[..n].iter().filter_map(sector_gen) {
+                    valid[b] += 1;
+                    st.gen = st.gen.max(g);
+                }
+                if let Some((table, gen)) = MarkTable::decode_bank(&raw, n, quota) {
+                    whole[b] = true;
+                    // A tie of generations keeps bank 0.
+                    if st.bank.is_none() || gen > newest {
+                        (st.table, st.bank, newest) = (table, Some(b), gen);
+                    }
+                }
             }
-            let blank = |b: usize| raw[b][..n].iter().all(|s| s.iter().all(|&x| x == 0));
-            let valid = |b: usize| raw[b][..n].iter().filter(|s| sector_gen(s).is_some()).count();
-            st.gen = raw.iter().flat_map(|b| b[..n].iter().filter_map(sector_gen)).max().unwrap_or(0);
-            let banks = [MarkTable::decode_bank(&raw[0], n, quota), MarkTable::decode_bank(&raw[1], n, quota)];
-            let newest = match banks {
-                [Some(x), Some(y)] => Some(if y.1 > x.1 { (y, 1) } else { (x, 0) }),
-                [Some(x), None] => Some((x, 0)),
-                [None, Some(y)] => Some((y, 1)),
-                [None, None] => None,
-            };
-            match newest {
-                Some(((table, gen), b)) => {
-                    st = State { table, gen: st.gen.max(gen), bank: Some(b), spare: 1 - b, ..st };
-                    if banks[1 - b].is_none() && !blank(1 - b) {
+            match st.bank {
+                Some(b) => {
+                    st.gen = st.gen.max(newest);
+                    st.spare = 1 - b;
+                    if !whole[1 - b] && !blank[1 - b] {
                         st.cond.ignored = Some(1 - b);
                     }
                 }
-                None if blank(0) && blank(1) && !tail.provisioned() => {}
+                None if blank[0] && blank[1] && !tail.provisioned() => {}
                 None => {
                     st.cond.lost = true;
-                    st.cond.erased = blank(0) && blank(1);
-                    st.spare = usize::from(valid(1) < valid(0));
+                    st.cond.erased = blank[0] && blank[1];
+                    st.spare = usize::from(valid[1] < valid[0]);
                 }
             }
         }
