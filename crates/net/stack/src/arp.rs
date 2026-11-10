@@ -112,7 +112,7 @@ const ARP_REACHABLE_TICKS: u64 = 30 * azos_drv_sys::timebase::TIMER_FREQ;
 /// The ARP cache as a data structure, independent of the machine's live one.
 ///
 /// **Public so it can be measured and exercised without touching
-/// the ARP caches.** Until 2026-09-08 `crates/lib/bench/src/net.rs` benchmarked
+/// the ARP caches.** `crates/lib/bench/src/net.rs` once benchmarked
 /// `arp::insert` — the global — on every boot: 100 iterations x 5 repeats of
 /// `insert([10, 0, 2, i], TEST_MAC)` into a 16-entry LRU table, which wiped
 /// every real entry several times over and, at `i == 2`, replaced the SLIRP
@@ -380,7 +380,7 @@ fn record_pending(ifindex: IfIndex, ip: &[u8; 4], now: u64) {
 /// later by a third party — a second, genuine reply for an address already in
 /// the cache is simply redundant.
 ///
-/// Re-verified 2026-09-06 (claims_check audit): the find-and-invalidate
+/// Re-verified (claims_check audit): the find-and-invalidate
 /// above runs entirely under `ARP_PENDING.lock()`, so a second hart racing
 /// a duplicate reply for the same `ip` cannot observe `valid == true` twice
 /// — there is no window between the freshness check and `p[i].valid =

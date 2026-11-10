@@ -180,7 +180,7 @@ pub struct DtbInfo {
     /// `/cpus/cpu@0` declares Zbb / Zbc / Zknh (exact tokens, as
     /// [`Self::isa_sstc`]) and V (a letter of the base segment of
     /// `riscv,isa`, or the entry `v` of `riscv,isa-extensions`): the inputs
-    /// of the vDSO `hwcap` word (wave 13).
+    /// of the vDSO `hwcap` word.
     pub isa_zbb: bool,
     pub isa_zbc: bool,
     pub isa_zknh: bool,
@@ -1821,7 +1821,7 @@ pub fn is_arm_pmu(prop: &[u8]) -> bool {
 }
 
 // ---------------------------------------------------------------
-// Interrupt trigger types (wave 9 IRQ4 item 3)
+// Interrupt trigger types
 // ---------------------------------------------------------------
 
 /// The interrupt controller whose lines [`dtb_irq_triggers`] decodes.

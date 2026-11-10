@@ -168,7 +168,7 @@ const WCET_BOUNDS_US: [u64; WCET_MAX_POINTS] = {
     // enforcing a 30 / 100 µs budget on every annotated function produces
     // a flood of `[WCET] VIOLATION` spam (7000+ lines per 40s bench run,
     // saturating UART and starving wcet_report() of bandwidth — empirical
-    // observation 2026-05-29).  Set generated bounds to 0 = enforcement
+    // observation).  Set generated bounds to 0 = enforcement
     // disabled under qemu.  Samples still accumulate; only the violation
     // logging path is silenced.  Real bound checks happen on VF2 / K1.
     let mut i = 0usize;

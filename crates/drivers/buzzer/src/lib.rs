@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Piezo buzzer, one source for both placements (wave 12
-//! DRVPLACE).
+//! Piezo buzzer, one source for both placements.
 //!
 //! [`Player`] is the chip logic over a [`Pwm`] channel: a tone, a beep or a
 //! pattern is a list of [`Step`]s played against the host's clock, and every

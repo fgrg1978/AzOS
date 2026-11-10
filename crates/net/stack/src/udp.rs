@@ -67,7 +67,7 @@ static RX_OVERSIZE_DROPS: AtomicU32 = AtomicU32::new(0);
 ///
 /// "Evicted" is load-bearing: this counts the OLDEST already-queued datagram
 /// being pushed out to make room, not the new arrival being refused. Owner
-/// decision (2026-09-05, see the eviction site in `UdpRxBuf::push`): head-drop,
+/// decision (see the eviction site in `UdpRxBuf::push`): head-drop,
 /// not tail-drop. The count means the same thing either policy would give —
 /// exactly one datagram lost per full-ring event — so nothing here needed to
 /// change when the policy was settled; only which datagram is the one lost
@@ -151,7 +151,7 @@ impl UdpRxBuf {
             return;
         }
         if self.count >= UDP_RX_SLOTS {
-            // Head-drop. Decided (owner, 2026-09-05): evict the OLDEST
+            // Head-drop. Decided (owner): evict the OLDEST
             // datagram already queued to make room for the one that just
             // arrived, not the other way around.
             //

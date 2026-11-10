@@ -35,7 +35,7 @@ pub fn create(_: azos_ext_api::EnableLine) {
 /// into the IMU's streams (the sample, and the die temperature).
 /// RT priority: IMU data must be fresh for safety layer L0.
 ///
-/// Kconfig `IMU_SAMPLE_QUEUED` (default, wave 15 S1): an RT task only
+/// Kconfig `IMU_SAMPLE_QUEUED` (default): an RT task only
 /// enqueues. Each tick collects the burst read queued earlier (if it has
 /// finished) and queues the next one; the bus's service step puts it on the
 /// wire. A read that fails or is not finished yet publishes nothing, so the

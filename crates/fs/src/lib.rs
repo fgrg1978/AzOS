@@ -54,7 +54,7 @@ pub use fat32::{
     fat32_alloc_cluster, fat32_free_chain, fat32_sync,
     fat32_journal_idle, fat32_check_root_chain,
     fat32_locks_available, fat32_write_epoch,
-    // Write-back (wave 15): the `fs-wb` task's pass, its hooks and gauges.
+    // Write-back: the `fs-wb` task's pass, its hooks and gauges.
     fat32_writeback_tick, fat32_writeback_hooks, fat32_writeback_period_ms, fat32_wb_pass_here,
     // Claim priority donation (FX12): the scheduler's hooks and the canary.
     fat32_claim_pi_hooks, fat32_canary_claim_no_donate, ClaimPiHooks,
@@ -106,14 +106,14 @@ pub use vfs::{
     DeleteGate, DeleteOp, set_delete_gate, delete_admitted,
     INODE_KEY_LEN, PATH_KEY_LEN, ZEROED_KEY, NO_BACKING, FAT32_FS,
     fd_alloc, fd_free, fd_get, fd_dup,
-    // Wave 15 (PI), owner rule F1: descriptor I/O without the table's lock.
+    // Descriptor I/O without the table's lock.
     LoneFd, fd_streams, fd_lend, fd_settle, fd_adopt, fd_detach, fd_stream_transfer,
     FsyncWork, fd_fsync_begin, fd_fsync_finish, fd_file_backing,
     fd_set_owner, fd_owner, fd_count_owned, fd_release_owned,
     FD_NO_OWNER, MAX_FDS_PER_TASK,
     vfs_open, vfs_close, vfs_read, vfs_write, vfs_lseek,
     vfs_fs_lock_available, vfs_file_size,
-    // Wave 14 (SPAWNCACHE): what a verified-image cache keys by.
+    // What a verified-image cache keys by.
     ContentStamp, STAMP_FS_FAT32, vfs_content_stamp,
     // A system set's files under their root names (`azos_ota`'s atomic update).
     vfs_set_root_overlay,

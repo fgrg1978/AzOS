@@ -11,9 +11,9 @@
 /// MCP2515 datasheet, so per this repo's own rule (a `Status:`-shaped claim
 /// is not evidence) that map
 /// must be treated as unconfirmed, not as done groundwork. Two independent
-/// gaps block wiring it up, and both are owner decisions, not missing
+/// gaps block wiring it up, and both are design decisions, not missing
 /// effort:
-///   1. **SETTLED 2026-09-05, against the primary source — and against the
+///   1. **SETTLED, against the primary source — and against the
 ///      original premise.** That premise was "the VF2's JH7110 and the K1
 ///      each have their own CAN controller". The 40-pin GPIO header user
 ///      guide (StarFive

@@ -15,7 +15,7 @@
 //! `inode` (inode slot) and `fd` (descriptor). Counters (per open): FAT32
 //! sector-cache hits and misses and device read requests.
 //!
-//! Writes (wave 15, FW), a second line every [`EVERY`] backend writes:
+//! Writes (FW), a second line every [`EVERY`] backend writes:
 //! `write` (all of `vfs_write` on a backend inode), inside FAT32's
 //! `write_at` `lookup` (the name to a handle), `data` (seek, chain and
 //! sectors) and `entry` (the directory-entry update); and `trunc` (FAT32's

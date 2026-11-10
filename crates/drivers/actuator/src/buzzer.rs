@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Piezo buzzer, the kernel host (wave 12 DRVPLACE).
+//! Piezo buzzer, the kernel host.
 //!
 //! One chip-logic source, `crates/drivers/buzzer`, and two hosts: this one,
 //! in the kernel, and `userspace/drivers/buzz_drv`, in ring 3, serving the

@@ -3,8 +3,8 @@
 //! virtio-pci **modern** transport (VirtIO 1.x over PCI, not MMIO).
 //!
 //! `mod.rs` next door is the existing virtio-**MMIO** transport (1,683
-//! lines, U05-12's `VIRTIO_F_VERSION_1` fix already landed there,
-//! 2026-09-26 — this file does NOT touch that fix, it is the PCI-side
+//! lines, the `VIRTIO_F_VERSION_1` fix already landed there
+//! — this file does NOT touch that fix, it is the PCI-side
 //! counterpart of the same negotiation). This module is the
 //! PCI transport: virtio-net/blk over `virtio-pci` instead of
 //! `virtio-mmio`, with MSI-X delivery (see "MSI-X delivery" below).

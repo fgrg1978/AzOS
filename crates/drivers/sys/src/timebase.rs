@@ -14,7 +14,7 @@
 //!
 //! # Why it is here and not in `arch`
 //!
-//! Owner decision 2026-09-20 put the primitive in `arch-api`'s `Cpu` trait,
+//! The primitive lives in `arch-api`'s `Cpu` trait,
 //! and [`now`] delegates straight to it — the implementation IS arch's, on both
 //! ISAs.
 //!
@@ -141,7 +141,7 @@ pub fn sched_hz_get() -> u64 {
 // what made these two functions read as ISA-specific when only one line of
 // each is.
 
-// ── The comparator's one writer (wave 11 ONESHOT) ──────────
+// ── The comparator's one writer ──────────
 //
 // Every write of this hart's timer comparator goes through [`program`], which
 // records the instant in [`PROGRAMMED`] (one word per hart, written only by
@@ -410,14 +410,14 @@ pub fn set_next_tick_smart(_hart: u32, nearest_deadline: Option<u64>) {
     }
 }
 
-// ── M04: true tickless — the owner decision of 2026-09-25 ──────────────────
+// ── true tickless ──────────────────
 //
 // `set_next_tick_smart` above is the M03 "tickless" scheduler's actual
 // behaviour: `now() + TIMER_FREQ / sched_hz_get()` is computed and folded
 // into the `min` UNCONDITIONALLY, so an idle hart is reprogrammed for "one
 // ordinary tick period from now" forever — the periodic clamp this module's
-// own doc calls out as never dropped. That is the gap the owner decision
-// names FALSE: an idle hart never actually sleeps past one tick.
+// own doc calls out as never dropped. That is the gap in the claim
+// that it does: an idle hart never actually sleeps past one tick.
 //
 // [`set_next_tick_tickless`] is the fix. It is a distinct function, not a
 // rewrite of `set_next_tick_smart` in place, because `set_next_tick_smart`'s
@@ -434,7 +434,7 @@ pub fn set_next_tick_smart(_hart: u32, nearest_deadline: Option<u64>) {
 // wake/reap sweep has even run — and it is reached whether the hart went
 // idle from a tick, a yield, or a block.
 
-/// Hart 0's idle keepalive (owner decision, wave 13 round 50).
+/// Hart 0's idle keepalive.
 ///
 /// Hart 0 alone feeds the hardware watchdog, from its timer interrupt
 /// (`azos_actuation::watchdog::feed_from_timer_tick`, gated

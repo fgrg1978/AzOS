@@ -53,7 +53,7 @@ pub const DEGRADE_LEVEL_MAX: u8 = DEGRADE_LEVEL_CONTAINED;
 // Per-level speed ceilings — single source of truth
 // ──────────────────────────────────────────────────────────────────────────
 //
-// PLACEHOLDER VALUES — owner decision recorded 2026-09-06.
+// PLACEHOLDER VALUES.
 //
 // `DEGRADE_SPEED_CAP_CAUTIOUS_PCT` (70) and `DEGRADE_SPEED_CAP_SLOW_PCT` (30)
 // were CHOSEN, not derived. No stopping-distance model and no measurement of
@@ -85,15 +85,13 @@ pub const DEGRADE_SPEED_CAP_FULL_PCT: i32 = 100;
 /// Matches the documented value and is enforced in `motor_envelope`.
 ///
 /// **Placeholder, not derived.** See the module-level note above this block:
-/// no stopping-distance model, no measurement — chosen, on record as such
-/// since 2026-09-06.
+/// no stopping-distance model, no measurement — chosen, on record as such.
 pub const DEGRADE_SPEED_CAP_CAUTIOUS_PCT: i32 = 70;
 
 /// Speed ceiling at `DEGRADE_LEVEL_SLOW`: 30 % of per-type maximum.
 ///
 /// **Placeholder, not derived.** See the module-level note above this block:
-/// no stopping-distance model, no measurement — chosen, on record as such
-/// since 2026-09-06.
+/// no stopping-distance model, no measurement — chosen, on record as such.
 pub const DEGRADE_SPEED_CAP_SLOW_PCT: i32 = 30;
 
 /// Speed ceiling at `DEGRADE_LEVEL_CONTAINED`: 0 % (full stop).

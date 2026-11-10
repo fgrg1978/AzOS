@@ -24,7 +24,7 @@ pub mod uart;
 /// 3 reads (`userspace/services/logd`, the toolbox's `log`).
 pub mod klog;
 
-/// Ring-3 console ownership and deferred kernel lines (wave 9); see
+/// Ring-3 console ownership and deferred kernel lines; see
 /// `uart::console_write_ring3`.
 pub mod console_defer;
 

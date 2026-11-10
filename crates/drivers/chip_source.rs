@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-// The chip-logic crates' source fingerprint (wave 12, DRVPLACE "same
+// The chip-logic crates' source fingerprint (DRVPLACE "same
 // source"), shared by their build scripts with `include!`. A chip crate
 // (crates/drivers/ina219, crates/drivers/buzzer) is written once and hosted
 // twice: in ring 3 and in the kernel. Its build script hashes its own `src/`

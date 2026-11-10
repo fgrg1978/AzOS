@@ -5,10 +5,10 @@
 //!
 //! # Why
 //!
-//! Before wave 15 the synchronous DesignWare path polled `IC_STATUS` for the
-//! whole transfer with the bus `SpinLock` held, so preemption was off for
+//! The synchronous DesignWare path polls `IC_STATUS` for the
+//! whole transfer with the bus `SpinLock` held, so preemption is off for
 //! it: ~1.35 ms for the IMU's 14-byte read at 100 kHz, from `imu_task`, a
-//! real-time task, 100 times a second. The owner rule is that a real-time
+//! real-time task, 100 times a second. A real-time
 //! task only enqueues.
 //!
 //! # The shape

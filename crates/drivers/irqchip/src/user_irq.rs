@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! Ring-3 ownership of riscv64 external interrupt lines — the PLIC/APLIC
-//! half of mask-until-ACK (wave 9 IRQ4 item 2; aarch64's GIC half is
+//! half of mask-until-ACK (aarch64's GIC half is
 //! `azos_arch_aarch64::irq::gic`'s ring-3 section).
 //!
 //! A line a ring-3 driver bound (`PORT_SRC_IRQ`) is
@@ -25,7 +25,7 @@
 //! source claimed forever. APLIC (AIA): the source's enable
 //! (`clrienum`/`setienum`, domain-global), plus a level re-arm on the unmask.
 //!
-//! **Routing (wave 10 IRQ5).** A ring-3 line is enabled on ONE hart: the
+//! **Routing.** A ring-3 line is enabled on ONE hart: the
 //! hart its binding task is pinned to, or, for an unpinned task, the hart it
 //! binds from ([`route_for`]); a hart that does not take supervisor external
 //! interrupts falls back to the boot hart. Every hart that takes them says so

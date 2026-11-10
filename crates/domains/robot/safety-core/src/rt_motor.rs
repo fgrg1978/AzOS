@@ -320,7 +320,7 @@ pub fn rt_motor_task(_: usize) {
         // used all along; the wake path (timer ISR → `wake_expired_timers`
         // → home-hart enqueue + IPI) is the proven one. The period is 1 ms:
         // the block programs the hart's timer for this deadline when it is
-        // earlier than what is programmed (wave 11 ONESHOT; before that a
+        // earlier than what is programmed (before that a
         // busy hart saw it at the next tick, up to 10 ms later).
         // CONTROL_HEARTBEAT still advances every iteration, far inside the
         // feeder's stall grace (40 ticks and 400 ms, `watchdog.rs`).

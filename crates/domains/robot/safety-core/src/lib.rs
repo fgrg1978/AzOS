@@ -20,7 +20,7 @@ pub mod sensor_tasks;
 pub mod txn;
 pub mod txn_rule;
 
-// Moved to `azos_actuation` (wave 11, DOMAIN): the boot latch replay, the
+// Moved to `azos_actuation` (DOMAIN): the boot latch replay, the
 // kill switch, the system watchdog task and the tick/heartbeat/WDT feed are
 // not robot-specific. Re-exported so `azos_safety_core::<module>` paths
 // keep resolving for robot code.

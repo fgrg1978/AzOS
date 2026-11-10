@@ -111,7 +111,7 @@ pub const NO_IDX: u32 = u32::MAX;
 /// The VFS never looks inside: it is produced by [`FileSystem::key_for`] and
 /// handed back to `stat` / `write_all` / `unlink` unchanged. 72 bytes holds
 /// tmpfs's key, an entry's slot and id (6 bytes) plus a leaf name of up to
-/// `TMPFS_NAME_LEN - 1` bytes (owner decision, wave 10; was 11, FAT32's 8.3
+/// `TMPFS_NAME_LEN - 1` bytes (was 11, FAT32's 8.3
 /// name, which made every tmpfs name longer than 11 bytes unreachable through
 /// a mount). FAT32's key is the canonical path of the file
 /// (`PKG/SYS_B/KERN.BIN`) and refuses a path that does not fit
@@ -404,7 +404,7 @@ pub trait FileSystem: Sync {
     /// `true` when this backend's reads and writes wait on a device (the
     /// default); `false` for a RAM-resident one (tmpfs). A streaming
     /// file of a device-backed backend transfers with the descriptor table
-    /// released and under its description's position lock (owner rule F1,
+    /// released and under its description's position lock (
     /// `fd_stream_transfer`); a RAM-resident one keeps the table's lock.
     fn device_backed(&self) -> bool { true }
 
@@ -418,7 +418,7 @@ pub trait FileSystem: Sync {
     /// `true` for a [`streaming`](Self::streaming) backend whose READ-ONLY
     /// opens still take the read-handle path (`stream_reads`,
     /// `read_at_handle`) instead of the generic streaming open (FAT32 since
-    /// wave 15: its writable opens stream, its read-only ones keep the
+    /// Its writable opens stream, its read-only ones keep the
     /// start-cluster handle). Default `false`.
     fn ro_handles(&self) -> bool { false }
 
@@ -445,7 +445,7 @@ pub trait FileSystem: Sync {
     fn handle_names(&self, _handle: u64, _cookie: u32) -> bool { true }
 
     /// The identity of the bytes `key` names now, for a cache of what was
-    /// verified about them (wave 14, SPAWNCACHE: the exec image digest and
+    /// verified about them (SPAWNCACHE: the exec image digest and
     /// frames). Two equal stamps mean the same bytes. `None` (the default)
     /// for a backend that cannot promise that: nothing is cached for it.
     fn content_stamp(&self, _key: &InodeKey) -> Option<ContentStamp> { None }
@@ -611,7 +611,7 @@ pub struct InodeBacking {
     /// own `size` is the proxy buffer's and stays `u32`).
     pub size:  u64,
     /// A read-only stream over a backend that is NOT [`FileSystem::streaming`]
-    /// ([`FileSystem::stream_reads`], wave 14): the descriptor reads in
+    /// ([`FileSystem::stream_reads`]): the descriptor reads in
     /// place, and every write path refuses it, so what the backend's writes
     /// do (FAT32's whole-file proxy rewrite) is unchanged.
     pub ro_stream: bool,
@@ -692,7 +692,7 @@ const ZEROED_FD: FileDesc = FileDesc {
 
 // ─── OpenDesc ─────────────────────────────────────────────────────────────────
 
-/// An open file description (round 48, owner decision): what descriptors
+/// An open file description: what descriptors
 /// made from one `open` share — the offset — and how many descriptors name
 /// it. A descriptor keeps its own owner (one task per slot, so every access
 /// check stays per slot); several slots, owned by one task or by a parent
@@ -1321,7 +1321,7 @@ fn overlaid<'a>(path: &'a [u8], buf: &'a mut [u8; OVERLAY_PATH_MAX]) -> &'a [u8]
 fn backend_for_path(path: &[u8]) -> Option<(&'static dyn FileSystem, &[u8])> {
     let path = trim_nul(path);
 
-    // Scanned in place under the lock (wave 14): the loop only compares
+    // Scanned in place under the lock: the loop only compares
     // paths and never calls into a backend, and copying the whole mount
     // table out first was most of what matching a mount cost. The result
     // borrows `path` and a `'static` backend, never the table.
@@ -1534,7 +1534,7 @@ fn try_backend_stream_open_at(
     Some(idx)
 }
 
-/// A read-only open on a [`FileSystem::stream_reads`] backend (wave 14): an
+/// A read-only open on a [`FileSystem::stream_reads`] backend: an
 /// inode that holds no data and serves reads in place, so `open` + `read 64 B`
 /// costs the directory lookup and the bytes read, not a load of the whole
 /// file into the heap. `None` (the proxy path, as before) for any flag that
@@ -1616,7 +1616,7 @@ pub fn fd_free<const N: usize>(table: &mut FdTableN<N>, fd: i32) {
 }
 
 
-// ─── Descriptor I/O without the table's lock (owner rule F1, wave 15) ───────
+// ─── Descriptor I/O without the table's lock ───────
 //
 // The machine-wide table is a `Mutex` (kernel/src/boot/seams.rs
 // `KERNEL_FD_TABLE`): real-time tasks use it for RAM-resident and device files, so
@@ -2557,7 +2557,7 @@ pub fn vfs_rename(from: &[u8], to: &[u8]) -> Result<(), FsErr> {
 pub const REPLACE_TMP: &[u8] = b"AZREPL.TMP";
 
 /// One replace at a time: they share [`REPLACE_TMP`]. A claim, not a `Mutex`:
-/// the holder waits on the device (owner rule F1).
+/// the holder waits on the device.
 static REPLACE_LOCK: azos_sync::claim::Claim<()> = azos_sync::claim::Claim::new(());
 
 /// Replace the whole contents of the file at `path` (created if absent) with
@@ -2808,7 +2808,7 @@ pub fn vfs_fsync<const N: usize>(table: &mut FdTableN<N>, fd: i32) -> Result<(),
 
 
 /// [`vfs_fsync`] in two halves, for a table whose lock must not be held
-/// across the device (owner rule F1). Under the lock, [`fd_fsync_begin`]
+/// across the device. Under the lock, [`fd_fsync_begin`]
 /// lends the descriptor (its inode stays alive); outside it,
 /// [`fd_fsync_finish`] asks the backend to make the file durable.
 pub struct FsyncWork {
@@ -2826,7 +2826,7 @@ pub fn fd_fsync_begin<const N: usize>(table: &FdTableN<N>, fd: i32) -> Result<Fs
     let (lone, _) = fd_lend(table, fd).ok_or(FsErr::Invalid)?;
     let mut work = FsyncWork { lone };
     let backing = FS.lock().inodes[idx as usize].backing;
-    // Wave 15: no heap copy of the file. Every writable backend streams
+    // No heap copy of the file. Every writable backend streams
     // (FAT32's writes go in place through its write-back cache, tmpfs is
     // RAM), so the fsync below has nothing to carry: `backend.fsync` writes
     // the cache back and flushes. A proxy with bytes held back is a backend
@@ -2876,7 +2876,7 @@ pub struct SyncAll {
 }
 
 /// Every mounted backend once, in mount order: copied out under the table's
-/// lock, which no backend call is made under (owner rule F1).
+/// lock, which no backend call is made under.
 fn mounted_volumes(out: &mut [&'static dyn FileSystem; MAX_MOUNTS]) -> usize {
     let fs = FS.lock();
     let mut n = 0;
@@ -2925,7 +2925,7 @@ pub fn sync_volumes(
     r
 }
 
-/// Mounted volumes that live on the block medium (FAT32, azvol): an opener
+/// Mounted volumes that live on the block medium (azvol): an opener
 /// that keeps the disk's driver from letting go of it.
 pub fn vfs_block_mounts() -> usize {
     let fs = FS.lock();

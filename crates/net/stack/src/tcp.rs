@@ -380,7 +380,7 @@ const RTO_MAX_MS: u64 = 60_000;
 /// does not vary, RTTVAR decays towards 0, and G alone (1 ms) puts the RTO a
 /// millisecond above SRTT — shorter than a resend's round trip, so above
 /// `RTO_MIN_MS` a loss recovery times out while its resend is on the way
-/// (measured in `net-tests` `tcp_rto_estimate`, 2026-09-14). 200 ms is
+/// (measured in `net-tests` `tcp_rto_estimate`). 200 ms is
 /// `RTO_MIN_MS` and Linux's `tcp_rto_min`, the floor Linux keeps under
 /// `mdev_max`. The RTO is never below RFC 6298's, so the floor adds no
 /// timeout; a real one fires up to this much later.
@@ -527,7 +527,7 @@ const PAWS_IDLE_TICKS: u64 = 24 * 86_400 * azos_drv_sys::timebase::TIMER_FREQ;
 // ---------------------------------------------------------------------------
 
 /// Longest an in-order segment's ACK is held (`CONFIG_TCP_DELACK_MS`), in
-/// ticks. 0: every in-order segment is acknowledged at once, as before wave 15.
+/// ticks. 0: every in-order segment is acknowledged at once.
 const TCP_DELACK_TICKS: u64 = azos_limits::TCP_DELACK_MS as u64 * TICKS_PER_MS;
 
 /// Full-sized segments of unacknowledged in-order data that force the ACK out
@@ -621,7 +621,7 @@ const DUP_ACK_THRESHOLD: u8 = 3;
 /// segments' worth of SACKed bytes above a hole, and both come only from
 /// segments sent after the lost one. A ring that cannot hold that flight leaves
 /// every loss to the retransmission timer. On the host at a 4096-byte ring
-/// (2026-09-14) `tcp_throughput::a_lost_middle_segment_is_recovered_with_the_stream_intact`
+/// `tcp_throughput::a_lost_middle_segment_is_recovered_with_the_stream_intact`
 /// saw the lost segment resent 240 ms after it left, by timeout. The smallest
 /// power of two that passes is 8192; `crates/core/limits/build.rs` rejects a smaller
 /// `CONFIG_TCP_BUF_SIZE` with a readable message before this is evaluated.
@@ -712,7 +712,7 @@ const OOO_MAX_SEGMENTS: usize = 4;
 /// (`TCP_MSS`, the MSS our SYN advertises), so a segment a peer cuts at that
 /// MSS is held whole. A longer one is truncated to it, and the ACK and SACK
 /// blocks cover only what was kept. 4 × 1460 B of `TcpConn` per connection;
-/// 256 B until 2026-09-14, less than one segment.
+/// A 256 B buffer is less than one segment.
 const OOO_SEGMENT_MAX_LEN: usize = TCP_MSS;
 
 // ---------------------------------------------------------------------------
@@ -992,7 +992,7 @@ pub struct TcpConn {
     fin_seq:          u32,            // sequence number of our FIN
     time_wait_start:  u64,            // tick when TimeWait began
 
-    // --- Delayed ACK (RFC 1122 §4.2.3.2, RFC 5681 §4.2; wave 15 N6) ---
+    // --- Delayed ACK (RFC 1122 §4.2.3.2, RFC 5681 §4.2) ---
     /// RCV.NXT has moved past what our last segment acknowledged and no ACK
     /// has left for it yet. Cleared by every segment we send that carries the
     /// current `ack` (see [`TcpConn::advertise`]).
@@ -2373,7 +2373,7 @@ fn connect_h<A: Into<IpAddr>>(dst_ip: A, dst_port: u16, src_port: u16) -> Option
 /// Like `connect`, but yields until the ARP cache has the destination MAC
 /// before issuing the SYN.
 ///
-/// Corrected 2026-09-26: this doc used to say the first
+/// Corrected: this doc used to say the first
 /// `ip::send` inside `crate::send_syn_segment` "would normally trigger an
 /// ARP request and return -1" on a cold cache — stale. `ip::send` queues an
 /// unresolved frame instead of dropping it (see its own doc), so a plain
@@ -2434,7 +2434,7 @@ fn connect_with_yield_h<A: Into<IpAddr>, F: FnMut()>(
 /// interval stops the robot. So the ceiling is an order of magnitude under the
 /// watchdog, and at most one loop period.
 ///
-/// The measurement (2026-09-09, `arp-timing`, with the ARP microbenchmarks
+/// The measurement (`arp-timing`, with the ARP microbenchmarks
 /// restored to wiping the live cache as a hostile load): resolution completed
 /// in **9 428 µs and 9 742 µs** over two runs, ~5 700 yields each. So 50 ms is
 /// ~5x the observed worst case, and the earlier 500-yield budget failed simply
@@ -2443,7 +2443,7 @@ fn connect_with_yield_h<A: Into<IpAddr>, F: FnMut()>(
 /// **On real hardware this number is wrong and must be re-measured.** ARP
 /// answers in tens of µs there; ~9.5 ms is QEMU TCG. Build with `arp-timing`
 /// and read `[ARPTIME]` — that is what the feature is for.
-// NOTE (2026-09-10): the layer below no longer LOSES a packet on an ARP miss —
+// NOTE: the layer below no longer LOSES a packet on an ARP miss —
 // `ip::send` queues it and delivers it when the reply lands. That makes this
 // pre-resolve an optimisation (it keeps the segment in order and avoids a
 // round trip's worth of latency on the first send) rather than the difference
@@ -2467,7 +2467,7 @@ pub const ARP_RESOLVE_SPIN_CAP: u32 = 5_000_000;
 /// request and returning -1, and `send_data` turns any transmit failure into
 /// -1 — which reaches ring 3 as a fatal error. `brain_client` treats any
 /// negative as fatal and tears down a healthy `Established` connection over a
-/// cache miss. Measured 2026-09-08: the ARP microbenchmarks were evicting the
+/// cache miss. Measured: the ARP microbenchmarks were evicting the
 /// gateway's entry, and the symptom read as a TCP transport bug three layers
 /// away.
 ///
@@ -2477,8 +2477,8 @@ pub const ARP_RESOLVE_SPIN_CAP: u32 = 5_000_000;
 ///
 /// **Why pre-resolve instead of reporting the transient.** Returning 0
 /// ("retry later", which is what this function already answers for a closed
-/// peer window and for a full send window) was considered and REJECTED by the
-/// owner on 2026-09-08: callers that read 0 as success — `brain_client` does —
+/// peer window and for a full send window) was considered and REJECTED:
+/// callers that read 0 as success — `brain_client` does —
 /// would silently drop the frame, trading a visible failure for silent data
 /// loss. Pre-resolving keeps the return contract untouched, so no existing
 /// caller changes behaviour.
@@ -3063,7 +3063,7 @@ fn accept_h(local_port: u16, v6: bool) -> Option<TcpHandle> {
         // polls of the accepting task, and its data is still in `rx_buf`,
         // readable until EOF. Accepting only `Established` left such a
         // connection unaccepted for good — an OTA push lost with no line on
-        // the console (seen under TCG on the safe-mode gate row, wave 10).
+        // the console (seen under TCG on the safe-mode gate row).
         if matches!(c.state, TcpState::Established | TcpState::CloseWait)
             && c.local_port == local_port
             && c.local_ip.is_v6() == v6
@@ -3254,7 +3254,7 @@ fn process_inbound_payload(
 ///
 /// Private by design: `handle_checked` is the only way in, so this cannot be
 /// reached without the mandatory checksum validation having run first.
-/// Re-verified 2026-09-26 (the previous line numbers
+/// Re-verified (the previous line numbers
 /// here — 1256/1265/1267 — had already drifted false): `handle_checked` is
 /// `fn handle`'s sole call site, and that call is unconditionally preceded
 /// by the checksum-mismatch `return` in the same function, a few lines
@@ -4323,8 +4323,7 @@ fn process_ack(
             // cumulative ACK instead, a recovery ends in a timeout whenever
             // it takes longer than one RTO — about two round trips: the
             // duplicates arrive one after that ACK, the resend's ACK one
-            // later — with its resend still on the way (`tcp_rto_estimate`,
-            // 2026-09-14). Only bytes never SACKed before count (`sack_new`),
+            // later — with its resend still on the way (`tcp_rto_estimate`). Only bytes never SACKed before count (`sack_new`),
             // all inside the flight, so one recovery restarts the timer a
             // bounded number of times. Outside SACK recovery a new SACK does
             // not restart it: a tail loss that draws one or two duplicates
@@ -4711,7 +4710,7 @@ fn ecn_note(idx: usize, flags: u8, ce: bool) -> bool {
 /// `false` when PAWS refuses it (R1: its TSval is behind TS.Recent, which is
 /// at most 24 days old), after answering it with an ACK as any unacceptable
 /// segment is (R2); otherwise TS.Recent moves up to its TSval when it is in
-/// the window and starts at or before what we last acknowledged (R3, §4.3),
+/// the window and starts at or before what we last acknowledged (§4.3),
 /// so the echo answers the oldest segment an ACK covers. A segment that
 /// carries no Timestamps is let through without either: RFC 7323 §3.2 lets a
 /// receiver drop it, Linux takes it, and so does this stack.
@@ -4796,7 +4795,7 @@ fn store_ooo_segment(c: &mut TcpConn, seg_seq: u32, data: &[u8]) {
 
     // A free slot, or the arrival is dropped, whatever its sequence: beyond
     // every held entry, before them, or over one. A held entry is never
-    // evicted (owner decision 2026-09-14). Every held entry has been
+    // evicted. Every held entry has been
     // reported: the ACK answering it named it in a SACK block when SACK was
     // negotiated, and all of them fit in one option (the assert above).
     // Evicting one is reneging (RFC 2018 §8). The sender keeps the range as
@@ -4804,7 +4803,7 @@ fn store_ooo_segment(c: &mut TcpConn, seg_seq: u32, data: &[u8]) {
     // repairs it. With one-MSS slots each block covers a whole segment: the
     // eviction this replaced (the farthest entry, for any arrival) left a
     // sender scoreboard of 128,480 B against 5,840 B held, and timeouts that
-    // backed off to 3.5 s (`tcp_throughput`, 2026-09-14). A dropped arrival
+    // backed off to 3.5 s (`tcp_throughput`). A dropped arrival
     // was never acknowledged or reported, so the peer sends it again.
     // Beside Timestamps a SACK option has room for three blocks, so a
     // connection that negotiated both holds three entries: a fourth could
@@ -5057,7 +5056,7 @@ fn timer_kick() {
 }
 
 // ---------------------------------------------------------------------------
-// TCP deadlines on the kernel timer (wave 15: the stack is woken when a timer
+// TCP deadlines on the kernel timer (the stack is woken when a timer
 // falls due, not by the net poll task's cadence)
 // ---------------------------------------------------------------------------
 

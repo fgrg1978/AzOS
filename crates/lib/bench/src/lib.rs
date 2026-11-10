@@ -50,7 +50,7 @@
 //!
 //! # What these numbers can and cannot support
 //!
-//! **Baseline measured 2026-09-06, four runs of one identical binary under
+//! **Baseline measured, four runs of one identical binary under
 //! QEMU TCG SMP-4, before the fix below existed (`repeats=1`, every bracket
 //! taken once).** Median run-to-run spread across the 49 measurements:
 //! **1.12x**. Worst: `net.ip_checksum_20B` at **16.3x** — 210, 150, 2450, 150
@@ -245,7 +245,7 @@ impl BenchResult {
 /// Run a bracketed measurement [`BENCH_REPEATS`] times and keep the one
 /// with the lowest `total_cycles`.
 ///
-/// This is the fix for the 16.3x outlier measured 2026-09-06
+/// This is the fix for the 16.3x outlier measured
 /// (`net.ip_checksum_20B`, 210/150/2450/150 cycles across four runs of one
 /// binary): the 2450 sample was a preemption landing inside that run's
 /// whole-loop bracket, inflating `total_cycles` from ~15k to ~245k.

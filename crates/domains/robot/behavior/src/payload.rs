@@ -48,8 +48,7 @@ pub const PAYLOAD_GPIO_CAM_TRIGGER: u32 = 21;
 /// represent that pulse width at all. Deliberately deferred to hardware
 /// bring-up (decided 2026-08): not attempted in this pass.
 ///
-/// **And moving it to channel 2 or 3 is NOT the fix** (owner decision
-/// 2026-09-13). The JH7110 instance has one `PWMCFG` for all four channels, and
+/// **And moving it to channel 2 or 3 is NOT the fix.** The JH7110 instance has one `PWMCFG` for all four channels, and
 /// `pwm_set_period` programs its shared scale field — so a 50 Hz servo period
 /// set here at `payload_init` would reprogram the drivetrain's PWM frequency
 /// at boot, before anything moves. The gripper gets its own PWM instance or a
@@ -71,7 +70,7 @@ pub const GRIPPER_PWM_RANGE_NS: u32 = GRIPPER_PWM_OPEN_NS - GRIPPER_PWM_CLOSED_N
 // ── Camera trigger constants ──────────────────────────────────────────────────
 
 /// Camera shutter trigger pulse width — 50 ms, long enough for any DSLR /
-/// mirrorless shutter to register. Owner fix, 2026-09-26 (U08-8, M48): was a
+/// mirrorless shutter to register. Not a
 /// raw `500_000` (10 MHz QEMU literal) — 125 ms on VF2 (4 MHz), 20.8 ms on
 /// K1 (24 MHz). Reachable: `payload_exec`'s shutter path is the one caller
 /// (`:169` in this file at the time of the audit), dispatched from both
@@ -142,7 +141,7 @@ pub const PAYLOAD_ACTUATOR_TYPE_BASE: u8 = 0x10;
 /// Returns `true` if the command type was recognised, handled, and NOT
 /// refused.
 ///
-/// **H22 (coordinator audit, 2026-09-26).** Before this decision this
+/// **H22 (coordinator audit).** Before this decision this
 /// function had no e-stop check at all, no capability, and wrote no record
 /// on success — a 12 V spray pump kept running through a latched e-stop,
 /// same class of gap `motor.rs`'s chokepoint closed for the wheels. Checked

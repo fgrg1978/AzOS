@@ -124,8 +124,7 @@ azos_common::ro_hook! {
     ///
     /// Takes the requested speed percentage and returns the permitted one; 0 means
     /// refuse. `None` until the kernel installs one at boot, and until then the
-    /// requested speed is CLAMPED TO 0 — owner decision 2026-09-25 (Q1.4),
-    /// reversing the previous passthrough default.
+    /// requested speed is CLAMPED TO 0 (not passed through).
     ///
     /// **Fail closed, not fail open.** The previous behaviour ("no gate installed
     /// -> the requested speed is used unchanged") was argued as "what a build
@@ -244,7 +243,7 @@ azos_common::ro_hook! {
     ///
     /// The gate decides the DUTY. This decides the H-bridge DIRECTION PINS: while
     /// it answers true, [`motor_set_reporting`] writes `Brake` and `Coast` as asked
-    /// and refuses `Forward` and `Backward` — owner decision 2026-09-13, "stopping
+    /// and refuses `Forward` and `Backward` — the rule is "stopping
     /// yes, changing direction no". The kernel installs it answering a latched
     /// e-stop or brain-loss containment, neither of which this crate can see.
     ///
@@ -270,9 +269,9 @@ pub fn motor_halted() -> bool {
 azos_common::ro_hook! {
     /// Records a CHANGE in a motor's applied (direction, effective speed).
     ///
-    /// Owner decision 2026-09-25 (Q1.3): the product thesis says no irreversible
-    /// effect happens without a record, and until now a SUCCESSFUL motor command
-    /// left none — only refusals and stops were recorded. This is the seam that
+    /// The product thesis says no irreversible
+    /// effect happens without a record, so a SUCCESSFUL motor command must
+    /// leave one, not only refusals and stops. This is the seam that
     /// closes it, installed once at boot by
     /// `azos_safety_core::actuation::install`, beside [`MOTOR_GATE`] and
     /// [`MOTOR_HALT`] and for the same reason: `crates/domains/robot/robot` cannot depend on
@@ -392,7 +391,7 @@ pub fn motor_set(id: u32, dir: MotorDir, speed_pct: u32) -> i32 {
 ///
 /// What the applied value is good for: it is produced by the hardware write
 /// itself, so it distinguishes a command that actuated from a call that merely
-/// returned 0 — the failure mode measured on 2026-09-07, when a typed handler
+/// returned 0 — the failure mode measured, when a typed handler
 /// stubbed to drive nothing left the scenario green. It is also where the
 /// safety layer becomes visible, since `gate_speed` can clamp the request to
 /// something smaller before it ever reaches the channel.
@@ -412,7 +411,7 @@ pub fn motor_set_reporting(id: u32, dir: MotorDir, speed_pct: u32) -> (i32, Opti
         (m[id as usize].pwm_ch, m[id as usize].dir_pin_a, m[id as usize].dir_pin_b)
     };
 
-    // Owner decision 2026-09-13, "stopping yes, changing direction no". The
+    // The rule is "stopping yes, changing direction no". The
     // gate only sets the DUTY, so a clamped command used to reconfigure the
     // H-bridge all the same: a latched e-stop answered duty 0 and the pins were
     // written for whatever direction was asked. While the halt query answers

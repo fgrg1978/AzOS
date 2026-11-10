@@ -7,7 +7,7 @@
 // Which hardware speaks this register set:
 //   - SpacemiT K1 (`k1`): both MMC blocks, `sdhci0@d4280000` and
 //     `emmc@d4281000`, are `compatible = "spacemit,k1-sdhci"` in mainline
-//     `k1.dtsi` (checked 2026-10-21 against the Linux v7.2.9 tree).
+//     `k1.dtsi` (checked against the Linux v7.2.9 tree).
 //   - QEMU's `sdhci-pci`, under `mmc-pci` (the MMC flush and interrupt rows).
 // The StarFive JH7110 (VisionFive 2) does NOT: its SDIO blocks are
 // `starfive,jh7110-mmc`, a Synopsys DesignWare MSHC with a different register
@@ -41,7 +41,7 @@
 // the handler wakes it by TID, bounded by the request's deadline and a
 // short slice so a lost line costs latency, not a hang.
 //
-// `mmc_flush` (2026-09-28) is the SD/eMMC durability point: CMD13
+// `mmc_flush` is the SD/eMMC durability point: CMD13
 // SEND_STATUS until the card is back in `tran` with READY_FOR_DATA, error
 // bits checked, and — only if an eMMC cache was ever enabled, which this
 // driver never does — CMD6 FLUSH_CACHE. Under `--features mmc-pci` (QEMU
@@ -252,7 +252,7 @@ pub fn mmc_flush_evidence() -> (u32, u32) {
     (FLUSH_STATUS_READS.load(Ordering::Acquire), FLUSH_LAST_STATUS.load(Ordering::Acquire))
 }
 
-/// One request queue per slot (owner rule F1, wave 15 MMC). A request
+/// One request queue per slot. A request
 /// (`mmc_read`, `mmc_write`, `mmc_flush`) owns its controller from its turn
 /// to its last `INT_TRANSFER_DONE` — two harts interleaving
 /// `SDHCI_ARGUMENT`/`SDHCI_COMMAND` writes would each read back the other's

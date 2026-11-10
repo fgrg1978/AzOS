@@ -162,7 +162,7 @@ static BLK_LOCK: Mutex<()> = Mutex::new(());
 /// used ring and freeing a completed chain's descriptors. On SMP two harts
 /// doing that on one queue concurrently would corrupt the free-descriptor
 /// accounting and race the ring indices. **Never held across the device
-/// request** (owner rule F1): a command is submitted under it, and the wait
+/// request**: a command is submitted under it, and the wait
 /// is the request layer's, with none held. The sections are a few hundred
 /// instructions with no wait on the device.
 static QLOCK: [Mutex<()>; MAXQ] = [const { Mutex::new(()) }; MAXQ];
@@ -308,7 +308,7 @@ fn slot_give(t: usize) {
     SLOT_BUSY.fetch_and(!(1u32 << t), Ordering::SeqCst);
 }
 
-// ---- Completion by interrupt (wave 15) ----
+// ---- Completion by interrupt ----
 //
 // The device raises its virtio-mmio line when it posts a used-ring entry.
 // Once the kernel has wired that line (`set_irq_mode`, after the interrupt

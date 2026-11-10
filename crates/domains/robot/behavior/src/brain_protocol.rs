@@ -5,7 +5,7 @@
 //! Packet frame:
 //!   MAGIC[2] | TYPE[1] | LEN[2 LE] | PAYLOAD[0..65535] | CRC8[1]
 //!
-//! `PAYLOAD` was documented as `[0..1400]` until 2026-09-26: `parse_packet`
+//! `PAYLOAD` is not bounded to `[0..1400]`: `parse_packet`
 //! bounds nothing below the full range of its 2-byte LE length field, and
 //! CAMERA_FRAME payloads (a JPEG) routinely exceed 1400 bytes — so 1400 was
 //! never the wire limit, only a rough MTU-sized figure for the SENSOR/STATUS
@@ -507,7 +507,7 @@ pub fn encode_camera_header(hdr_buf: &mut [u8; CAMERA_HDR_SIZE], width: u16, hei
 pub const MODE_PAYLOAD_SIZE: usize = 1;
 
 /// Reserved `mode_id`: the ONLY value that may clear an armed e-stop, or exit
-/// degraded mode, via `PKT_MODE` (owner decision, 2026-09-06). Every other
+/// degraded mode, via `PKT_MODE`. Every other
 /// mode id changes mode and must leave both containment states exactly as
 /// they were.
 ///
@@ -593,7 +593,7 @@ pub fn mode_estop_record(mode_id: u8, estop_armed: bool) -> Option<(bool, u8)> {
 }
 
 // `refusal_is_worth_recording` and `relatched_within_window` moved with the
-// latch to `azos_actuation::estop` (wave 11), their only caller.
+// latch to `azos_actuation::estop`, their only caller.
 
 /// Decide what a `PKT_MODE` arrival should do to degraded mode,
 /// and what to tell the flight recorder.

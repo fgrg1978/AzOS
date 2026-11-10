@@ -65,7 +65,7 @@ use azos_sync::SpinLock;
 // The aarch64 rows boot the modern transport, and with a 10-byte header
 // there every TX frame went out with its first two Ethernet bytes eaten as
 // `num_buffers` and every RX frame was parsed two bytes early: DHCP
-// DISCOVER "sent", never answered (gate 182e, 2026-09-26; the same image
+// DISCOVER "sent", never answered (gate 182e; the same image
 // got a lease the moment the flag was dropped).
 use azos_virtio_proto::net::{HDR_BYTES as NET_HDR_MODERN, HDR_BYTES_LEGACY as NET_HDR_LEGACY};
 
@@ -844,7 +844,7 @@ pub fn set_event_idx_flags_canary(on: bool) {
 
 /// Runtime canary `net-kick-per-frame` (the kernel arms it from the
 /// command line): a doorbell per TX frame and per RX re-post, ignoring
-/// batches and NO_NOTIFY — what the driver did before wave 15.
+/// batches and NO_NOTIFY — what a driver without batching does.
 pub fn set_kick_every_frame(on: bool) {
     NET.lock().kick_every_frame = on;
 }

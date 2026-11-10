@@ -1385,7 +1385,7 @@ pub fn socket_close(fd: i32) {
 ///
 /// Idempotent and safe to call for a TID that owns nothing.
 ///
-/// Re-verified 2026-09-06 (claims_check audit): the guard `if tid ==
+/// Re-verified (claims_check audit): the guard `if tid ==
 /// SOCK_OWNER_KERNEL || tid == SOCK_OWNER_NONE { return; }` at the top of
 /// this function's body means the per-fd match below (`s.owner == tid`)
 /// runs only for a `tid` that is provably neither sentinel, so a

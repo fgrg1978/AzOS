@@ -28,7 +28,7 @@
 //! node leaves the window unbound: [`wdt_has_hardware`] is `false`, the
 //! software watchdog is all there is, and nothing is written.
 //!
-//! **U05-3 correction (2026-09-26).** This file used to model a Synopsys
+//! **U05-3 correction.** This file used to model a Synopsys
 //! DesignWare WDT (`CR`/`TORR`/`CCVR`/`CRR`) at `platform::hw::WDT_BASE`,
 //! which the header above claimed was `0x1301_0000`. Nothing at that
 //! address is a watchdog: mainline `jh7110.dtsi` has no node there at all.
@@ -64,7 +64,7 @@
 //! ## WDT-L register map (VF2 only — see [`wdt_has_hardware`] for K1)
 //!
 //! All registers are 32-bit, base from the bound node ([`wdt_attach`]). Confirmed
-//! against `drivers/watchdog/starfive-wdt.c`'s JH7110 variant, 2026-09-26.
+//! against `drivers/watchdog/starfive-wdt.c`'s JH7110 variant.
 //!
 //! ```text
 //! 0x000  LOAD    — down-counter reload value: ticks = timeout_s * WDT_CLK_HZ
@@ -499,7 +499,7 @@ pub fn wdt_disable() {
 /// by the hardware bus, [`wdt_attach`]), or a [`Found`] watchdog (SBSA, AMD
 /// FCH). A machine without one is the software watchdog alone, not a fault.
 ///
-/// **K1 corrected 2026-09-26 (U05-3): always `false`.** Mainline `k1.dtsi`
+/// **K1 corrected (U05-3): always `false`.** Mainline `k1.dtsi`
 /// has no watchdog node at all (`grep -i "watchdog\|wdt" k1.dtsi` → no
 /// match) — the address this file used to arm under `feature = "k1"`
 /// (`platform::hw::WDT_BASE`, `0xD401_5000`) is `syscon_apbc`, an unrelated

@@ -17,12 +17,12 @@
 //! `sectors_per_block` 512-byte sectors starting at LBA
 //! `base_lba + b * sectors_per_block`; `base_lba` is where a partition starts.
 //!
-//! Lines are grouped in sets of [`MAX_WAYS`] (wave 14): block `b` can only
+//! Lines are grouped in sets of [`MAX_WAYS`]: block `b` can only
 //! live in set `b & set_mask`, so a lookup, an install and a single-block
 //! invalidation probe at most `MAX_WAYS` tags whatever the cache size, and
 //! LRU is per set. A cache of `MAX_WAYS` lines or fewer is one set, i.e.
-//! fully associative, exactly the cache this file had before. Since wave 15
-//! (WRITEBACK) a [`Mode::WriteBack`] cache is set-associative too: the epoch
+//! fully associative, exactly the cache this file had before. With
+//! WRITEBACK, a [`Mode::WriteBack`] cache is set-associative too: the epoch
 //! rule no longer depends on which line is evicted, because evicting a dirty
 //! line first writes back every OLDER epoch (see [`BlockCache::write`]), and
 //! the split path ([`write_dirty`](BlockCache::write_dirty)) never evicts a
@@ -87,7 +87,7 @@
 //!
 //! The whole-operation calls above do their I/O with the cache borrowed, i.e.
 //! under the owner's lock. An owner whose lock is a spinlock (FAT32) must
-//! never wait on the device under it (owner rule F1), so wave 15 adds a
+//! never wait on the device under it, so there is a
 //! split write-back path that does no I/O inside the cache:
 //!
 //! * [`write_dirty`](BlockCache::write_dirty) dirties a line or answers
@@ -1055,7 +1055,7 @@ impl CacheMut<'_> {
     }
 
     /// [`write_dirty`](Self::write_dirty) into the epoch AFTER the current
-    /// one, without closing the current one (wave 15, FW): the block reaches
+    /// one, without closing the current one (FW): the block reaches
     /// the device after every block of the current epoch, including those
     /// written after this call, until the next [`barrier`](Self::barrier),
     /// which closes both. FAT32 puts a file's directory entry here: the

@@ -8,10 +8,8 @@
 //! is what lets `tests/host/flight-tests` pull it in with `#[path]` and run it —
 //! the same arrangement `path3d.rs` already uses.
 //!
-//! Until 2026-09-06 `check_failsafe` and `FailsafeAction` had **no test of any
-//! kind**, on the host or in QEMU, and no reference anywhere in the tree
-//! outside `lib.rs` and the one kernel call site. The failsafe chain of a
-//! flying machine was carried entirely by review.
+//! `check_failsafe` and `FailsafeAction` are tested here on the host, since the
+//! failsafe chain of a flying machine must not rest on review alone.
 
 // ── Failsafe ────────────────────────────────────────────────────────────────
 

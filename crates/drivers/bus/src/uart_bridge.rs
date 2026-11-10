@@ -6,7 +6,7 @@
 /// 0x10010000, 115200 baud. Same IP as UART0 — see `uart.rs`'s module doc
 /// comment: real hardware needs `reg-shift = 2` / 32-bit-wide MMIO accesses,
 /// confirmed for this exact node (`serial@10010000`) against StarFive's
-/// `u-boot` tree, `arch/riscv/dts/jh7110.dtsi` (fetched 2026-09-18).
+/// `u-boot` tree, `arch/riscv/dts/jh7110.dtsi`.
 /// QEMU/K1: stubs (no bridge hardware).
 ///
 /// Architecture:
@@ -77,9 +77,9 @@ mod uart1 {
 
     const LSR_DATA_READY: u8 = 1 << 0;
     /// Overrun Error: the receiver was handed a byte before the previous one
-    /// was read, and the previous one is GONE. The driver never looked at this
-    /// bit until 2026-09-11, so hardware-level byte loss was not merely
-    /// unhandled — it was undetectable.
+    /// was read, and the previous one is GONE. Unless the driver looks at this
+    /// bit, hardware-level byte loss is not merely
+    /// unhandled — it is undetectable.
     const LSR_OVERRUN:    u8 = 1 << 1;
     const LSR_THR_EMPTY:  u8 = 1 << 5;
     const LCR_8BITS:      u8 = 0x03;

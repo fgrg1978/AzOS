@@ -223,7 +223,7 @@ mod sim {
 #[cfg(not(any(feature = "vf2", feature = "k1")))]
 pub use sim::*;
 
-// ── VisionFive 2 / JH7110: register model UNVERIFIED (U05-1, 2026-09-26) ────
+// ── VisionFive 2 / JH7110: register model UNVERIFIED ────
 //
 // **This module models the wrong IP.** It implements the SiFive PWM v0
 // register layout (`drivers/pwm/pwm-sifive.c`: one shared `PWMCFG` +

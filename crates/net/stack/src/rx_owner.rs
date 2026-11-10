@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! One consumer of the NIC receive ring at a time (wave 15 N8).
+//! One consumer of the NIC receive ring at a time.
 //!
 //! `net_poll` is called from the net-poll task and, inline, from many other
 //! places: the OTA listener's loops, the shell, DHCP/DNS/NTP waits, boot
 //! smokes, the recv/accept syscalls when the poll task is not running. Each
 //! call used to pop frames one at a time under the driver lock and process
 //! them with no lock held, so two calls on two harts could take two frames of
-//! one connection and hand them to TCP out of ring order. Seen 2026-10-09 on
+//! one connection and hand them to TCP out of ring order. Seen on
 //! the OTA row: the handshake's final ACK and the first data segment, 45 us
 //! apart, popped by the OTA loop and the poll task; both read the connection
 //! as `SynRcvd`, the first moved it to `Established` and stepped `snd.nxt`,

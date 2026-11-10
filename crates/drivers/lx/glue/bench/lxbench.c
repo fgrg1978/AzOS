@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 /*
- * lxbench.ko: the Linux side of the L1 comparison (owner rule,
- * wave 13: report against Linux on the same QEMU). Loaded by the comparison
+ * lxbench.ko: the Linux side of the L1 comparison (
+ * Report against Linux on the same QEMU). Loaded by the comparison
  * initramfs's /init into a Linux kernel built from the pinned tree with the
  * same configuration as the AzOS modules, after the very same xz_dec.ko.
  * Its init does, in kernel, exactly what the AzOS Linux driver server

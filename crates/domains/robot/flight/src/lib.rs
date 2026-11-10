@@ -198,7 +198,7 @@ pub enum FlightMode {
     AltHold,
     /// **PLANNED**: AltHold + position PID. Same status as `AltHold` —
     /// the position controller exists in `crate::position::PositionController`
-    /// (D04, host-tested in flight-math-tests) but is NOT wired into
+    /// (host-tested in flight-math-tests) but is NOT wired into
     /// `flight_control_task`; PosHold currently forwards whatever
     /// roll/pitch/throttle the server publishes via `CH_FLIGHT_TARGET`.
     /// Deferred until SITL/HIL.
@@ -248,7 +248,7 @@ static FLIGHT_MODE: AtomicU8 = AtomicU8::new(0); // 0 = Disarmed
 azos_common::ro_hook! {
     /// Whether the e-stop latch holds, queried before arming. `None` until
     /// installed (`set_arm_gate`), in which case arming is unconditionally
-    /// permitted — the pre-2026-09-26 behaviour, for a build with no safety
+    /// permitted — the earlier behaviour, for a build with no safety
     /// layer wired at all.
     ///
     /// This crate cannot depend on `crates/domains/robot/behavior`/`crates/domains/robot/safety-core`
@@ -279,8 +279,7 @@ pub fn is_armed() -> bool {
 
 /// Arm the motors (enable flight).
 ///
-/// Refuses while the e-stop latch holds (owner/coordinator decision,
-/// 2026-09-26, H22/U08-6) — before this, `flight_arm`/`esc_arm` (the shell
+/// Refuses while the e-stop latch holds — without this, `flight_arm`/`esc_arm` (the shell
 /// command wrapping it) re-energised the ESC while the latch held; the
 /// ACTUATION half of that gap is closed independently in
 /// `crates/domains/robot/safety-core/src/flight_ctrl.rs` (throttle zeroed every tick while
@@ -535,7 +534,7 @@ fn clamp_throttle(v: i32) -> u16 {
 
 // ── PID controller ──────────────────────────────────────────────────────────
 //
-// Extracted to its own file 2026-09-26 (`pid.rs`) so it can be `#[path]`-
+// Kept in its own file (`pid.rs`) so it can be `#[path]`-
 // pulled into `tests/host/flight-tests` without the rest of this file's AHRS/
 // GPS/driver dependencies — see that module's doc for why the file as a
 // whole cannot be.

@@ -42,17 +42,16 @@ pub const ROBOT_TYPE_ACKERMANN: u8 = 3;
 pub const SAFETY_FALL_ACCEL_Z_MG: i32 = 500;
 /// Maximum gyro rate (mdps) — above this, robot is spinning out of control.
 pub const SAFETY_MAX_GYRO_MDPS: u32 = 90_000;
-/// Comms timeout — 5 seconds. Owner fix, 2026-09-26 (U12-9 class, U08-8):
-/// was a raw `50_000_000` (10 MHz QEMU literal) — 7.5 s on VF2 (4 MHz), 1.25 s
+/// Comms timeout — 5 seconds. Not a raw `50_000_000` (10 MHz QEMU literal) — 7.5 s on VF2 (4 MHz), 1.25 s
 /// on K1 (24 MHz) — the same per-board tick-unit class `layers.rs:62-67`
-/// fixed for `REMOTE_ACTION_MAX_AGE_S` on 2026-09-18. Currently unused (no
-/// caller checks it for the wheeled profile — see U08-4/M32: the wheeled
+/// fixed for `REMOTE_ACTION_MAX_AGE_S`. Currently unused (no
+/// caller checks it for the wheeled profile: the wheeled
 /// robot has NO comms-loss e-stop of its own today, only `sys_wdt`'s timer
 /// liveness and `rt_motor.rs`'s own comms-loss stop, which is unlatched and
 /// unrecorded — reported, not fixed here, since wiring a NEW caller for this
 /// constant is a behavior change beyond a tick-unit fix).
 ///
-/// Wave 11: the seconds come from Kconfig `SAFETY_COMMS_TIMEOUT_S` (Robot
+/// The seconds come from Kconfig `SAFETY_COMMS_TIMEOUT_S` (Robot
 /// menu, default 5); the tick count is still derived here from the board's
 /// `TIMER_FREQ`, so it is the same time on every board.
 pub const SAFETY_COMMS_TIMEOUT_TICKS: u64 =
@@ -75,14 +74,13 @@ pub const SAFETY_DRONE_LOW_BATTERY_MV: u16 = 7000;
 pub const SAFETY_DRONE_CRITICAL_BATTERY_MV: u16 = 6500;
 /// Maximum tilt for drone (centidegrees) — ~35°.
 pub const SAFETY_DRONE_MAX_TILT_CDEG: u16 = 3500;
-/// Drone comms timeout — 3 seconds (shorter than wheeled). Owner fix,
-/// 2026-09-26 (U08-8): was a raw `30_000_000`, the same per-board tick-unit
+/// Drone comms timeout — 3 seconds (shorter than wheeled). Not a raw `30_000_000`: the same per-board tick-unit
 /// defect class as [`SAFETY_COMMS_TIMEOUT_TICKS`] above — 4.5 s on VF2,
 /// 0.75 s on K1, both silently different from the 3 s the doc comment and
 /// `check_drone`'s caller assume. This one DOES have a caller
 /// (`check_drone`), so the wrong unit was live, not latent.
 ///
-/// Wave 11: the seconds come from Kconfig `SAFETY_DRONE_COMMS_TIMEOUT_S`
+/// The seconds come from Kconfig `SAFETY_DRONE_COMMS_TIMEOUT_S`
 /// (Robot menu, default 3), scaled by the board's `TIMER_FREQ` here.
 pub const SAFETY_DRONE_COMMS_TIMEOUT_TICKS: u64 =
     azos_drv_sys::timebase::TIMER_FREQ * azos_limits::SAFETY_DRONE_COMMS_TIMEOUT_S as u64;
@@ -142,7 +140,7 @@ pub enum SafetyViolation {
     /// Robot has crossed the circular geofence boundary (E03).
     GeofenceViolation,
     /// The IMU has been invalid/stale for longer than
-    /// [`IMU_INCOHERENT_AFTER_TICKS`] (owner decision 2026-09-26, V1.6).
+    /// [`IMU_INCOHERENT_AFTER_TICKS`] (V1.6).
     SensorIncoherent,
 }
 
@@ -165,7 +163,7 @@ pub const SAFETY_WARN_TEMP_CDEG: i32 = 7000;
 // ---------------------------------------------------------------------------
 // The e-stop latch, release authority and safe mode
 // ---------------------------------------------------------------------------
-// Moved to `azos_actuation::estop` (wave 11): the latch is cross-cutting,
+// Moved to `azos_actuation::estop`: the latch is cross-cutting,
 // not robot-specific. Re-exported here so every robot caller keeps its path.
 // `crate::estop` is that module (`lib.rs`), so this also resolves when a host
 // suite pulls this file in with `#[path]` beside its own copy of the module.
@@ -222,7 +220,7 @@ pub const SAFETY_LOW_CONFIDENCE_CAP_PCT: u8 = 40;
 /// Re-exported from `azos_degrade_policy::DEGRADE_SPEED_CAP_FULL_PCT`.
 pub const SAFETY_DEGRADE_FULL_CAP_PCT: i32 = azos_degrade_policy::DEGRADE_SPEED_CAP_FULL_PCT;
 
-// The level numbers are declared twice since wave 11: by `azos_ipc::cap`
+// The level numbers are declared twice: by `azos_ipc::cap`
 // (core: it holds the level and enforces containment) and by
 // `azos_degrade_policy` (robot: the level -> speed mapping). This crate
 // sees both, so the two copies are checked against each other here; a drift
@@ -352,8 +350,8 @@ pub fn safety_check(state: &SensorState) -> SafetyResult {
 
 /// Second, longer bound on top of `SensorBus::imu_max_age_ns` (200 ms at the default rate,
 /// which is already what `SensorState.imu_valid` means: "a sample arrived
-/// AND it is fresh"). Owner decision, 2026-09-26 (V1.6): fail-operational on
-/// a dead IMU forever — the behaviour before this decision — reads a robot
+/// AND it is fresh"). Fail-operational on
+/// a dead IMU forever reads a robot
 /// lying on its side, or one whose sensor died outright, as "nothing to
 /// check," exactly the case `sensor_bus.rs`'s own staleness handling was
 /// written against. But treating the FIRST invalid tick as a fault would
@@ -372,7 +370,7 @@ pub const IMU_INCOHERENT_AFTER_TICKS: u64 = azos_drv_sys::timebase::TIMER_FREQ; 
 static IMU_INVALID_SINCE: AtomicU64 = AtomicU64::new(0);
 
 /// Whether the durable `SensorIncoherent` record has already been written
-/// for the CURRENT stretch of invalidity — "recorded ONCE" (owner decision),
+/// for the CURRENT stretch of invalidity — "recorded ONCE",
 /// matching every other latch-shaped event in this file, not once per tick
 /// the condition continues to hold.
 static IMU_INCOHERENT_RECORDED: AtomicBool = AtomicBool::new(false);
@@ -647,8 +645,8 @@ fn isqrt(n: u64) -> u64 {
 // `Unknown` rather than its last `Inside`.
 //
 // The behavior loop arms the fence once per boot at the first trusted fix
-// ([`geofence_arm_home`], radius Kconfig `GEOFENCE_RADIUS_M`; wave 15 — until
-// then `geofence_set` had no production caller and the fence stayed disabled).
+// ([`geofence_arm_home`], radius Kconfig `GEOFENCE_RADIUS_M`); `geofence_set` has no other production caller, so
+// without it the fence stays disabled.
 // A breach then does three things: L0 turns `EmergencyStop` into
 // `MotorOutput::some(0, 0)` (`layers.rs`); [`geofence_breach_latch`] latches
 // the e-stop, so the actuation gate refuses every motor write until an
@@ -816,8 +814,7 @@ const fn isqrt_u64(n: u64) -> u64 {
 /// input) and 8 (simulator): three qualities carrying a position the receiver
 /// did not measure. A fence acting on a manual or simulated position stops the
 /// machine on a number somebody typed, and — worse in this direction — reads a
-/// drifting dead-reckoned position as being inside the fence. Owner decision,
-/// 2026-09-16.
+/// drifting dead-reckoned position as being inside the fence.
 pub const GEOFENCE_FIX_QUALITIES: [u8; 5] = [1, 2, 3, 4, 5];
 
 /// Whether a GGA fix quality is one the geofence acts on.
@@ -827,7 +824,7 @@ pub const fn geofence_fix_trusted(quality: u8) -> bool {
 /// Minimum satellites in use the geofence acts on: 4, the fewest that fix a
 /// position in three dimensions plus the receiver clock.
 ///
-/// Kconfig `GEOFENCE_MIN_SATELLITES` (wave 15; was this literal 4).
+/// Kconfig `GEOFENCE_MIN_SATELLITES` (was this literal 4).
 pub const GEOFENCE_MIN_SATELLITES: u8 = azos_limits::GEOFENCE_MIN_SATELLITES as u8;
 const _: () = assert!(azos_limits::GEOFENCE_MIN_SATELLITES >= 4
     && azos_limits::GEOFENCE_MIN_SATELLITES <= u8::MAX as usize);
@@ -849,7 +846,7 @@ pub fn geofence_status(state: &SensorState) -> GeofenceStatus {
 
 /// Latch the emergency stop on a fence breach, once per breach.
 ///
-/// Owner decision, 2026-09-16. Until then a breach only made L0 command
+/// Until then a breach only made L0 command
 /// (0, 0): the moment the reading stopped saying `Outside` — a fix going
 /// stale is enough, and reads as `Unknown` — L1-L3 drove again, with nothing
 /// recorded and nobody asked. A fence that releases itself is not a fence.
@@ -881,7 +878,7 @@ static HOME_ARM_DONE: AtomicBool = AtomicBool::new(false);
 
 /// Arm the fence at the home fix: the first trusted fix of the boot, radius
 /// Kconfig `GEOFENCE_RADIUS_M`. The production caller of [`geofence_set`]
-/// (wave 15, owner decision: wire the fence); the behavior loop calls it every
+/// (wire the fence); the behavior loop calls it every
 /// tick and it acts once.
 ///
 /// `Some((lat_udeg, lon_udeg, radius_m))` on the tick it arms, for the caller

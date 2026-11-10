@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! Console ownership: ring 3 owns the UART with interrupts on, kernel lines
-//! written meanwhile wait in a bounded buffer the owner drains (wave 9).
+//! written meanwhile wait in a bounded buffer the owner drains.
 //!
 //! # Why
 //!
@@ -11,7 +11,7 @@
 //! `[IPCTEST] ALL PA[SCHED-DBG]   ASKS-SCHED ...`, a timer-ISR line inside a
 //! ring-3 marker. Holding the spinlock for a whole line closes that, but masks
 //! interrupts for a line of wire time (≈ 10 ms per 128 B at 115200 baud). The
-//! owner chose this shape instead (2026-09-28), the one Linux's printk uses:
+//! owner chose this shape instead, the one Linux's printk uses:
 //! the writer that owns the console puts its line on the wire with
 //! interrupts ON, and everybody else hands their output to it.
 //!
@@ -59,7 +59,7 @@
 //!   direct line, never the residual. A residual nobody is left to drain
 //!   (a quiet system) is drained from the idle loop ([`idle_drain`]).
 //!
-//! # The wire may be a queue (wave 11)
+//! # The wire may be a queue
 //!
 //! In the kernel the "wire" is a TX ring the UART's interrupt drains, and a
 //! writer holding the lock may not wait for room in it. So a direct kernel
@@ -101,7 +101,7 @@ pub const DRAIN_BUDGET: usize = 8192;
 pub const DROP_MARKER_MAX: usize = 112;
 
 /// Where output goes. Two ways in, because the two kinds of caller differ in
-/// what they may do while the wire is busy (wave 11, the TX ring):
+/// what they may do while the wire is busy (the TX ring):
 ///
 /// * [`put`](Wire::put) is called with the caller's lock HELD (in the kernel:
 ///   the UART spinlock, interrupts masked). It must never wait. It takes the
@@ -250,7 +250,7 @@ impl<const N: usize> ConsoleDefer<N> {
     }
 
     /// Unowned: whatever is deferred goes first. Otherwise put what the wire
-    /// takes now and defer the rest behind it (wave 11: the wire is a TX ring
+    /// takes now and defer the rest behind it (the wire is a TX ring
     /// that may be full, and the caller holds the lock, so it may not wait).
     fn put_or_defer<F: Wire + ?Sized>(&mut self, bytes: &[u8], direct: &mut F) {
         let n = if self.has_residual() { 0 } else { direct.put(bytes) };
@@ -580,7 +580,7 @@ pub fn owner_write<const N: usize, L: DeferLock<N>, R: FnMut(&[u8]), K: FnMut(&[
 ///   - otherwise (an interrupt handler, interrupts already masked, a
 ///     spinlock held, or the line lock busy): [`ConsoleDefer::help`] with one chunk and defer the
 ///     line behind the rest.
-/// * **A full buffer** (XC, wave 15): a writer handed `wait_line` (it may
+/// * **A full buffer** (XC): a writer handed `wait_line` (it may
 ///   own and holds no sleeping lock: [`may_wait`]) never appends into less
 ///   than [`LINE_RESERVE`] free while another context owns the console or
 ///   holds the line lock: it waits for the line lock, then writes its line
@@ -610,7 +610,7 @@ pub fn kernel_print<const N: usize, L, G, T, W, K, E>(
     // (see [`may_wait`]: it holds a sleeping lock). Such a writer never drops its own
     // line: when the buffer has less than [`LINE_RESERVE`] free while
     // someone else owns the console, it waits for the owner's release
-    // instead of appending into an overflow (XC, wave 15). Everyone else
+    // instead of appending into an overflow (XC). Everyone else
     // (interrupt handlers, spinlock holders, RT callers, the idle drain)
     // keeps the append-and-count path.
     let may_wait = may_own && wait_line.is_some();
@@ -716,7 +716,7 @@ pub fn may_wait(may_own: bool, holds_mutex: bool) -> bool {
 /// defers instead.
 ///
 /// A real-time caller (`rt`: its own priority is in the RT band) never owns
-/// either (wave 15, owner rule "RT tasks only enqueue"): owning means
+/// either (owner rule "RT tasks only enqueue"): owning means
 /// putting other contexts' lines on the wire in the caller's time, an
 /// unbounded wait on the RT path. It appends like an interrupt handler,
 /// through a [`BandWire`].
@@ -724,7 +724,7 @@ pub fn may_own(irqs_on: bool, preempt_depth: u32, rt: bool) -> bool {
     !rt && irqs_on && preempt_depth == 0
 }
 
-/// A real-time caller's wire (wave 15, C2): append-only.
+/// A real-time caller's wire: append-only.
 ///
 /// [`put`](Wire::put) takes a prefix only while the wire is a queue
 /// (`queued`: in the kernel, the TX ring its interrupt drains), a copy and

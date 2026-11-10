@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The RC receiver's say in the safety path (wave 15, owner decision: wire the
+//! The RC receiver's say in the safety path (wire the
 //! RC input; Kconfig `RC_INPUT`).
 //!
 //! Pure policy: it is handed what `azos_robot_drivers::rc` reports (the

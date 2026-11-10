@@ -6,7 +6,7 @@
 /// In QEMU (`RcMode::Simulated`), returns simulated neutral stick positions
 /// — labeled as such, and only reachable in that mode.
 ///
-/// **The SBUS byte source is [`rc_feed_byte`]** (wave 15). It accumulates
+/// **The SBUS byte source is [`rc_feed_byte`]**. It accumulates
 /// 25-byte frames, decodes them with [`sbus_decode`] and applies them with
 /// [`rc_apply_sbus_frame`], which marks the driver ready. A board's UART
 /// receive interrupt (100 kbaud, 8E2, signal-inverted) calls it once per byte;
@@ -45,7 +45,7 @@ pub enum RcMode {
     /// failsafe chain can never fire. On a laptop that is a useful stand-in;
     /// on a real machine it is a fabricated "link established" that no
     /// operator asked for, and the kernel selected it unconditionally at
-    /// `rc_init` for every target until 2026-09-10.
+    /// `rc_init` for every target.
     ///
     /// Gated with `cfg` rather than with a runtime check on purpose: a board
     /// build that tries to select it must FAIL TO COMPILE. A runtime guard
@@ -436,7 +436,7 @@ pub fn rc_set_channels(channels: &[u16; 16]) {
 ///   * `frame_lost` (flags bit 2) is set when a SINGLE frame did not arrive.
 ///     At 100 Hz that happens with ordinary interference.
 ///
-/// **Only bit 3 feeds `RC_FAILSAFE`** (owner decision, 2026-09-07). Feeding
+/// **Only bit 3 feeds `RC_FAILSAFE`**. Feeding
 /// `frame_lost` as well would turn one dropped frame into apparent link loss,
 /// and what `RC_FAILSAFE` gates is whether the frame refreshes `CH_RC_INPUT` —
 /// so whether `rc_age` grows and `FailsafeAction::RTL` fires. A spurious RTL
@@ -457,7 +457,7 @@ pub fn rc_apply_sbus_frame(frame: &SbusFrame) {
     // Deliberately NOT `frame.failsafe || frame.frame_lost`.
     rc_set_failsafe(frame.failsafe);
     // A decoded frame is a live receiver: from here `rc_read` hands out what
-    // it said (wave 15; before, nothing ever called this outside host tests).
+    // it said (before, nothing ever called this outside host tests).
     let _ = RC_FRAMES.fetch_update(Ordering::AcqRel, Ordering::Acquire,
                                    |n| Some(n.saturating_add(1)));
     RC_READY.store(true, Ordering::Release);

@@ -62,7 +62,7 @@ pub fn net_random_fill(buf: &mut [u8]) -> bool {
 }
 
 // DEV01.2 — boot-time TFTP fetch (RFC 1350) wired over UDP.
-// `tftp_client` moved to `crates/net/tftp/src/client.rs` (2026-09-05): it was
+// `tftp_client` moved to `crates/net/tftp/src/client.rs`: it was
 // boot-time netboot convenience, and it was the only edge from this core crate
 // to a scaffolding one.
 

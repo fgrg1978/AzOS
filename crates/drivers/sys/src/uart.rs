@@ -10,8 +10,7 @@
 /// a 4-byte stride), unlike QEMU's generic 16550 model, which is
 /// byte-addressed (`reg-shift = 0`). Confirmed against StarFive's own
 /// `u-boot` tree, `arch/riscv/dts/jh7110.dtsi`, `uart0`/`uart1` nodes
-/// (<https://github.com/starfive-tech/u-boot/blob/JH7110_VisionFive2_devel/arch/riscv/dts/jh7110.dtsi>),
-/// fetched 2026-09-18. `#[cfg(feature = "vf2")]` below switches to the
+/// (<https://github.com/starfive-tech/u-boot/blob/JH7110_VisionFive2_devel/arch/riscv/dts/jh7110.dtsi>). `#[cfg(feature = "vf2")]` below switches to the
 /// shifted, 32-bit-wide access pattern; QEMU and K1 keep the original
 /// byte-stride path (K1's own UART register-stride behavior has not been
 /// independently re-verified in this pass — out of scope until board
@@ -300,8 +299,7 @@ mod ns16550a {
     // `intel,xscale-uart`) declares the same `reg-shift = <2>` and
     // `reg-io-width = <4>`, so it takes this stride too. Byte-stride access
     // read the wrong register (LSR polled forever). NOT verified on K1
-    // silicon: integrated behind the K1 build's `compile_error!` (owner
-    // decision 2026-09-28) so it does not rot before a board exists. The
+    // silicon: integrated behind the K1 build's `compile_error!` so it does not rot before a board exists. The
     // DW busy-detect workaround below stays VF2-only: an xscale UART is not
     // a DesignWare part.
     #[cfg(any(feature = "vf2", feature = "k1"))]
@@ -331,8 +329,7 @@ mod ns16550a {
     // Status Register" busy bit before retrying the write once.
     // `DW_UART_USR` = register index `0x1f` (byte offset `0x7C` at this
     // IP's `reg-shift = 2`), `DW_UART_USR_BUSY = BIT(0)` — both confirmed
-    // against Linux mainline `drivers/tty/serial/8250/8250_dwlib.h`
-    // (fetched 2026-09-18):
+    // against Linux mainline `drivers/tty/serial/8250/8250_dwlib.h`:
     // <https://raw.githubusercontent.com/torvalds/linux/master/drivers/tty/serial/8250/8250_dwlib.h>
     #[cfg(feature = "vf2")]
     const REG_USR: usize = 0x1f;
@@ -1086,7 +1083,7 @@ pub static CONSOLE: com16550_pio::Com16550Console = com16550_pio::Com16550Consol
 /// `console-route-canary`, which also pulls `qemu`.
 ///
 /// U07-1: [`console_write_ring3`] has not always called `write_bytes` once
-/// per line (until wave 9 it was once per 16-byte FIFO load), so prefixing
+/// per line (it used to be once per 16-byte FIFO load), so prefixing
 /// every CALL would splice `CANARY>` into the middle of a line whenever a
 /// writer splits one. [`CANARY_AT_LINE_START`] makes the prefix a per-LINE
 /// property: it is set after every `write_bytes` call to whether that call's
@@ -1183,7 +1180,7 @@ fn registered_console() -> Option<&'static dyn Console> {
 /// (`hw/riscv/virt.c`'s `VIRT_UART0_IRQ`). Real JH7110 UART0: interrupt 32
 /// — confirmed against StarFive's `u-boot` tree,
 /// `arch/riscv/dts/jh7110.dtsi`, `uart0@10000000`'s `interrupts` property
-/// (fetched 2026-09-18, same source as the register-stride fix above).
+/// (same source as the register-stride fix above).
 /// K1's real UART0 IRQ number has not been independently verified in this
 /// pass — kept on the QEMU-shaped default (out of scope until board
 /// bring-up).
@@ -1337,7 +1334,7 @@ pub fn kernel_log(level: usize, module: &'static str, args: fmt::Arguments<'_>, 
 }
 
 fn print_line(args: fmt::Arguments<'_>, newline: bool, log: Option<(usize, &'static str)>) {
-    // Format BEFORE the console lock (wave 13, RT7). The lock hold masks
+    // Format BEFORE the console lock. The lock hold masks
     // interrupts, and formatting inside it was the longest masked window on
     // a hart: 9.7 us per WCET/report line under -icount (lat-trace, site
     // `uart.rs` try_acquire..drop), longer than the timer-ISR entry, and
@@ -1529,7 +1526,7 @@ fn kernel_emit(emit: &mut dyn FnMut(&mut dyn FnMut(&[u8]))) {
         return;
     }
     if rt != RT_CALLER_NONE {
-        // Wave 15 (C2): an RT caller only appends — into the TX ring the
+        // An RT caller only appends — into the TX ring the
         // UART interrupt drains, or into the defer buffer a non-RT context
         // drains — and never owns (`may_own` is false above).
         let mut wire = crate::console_defer::BandWire {
@@ -1749,7 +1746,7 @@ pub fn write_str_translated(bytes: &[u8]) {
 }
 
 /// The platform UART with no TX ring in between: [`CONSOLE`]'s impl now
-/// queues ring 3's bytes into the TX ring (wave 11), and the direct path
+/// queues ring 3's bytes into the TX ring, and the direct path
 /// must not — it is the panic/halt/reset writer and the pre-interrupt one.
 struct DirectHw;
 
@@ -1766,7 +1763,7 @@ impl Console for DirectHw {
 /// The [`Console`]-dispatched write with no ownership protocol. Nothing in
 /// the kernel calls it today: `sys_write` to fd 1/2 goes through
 /// [`console_write_ring3`]. It takes no line lock and does not own the
-/// console, so a kernel line may land inside its bytes; and since wave 11
+/// console, so a kernel line may land inside its bytes; and
 /// the platform [`Console`] impls queue into the TX ring and take the UART
 /// lock themselves, so it must NOT be called with that lock held.
 ///
@@ -1784,7 +1781,7 @@ pub fn console_write(bytes: &[u8]) {
 /// Write a ring-3 `write(1|2, ..)` to the console: the whole write is one
 /// piece on the wire against every kernel print but the lock-free ones.
 ///
-/// # Ownership, not a held lock (wave 9)
+/// # Ownership, not a held lock
 ///
 /// The caller becomes the console's OWNER (see [`crate::console_defer`] for
 /// the protocol and why): it takes the UART spinlock only to flip ownership
@@ -1805,7 +1802,7 @@ pub fn console_write(bytes: &[u8]) {
 ///
 /// Interrupts are masked on this hart only for the lock holds: the flip, and
 /// each drain step's copy of at most `DRAIN_CHUNK` bytes — shorter than the
-/// old 16-byte FIFO load. Since wave 11 the bytes themselves go into the TX
+/// old 16-byte FIFO load. The bytes themselves go into the TX
 /// ring ([`tx_write_wait`]) and this returns once they are queued, not once
 /// they are on the wire. `console-splice-smoke`'s `[SPLICE] DONE` line
 /// reports the longest and the total per call.
@@ -1813,7 +1810,7 @@ pub fn console_write(bytes: &[u8]) {
 /// # Ownership cannot leak
 ///
 /// It ends only when this function returns, or at a halt
-/// ([`console_bypass_for_halt`]). As of 2026-09-28 no path ends a task inside
+/// ([`console_bypass_for_halt`]). No path ends a task inside
 /// a syscall from another hart: the native `SYS_KILL` family is retired and
 /// the Linux signals live in `sched/signal_state.rs`; every kill is the task's own
 /// user-mode trap. `sys_write` copies from ring 3 before calling this, so a
@@ -1830,10 +1827,10 @@ pub fn console_write(bytes: &[u8]) {
 /// * The lock-free writer: [`puts`] (the panic path, by design). `sys_putchar`
 ///   and `vfs`'s `/dev/stdout` come through here, and the kernel shell
 ///   through [`write_locked`]/[`putc_locked`]
-///   (wave 11; [`putc`] has no caller left in the kernel).
+///   ([`putc`] has no caller left in the kernel).
 pub fn console_write_ring3(bytes: &[u8]) {
     mirror(bytes);
-    // Wave 15 (C2): a ring-3 task in the RT band only appends, exactly like
+    // A ring-3 task in the RT band only appends, exactly like
     // an RT kernel line (see `kernel_emit`): no line lock (another owner's
     // wire time), no ownership, no wait for room. Its bytes go into the TX
     // ring or the deferred buffer, translated on the way out; a full buffer
@@ -1912,7 +1909,7 @@ pub fn console_defer_room() -> (usize, bool) {
 
 /// Kernel lines deferred while ring 3 owns the console.
 ///
-/// Sized against measurements (2026-09-28), not by feel: the `ipc-census`
+/// Sized against measurements, not by feel: the `ipc-census`
 /// dump's `console defer hwm=` line peaked at 3072 B over fifteen `ipc:
 /// census counters zero` boots (bursts of ISR census lines landing while a
 /// ring-3 line is out); the aarch64 `-smp 2` splice smoke, a stress run,
@@ -1988,7 +1985,7 @@ unsafe fn defer_state() -> &'static mut crate::console_defer::ConsoleDefer<DEFER
 }
 
 // ============================================================
-// TX ring: the UART fed by its TX interrupt (wave 11)
+// TX ring: the UART fed by its TX interrupt
 // ============================================================
 //
 // Before this, every byte reached the UART from the writer itself, spinning
@@ -2041,7 +2038,7 @@ const TX_KICK_BUDGET: usize = 16;
 /// Most bytes one TX interrupt moves to the FIFO. On a real UART the FIFO
 /// fills first (16 bytes), so this never binds; under QEMU, which transmits
 /// instantly, it is the bound. One FIFO per interrupt there cost ten times
-/// the throughput the console had before (aarch64 smoke, 2026-10-02: the
+/// the throughput the console had before (aarch64 smoke: the
 /// ring stayed full and the ring-3 writer stalled), so 256: the interrupt's
 /// FIFO writes take the place of the old writer's, which ran under the
 /// same lock with interrupts masked too, never with a wait in between.
@@ -2127,7 +2124,7 @@ impl TxRing {
     /// Copy the longest prefix of `bytes` that fits (a `\n` only together
     /// with its `\r`). Returns how many input bytes went in.
     ///
-    /// Runs without a `\n` go in as at most two block copies (wave 13, RT7):
+    /// Runs without a `\n` go in as at most two block copies:
     /// this runs under the UART lock with interrupts masked, and the old
     /// byte-at-a-time push made a 230-byte report line a 3.5 us masked
     /// window under -icount.
@@ -2680,7 +2677,7 @@ pub mod lock_probe {
     /// dominates the tick maxima under QEMU.
     static HOLD_BYTES: AtomicU64 = AtomicU64::new(0);
     static MAX_HOLD_BYTES: AtomicU64 = AtomicU64::new(0);
-    /// Bytes the TX ring moved into the FIFO inside one hold (wave 11), and
+    /// Bytes the TX ring moved into the FIFO inside one hold, and
     /// the largest such count. Unlike [`wire`], a fill never waits: it writes
     /// only what the FIFO takes at that moment, so on a real UART one hold
     /// moves at most one FIFO's worth; under QEMU (instant transmit) an
@@ -2942,7 +2939,7 @@ pub fn irq_rearm() {}
 // scheduler, takes it and wakes that task by TID. Taking (swap to 0) makes
 // one arm worth at most one wake.
 //
-// Both ISAs since wave 11: aarch64's PL011 arm and riscv64's
+// Both ISAs: aarch64's PL011 arm and riscv64's
 // PLIC arm (`kernel/src/entry/riscv64/irq.rs`) take the waiter once the boot
 // code has wired the RX interrupt. Only the console's input owner
 // ([`CONSOLE_RX`]) arms it, so one slot is enough.
@@ -3027,7 +3024,7 @@ pub fn rx_nudge_take() -> bool {
 /// console ([`console_rx::RX_OWNER_KERNEL`]). See `console_rx.rs`.
 pub static CONSOLE_RX: crate::console_rx::RxOwner = crate::console_rx::RxOwner::new();
 
-/// Wave 13: `^C` received while console input is lent ([`CONSOLE_RX`]) to a
+/// `^C` received while console input is lent ([`CONSOLE_RX`]) to a
 /// Linux job: not queued, counted here; the kernel's IRQ arm turns it into
 /// `SIGINT` for that job ([`take_intr`]).
 static INTR_PENDING: AtomicU32 = AtomicU32::new(0);

@@ -417,7 +417,7 @@ pub unsafe fn init_with(dev: &mut VirtioDev, want_low: u32) -> Result<u32, ()> {
     // Step 4: Feature negotiation — accept no optional features EXCEPT
     // VIRTIO_F_VERSION_1 (bit 32) on a modern (v2) transport.
     //
-    // U05-12 fix (2026-09-26): this module's doc claims "Supports both
+    // U05-12 fix: this module's doc claims "Supports both
     // legacy (v1) and modern (v2)", but a v2 transport MUST see
     // VIRTIO_F_VERSION_1 acknowledged before it will grant FEATURES_OK —
     // the VirtIO 1.0+ spec (§6, "Legacy Interface") makes accepting this

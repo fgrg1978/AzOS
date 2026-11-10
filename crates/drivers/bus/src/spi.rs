@@ -226,7 +226,7 @@ mod k1_spi {
 #[cfg(feature = "k1")]
 pub use k1_spi::*;
 
-// ── VisionFive 2 / JH7110: register model UNVERIFIED (U05-1, 2026-09-26) ───
+// ── VisionFive 2 / JH7110: register model UNVERIFIED ───
 //
 // **Both the address and the IP identity below were wrong.** `0x1004_0000`
 // is `i2c1@10040000` in mainline `jh7110.dtsi` (`compatible =
@@ -254,7 +254,7 @@ pub use k1_spi::*;
 
 #[cfg(feature = "vf2")]
 mod cdns_spi {
-    /// Corrected 2026-09-26 (U05-1): was a literal `0x1004_0000` (`i2c1`,
+    /// Corrected (U05-1): was a literal `0x1004_0000` (`i2c1`,
     /// see the module doc above). Now the real `spi0` address — but this
     /// module's register layout below is still the wrong IP's.
     const SPI0_BASE: usize = azos_drv_base::platform::hw::SPI0_BASE;

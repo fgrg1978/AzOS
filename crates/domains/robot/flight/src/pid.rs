@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Integer PID controller — extracted from `lib.rs` 2026-09-26 so it can be
+//! Integer PID controller — kept apart from `lib.rs` so it can be
 //! `#[path]`-pulled into `tests/host/flight-tests` on its own: `lib.rs` as a
 //! whole does not build on the host (AHRS, GPS, the driver layer), but this
 //! struct names no external crate at all — every operand is a primitive.
@@ -63,7 +63,7 @@ impl Pid {
         // D term: derivative = (error - prev_error) / dt.
         // d_error per second = (error - prev) * 1_000_000 / dt_us.
         //
-        // Fixed 2026-09-26: `(error - self.prev_error)` used to subtract in
+        // Fixed: `(error - self.prev_error)` used to subtract in
         // i32 BEFORE the `as i64` widening — the exact "toxic gyro sample"
         // overflow this function's own comment two lines up warned about for
         // the INTEGRAL term (which clamps first) but left open here. Under

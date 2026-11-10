@@ -319,7 +319,7 @@ pub use sim::*;
 
 // ── VisionFive 2 / JH7110: real MMIO GPIO ────────────────────────────────────
 //
-// **U05-1 correction, 2026-09-26.** JH7110 `sysgpio: pinctrl@13040000`
+// JH7110 `sysgpio: pinctrl@13040000`
 // (`compatible = "starfive,jh7110-sys-pinctrl"`) is NOT a bit-per-pin GPIO
 // controller — the model this module used to implement (`GPIOOUT0`/
 // `GPIOOEN0`/`GPIOIN0`, one bit per pin, two 32-bit banks). It is a pin

@@ -33,7 +33,7 @@ wdt-sp5100 = []
 wdt-bcm2835-pm = ["dep:azos_drv_power"]
 # The PM block is also the hardware watchdog (Kconfig WDT_BCM2835_PM_ARM).
 wdt-bcm2835-pm-arm = ["wdt-bcm2835-pm"]
-# Wave 13 canary: `^C` on a console lent to a Linux job is queued as a byte,
+# Canary: `^C` on a console lent to a Linux job is queued as a byte,
 # not turned into SIGINT. Never in a real build.
 console-isig-canary = []
 # Gate-only: registers a `Console` that PREFIXES every write with `CANARY>`.
@@ -43,7 +43,7 @@ console-isig-canary = []
 # ring-3 write must come out prefixed and the kernel's own `kprintln!` must
 # not. Never enabled in a shipping build.
 console-route-canary = []
-# Gate canary only (wave 13): format every kernel line inside the console
+# Gate canary only: format every kernel line inside the console
 # lock again (uart.rs `kernel_print`): the masked-window row must go red.
 console-format-in-lock = []
 # Gate-only: measure the ring-3 console writer's lock hold (`uart::

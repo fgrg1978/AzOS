@@ -17,7 +17,7 @@ use azos_net::{arp, ip, ethernet};
 const TEST_IP: [u8; 4] = [192, 0, 2, 99];
 const TEST_MAC: [u8; 6] = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
 
-// ── These benchmarks own their cache, 2026-09-08 ──────────────────────────
+// ── These benchmarks own their cache ──────────────────────────
 //
 // They used to call `arp::insert` and `arp::lookup`, which operate on the
 // machine's LIVE table: `bench_arp_insert` performed 100 iterations x 5

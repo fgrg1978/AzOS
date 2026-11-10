@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Who is told that the boot medium was written (wave 14, FATCACHE).
+//! Who is told that the boot medium was written (FATCACHE).
 //!
 //! The FAT32 driver keeps a block cache of the medium (`azos_fs`'s
 //! `bcache.rs`, sized by Kconfig `FS_BLOCK_CACHE_KB`). Its own writes keep
@@ -66,7 +66,7 @@ pub fn notify(sector: u64, count: u32) {
     }
 }
 
-/// The read observer (wave 15, WRITEBACK) as a `fn(u64, u32)` address; 0 = none.
+/// The read observer (WRITEBACK) as a `fn(u64, u32)` address; 0 = none.
 static READ_OBSERVER: AtomicUsize = AtomicUsize::new(0);
 
 /// The dirty probe as a `fn(u64, u32) -> bool` address; 0 = none.

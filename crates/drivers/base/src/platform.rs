@@ -103,7 +103,7 @@ pub mod hw {
 
 // ── StarFive VisionFive 2 (JH7110) ───────────────────────────────────────────
 //
-// **`vf2` is NOT a supported target — OWNER DECISION V2.3 (2026-09-26).**
+// **`vf2` is NOT a supported target — OWNER DECISION V2.3.**
 // Every constant below was re-checked against mainline `jh7110.dtsi` (and,
 // for the WDT/GPIO/PLIC register-level code in `wdt.rs`/`gpio.rs`/
 // `plic.rs`, against the matching mainline `.c` driver) during this pass —
@@ -147,7 +147,7 @@ pub mod hw {
     /// but NOT byte-addressed like QEMU's model — `reg-shift = 2`,
     /// `reg-io-width = 4` on real silicon. See `crates/drivers/sys/src/uart.rs`
     /// module doc comment for the fix and citation (confirmed against
-    /// `jh7110.dtsi` `uart0@10000000`, 2026-09-18). The base address itself
+    /// `jh7110.dtsi` `uart0@10000000`). The base address itself
     /// (0x1000_0000) matches the real device tree, independently confirmed
     /// the same fetch.
     pub const UART_BASE:   usize = 0x1000_0000;
@@ -184,7 +184,7 @@ pub mod hw {
     /// `crates/drivers/bus/src/spi.rs`'s own `SPI_BASE` literal carried the same
     /// wrong address, modelled as a Cadence SPI controller). Real IP is
     /// `arm,pl022`/`arm,primecell` (SSP/PL022), confirmed against
-    /// `jh7110.dtsi`'s `spi0` node, 2026-09-25. Register layout
+    /// `jh7110.dtsi`'s `spi0` node. Register layout
     /// (`SSPCR0`/`SSPCR1`/`SSPDR`/`SSPSR`/`SSPCPSR`) is a separate, not-yet-
     /// ported fix — `spi.rs` is left marked unverified against this address
     /// rather than reprogrammed against a still-unconfirmed register map
@@ -222,7 +222,7 @@ pub mod hw {
     /// This is the block `DC8200_*` register offsets in `crates/drivers/display`
     /// are relative to.
     pub const DC8200_MAIN_BASE:  usize = 0x2940_0800;
-    /// **Mislabeled (U05-1 pass, 2026-09-26): this is not a "DC8200
+    /// **Mislabeled (U05-1 pass): this is not a "DC8200
     /// NOC/clock-reset block".** `0x1703_0000` is `pwrc:
     /// power-controller@17030000`, `compatible = "starfive,jh7110-pmu"`,
     /// confirmed against mainline `jh7110.dtsi` — the SoC power controller
@@ -375,13 +375,13 @@ pub mod hw {
     /// SDHCI0 base — removable SD card slot on BPI-F3.
     /// Used as the boot storage device (MmcSlot::Emmc = 0 → MMC0_BASE).
     pub const MMC0_BASE:   usize = 0xD428_0000;
-    /// SDHCI2 base — onboard eMMC (HS400, non-removable).
+    /// SDHCI2 base — onboard eMMC (non-removable).
     pub const MMC1_BASE:   usize = 0xD428_1000;
 
     // ── Watchdog: NO NODE IN MAINLINE — see `wdt.rs::wdt_has_hardware` ──────
     /// **Not a watchdog.** `0xD401_5000` is `syscon_apbc:
     /// system-controller@d4015000`, `compatible = "spacemit,k1-syscon-
-    /// apbc"` in mainline `k1.dtsi` (confirmed 2026-09-26) — and mainline
+    /// apbc"` in mainline `k1.dtsi` — and mainline
     /// has no watchdog node anywhere on this SoC (`grep -i "watchdog\|wdt"
     /// k1.dtsi` → none). Kept as a named constant only because
     /// `wdt.rs`'s `hw_wdt_init` used to write here under `feature = "k1"`;
@@ -458,7 +458,7 @@ pub mod hw {
     /// old `GTIMER_BACKCOMPAT_HZ` (62.5 MHz) compat property is set for a
     /// pre-9.0 versioned machine type — which the gate's `-M virt` (no
     /// version pin) is not. Confirmed against a fetch of QEMU
-    /// `target/arm/cpu.c` (`master`, 2026-09-21). Still a **compile-time
+    /// `target/arm/cpu.c` (`master`). Still a **compile-time
     /// constant standing in for a runtime register** — see `WDT_CLK_HZ` on
     /// the K1 block above for the same honesty caveat: this is the value
     /// for the specific `-M virt -cpu cortex-a72` config, not a promise CNTFRQ_EL0
@@ -489,7 +489,7 @@ pub mod hw {
 
     // ── VirtIO-MMIO transport window ─────────────────────────────────────────
     //
-    // Confirmed 2026-09-21 by decoding the device tree QEMU itself generates
+    // Confirmed by decoding the device tree QEMU itself generates
     // (`qemu-system-aarch64 -M virt,gic-version=3 -cpu cortex-a72 -smp 2
     // -dumpdtb=... ` then `dtc -I dtb -O dts`, the exact `-M`/`-cpu`/`-smp`
     // the aarch64 gate rows boot with — not a default `-M virt` invocation, which picks GICv2 and would be the

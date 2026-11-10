@@ -54,8 +54,7 @@
 //! controller back, it is halted and latched dead until reboot, its memory
 //! never reused. A host system error or a host controller error the
 //! controller reports (USBSTS.HSE, USBSTS.HCE: xHCI 1.2 section 4.10.2.6 and
-//! 4.24.1 ask for a reset) goes through the same policy (owner decision
-//! 2026-10-23): one reset, shared with the timeouts, and the next fault of
+//! 4.24.1 ask for a reset) goes through the same policy: one reset, shared with the timeouts, and the next fault of
 //! any of the three causes latches. The record names the cause
 //! ([`Fault`]).
 //!

@@ -22,8 +22,7 @@ pub mod lidar;
 // `userspace/drivers/ina_drv` on its endpoint, or the in-kernel host).
 pub mod ina219;
 
-// Optical flow sensor driver (F26): PMW3901 / PAA5100JE via SPI — DELETED
-// 2026-09-26 (U05-7). Zero callers anywhere in kernel/crates/tests for any
+// Optical flow sensor driver (F26): PMW3901 / PAA5100JE via SPI — DELETED. Zero callers anywhere in kernel/crates/tests for any
 // of its public functions (`optical_flow_init`, `optical_flow_poll`,
 // `flow_delta_x/y`, `flow_squal`, `flow_to_velocity_nm_s`, …) or its
 // `OpticalFlowSensor` type — confirmed by grep before deletion, unlike

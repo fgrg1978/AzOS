@@ -3,7 +3,7 @@
 /// ESC (Electronic Speed Controller) driver — PWM output for brushless motors.
 ///
 /// Phase J1: provides ESC initialization, arming sequence, and per-channel
-/// throttle control. **Wired to `azos_drv_actuator::pwm` 2026-09-26 (U05-7)** —
+/// throttle control. **Wired to `azos_drv_actuator::pwm`** —
 /// `esc_set_throttle`/`esc_arm`/`esc_disarm` now call `pwm_set_duty_pct`/
 /// `pwm_enable`/`pwm_disable` for real, on every board (QEMU sim or VF2
 /// MMIO, whichever `pwm.rs` selects). Before this fix, `esc_set_throttle`

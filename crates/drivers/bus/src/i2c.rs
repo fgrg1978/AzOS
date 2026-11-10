@@ -53,7 +53,7 @@ pub fn i2c_bus_lock_slot(bus: u8) -> Option<usize> {
 }
 
 
-/// The locks themselves, MOVED OUT of the board module on 2026-09-08 for exactly
+/// The locks themselves, MOVED OUT of the board module for exactly
 /// the reason [`i2c_bus_lock_slot`] above is out here: that module is
 /// `#[cfg(any(feature = "i2c-dw", feature = "k1"))]` and names MMIO, so a host test cannot compile it
 /// — and while the array sat inside it, **nothing tested the exclusion**, only
@@ -70,9 +70,9 @@ pub fn i2c_bus_lock_slot(bus: u8) -> Option<usize> {
 /// `Mutex` was the first choice, but its acquire path yields
 /// (`crates/core/sync/src/kmutex.rs`), and the lock is taken inside a
 /// controller step that may run with preemption already off (a caller under
-/// a `SpinLock`, early boot). Until wave 15 the typed syscall path called
+/// a `SpinLock`, early boot). The typed syscall path does not call
 /// the transfer inside `cap_store::with_table` (the table's `SpinLock`); it
-/// now resolves the capability there and transfers after releasing it
+/// resolves the capability there and transfers after releasing it
 /// (`i2c_cap::I2cAccess`).
 ///
 /// Preempt depth is per **hart**, not per task (`crates/core/sync/src/preempt.rs:73`
@@ -94,7 +94,7 @@ pub fn i2c_bus_lock_slot(bus: u8) -> Option<usize> {
 /// `SpinLock::lock()` opens a critical section before it spins
 /// (`crates/core/sync/src/spinlock.rs:64`) and the guard carries the
 /// `PreemptGuard` (`:162`), so preemption is off while it is held. Since
-/// wave 15 (S1) it is held only for ONE service step of `crate::i2c_txn`
+/// It is held only for ONE service step of `crate::i2c_txn`
 /// (`board::step`): the register accesses that move the FIFOs, bounded by
 /// the FIFO depth, never a wait on the wire. Before, it was held for the
 /// whole transfer polling `IC_STATUS` (~1.35 ms for the IMU's 14 bytes at
@@ -424,7 +424,7 @@ pub const fn transfer_may_sleep() -> bool {
     cfg!(any(feature = "i2c-dw", feature = "k1"))
 }
 
-// ── The controllers: DesignWare (VF2, Pi 5 RP1, Intel LPSS) and K1 (SpacemiT) ─
+// ── The controllers: DesignWare (Pi 5 RP1, Intel LPSS) and K1 (SpacemiT) ─
 //
 // The controllers bind through the hardware bus (`kernel/src/boot/hwbus.rs`:
 // the `i2c` driver for a device-tree node, the `i2c-lpss-*` ones for an
@@ -515,7 +515,7 @@ mod board {
         Ok((bus, found))
     }
 
-    /// A synchronous transfer (wave 15, S1): the transaction goes on the
+    /// A synchronous transfer: the transaction goes on the
     /// bus queue like a queued one, on the caller's own buffers, and the
     /// caller waits for its completion SLEEPING between service steps
     /// (`set_sleep_hook`). Preemption is off only inside each step (the bus

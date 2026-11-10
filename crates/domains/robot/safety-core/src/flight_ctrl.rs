@@ -155,7 +155,7 @@ pub fn flight_control_task(_: usize) {
             continue;
         }
 
-        // U08-6 / H22, owner fix 2026-09-26: the e-stop latch reaches every
+        // The e-stop latch reaches every
         // OTHER actuator through `motor_envelope`'s `estop_is_active()`
         // check, but this loop had none — `flight_arm()`/`esc_arm()` could
         // (and still can, from the shell) re-energise while the latch

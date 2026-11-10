@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! What a kernel-placed controller does when the device stops answering: one
-//! policy for every block, network and USB host controller driver (owner
-//! decision 2026-10-23, Q8 a).
+//! policy for every block, network and USB host controller driver.
 //!
 //! A command (block, USB host) or a transmit ring (network) that runs out of
 //! its budget makes the driver ask [`Recovery::timed_out`]:

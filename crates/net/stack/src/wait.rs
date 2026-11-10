@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Waiting on a network event instead of sleep-polling for it (wave 15 N7).
+//! Waiting on a network event instead of sleep-polling for it.
 //!
 //! A task that waits for a handshake, a send window, an ARP reply, a DNS
 //! answer or an incoming connection used to sleep 1 ms (or yield) and look

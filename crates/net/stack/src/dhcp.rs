@@ -424,7 +424,7 @@ fn parse_response(data: &[u8]) -> Option<DhcpInfo> {
     // `data.len() <= ETH_MTU`, so `o + 2 + len` cannot overflow usize even
     // with `overflow-checks = true`.
     //
-    // Re-verified 2026-09-06 (claims_check audit): `parse_response` is
+    // Re-verified (claims_check audit): `parse_response` is
     // private (only this file calls it), and its only caller passes
     // `&buf[..n]` where `buf: [0u8; ip::ETH_MTU]` — so `data.len() <=
     // ETH_MTU = 1500` holds by construction, not by convention. But the

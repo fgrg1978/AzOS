@@ -17,7 +17,7 @@ pub enum FlushError {
 }
 
 /// What a record that must survive a power cut came to: its write, then the
-/// device's flush (owner decision 2026-10-23, Q2).
+/// device's flush.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Durability {
     /// Written, and the device confirmed the flush.

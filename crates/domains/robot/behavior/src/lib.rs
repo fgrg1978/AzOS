@@ -3,7 +3,7 @@
 #![no_std]
 
 //! The robot's behaviour stack as the kernel keeps it: the safety layer's
-//! checks and envelope (L0, run by the robot enforcer), the brain protocol's
+//! checks and envelope (run by the robot enforcer), the brain protocol's
 //! framing and the frames that ask for authority, the payload drivers, the RC
 //! receiver's policy, the sensor bus and the layer switches the ring-3
 //! behaviour engine (`userspace/services/brain_client`) reads. Choosing a
@@ -13,13 +13,13 @@ pub mod types;
 pub mod switches;
 pub mod brain_protocol;
 pub mod safety;
-// Wave 15: the RC receiver's safety policy (Kconfig `RC_INPUT`).
+// The RC receiver's safety policy (Kconfig `RC_INPUT`).
 #[cfg(feature = "rc-input")]
 pub mod rc_link;
 pub mod sensor_bus;
 pub mod payload;
 // The flight recorder and the e-stop latch moved to `azos_actuation`
-// (wave 11): they are cross-cutting. Re-exported at their old paths, so
+//: they are cross-cutting. Re-exported at their old paths, so
 // `crate::logger` / `azos_behavior::logger` keep resolving.
 pub use azos_actuation::{estop, logger};
 

@@ -117,7 +117,7 @@ pub fn imu_read_scaled_stamped() -> Option<(ImuData, u64)> {
     Some((scale(&raw), acq))
 }
 
-/// Queue the 14-byte burst read (wave 15, S1: Kconfig `IMU_SAMPLE_QUEUED`)
+/// Queue the 14-byte burst read (S1: Kconfig `IMU_SAMPLE_QUEUED`)
 /// on the IMU's bus; never waits for the wire. The ticket goes to
 /// [`imu_take`]. `None` before `imu_init` found the chip, or when the bus
 /// queue refuses (full).

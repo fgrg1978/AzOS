@@ -6,7 +6,7 @@ license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
 
 [features]
-# Wave 15 (config/subsys/Kconfig.robot RC_INPUT / GEOFENCE), forwarded from the
+# Features of config/subsys/Kconfig.robot RC_INPUT / GEOFENCE, forwarded from the
 # kernel's features of the same names. `rc-input` compiles `rc_link` (the RC
 # receiver's safety policy); `geofence` compiles the E03 fence in `safety`.
 rc-input = []

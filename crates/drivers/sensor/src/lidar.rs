@@ -58,7 +58,7 @@ pub struct ScanPoint {
 /// One completed revolution, published whole: a reader gets the points, their
 /// count and the acquisition time of ONE revolution, never a mix of two.
 ///
-/// **U05-13 (2026-09-26) was a double buffer swapped by index**; it still let
+/// **U05-13 was a double buffer swapped by index**; it still let
 /// the parser overwrite the old front while a slow reader copied it. The scan
 /// is now a [`Log`] of one slot: the parser accumulates a revolution in its
 /// own buffer ([`ACC`]) and publishes a copy (1.4 KB at 10 Hz); a reader that

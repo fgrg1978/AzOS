@@ -170,7 +170,7 @@ fn write_open<const N: usize>(table: &mut FdTableN<N>, fd: i32, entry: &[u8]) ->
     }
     let wrote = vfs::vfs_write(table, fd, entry.as_ptr(), entry.len());
     // Durable before the call returns: a close is not a durability point
-    // under FAT32's write-back cache (wave 15), an fsync is.
+    // under FAT32's write-back cache, an fsync is.
     let synced = vfs::vfs_fsync(table, fd).is_ok();
     if vfs::vfs_close(table, fd) == 0 && synced && wrote == entry.len() as i32 {
         WriteResult::Written

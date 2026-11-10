@@ -8,7 +8,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use azos_sync::SpinLock;
 
 // ---------------------------------------------------------------------------
-// Motor actuation record — Q1.3, 2026-09-25.
+// Motor actuation record.
 // ---------------------------------------------------------------------------
 //
 // `crates/domains/robot/robot`'s `motor_set_reporting` already calls the hook installed
@@ -125,7 +125,7 @@ fn stop_robot_actuators() {
     azos_robot::motor_stop(0);
     azos_robot::motor_stop(1);
     azos_robot_drivers::esc::esc_disarm();
-    // H22, 2026-09-26: the payload actuators (spray pump) are the third
+    // H22: the payload actuators (spray pump) are the third
     // family this sequence now covers, alongside the wheels and the ESC —
     // a command already in flight when the latch engages must not keep
     // running until `payload_exec` refuses the NEXT one.
@@ -272,7 +272,7 @@ pub fn install() {
     // skips the one call below that would otherwise use it.
     #[allow(dead_code)]
     fn actuation_gate(_id: u32, speed_pct: u32) -> u32 {
-        // A marker was tried here on 2026-09-07 and REMOVED, because it
+        // A marker was tried here and REMOVED, because it
         // did not discriminate. See the note in `tools/gate/ci_check.sh` above
         // the `userspace: reflex reacts` scenario: `rt_motor_task` writes
         // the motors every control tick, so a print at this hook fires
@@ -319,7 +319,7 @@ pub fn install() {
     // The halt query beside it. The gate sets the duty; this decides the
     // direction pins. While it answers true, `motor_set_reporting` writes
     // brake and coast and refuses forward and backward without touching
-    // the pins (owner decision 2026-09-13), for every caller — this
+    // the pins, for every caller — this
     // kernel's own `rt_motor_task` included, whose refused writes still
     // leave duty 0 on the channel. The two conditions are a latched e-stop
     // and brain-loss containment (`DEGRADE_LEVEL_CONTAINED`, speed cap 0 %).
@@ -376,7 +376,7 @@ pub fn install() {
     azos_robot::motor::set_motor_recorder(record_motor_change);
     kprintln!("[SAFETY] actuation record armed (motor commands logged on change)");
 
-    // H22/U08-6, 2026-09-26: `flight_arm` needs the same fact `motor_gate`
+    // H22/U08-6: `flight_arm` needs the same fact `motor_gate`
     // reads, and cannot depend on `azos_behavior` to get it (this crate
     // already depends on `azos_flight`, so the reverse edge would be a
     // cycle) — same shape as the motor gate two hooks above.
@@ -385,5 +385,5 @@ pub fn install() {
 
     // The capability-denial and audit recorders and the ring-3 e-stop are
     // not robot-specific: `azos_actuation::gate::install` arms them,
-    // right after this function (wave 11).
+    // right after this function.
 }

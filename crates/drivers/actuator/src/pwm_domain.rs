@@ -51,7 +51,7 @@ impl PwmDomain {
 
 /// Eight channels, each its own independent register block: a control
 /// write named for one channel reaches only that channel. Three things have
-/// this shape (owner decision 2026-09-26 gave the first two ONE constant, the
+/// this shape (the first two share ONE constant, the
 /// third joined it):
 ///
 /// * **The JH7110 PWM (VisionFive 2), as hardware.** Its DT compatible is

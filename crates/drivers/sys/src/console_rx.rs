@@ -32,7 +32,7 @@ pub enum Claim {
     Busy(u32),
 }
 
-/// The input owner, and (wave 13) the task it lent input to.
+/// The input owner, and the task it lent input to.
 pub struct RxOwner(AtomicU32, AtomicU32);
 
 impl RxOwner {
@@ -41,7 +41,7 @@ impl RxOwner {
         Self(AtomicU32::new(RX_OWNER_NONE), AtomicU32::new(0))
     }
 
-    /// Wave 13: the owner `owner` lends input to task `to` (its foreground
+    /// The owner `owner` lends input to task `to` (its foreground
     /// Linux job). Refused unless `owner` owns input now and nothing is lent.
     pub fn lend(&self, owner: u32, to: u32) -> bool {
         to != 0
