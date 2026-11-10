@@ -826,7 +826,7 @@ pkgd's journal, not here.
 second; capability denials and their reports take at most a quarter of it each,
 egress, logins and microphone records at most half each and a quarter for any one
 application (its root Domain, with every task and child Domain it spawns), and an
-application's records of every class together at most half of it, so a flood of one
+application's records of the classes a task can raise in a loop together at most half of it, so a flood of one
 class or one application cannot spend a share that is another's. The last quarter of
 the bucket is spendable only by the classes no task can raise in a loop (camera,
 image load, update, USB, hardening). The refill keeps what an integer

@@ -1941,7 +1941,7 @@ pub fn security_tally() -> (
 /// them all; a quarter of it for each class a task can raise in a loop
 /// (capability denials, the decision layer's reports of them), half of it
 /// for egress, logins and microphone records and a quarter of that for each
-/// subject, and a half for each subject across every class (the record's bucket: its Domain where the
+/// subject, and a half for each subject across those classes (the record's bucket: its Domain where the
 /// caller names it), so a flood of one class or one application leaves the
 /// others room. The classes no task can raise in a loop (camera, image load,
 /// update, USB, hardening) keep the last quarter of the whole for themselves:
@@ -1957,7 +1957,7 @@ struct SecCap {
 /// Subjects with a share of their own, and the subjects held most.
 const SEC_SUBJECTS: usize = 32;
 
-/// The `subj` class key of a subject's share across every class.
+/// The `subj` class key of a subject's share across the classes a task can raise in a loop.
 const SEC_ANY: u8 = u8::MAX;
 
 struct SecTokens {
@@ -2088,7 +2088,7 @@ fn sec_admit(class: SecClass, subject: u32, dest: Option<u64>) -> SecAdmit {
         }
         let canary = cfg!(feature = "canary-global-security-bucket");
         let class_slot = (sec_per_subject(class) && !(canary && class == SecClass::Microphone)).then(|| sec_slot(t, class as u8, subject, rate, None));
-        let any_slot = sec_slot(t, SEC_ANY, subject, rate, class_slot);
+        let any_slot = sec_paced(class).then(|| sec_slot(t, SEC_ANY, subject, rate, class_slot));
         let paced = sec_paced(class) && !(canary && class == SecClass::Microphone);
         // A class shared by subjects takes half the whole, a subject a quarter.
         let class_cost = if class_slot.is_some() { SHARE / 2 } else { SHARE };
@@ -2096,7 +2096,7 @@ fn sec_admit(class: SecClass, subject: u32, dest: Option<u64>) -> SecAdmit {
         let ok = t.all >= floor
             && (!paced || t.class[c] >= class_cost)
             && class_slot.is_none_or(|i| t.subj[i].2 >= SHARE)
-            && (canary || t.subj[any_slot].2 >= ANY_COST);
+            && any_slot.is_none_or(|i| canary || t.subj[i].2 >= ANY_COST);
         if ok {
             t.all -= ONE;
             if paced {
@@ -2105,7 +2105,9 @@ fn sec_admit(class: SecClass, subject: u32, dest: Option<u64>) -> SecAdmit {
             if let Some(i) = class_slot {
                 t.subj[i].2 -= SHARE;
             }
-            t.subj[any_slot].2 = t.subj[any_slot].2.saturating_sub(ANY_COST);
+            if let Some(i) = any_slot {
+                t.subj[i].2 = t.subj[i].2.saturating_sub(ANY_COST);
+            }
             if let Some(d) = dest {
                 t.dests[t.next_dest] = (subject, d);
                 t.next_dest = (t.next_dest + 1) % SEC_SUBJECTS;

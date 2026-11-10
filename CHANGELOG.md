@@ -21,7 +21,8 @@ releases yet. The ABI crate keeps its own file,
 
 - The shared kernel call task (`kernel/src/call_task.rs`) carries the calls the ext4
   mount and the power monitor make to their ring-3 servers: one call in flight, a
-  bounded reply wait, the caller's priority lent while it waits.
+  bounded reply wait, the caller's priority lent to the call task while it waits (the
+  ring-3 server keeps its own).
 
 - Stat, listing and statfs on a directory handle keep to that directory like an open
   (`stat_beneath`, `readdir_beneath`, `statfs_beneath`; the `Dir` operations carry a
