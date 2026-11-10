@@ -21820,11 +21820,14 @@ PY
             kill "$bpid" 2>/dev/null; wait "$bpid" 2>/dev/null
             return 1
         fi
+        # The ring-3 client's handshake needs a seeded entropy pool (the
+        # `entropy` endpoint refuses an unseeded one): virtio-rng seeds it.
         "$QEMU" -machine virt -nographic -bios default -kernel "$KERNEL" \
             -smp 4 -global virtio-mmio.force-legacy=false \
             -drive file="$image",if=none,format=raw,id=hd0 \
             -device virtio-blk-device,drive=hd0 \
             -netdev user,id=net0 -device virtio-net-device,netdev=net0 \
+            -device virtio-rng-device \
             ${PEER_BOOT_QEMU_EXTRA:-} \
             >"$log" 2>&1 &
         local qpid=$!
@@ -22062,7 +22065,6 @@ PY
         # kernel's own companion link dials the same port with the same key; the
         # peer tells it from companion_client by its first message and never
         # answers it.
-        PEER_BOOT_QEMU_EXTRA="-device virtio-rng-device" \
         run_companion_peer_boot "$log" "$blog" $AZOS_OUT/build/disk-compcli-linkkey.img 8 \
             --serve --duration 40 --link-key $AZOS_OUT/build/compcli_linkkey.bin
 
@@ -22140,7 +22142,6 @@ PY
             rm -f "$tmp"; bad; echo "      could not flip a byte of BEHAVIOR.MBL in $img"; return
         fi
         rm -f "$tmp"
-        PEER_BOOT_QEMU_EXTRA="-device virtio-rng-device" \
         run_companion_peer_boot "$log" "$blog" $img 8 \
             --serve --duration 40 --link-key $AZOS_OUT/build/compcli_linkkey.bin
 
@@ -22202,7 +22203,6 @@ PY
 
         # The peer opens every connection with the encrypted-link HELLO (the
         # client sends nothing before one) and resets it after the reply.
-        PEER_BOOT_QEMU_EXTRA="-device virtio-rng-device" \
         run_companion_peer_boot "$log" "$blog" $AZOS_OUT/build/disk-compcli-linkkey.img 1 \
             --reconnect --duration 80 --link-key $AZOS_OUT/build/compcli_linkkey.bin
 
@@ -22275,7 +22275,6 @@ PY
             echo "      run make $AZOS_OUT/build/image_hashes.rs, then rebuild the kernel."; return
         fi
 
-        PEER_BOOT_QEMU_EXTRA="-device virtio-rng-device" \
         run_companion_peer_boot "$log" "$blog" $AZOS_OUT/build/disk-compcli-linkkey.img 20 \
             --serve --emergency --duration 40 --link-key $AZOS_OUT/build/compcli_linkkey.bin
 
@@ -22415,7 +22414,6 @@ PY
         # ceiling. On the PEER's line, not the client's `REKEY sent`: that
         # prints before the record reaches the host, and ending there killed
         # the peer first.
-        PEER_BOOT_QEMU_EXTRA="-device virtio-rng-device" \
         PEER_BOOT_PEER_DONE_RE="client REKEY #1 completed" \
         run_companion_peer_boot "$log" "$blog" $AZOS_OUT/build/disk-compcli-linkkey.img 30 \
             --serve --duration 60 --link-key $AZOS_OUT/build/compcli_linkkey.bin
@@ -22732,10 +22730,6 @@ PYEOF
     estop_release_authority_run() {
         companion_peer_required || return 0
         local label="$1" features="$2" tag="$3"
-        # The link's handshake needs a seeded entropy pool (the `entropy`
-        # endpoint refuses an unseeded one), and QEMU's pool is seeded by
-        # virtio-rng.
-        local PEER_BOOT_QEMU_EXTRA="-device virtio-rng-device"
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
         local log="$CI_LOG_DIR/${tag}.log"
