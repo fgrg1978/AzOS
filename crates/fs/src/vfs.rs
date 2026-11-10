@@ -299,6 +299,15 @@ pub struct SectorRun {
     pub sectors: u32,
 }
 
+/// Would a `*_beneath` default of [`FileSystem`] drop the floor of a caller
+/// rooted `floor` components below the mount? Yes when the backend follows
+/// links and has not implemented the op with the floor: the default then
+/// refuses. Gate canary `beneath-default-open-canary` (never in a real
+/// build): the defaults drop it as if the names were lexical.
+fn floor_dropped(follows_links: bool, floor: usize) -> bool {
+    floor > 0 && follows_links && !cfg!(feature = "beneath-default-open-canary")
+}
+
 /// One mountable filesystem.
 ///
 /// `Sync` because implementations are `&'static` values shared by every hart;
@@ -325,12 +334,25 @@ pub trait FileSystem: Sync {
     /// limits, how deep a path may go. They used to live in this file.
     fn key_for(&self, name: &[u8]) -> Option<InodeKey>;
 
+    /// Does the backend resolve names itself, so a link can lead a name out
+    /// of the directory a caller is rooted at? `true` (the default) is what
+    /// is assumed of a backend that has not said: the `*_beneath` ops below
+    /// then refuse a caller rooted below the mount unless the backend
+    /// implements them with the floor. A backend whose names are lexical
+    /// (no links, no bind mounts) answers `false`, and the floor is nothing
+    /// to it.
+    fn follows_links(&self) -> bool { true }
+
     /// [`FileSystem::key_for`] for a caller whose authority is rooted at the
     /// directory the first `floor` components of `name` make: a backend that
     /// follows links itself keeps the floor in the key and refuses a link that
-    /// leads out of it. One that has no links ignores it.
+    /// leads out of it. The default names nothing beneath a floor for a
+    /// backend that follows links ([`floor_dropped`]); one with lexical names
+    /// ignores the floor.
     fn key_for_beneath(&self, name: &[u8], floor: usize) -> Option<InodeKey> {
-        let _ = floor;
+        if floor_dropped(self.follows_links(), floor) {
+            return None;
+        }
         self.key_for(name)
     }
 
@@ -521,9 +543,14 @@ pub trait FileSystem: Sync {
     /// [`FileSystem::statfs`] of the volume `name` (relative to the mount
     /// point) is on, for a caller rooted at the directory the first `floor`
     /// components of it make. A backend that follows links itself refuses one
-    /// that leads out of it; the others answer for the whole volume.
+    /// that leads out of it; the others answer for the whole volume. The
+    /// default is `Denied` beneath a floor for a backend that follows links
+    /// ([`floor_dropped`]).
     fn statfs_beneath(&self, name: &[u8], floor: usize) -> Result<StatFs, FsErr> {
-        let _ = (name, floor);
+        let _ = name;
+        if floor_dropped(self.follows_links(), floor) {
+            return Err(FsErr::Denied);
+        }
         self.statfs()
     }
 
@@ -553,9 +580,12 @@ pub trait FileSystem: Sync {
     }
 
     /// [`FileSystem::readdir`] for a caller rooted at the directory the first
-    /// `floor` components of `dir` make (see [`FileSystem::key_for_beneath`]).
+    /// `floor` components of `dir` make (see [`FileSystem::key_for_beneath`]):
+    /// `Denied` by default beneath a floor for a backend that follows links.
     fn readdir_beneath(&self, dir: &[u8], floor: usize, cookie: u64, out: &mut DirEnt) -> Result<Option<u64>, FsErr> {
-        let _ = floor;
+        if floor_dropped(self.follows_links(), floor) {
+            return Err(FsErr::Denied);
+        }
         self.readdir(dir, cookie, out)
     }
 
@@ -1371,7 +1401,7 @@ fn mount_end(path: &[u8], mp: &[u8]) -> Option<usize> {
 ///
 /// Creates a temporary inode with the file content loaded from the backend;
 /// it is freed when its last descriptor closes.
-fn try_backend_open(path: &[u8]) -> u32 {
+fn try_backend_open(path: &[u8], floor: usize) -> u32 {
     let (backend, sub) = match backend_for_path(path) {
         Some(v) => v,
         None    => return NO_IDX,
@@ -1379,7 +1409,7 @@ fn try_backend_open(path: &[u8]) -> u32 {
 
     // The backend's naming rules — 8.3 conversion, path depth — used to be
     // open-coded here. They are now the backend's own business.
-    let key = match backend.key_for(sub) {
+    let key = match backend.key_for_beneath(sub, floor) {
         Some(k) => k,
         None    => return NO_IDX,
     };
@@ -1441,10 +1471,10 @@ fn try_backend_open(path: &[u8]) -> u32 {
 /// [`vfs_open`]'s `O_CREAT|O_APPEND` path has to make before it is allowed to
 /// create anything. Deliberately does NOT allocate: it is called on the paths
 /// where the allocation is what failed.
-fn backend_file_exists(path: &[u8]) -> bool {
+fn backend_file_exists(path: &[u8], floor: usize) -> bool {
     match backend_for_path(path) {
         Some((backend, sub)) => {
-            backend.key_for(sub).and_then(|k| backend.stat(&k)).is_some()
+            backend.key_for_beneath(sub, floor).and_then(|k| backend.stat(&k)).is_some()
         }
         None => false,
     }
@@ -1470,9 +1500,9 @@ pub fn vfs_file_size(path: &[u8]) -> Option<u64> {
 ///
 /// Returns `Some(inode_idx)` if the path falls under a mounted backend and
 /// that backend can name the file; `None` otherwise.
-fn try_backend_create(path: &[u8]) -> Option<u32> {
+fn try_backend_create(path: &[u8], floor: usize) -> Option<u32> {
     let (backend, sub) = backend_for_path(path)?;
-    let key = backend.key_for(sub)?;
+    let key = backend.key_for_beneath(sub, floor)?;
 
     let inode_idx = inode_alloc(InodeBacking {
         fs: Some(backend), dirty: false, key, streaming: false, size: 0,
@@ -2044,7 +2074,7 @@ fn vfs_open_inner<const N: usize>(table: &mut FdTableN<N>, path: &[u8], flags: u
     let inode_idx;
     if flags & O_CREAT == 0 {
         // The proxy of a backend that does not stream.
-        inode_idx = try_backend_open(path);
+        inode_idx = try_backend_open(path, floor);
         if inode_idx == NO_IDX { return -1; }
     } else {
         // **`O_CREAT` on a backend path must not destroy an existing
@@ -2069,7 +2099,7 @@ fn vfs_open_inner<const N: usize>(table: &mut FdTableN<N>, path: &[u8], flags: u
         // and its real size, and `vfs_write`'s own `O_APPEND` case seeks
         // to that size — so the write lands at the end rather than at 0.
         if flags & O_APPEND != 0 && flags & O_TRUNC == 0 {
-            let existing = try_backend_open(path);
+            let existing = try_backend_open(path, floor);
             if existing != NO_IDX {
                 return fd_alloc(table, existing, flags);
             }
@@ -2083,10 +2113,10 @@ fn vfs_open_inner<const N: usize>(table: &mut FdTableN<N>, path: &[u8], flags: u
             // history is worth most. Refuse the open instead: a panic
             // that is not recorded is recoverable, a panic log that is
             // erased is not.
-            if backend_file_exists(path) { return -1; }
+            if backend_file_exists(path, floor) { return -1; }
         }
 
-        let Some(proxy_idx) = try_backend_create(path) else { return -1 };
+        let Some(proxy_idx) = try_backend_create(path, floor) else { return -1 };
         // O_TRUNC on a freshly created inode is a no-op (size==0),
         // but mark it dirty so vfs_close flushes an explicit truncate.
         if flags & O_TRUNC != 0 {

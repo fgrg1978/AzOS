@@ -624,6 +624,10 @@ impl<D: BlockDev + Send> FileSystem for AzvolFs<D> {
         FS_TYPE_AZVOL
     }
 
+    fn follows_links(&self) -> bool {
+        false
+    }
+
     /// Mounted when built ([`AzvolFs::new`] takes a mounted volume).
     fn mount(&self) -> Result<(), ()> {
         Ok(())

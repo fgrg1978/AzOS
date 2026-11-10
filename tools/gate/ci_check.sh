@@ -12408,6 +12408,8 @@ host_job host_canary_row "ext4: a key's floor in stat, listing and statfs canary
 host_job host_canary_row "ext4: a key's floor in an open of a link canary" fs-tests endpoint-floor-canary a_link_out_of_the_callers_directory_is_not_opened
 host_job host_canary_row "ext4: a link in the granted directory's path canary" ext4-tests escape-canary a_link_in_the_granted_directorys_path_is_refused
 host_job host_canary_row "ext4: the handlers do not tell the root canary (syscall)" syscall-tests beneath-root-canary stat_listing_and_statfs_name_the_directory_they_are_rooted_at
+host_job host_canary_row "fs: a backend without the floor serves beneath it canary" fs-tests beneath-default-open-canary a_backend_without_the_floor_serves_only_a_caller_rooted_at_or_above_the_mount
+host_job host_canary_row "fs: a seam without the root serves beneath it canary (syscall)" syscall-tests beneath-default-open-canary a_seam_without_the_root_serves_only_a_caller_rooted_at_slash
 host_job host_canary_row "ext4: an open's badge is its slot canary" ext4-tests badge-slot-canary a_badge_from_an_earlier_server_reaches_nothing
 host_job host_canary_row "ext4: a late block completion taken canary" ext4-tests stale-completion-canary a_late_completion_is_dropped
 host_job host_canary_row "ext4: the server's row holds one more partition canary" topology-tests ext4d-grant-canary ext4d_holds_its_partition_endpoint_and_region_and_nothing_else

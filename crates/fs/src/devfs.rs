@@ -25,6 +25,7 @@ fn node(key: &InodeKey) -> Option<usize> {
 
 impl FileSystem for DevFs {
     fn fs_type(&self) -> u32 { FS_TYPE_DEVFS }
+    fn follows_links(&self) -> bool { false }
 
     fn mount(&self) -> Result<(), ()> { Ok(()) }
 

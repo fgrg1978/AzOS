@@ -656,3 +656,57 @@ fn stat_listing_and_statfs_name_the_directory_they_are_rooted_at() {
         vec!["stat /fat/x /fat/x/f/g".to_string(), "statfs /fat/x /fat/x/f/g".to_string(), "readdir /fat/x /fat/x/f/g 2".to_string()]
     );
 }
+
+/// A filesystem that implements only the rootless `stat`, `readdir` and
+/// `statfs`: every `*_beneath` of it is the seam's default.
+struct Plain;
+
+impl crate::file_ops::FileOps for Plain {
+    fn open_at(&self, _: &[u8], _: &[u8], _: u32) -> i64 { unreachable!() }
+    fn close(&self, _: i32) -> i64 { unreachable!() }
+    fn read(&self, _: i32, _: &mut [u8]) -> i64 { unreachable!() }
+    fn write(&self, _: i32, _: &[u8]) -> i64 { unreachable!() }
+    fn lseek(&self, _: i32, _: i64, _: i32) -> i64 { unreachable!() }
+    fn dup(&self, _: i32) -> i64 { unreachable!() }
+    fn mkdir(&self, _: &[u8]) -> i64 { unreachable!() }
+    fn unlink(&self, _: &[u8]) -> i64 { unreachable!() }
+    fn readdir(&self, p: &[u8], i: u32) -> Option<([u8; azos_abi::syscall_nr::READDIR_NAME_BYTES], u32, bool)> {
+        note(format!("readdir {} {i}", s(p)));
+        None
+    }
+    fn release_all(&self, _: u32) -> usize { unreachable!() }
+    fn read_whole(&self, _: &[u8], _: &mut [u8]) -> usize { unreachable!() }
+    fn stat(&self, p: &[u8]) -> Result<crate::file_ops::StatOut, i64> { note(format!("stat {}", s(p))); Err(FS_ANSWER) }
+    fn statfs(&self, p: &[u8]) -> Result<crate::file_ops::StatFsOut, i64> { note(format!("statfs {}", s(p))); Err(FS_ANSWER) }
+}
+
+static PLAIN: Plain = Plain;
+
+/// **A seam that has not taken the root serves only a caller rooted at `/`.**
+/// Through a directory on `/fat/x`, the stat, listing and statfs of a name
+/// beneath it are refused (`-EACCES`) by the seam's own defaults, and the
+/// rootless methods are never reached; through the root directory, the
+/// same three reach them with the joined path.
+///
+/// **Canary.** `beneath-default-open-canary`: the defaults drop the root,
+/// and the three calls beneath `/fat/x` reach the rootless methods.
+#[test]
+fn a_seam_without_the_root_serves_only_a_caller_rooted_at_slash() {
+    let _g = serial();
+    let _u = Uninstall;
+    let tid = 0x7A00_0108;
+    let page = ring3(tid);
+    crate::file_ops::set_file_ops(&PLAIN);
+    let sub = dir(tid, "/fat/x", CapPerms::READ);
+    let root = dir(tid, "/", CapPerms::READ);
+    let (a, b) = paths(page, b"f\0", b"fat/x/f\0");
+    let out = (SCRATCH + 0x1000) as u64;
+    assert_eq!(sys_statat(sub, a, out), eacces());
+    assert_eq!(sys_statfsat(sub, a, out, azos_abi::syscall_nr::STATFS_BYTES as u64), eacces());
+    assert_eq!(sys_readdirat(sub, a, 0, out, azos_abi::syscall_nr::READDIR_NAME_BYTES as u64), Err(eacces()));
+    assert_eq!(calls(), Vec::<String>::new(), "a refused call reached the rootless seam");
+    assert_eq!(sys_statat(root, b, out), FS_ANSWER);
+    assert_eq!(sys_statfsat(root, b, out, azos_abi::syscall_nr::STATFS_BYTES as u64), FS_ANSWER);
+    assert_eq!(sys_readdirat(root, b, 0, out, azos_abi::syscall_nr::READDIR_NAME_BYTES as u64), Ok(None));
+    assert_eq!(calls(), vec!["stat /fat/x/f".to_string(), "statfs /fat/x/f".to_string(), "readdir /fat/x/f 0".to_string()]);
+}

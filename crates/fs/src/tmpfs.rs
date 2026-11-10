@@ -375,6 +375,7 @@ impl FileSystem for TmpFs {
     fn device_backed(&self) -> bool { false }
 
     fn fs_type(&self) -> u32 { FS_TYPE_TMPFS }
+    fn follows_links(&self) -> bool { false }
 
     fn mount(&self) -> Result<(), ()> { Ok(()) }
 

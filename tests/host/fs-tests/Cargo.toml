@@ -20,6 +20,9 @@ doctest = false
 fd-private-offset-canary = []
 # Gate canary (crates/fs): the delete gate is never asked.
 envelope-delete-canary = []
+# Mirrors crates/fs's: the `*_beneath` defaults of `FileSystem` drop the floor
+# (`beneath_defaults` goes red).
+beneath-default-open-canary = []
 # Canary: no per-description position lock (see crates/fs).
 fd-pos-lock-canary = []
 # Canary: per-sector `fat32_read_chain` (see crates/fs).

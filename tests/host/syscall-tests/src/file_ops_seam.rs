@@ -76,6 +76,10 @@ impl crate::file_ops::FileOps for Recorder {
         LOG.lock().unwrap().push(Call::Unlink { path: path.to_vec() });
         0
     }
+    // Lexical names: the root is nothing to this recorder.
+    fn readdir_beneath(&self, _: &[u8], path: &[u8], index: u32) -> Result<Option<([u8; azos_abi::syscall_nr::READDIR_NAME_BYTES], u32, bool)>, i64> {
+        Ok(self.readdir(path, index))
+    }
     fn readdir(&self, path: &[u8], index: u32) -> Option<([u8; azos_abi::syscall_nr::READDIR_NAME_BYTES], u32, bool)> {
         LOG.lock().unwrap().push(Call::Readdir { path: path.to_vec(), index });
         let mut name = [0u8; azos_abi::syscall_nr::READDIR_NAME_BYTES];

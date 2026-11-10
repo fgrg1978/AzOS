@@ -27,6 +27,9 @@ endpoint-epoch-canary = []
 # Host canary (fs-tests `endpoint_fs`): a key forgets the directory its opener is
 # rooted at (`endpoint-floor-canary`).
 endpoint-floor-canary = []
+# Host canary (fs-tests `beneath_defaults`): the `*_beneath` defaults of
+# `FileSystem` drop the floor for a backend that follows links.
+beneath-default-open-canary = []
 # Gate canary: a retired mount's inodes stay on its backend (`vfs_unmount`):
 # a descriptor opened on one USB stick reads the next stick's file of the
 # same name. The fs-tests `usb_volume` row must turn red. Never in a real build.

@@ -55,6 +55,9 @@ azos_crypto = { workspace = true }
 # Gate canary (syscall-tests `fs_tree_caps`): a stat, listing or statfs through a directory
 # capability does not tell the filesystem the directory's root.
 beneath-root-canary = []
+# Host canary (syscall-tests `fs_tree_caps`): the `*_beneath` defaults of `FileOps`
+# drop the root and serve a confined caller from `/`.
+beneath-default-open-canary = []
 # Canaries of `devices.rs` (built by tests/host/syscall-tests): a controller
 # that is not registered is answered by the board's; the safety core's lines
 # are not kept from an acting Gpio op.

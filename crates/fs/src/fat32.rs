@@ -7118,6 +7118,7 @@ fn named(v: &'static Vol, key: &crate::vfs::InodeKey) -> Option<FName> {
 impl crate::vfs::FileSystem for Fat32Fs {
     #[inline]
     fn fs_type(&self) -> u32 { self.vol.knobs.fs_type }
+    fn follows_links(&self) -> bool { false }
 
     #[inline]
     fn mount(&self) -> Result<(), ()> { fat32_mount_on(self.vol) }

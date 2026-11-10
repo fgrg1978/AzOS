@@ -190,6 +190,9 @@ mod azvol_mount;
 
 #[cfg(test)]
 mod capdir;
+// The `*_beneath` defaults of `FileSystem` for a backend that has not taken the floor.
+#[cfg(test)]
+mod beneath_defaults;
 #[cfg(test)]
 mod crash_dump;
 // FAT32 files below the root, through the VFS: `subdirs.rs`.

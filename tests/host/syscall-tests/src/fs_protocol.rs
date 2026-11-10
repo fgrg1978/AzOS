@@ -95,6 +95,10 @@ impl crate::file_ops::FileOps for Listing {
     fn dup(&self, _: i32) -> i64 { unreachable!() }
     fn mkdir(&self, _: &[u8]) -> i64 { unreachable!() }
     fn unlink(&self, _: &[u8]) -> i64 { unreachable!() }
+    // Lexical names: the root is nothing to this listing.
+    fn readdir_beneath(&self, _: &[u8], path: &[u8], index: u32) -> Result<Option<([u8; azos_abi::syscall_nr::READDIR_NAME_BYTES], u32, bool)>, i64> {
+        Ok(self.readdir(path, index))
+    }
     fn readdir(&self, path: &[u8], index: u32) -> Option<([u8; azos_abi::syscall_nr::READDIR_NAME_BYTES], u32, bool)> {
         assert_eq!(path, b"/tmp/d");
         let mut short = [0u8; azos_abi::syscall_nr::READDIR_NAME_BYTES];

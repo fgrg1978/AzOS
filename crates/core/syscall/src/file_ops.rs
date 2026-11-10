@@ -49,6 +49,15 @@ pub fn rel_to_root(path: &[u8]) -> &[u8] {
     p
 }
 
+/// Would a `*_beneath` default of [`FileOps`] drop the root of a caller
+/// rooted at `root`? Yes for any directory but `/`: the default then
+/// refuses, as the implementation has not said it keeps a caller beneath
+/// its root. Gate canary `beneath-default-open-canary` (never in a real
+/// build): the defaults drop the root and serve from `/`.
+fn root_dropped(root: &[u8]) -> bool {
+    root != azos_common::path::ROOT_DIR && !cfg!(feature = "beneath-default-open-canary")
+}
+
 /// What the syscall layer needs from a filesystem.
 ///
 /// Descriptors are plain `i32`, allocated and interpreted entirely by the
@@ -111,9 +120,13 @@ pub trait FileOps: Sync {
 
     /// [`FileOps::readdir`] for a caller whose authority is the directory
     /// `root` (the `Cap<Dir>` it names): a link that leaves it is not followed.
-    /// `Err` is the refusal, as a negative errno. An implementation whose
-    /// filesystems have no links keeps the default.
-    fn readdir_beneath(&self, _root: &[u8], path: &[u8], index: u32) -> Result<Option<([u8; azos_abi::syscall_nr::READDIR_NAME_BYTES], u32, bool)>, i64> {
+    /// `Err` is the refusal, as a negative errno. The default serves only a
+    /// caller rooted at `/` ([`root_dropped`]): an implementation that has
+    /// not taken the root cannot keep a confined caller beneath it.
+    fn readdir_beneath(&self, root: &[u8], path: &[u8], index: u32) -> Result<Option<([u8; azos_abi::syscall_nr::READDIR_NAME_BYTES], u32, bool)>, i64> {
+        if root_dropped(root) {
+            return Err(azos_abi::error::Errno::EACCES.to_syscall_ret());
+        }
         Ok(self.readdir(path, index))
     }
 
@@ -165,7 +178,12 @@ pub trait FileOps: Sync {
 
     /// [`FileOps::stat`] for a caller rooted at `root`, as
     /// [`FileOps::readdir_beneath`].
-    fn stat_beneath(&self, _root: &[u8], path: &[u8]) -> Result<StatOut, i64> { self.stat(path) }
+    fn stat_beneath(&self, root: &[u8], path: &[u8]) -> Result<StatOut, i64> {
+        if root_dropped(root) {
+            return Err(azos_abi::error::Errno::EACCES.to_syscall_ret());
+        }
+        self.stat(path)
+    }
 
     /// (`SYS_SPAWN_EX` move list): descriptor `fd`, owned by `from`,
     /// now belongs to `to`, whose per-task share of the table it is charged
@@ -228,7 +246,12 @@ pub trait FileOps: Sync {
 
     /// [`FileOps::statfs`] for a caller rooted at `root`, as
     /// [`FileOps::readdir_beneath`].
-    fn statfs_beneath(&self, _root: &[u8], path: &[u8]) -> Result<StatFsOut, i64> { self.statfs(path) }
+    fn statfs_beneath(&self, root: &[u8], path: &[u8]) -> Result<StatFsOut, i64> {
+        if root_dropped(root) {
+            return Err(azos_abi::error::Errno::EACCES.to_syscall_ret());
+        }
+        self.statfs(path)
+    }
 
     /// What the page cache needs to map the file open as `fd` (`NODE_MMAP`,
     /// `crate::file_map`): its name in the cache, the backing its pages come
