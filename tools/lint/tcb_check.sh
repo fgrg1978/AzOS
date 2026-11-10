@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-# Certified-partition check (renamed 2026-09-26, audit item Q2.1).
+# Certified-partition check (renamed from a TCB check).
 #
-# RENAMED CLAIM (Q2.1): this script does NOT measure the TCB. The TCB is the
+# RENAMED CLAIM: this script does NOT measure the TCB. The TCB is the
 # linked kernel image — every crate in it runs in S-mode and can write the
 # e-stop latch, scaffolding included. What this script measures is the
 # CERTIFIED PARTITION: which crates the project is willing to call "core"
@@ -34,7 +34,7 @@
 # flagged, not silently allowed), and it fails on the exact edge that broke
 # it, not on a vibe.
 #
-# The rule for which side a crate is on (owner's, 2026-09-05): core is
+# The rule for which side a crate is on (owner's): core is
 # everything that can move or stop a motor, PLUS all of `crates/net/stack` — the
 # e-stop arrives over TCP, so the network stack that carries it is core too.
 # Scaffolding is everything else: FAT32, camera, OTA, TFTP, USB MSC,
@@ -44,7 +44,7 @@
 # one-line justification of every crate on both sides, and of the crates
 # that were genuinely ambiguous.
 #
-# PROFILE (added 2026-09-26, Fable audit Q2.3, owner default): a third list,
+# PROFILE (added, Fable audit Q2.3, owner default): a third list,
 # for the robot payload — sensors, flight math, and the behavior arbiter that
 # reads them. Profile may depend on core; core may NOT depend on profile.
 # `tcb_check.sh` used to list these nine directly under CORE_CRATES ("core is
@@ -76,7 +76,7 @@ set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 CRATES_DIR="$REPO_ROOT/crates"
-# crate_dir <name>: the crate lives in one of the restructured groups (wave 11),
+# crate_dir <name>: the crate lives in one of the restructured groups,
 # or is a group of its own (crates/fs). A bare name is searched group by
 # group; a name that is ambiguous across groups is listed group-qualified,
 # `<group>/<name>`, and resolves under crates/ directly (w14).
@@ -117,13 +117,13 @@ hv
 hwbus input nvme bytepipe devif idl
 kit image hyp-api
 "
-# Wave 11 (DOMAIN): `actuation` (crates/core/actuation) is the authority
+# `actuation` (crates/core/actuation) is the authority
 # every domain shares — e-stop latch, signed release, flight recorder,
 # sys-wdt, the timer-ISR feed — extracted from `safety-core` and `behavior`.
 # What stayed in `safety-core` is the robot's part (motor gate and
 # envelope wiring, rt-motor, flight control, I-13 rollback), so it moved to
 # PROFILE: it links only into a USE_ROBOT image.
-# pci/dma joined CORE 2026-09-26: the drivers crate (CORE)
+# pci/dma joined CORE: the drivers crate (CORE)
 # had an optional path dependency on both (its `pci` feature) for the
 # virtio-pci modern transport; since w14 that is `virtio` (crates/drivers/virtio)
 # on `pci` alone. Putting them in
@@ -145,14 +145,14 @@ kit image hyp-api
 # `syscall`, `devif` and `libsys` build their interfaces on, so by dependency
 # direction it can only be CORE.
 
-# `energy` joined CORE in wave 12: the scheduler's energy seams and
+# `energy` joined CORE: the scheduler's energy seams and
 # utilisation tracker (pure, no_std); `sched` (CORE) depends on it.
 
 # `hv` joined CORE with the hypervisor core (Kconfig VIRT): `syscall` (CORE)
 # hosts the `vm` and `vcpu` interfaces over it, so by dependency direction it
 # can only be CORE. It depends on arch-api, decision, limits, rings and topology.
 
-# `rings` is CORE (it replaced `spsc`, wave 11 SHMRING): the ring shapes the
+# `rings` is CORE (it replaced `spsc`): the ring shapes the
 # kernel publishes trace records through (crates/core/trace) and the channels
 # sit on; libsys re-exports its shared-memory forms.
 
@@ -161,17 +161,17 @@ kit image hyp-api
 # `seclog` is CORE by the same direction: `records` and `decision` take the
 # security records' layout from it; it depends on rings and crypto only.
 
-# `linux-abi` joined CORE in wave 12: the Linux personality's
+# `linux-abi` joined CORE: the Linux personality's
 # numbers and layouts, a dependency of `sched` (the initial stack's auxv) and
 # `syscall` (the translation); by dependency direction it can only be CORE.
 
-# `ina219` joined CORE in wave 11 (DRVPLACE): the INA219 chip logic, a
+# `ina219` joined CORE (DRVPLACE): the INA219 chip logic, a
 # dependency of `drivers` (CORE) for its in-kernel placement; by dependency
 # direction it can only be CORE.
-# `buzzer` joined CORE in wave 12 (DRVPLACE): the buzzer chip logic, the
+# `buzzer` joined CORE (DRVPLACE): the buzzer chip logic, the
 # same shape and the same dependency edge from `drivers` as `ina219`.
 
-# `percpu` and `trace` joined CORE in wave 15, by dependency direction:
+# `percpu` and `trace` joined CORE, by dependency direction:
 # `percpu` (NRCPUS) holds the per-CPU areas `sched`, `mm` and `trace` reach
 # their per-CPU state through; `trace` (block A, TRACE) is the static-key
 # tracepoint layer `sched`, `ipc` and `syscall` call on their hot paths, so
@@ -179,7 +179,7 @@ kit image hyp-api
 # the row's red since c44e9b85). Its own dependencies (abi, rings, percpu) are
 # CORE.
 
-# `chaos` and `decision` joined CORE in wave 15, by dependency direction:
+# `chaos` and `decision` joined CORE, by dependency direction:
 # `sched`, `mm`, `ipc` and `syscall` (and the block driver class) call their
 # injection points (Kconfig CHAOS) and decision records (Kconfig
 # DECISION_RECORDS_DEV) from their own paths, so either one in SCAFFOLD or
@@ -192,7 +192,7 @@ behavior flight flight-math nav robot ahrs baro gps imu degrade-policy safety-co
 lx-loader
 "
 
-# `ktest` joined SCAFFOLD in wave 15 (KTEST): the in-kernel test registry,
+# `ktest` joined SCAFFOLD (KTEST): the in-kernel test registry,
 # compiled into a kernel only with Kconfig KTEST (a test kernel the gate
 # boots); no CORE crate depends on it, only the kernel binary's tests do.
 # `hwbus`, `input`, `nvme`, `bytepipe` and `devif` joined CORE (S6), by
@@ -240,19 +240,19 @@ hyp-mon
 
 # ── Known violations ────────────────────────────────────────────────────────
 #
-# When the partition above was drawn (2026-09-05) it did not find a clean
+# When the partition above was drawn it did not find a clean
 # graph — it exposed one that was never clean. Three edges from a core crate
 # to a scaffolding crate existed then. All three are closed, and none of them
-# is in the manifests today (re-checked against each Cargo.toml 2026-09-14):
+# is in the manifests today (re-checked against each Cargo.toml):
 #
-#   azos_syscall  -> azos_fs     CLOSED 2026-09-05. The file syscalls
+#   azos_syscall  -> azos_fs     CLOSED. The file syscalls
 #                        go through the `FileOps` trait in
 #                        crates/core/syscall/src/file_ops.rs; the kernel supplies
 #                        FAT32 and owns the descriptor table.
-#   azos_behavior -> azos_fs     CLOSED 2026-09-05. The flight
+#   azos_behavior -> azos_fs     CLOSED. The flight
 #                        recorder (logger.rs) declares a `LogStorage` trait
 #                        and the kernel supplies FAT32.
-#   azos_net      -> azos_tftp   CLOSED 2026-09-05. The boot-time
+#   azos_net      -> azos_tftp   CLOSED. The boot-time
 #                        TFTP fetch loop moved to crates/net/tftp/src/client.rs
 #                        behind a `UdpTransport` trait.
 #
@@ -262,7 +262,7 @@ hyp-mon
 # to grow.
 BASELINE_VIOLATIONS=0
 
-# ── Known core -> profile edges (2026-09-26, new with the PROFILE list) ────
+# ── Known core -> profile edges (new with the PROFILE list) ────
 #
 # Moving the nine Q2.3 crates plus `degrade-policy` out of CORE_CRATES turns
 # these EIGHT existing dependency edges into violations of the new rule
@@ -289,7 +289,7 @@ BASELINE_VIOLATIONS=0
 # false; this script does not edit that file. Report, do not fix (task
 # instruction) — flagging it here so it is not lost between fronts.
 #
-# Wave 11 (DOMAIN) closed all eight. `ipc` declares the five degrade-level
+# Closed all eight. `ipc` declares the five degrade-level
 # numbers itself (the speed mapping stays in `degrade-policy`, cross-checked at
 # compile time in `behavior`); `safety-core` is PROFILE now (see CORE_CRATES);
 # `syscall`'s three became OPTIONAL dependencies enabled only by its
@@ -346,7 +346,7 @@ deps_of() { # deps_of <path/to/Cargo.toml>  (non-optional dependencies only)
     done < "$toml"
 }
 
-# The optional azos_* dependencies of a Cargo.toml (wave 11): linked only
+# The optional azos_* dependencies of a Cargo.toml: linked only
 # when a feature names them, reported as domain-gated edges, not counted.
 optional_deps_of() { # optional_deps_of <path/to/Cargo.toml>
     local toml="$1" in_deps=0 line key

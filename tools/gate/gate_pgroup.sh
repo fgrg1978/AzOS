@@ -4,7 +4,7 @@
 # command in a process group of its own, so an interrupted gate can kill
 # everything it started, including processes that were re-parented away.
 #
-# Why (wave 13): the gate's tree kill (`par_kill_tree`) walks `pgrep -P` from
+# Why: the gate's tree kill (`par_kill_tree`) walks `pgrep -P` from
 # its own PID down. A process whose parent died first is re-parented to
 # launchd and drops out of that tree: a `azos_net_tests` binary started by
 # the serial `net-tests (fleet ring)` row outlived an interrupted gate that

@@ -4,7 +4,7 @@
 """Licence lint for the Linux driver layer (gate rows `lx: ...`).
 
 The project is "Apache-2.0 OR GPL-2.0-only", and so is our own Rust in the
-Linux layer (`crates/drivers/lx/emul`, no Linux header; owner decision, round 47). The glue
+Linux layer (`crates/drivers/lx/emul`, no Linux header). The glue
 that includes Linux headers (`crates/drivers/lx/glue/`) and the pinned Linux tree
 (`third_party/linux/`) are GPL-2.0-only. The rule this keeps: **no GPL-only
 source, symbol or object outside `crates/drivers/lx/glue/` and `third_party/`**, so nothing

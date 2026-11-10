@@ -8,7 +8,7 @@
 # ## Why this exists
 #
 # The hardware gate is conditional on "vsbench with parity against Linux or a
-# justification per measurement". Until 2026-09-07 that condition was checked
+# justification per measurement". That condition used to be checked
 # by hand, once. Nothing re-ran it, and the Linux half was not even built
 # by `make userspace` — long enough for its `fork_exit` lane to accumulate a
 # comment saying the reap "should be taken back in" and dead code marked "kept
@@ -17,14 +17,14 @@
 # ## What is asserted, and what deliberately is NOT
 #
 # **NOT asserted: timings, ratios or thresholds.** Five runs of the same AzOS
-# binary on 2026-09-07 spanned 246,450-332,975 ns/op on `fork+exit` alone —
+# binary spanned 246,450-332,975 ns/op on `fork+exit` alone —
 # about 35% — and the "x floor" ratios moved 73x-184x because the floor itself
 # oscillates. A threshold over that produces false reds, and a false red in a
 # gate is worse than no check: it trains the reader to ignore it.
 #
 # `switch-loaded` was bimodal — 33,964 / 32,416 / 2,822 ns/op across three runs
-# of the same binary on 2026-09-07 — and the note here used to guess at the
-# host being busy. **ATTRIBUTED on 2026-09-10, and it was not the host.**
+# of the same binary — and the note here used to guess at the
+# host being busy. **ATTRIBUTED, and it was not the host.**
 #
 # Linux is measured in the same runs on the same machine and stayed inside
 # 3,460-4,738 while AzOS spanned 3,276-59,926. A busy host moves both.
@@ -138,7 +138,7 @@
 # which this kernel offers by neither path and says so in its own output), but
 # a AzOS lane with no counterpart means the comparison stopped covering it.
 # The table exists so that "no counterpart" is a decision written down per
-# lane, not a gap: wave 6 (2026-09) added 27 AzOS-only lanes, the gate went
+# lane, not a gap: 27 AzOS-only lanes were added once, the gate went
 # red on all of them, and 24 got a real Linux counterpart (`futex`, a
 # `MAP_SHARED` SPSC ring, `getrusage`, a pipe, `clock_nanosleep`, `io_uring`;
 # see `userspace/bench/vsbench/src/abi_linux.rs`). Only the three below are rows.
@@ -146,7 +146,7 @@
 # The numbers are printed side by side for a human to read. That is what they
 # are for.
 #
-# ## Two AzOS columns (owner decision 2026-09-14)
+# ## Two AzOS columns
 #
 # The same VSBENCH.ELF, from the same disk image, is booted on two kernels,
 # each built here into its own cargo target directory:
@@ -181,7 +181,7 @@
 #
 # ## The Linux + seccomp column (`VSBENCH_SECCOMP=1`)
 #
-# Owner decision 2026-09-14: AzOS runs vsbench under its image profile, so
+# AzOS runs vsbench under its image profile, so
 # Linux gets a column under an equivalent filter too, beside the unfiltered
 # Linux column, which stays.
 #
@@ -224,7 +224,7 @@ QEMU="${QEMU:-qemu-system-riscv64}"
 # ── VSBENCH_ICOUNT=1: measure instructions instead of nanoseconds ───────────
 #
 # WHY THIS EXISTS. The wall-clock lanes cannot resolve the difference they are
-# most often asked about. Five runs of the same two binaries on 2026-09-16, on
+# most often asked about. Five runs of the same two binaries, on
 # a host at load 1.3-6.8, put `syscall-floor` anywhere from 11% BELOW Linux to
 # 14% ABOVE it -- and an earlier single run of that spread had been recorded as
 # a "+12% regression" and chased. The lane was measuring the host.
@@ -253,7 +253,7 @@ if [ "$VSBENCH_ICOUNT" = "1" ]; then ICOUNT_ARGS="-icount shift=0,sleep=off"; fi
 #
 # `-icount` alone is not enough. It makes a lane reproducible only when the
 # lane's cost does not depend on WHEN another hart picks up work, and at the
-# default `-smp 4` the process lanes do. Measured 2026-09-18, three runs of the
+# default `-smp 4` the process lanes do. Measured, three runs of the
 # same unchanged binaries at `-smp 4`: `syscall-floor` read exactly 314/237
 # every time (one hart, tight loop), while `fork+exit` on the LINUX side --
 # nothing changed between runs -- produced 122,410 / 2,259,292 / 3,661,717, a
@@ -278,7 +278,7 @@ VSBENCH_SMP="${VSBENCH_SMP:-4}"
 
 # ── VSBENCH_RING_DET: the ring lanes again, under one TCG thread and -icount ─
 #
-# Owner decision 2026-09-28 (wave 9 INV, question 4). `ring-pingpong` in the
+# `ring-pingpong` in the
 # gate column read ~550,000 ns/op against ~148,000 in the product column, same
 # kernels, host load ~40. Measured: under MTTCG (the default) each exchange
 # wakes a HALTED vCPU of the parked gate column, and that host-thread wake
@@ -288,7 +288,7 @@ VSBENCH_SMP="${VSBENCH_SMP:-4}"
 # daemons keep those vCPUs running.
 #
 # So the gate column's ring lanes (`ring-*`, the shared-memory SPSC ring,
-# `ioring-*`, the submission ring, and `frame-stream`, wave 11) are measured a second time, on a second
+# `ioring-*`, the submission ring, and `frame-stream`) are measured a second time, on a second
 # boot of the SAME kernel-min kernel and the SAME Linux initramfs, both under
 # `-accel tcg,thread=single -icount shift=0,sleep=off` at the same `-smp`
 # (`-smp 1` would put client and server on one hart and change what the lane
@@ -318,7 +318,7 @@ RING_LANES_RE='^(ring-|ioring-|frame-stream)'
 # runs with the Linux half and the full lane set only; `VSBENCH_LAT=0` skips it.
 VSBENCH_LAT="${VSBENCH_LAT:-1}"
 
-# ── VSBENCH_TCP: TCP bulk to a host peer, both kernels (wave 15) ───────────
+# ── VSBENCH_TCP: TCP bulk to a host peer, both kernels ───────────
 #
 # `tcp-bulk-tx` and `tcp-bulk-rx` move TCP_BULK_BYTES (4 MiB) one way each
 # between the guest and `tools/bench/vsbench_tcp_peer.py` on the host, over QEMU
@@ -374,7 +374,7 @@ WORK="${VSBENCH_WORK:-$AZOS_OUT/build/vsbench-compare}"
 CARGO="${CARGO:-cargo}"
 VSBENCH_SECCOMP="${VSBENCH_SECCOMP:-0}"
 
-# ── VSBENCH_LANES: run only some sections, on every side (wave 15) ──────────
+# ── VSBENCH_LANES: run only some sections, on every side ──────────
 #
 # A comma list of section keys (see `Lanes` in
 # userspace/bench/vsbench/src/bench_core.rs): ipc, mem, proc, thread, vdso,
@@ -390,14 +390,14 @@ VSBENCH_SECCOMP="${VSBENCH_SECCOMP:-0}"
 # suite, and the seccomp column (whose check is "every lane the unfiltered
 # column measured") is refused with it.
 VSBENCH_LANES="${VSBENCH_LANES:-}"
-# ── VSBENCH_GATE_ONLY=1: the gate column alone (2026-10-22) ─────────────────
+# ── VSBENCH_GATE_ONLY=1: the gate column alone ─────────────────
 # Builds and boots only the gate (bench-minimal) kernel: no product column, no
 # Linux half, no TCP pass. For an A/B of the gate kernel against itself, two
 # runs from two configurations (tools/bench/vsbench_cost.sh), where the other
 # columns would only double the boots. Its lanes are in
 # $VSBENCH_WORK/azos-bench-minimal.log; the comparison with Linux is not made.
 VSBENCH_GATE_ONLY="${VSBENCH_GATE_ONLY:-0}"
-# Wave 15: both sides' disk, the SAME drive line: modern virtio-mmio and this
+# Both sides' disk, the SAME drive line: modern virtio-mmio and this
 # QEMU cache mode (writeback: a guest FLUSH is a host fdatasync; the `disk`
 # lanes compare fsync at the same durability only with the same mode).
 VSBENCH_DISK_CACHE="${VSBENCH_DISK_CACHE:-writeback}"
@@ -524,7 +524,7 @@ completion_lane() { # completion_lane <log> <side>
         tr -d '\r' <"$1" 2>/dev/null | grep -qF "[VSBENCH] side=$2 done"
         return
     fi
-    # The lane's LAST line (wave 15): `ctxsw-loaded` or its refusal follows
+    # The lane's LAST line: `ctxsw-loaded` or its refusal follows
     # `switch-loaded =`, so stopping on the earlier line could cut it off.
     tr -d '\r' <"$1" 2>/dev/null \
         | grep -qE "\[VSBENCH\] $2 ctxsw-loaded =|\[VSBENCH\] ctxsw-loaded: |\[VSBENCH\] switch-loaded: REFUSED"
@@ -535,7 +535,7 @@ completion_lane() { # completion_lane <log> <side>
 # to be sitting in `target/`, while building the disk image and the whole Linux
 # side itself — so the one artefact it did not produce was the one under test.
 #
-# It bit on 2026-09-11: a `--features vf2` kernel left over from an unrelated
+# It has bitten: a `--features vf2` kernel left over from an unrelated
 # build was booted on `-machine virt` and died in Phase 6 with a Store/AMO
 # access fault at `0x1602002f`, a JH7110 MMIO address. That reads exactly like
 # a kernel regression, and it was a stale artefact. A comparison tool that does
@@ -551,7 +551,7 @@ KP_KERNEL="$BENCH_TARGET/azos-product/riscv64imac-unknown-none-elf/release/kerne
 # That table is generated by `make`, not by cargo, so a kernel built here after
 # `userspace/bench/vsbench` changed carried the OLD hash and never started the
 # benchmark. The symptom is "did not reach its last lane" on both kernels and
-# nothing about a hash, which reads like a kernel regression (2026-09-18: a server
+# nothing about a hash, which reads like a kernel regression (a server
 # loop change, twice; earlier, N_PROC). Regenerate it first, like the gate does.
 ( cd "$REPO_ROOT" && make ALL_USER_IMAGES=1 $AZOS_OUT/build/image_hashes.rs >/dev/null 2>&1 ) \
     || die "could not regenerate $AZOS_OUT/build/image_hashes.rs"
@@ -698,7 +698,7 @@ fi
 # Stops at the last lane, or once PID 1 is gone: `Attempted to kill init!` is
 # printed after PID 1's last write, so nothing is lost by stopping there, and a
 # run that died early does not sit out the whole `WAIT_SECS`.
-# Wave 15: Linux gets its own copy of the AzOS disk image (FAT32) on the same
+# Linux gets its own copy of the AzOS disk image (FAT32) on the same
 # virtio-blk device, which `disk_setup` mounts `vfat` at /mnt for the `disk`
 # lanes (file-write): the same file system on the same emulated disk.
 boot_linux() { # boot_linux <initramfs> <log> [extra cmdline]
@@ -869,7 +869,7 @@ rc=0
 #
 # `side=<x> done` is printed, but a correct run can mangle it: kernel output
 # interleaves with the benchmark's on the same serial console. Observed
-# 2026-09-07 on the Linux side, where the final line came out as
+# on the Linux side, where the final line came out as
 #
 #   [VSBENCH] side=[    1.007980] Kernlinux del panic - not soneyncing: ...
 #
@@ -1027,15 +1027,15 @@ if [ -n "$L_LOG" ]; then
 
     # ── Lanes that are NOT comparable, and why each one is listed ─────────
     #
-    # `switch-loaded`: measured 2026-09-11 (`-smp 4`) with both kernels' own
+    # `switch-loaded`: measured (`-smp 4`) with both kernels' own
     # switch counters, AzOS switched on 500 of 500 yields and Linux on 0 of
-    # 500. At `-smp 1` (wave 15) Linux switches, but runs ~1 competitor yield
+    # 500. At `-smp 1` Linux switches, but runs ~1 competitor yield
     # per op where AzOS runs 4: one op is not the same work on the two
     # kernels. `ctxsw-loaded` (same window, per context switch) is the lane
     # that compares; this one stays in each side's own output, not in a
     # column headed "azos / linux".
     #
-    # `sleep-until0` and `ioring-tmr xN` (2026-09-27): AzOS completes a
+    # `sleep-until0` and `ioring-tmr xN`: AzOS completes a
     # deadline that has already passed inside the call; Linux arms an hrtimer
     # that has already expired and completes it from the timer interrupt, so
     # its side is interrupt-to-wake latency (17-330 us per op, not monotonic in

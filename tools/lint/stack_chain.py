@@ -6,7 +6,7 @@
     stack_chain.py <elf> --limit BYTES [--root SYMBOL ...] [--frames N]
 
 The frame lint (tools/lint/stack_frames.py) asks whether any single function is too
-big for the stack. That is not what overflows a stack. On 2026-09-15 every
+big for the stack. That is not what overflows a stack. Once every
 brain-peer boot died in a kernel page fault with no frame anywhere near the
 limit: ten small and medium frames in one chain summed past the 12 KiB a
 16 KiB task stack has above its guard page. This tool asks the question that
@@ -44,7 +44,7 @@ THE BUDGET. A kernel task stack is KERNEL_STACK_SIZE_BYTES with the first
 page a guard, so the usable depth is that minus 4096. Out of it must come the
 deepest chain and the trap frame that starts it (288 bytes on riscv64, 192 on
 x86_64: the gate's `chain_row`). An interrupt taken on top costs only that
-frame since 2026-09-16: its handler runs on the hart's own interrupt stack
+frame: its handler runs on the hart's own interrupt stack
 (kernel/src/entry/<isa>/asm/trap_entry.S).
 
 Exit 1 when the chain is over the limit, or when a recursive block too big to
@@ -77,8 +77,8 @@ def edges(an, owner, stats=None):
     A call is resolved by the ADDRESS it reaches, not by the name objdump
     annotates it with. Images keep the assembler's local labels
     (`.Lpcrel_hiN`, one set per compilation unit) and objdump names a target
-    by the nearest one, `<.Lpcrel_hi164+0x1a>`, a name 57 functions of the
-    2026-10-24 qemu kernel define. Looking the name up resolved a branch to
+    by the nearest one, `<.Lpcrel_hi164+0x1a>`, a name 57 functions of a
+    qemu kernel define. Looking the name up resolved a branch to
     the last of them: `ip::iface_get`'s jump to its own exit "called"
     `waitgraph::effective`, and edges like it knotted 331 functions into one
     recursive component that the chain charged whole (32 KiB of a 54 KiB
@@ -90,7 +90,7 @@ def edges(an, owner, stats=None):
     thunk. Every call the x86_64 compiler could not make direct goes through
     one (`callq __x86_indirect_thunk_r11`, the target in %r11), so a call
     graph read off the call instructions alone has no edges at all: 19 of
-    every 20 calls in the 2026-10-24 x86_64 qemu kernel are thunk calls, and
+    every 20 calls in an x86_64 qemu kernel are thunk calls, and
     most of them are static -- LLVM materialises the callee's address and
     calls through the thunk because the build asks for retpolines, not
     because the callee is unknown. A register loaded from memory (a vtable, a
@@ -177,13 +177,13 @@ def chain(graph, frames, root, unbounded=None):
 
     THE PANIC HANDLER IS ITS OWN ROOT. Anything that can panic calls it, and
     it calls the heap, the console and the file system (the crash log), which
-    can all panic: through it, 155 functions of the 2026-10-24 qemu kernel are
+    can all panic: through it, 155 functions of a qemu kernel were
     one recursive component, too big to walk and charged whole (14.7 KiB).
     So the calls into the handler are cut, its chain is measured from it over
     the cut graph, and that depth is added to the deepest chain once, as if
     the deepest frame panicked.
 
-    A PANIC INSIDE THE HANDLER is bounded since 2026-10-24
+    A PANIC INSIDE THE HANDLER is bounded
     (kernel/src/panic.rs `nested`): it enters the handler again, which marks
     the hart and goes straight to `nested` -- one line, then reboot or halt --
     and a panic inside `nested` enters once more and parks the hart at
@@ -410,7 +410,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("elf")
     ap.add_argument("--limit", type=int, required=True)
-    # B2-04 (2026-09-24): riscv64's trap dispatch now enters at
+    # B2-04: riscv64's trap dispatch now enters at
     # `riscv64_trap_handler` (kernel/src/entry/riscv64/mod.rs), which routes through
     # `TrapContext`; the old `main.rs::trap_handler` is deleted. Gate 173 went
     # red on all three `stack chain` rows with "no symbol trap_handler" — the

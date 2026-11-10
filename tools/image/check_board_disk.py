@@ -3,7 +3,7 @@
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 """check_board_disk.py — post-build anti-drift gate for the board disk image.
 
-Owner decision 2026-09-24: the build must FAIL if the volume and the
+The build must FAIL if the volume and the
 topology disagree, not silently pick one. `gen_board_manifest.py` derives
 what SHOULD be on the disk from the topology; this script checks what
 ACTUALLY landed there, by reading the FAT32 image back with `mdir` instead

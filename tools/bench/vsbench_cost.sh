@@ -55,7 +55,7 @@ die() { echo "vsbench-cost: $*" >&2; exit 1; }
 # guest time, which for a lane that WAITS (spawn+wait sleeps until the child
 # is reaped) moves in whole timer quanta for an instruction more or less; the
 # instruction count is the cost of the code path, and the bound reads it
-# wherever both columns have it. Measured 2026-10-22, spawn+wait with records
+# wherever both columns have it. Measured, spawn+wait with records
 # off/on: 344,072 / 545,040 ns/op but 233,746 / 235,275 instr/op.
 lanes_of() {
     local log; log="$(tr -d '\r' <"$1" 2>/dev/null | grep "\[VSBENCH\] azos ")"

@@ -70,7 +70,7 @@ AXIS_MEMBERS = {
 }
 
 
-# Owner decision (QoS timer tolerance): on for every task of the desktop, IoT
+# QoS timer tolerance: on for every task of the desktop, IoT
 # and wearable presets; opt-in per topology row on robot and industrial (and
 # automotive, which is industrial); off elsewhere. (QOS_TIMER_TOLERANCE,
 # QOS_TIMER_TOLERANCE_ROWS_ONLY) per preset.

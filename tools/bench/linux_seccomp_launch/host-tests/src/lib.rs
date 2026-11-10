@@ -147,7 +147,7 @@ mod tests {
         );
 
         // The launcher's one call after the install is `execve`, which
-        // vsbench issues too since wave 12 (`spawn+wait`), so the entry is
+        // vsbench issues too (`spawn+wait`), so the entry is
         // vsbench's and no launcher-only entry is left.
         let launcher: Vec<_> = ALLOWED.iter().filter(|s| s.by == By::Launcher).collect();
         assert!(launcher.is_empty(), "a launcher-only entry: {launcher:?}");
@@ -156,7 +156,7 @@ mod tests {
 
     #[test]
     fn every_ecall_in_the_linux_build_goes_through_a_named_helper() {
-        // The helpers are `syscall0` .. `syscall6`, and `syscall7` (wave 13:
+        // The helpers are `syscall0` .. `syscall6`, and `syscall7` (
         // the thread-shaped clone, whose child must leave the asm itself);
         // each holds one `ecall` and one `in("a7")`. Any other `ecall` would
         // issue a number the call site scan above never sees.
@@ -188,8 +188,8 @@ mod tests {
             assert!(!src.contains("\"svc #0\""), "{file} issues an aarch64 svc of its own");
             assert!(!src.contains("in(\"x8\")"), "{file} loads x8");
         }
-        // The Linux build compiles exactly these files. `ipc_proto` joined on
-        // 2026-09-21: the server LOOP moved to `userspace/bench/vssrv` and only the
+        // The Linux build compiles exactly these files. `ipc_proto` is included
+        // because the server LOOP moved to `userspace/bench/vssrv` and only the
         // protocol constant stayed shared, so the client stopped compiling
         // `SYS_IPC_ACCEPT`/`_REPLY`/`_REPLY_ACCEPT` at all.
         for m in MAIN_RS.lines().map(str::trim).filter(|l| l.starts_with("mod ")) {

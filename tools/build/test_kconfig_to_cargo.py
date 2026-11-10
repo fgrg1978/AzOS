@@ -393,7 +393,7 @@ def test_embedded_ram_size_comes_through() -> None:
             f"expanded embedded config carries {ram}, expected ['CONFIG_RAM_SIZE=64']"
         )
         _target, features = parse_output(run_bridge(cfg))
-        # The embedded profile is Generic (wave 11, owner decision): no board
+        # The embedded profile is Generic: no board
         # feature, the always-on base features and no robot one. A small board
         # starts only the drivers its topology names: no virtio-input and no
         # virtio-snd. A
@@ -555,7 +555,7 @@ def test_default_target_is_riscv64() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Wave 11: application domain, robot type, threat model, driver switches
+# Application domain, robot type, threat model, driver switches
 # ---------------------------------------------------------------------------
 
 def _expand(lines: list[str], tmp_dir: Path, name: str = "w11.config") -> list[str]:
@@ -617,7 +617,7 @@ def test_threat_profile_implies_never_forces() -> None:
         assert "CONFIG_CONSOLE_LOCKDOWN=y" not in conf, "a refused posture implied the lockdown"
         hard = _expand(["CONFIG_PRESET_ROBOT=y", "CONFIG_SECURITY_HARDENED=y"], t, "h.config")
         assert "# CONFIG_CONSOLE_LOCKDOWN is not set" in hard, "hardened implied the physical-access set"
-        # The brain-link switch exists only in the Robot domain (wave 11).
+        # The brain-link switch exists only in the Robot domain.
         gen = _expand(["CONFIG_SECURITY_SEPARATION_STATIC=y"], t, "g.config")
         assert not any(l.startswith("CONFIG_LINK_PROVISIONING_ENFORCED") for l in gen), (
             "LINK_PROVISIONING_ENFORCED reached a Generic image, which has no brain link"
@@ -630,7 +630,7 @@ def test_threat_profile_implies_never_forces() -> None:
 
 
 def test_brain_link_fails_closed_outside_dev() -> None:
-    """Owner decision 2026-10-23: the brain link fails closed. Every shipped
+    """The brain link fails closed. Every shipped
     robot defconfig that is not BUILD_TYPE_DEV builds `link-provisioning-
     enforced` (no boot without a link key, the UART bridge down), every
     BUILD_TYPE_DEV one does not, CERTIFIABLE cannot turn it off, and Kconfig
@@ -980,7 +980,7 @@ def test_page_size_reaches_the_build() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Application domains (wave 11, DOMAIN)
+# Application domains (DOMAIN)
 # ---------------------------------------------------------------------------
 
 # The features no domain turns off: the scheduler options, the refusal
@@ -1013,7 +1013,7 @@ ROBOT_ONLY_DEFAULTS = ("use-robot", "rc-input", "geofence")
 
 
 def test_profile_defconfigs_generic_robot_variants_robot() -> None:
-    """Owner decision (wave 11): the profile defconfigs are Generic, and the
+    """The profile defconfigs are Generic, and the
     robot twin of each (`robot-` in place of `generic-`, assembled from the
     same fragments by tools/build/gen_defconfigs.py) differs from it in the preset
     line only. Every committed defconfig is Generic exactly when its name
@@ -1106,7 +1106,7 @@ def test_refusal_receipts_follow_their_symbol() -> None:
     """DECISION_REFUSALS_DURABLE is y by default on every preset and builds
     `decisions-durable`; n drops it. The ring's symbol, DECISION_RECORDS_DEV,
     is the `decisions` feature and is separate: y by default on every preset
-    but a small board (owner 2026-10-22, receipts on), a `base` tag, and n
+    but a small board (receipts on), a `base` tag, and n
     drops it alone.
     Canary: remove the `# cargo-feature:` tag from a symbol -> the y case
     loses the feature."""
@@ -1224,7 +1224,7 @@ def test_ps2_is_x86_only_and_follows_the_domain() -> None:
 
 
 def test_robot_subsystem_off_drops_its_feature() -> None:
-    """Wave 15: RC_INPUT=n / GEOFENCE=n on a Robot .config builds without
+    """RC_INPUT=n / GEOFENCE=n on a Robot .config builds without
     that one feature, keeping `use-robot` and
     the other subsystem: off compiles it out."""
     import tempfile
@@ -1321,7 +1321,7 @@ def test_industrial_preset_starts_with_the_physical_access_threat_model() -> Non
 
 
 def test_microkernel_implies_ring3_placement() -> None:
-    """Wave 11 (DRVPLACE): STRUCTURE ring3-drivers implies DRV_RING3_DEFAULT, which every
+    """DRVPLACE: STRUCTURE ring3-drivers implies DRV_RING3_DEFAULT, which every
     driver placement choice follows, and changes nothing else; the imply can
     be turned off and each placement set by hand."""
     import tempfile
@@ -1395,7 +1395,7 @@ def test_driver_placement_reaches_the_build() -> None:
             _expand(dom + ["CONFIG_BOARD_IO=y", "CONFIG_DRV_INA219_PLACEMENT_KERNEL=y"], t, "k.config")
             feats = _bridge_args(t / "k.config")
             assert "ina219-kernel" in feats, (dom, feats)
-        # Wave 12: the buzzer's choice, the same way.
+        # The buzzer's choice, the same way.
         assert "CONFIG_DRV_BUZZER_PLACEMENT_RING3=y" in d, "the buzzer's default is not ring3"
         assert "buzzer-kernel" not in feats or "CONFIG_DRV_BUZZER_PLACEMENT_KERNEL=y" in d, feats
         _expand(["CONFIG_BOARD_IO=y", "CONFIG_DRV_BUZZER_PLACEMENT_KERNEL=y"], t, "b.config")

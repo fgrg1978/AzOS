@@ -71,10 +71,9 @@ def _read_ota_max_image_size() -> int:
     drift from the receiver's (`crates/core/ota/src/lib.rs::OTA_MAX_IMAGE_SIZE`,
     which reads the identical symbol via `azos_limits`).
 
-    U12-4 (2026-09-25 audit): this used to hardcode `2 * 1024 * 1024` —
+    This used to hardcode `2 * 1024 * 1024` —
     `secure_boot.rs`'s OLD, separate `.bss`-buffer ceiling — while Kconfig's
-    range was 1-64 MiB, default 8. That second ceiling is gone (2026-09-26,
-    U09-14: OTA verification streams the hash instead of buffering a whole
+    range was 1-64 MiB, default 8. That second ceiling is gone (OTA verification streams the hash instead of buffering a whole
     image), so `OTA_MAX_IMAGE_SIZE_MB` is now the ONLY size limit in the OTA
     path and this must track it, not the number that used to live beside it.
 

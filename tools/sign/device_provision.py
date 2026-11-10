@@ -18,7 +18,7 @@ which the USB mass-storage export cannot address:
 `--show` prints `device <32 hex> floor <n>` or `absent`. `--id-only` with
 `--show` prints just the 32 hex digits (what `gen_config_sig.py --device-id`
 takes). `--topo-floor` with `--show` prints the signed topology's counter
-floor instead (wave 15: the "KTPF" record the kernel keeps in tail sector
+floor instead (the "KTPF" record the kernel keeps in tail sector
 `--topo-sector`, Kconfig TOPOLOGY_FLOOR_SECTOR, default 3): `topo-floor <n>`,
 or `absent` (which the kernel reads as 0).
 

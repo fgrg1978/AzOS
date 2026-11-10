@@ -4,7 +4,7 @@
 """isa_neutral_names.py — the generic idle seam is not named after one ISA's instruction.
 
 `wfi` is riscv64's and aarch64's mnemonic; x86_64 waits with `hlt`. The
-shared code names what the seam does (owner, 2026-10-21):
+shared code names what the seam does:
 
     Cpu::wfi                 -> Cpu::wait_for_interrupt   (arch/api, each ISA's impl, callers)
     IdleChoice::Wfi          -> IdleChoice::Shallow       (crates/core/energy)

@@ -120,7 +120,7 @@ ROLES = {
     "forensic": ["seclog_verify/"],
 }
 
-# Entries in flight on other branches (2026-10-23): placed here so that --apply
+# Entries in flight on other branches: placed here so that --apply
 # on a tree where they have landed moves them too. An absent one is no finding.
 INCOMING = {
     "build": ["gen_defconfigs.py", "kconfig_to_cargo.golden"],
@@ -131,7 +131,7 @@ INCOMING = {
 }
 
 # The tools a person runs by hand, on purpose: nothing in the tree calls them,
-# and each line says why it stays manual (owner batch IV, 2026-10-24; the other
+# and each line says why it stays manual (owner batch IV; the other
 # tools that had no caller were wired, merged, moved out or deleted).
 NO_CALLER = {
     "merge_generated.py": "settles a merge's conflicts in the regenerated files and the budget baselines: run by hand in a stopped merge",

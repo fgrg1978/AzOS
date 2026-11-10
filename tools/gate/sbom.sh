@@ -128,7 +128,7 @@ rust_component_count = len(components)
 
 # --- Python (AzOSRobotBrain) dependencies -------------------------------
 # Scope: AzOSRobotBrain has no lockfile (no requirements.lock,
-# poetry.lock, Pipfile.lock or uv.lock) as of 2026-09-13 — only an
+# poetry.lock, Pipfile.lock or uv.lock) — only an
 # unpinned requirements.txt with >= constraints. Record each declared
 # dependency with an "unknown" resolved version rather than guessing
 # one; do not fabricate a purl version qualifier for an unpinned dep.

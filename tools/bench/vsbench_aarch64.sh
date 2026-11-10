@@ -35,7 +35,7 @@
 # 33x spread on an unchanged Linux binary at `-smp 4` vs bit-exact at
 # `-smp 1`).
 #
-# **Verified empirically for aarch64 while writing this script (2026-09-23):**
+# **Verified empirically for aarch64 while writing this script:**
 # the SAME aarch64 kernel+disk booted twice under `-smp 1 -icount
 # shift=0,sleep=off` produced BYTE-IDENTICAL `[VSBENCH]` output both times.
 # riscv64 was already known deterministic this way; aarch64 had not been
@@ -49,8 +49,7 @@
 #
 # ## The clock: CNTFRQ_EL0 must be read, not assumed
 #
-# `userspace/bench/vsbench/src/bench_core.rs`'s `scale_ticks` fixed a real bug on
-# 2026-09-22: it used to assume RISC-V's 10 MHz `time` CSR frequency for
+# `userspace/bench/vsbench/src/bench_core.rs`'s `scale_ticks` fixed a real bug: it used to assume RISC-V's 10 MHz `time` CSR frequency for
 # aarch64's `cntvct_el0` too, which runs at 1 GHz under QEMU `-cpu max` —
 # every aarch64 lane read 100x too high (a "41,300-instruction" syscall
 # floor). It now reads `CNTFRQ_EL0` at runtime on aarch64 and does the
@@ -75,7 +74,7 @@
 # script reports; it does not gate. See "How to run this" below for why it
 # is not wired into `tools/gate/ci_check.sh`'s default sequence.
 #
-# ## The Linux/aarch64 column (N0, wave 15)
+# ## The Linux/aarch64 column
 #
 # The image is the `aarch64=` line of tools/bench/vsbench_linux.conf (default
 # the Image `make fetch` builds from the pinned Linux tree), overridden by the env var
@@ -176,7 +175,7 @@ case "$VSBENCH_LOG_LEVEL" in
     *) die "VSBENCH_LOG_LEVEL=$VSBENCH_LOG_LEVEL: want err, warn, info or debug" ;;
 esac
 AZ_LEVEL="CONFIG_LOG_LEVEL_$(printf '%s' "$VSBENCH_LOG_LEVEL" | tr '[:lower:]' '[:upper:]')=y"
-# Wave 15: the same diagnostic knobs as tools/bench/vsbench_compare.sh.
+# The same diagnostic knobs as tools/bench/vsbench_compare.sh.
 # VSBENCH_AZOS_EXTRA_FEATURES: extra kernel features on both ISAs (e.g.
 # `switch-census`, whose `[SW-CENSUS]` lines need VSBENCH_LOG_LEVEL=debug).
 # VSBENCH_LANES: only the named vsbench sections (see vsbench_compare.sh).

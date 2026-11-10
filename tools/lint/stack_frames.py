@@ -18,7 +18,7 @@ objdump's own headers, which split a body at every local label. An x86_64
 frame also counts the return address its caller's `call` pushed, which
 riscv64 and aarch64 keep inside the frame they reserve.
 
-Until 2026-10-24 a frame was read from the prologue alone, the steps that
+A frame used to be read from the prologue alone, the steps that
 lower sp before the first other instruction. LLVM shrink-wraps: a function
 that can return early tests first and reserves its frame after the test, or
 reserves more on one path only. Those reservations were missed -- 1,482 of

@@ -14,20 +14,20 @@
 //! file's `nr(generic, x86_64)`, so the list stays exact for every ISA
 //! vsbench's Linux build targets; the BPF program uses the generic one.
 //!
-//! ## How the set was derived, 2026-09-14 (re-derived 2026-09-27)
+//! ## How the set was derived
 //!
 //! 1. **Source.** With `--features linux`, `main.rs` compiles `bench_core.rs`
 //!    (no `ecall`, only `rdtime`) and `abi_linux.rs`, whose seven
 //!    `syscallN` helpers are the only `ecall` sites. Every helper call names a
-//!    `SYS_*` constant; the constants below are exactly those names. Since
-//!    2026-09-27 the Linux build also links `azos_libsys` for its pure
+//!    `SYS_*` constant; the constants below are exactly those names. The
+//!    Linux build also links `azos_libsys` for its pure
 //!    ring core (`SpscRing` and friends) and calls none of its wrappers.
-//! 2. **Binary.** Re-checked 2026-09-27, after the wave-6 counterparts
+//! 2. **Binary.** Re-checked, after the futex/ring/io_uring counterparts
 //!    (`futex`, `clock_nanosleep`, `io_uring_*`, `close`): the built ELF has
 //!    225 `ecall` instructions; each is preceded in its block by
 //!    `li a7,<n>`, and the `<n>` are exactly the twenty-five vsbench numbers
 //!    below — no AzOS number from the linked `azos_libsys`. (First
-//!    derivation, 2026-09-14: 147 `ecall`s, twenty numbers.)
+//!    derivation: 147 `ecall`s, twenty numbers.)
 //! 3. **vDSO.** vsbench calls two vDSO functions. In the 6.4.0-rc4 reference
 //!    kernel's vDSO, `__vdso_clock_gettime` falls back to ecall 113 and
 //!    `__vdso_getcpu` is `li a7,168; ecall`; both are listed.
@@ -35,7 +35,7 @@
 //!    handler and `exit` (93) at the end: nothing runs before or after `main`
 //!    that issues a syscall. No signal handler is installed, so there is no
 //!    `rt_sigreturn` (139), and no `restart_syscall` (128) either: the calls
-//!    that DO block since 2026-09-27 (`futex` wait, `clock_nanosleep`,
+//!    that DO block (`futex` wait, `clock_nanosleep`,
 //!    `io_uring_enter` waiting for completions) are only restarted that way
 //!    after a signal handler or a stop, and there is neither. The process
 //!    exits with `exit`, not `exit_group` (94).
@@ -48,8 +48,8 @@
 //! here so the column is not read as "same filter, every path".
 //!
 //! The launcher's own call after the install is `execve`: the filter is
-//! installed before it, so it has to pass the filter. Since wave 12
-//! vsbench issues `execve` too (its `spawn+wait` lane starts itself with
+//! installed before it, so it has to pass the filter. vsbench
+//! issues `execve` too (its `spawn+wait` lane starts itself with
 //! `--exit`), so the entry is listed as vsbench's and is reachable after the
 //! launch as well.
 
@@ -87,10 +87,10 @@ const fn v(nr: u32, x86_64: u32, name: &'static str) -> Syscall {
 /// (`SyscallFilter::is_allowed` in `crates/core/sched/src/filter.rs`).
 pub const ALLOWED: [Syscall; 34] = [
     v(23, 32, "SYS_DUP"),
-    // N0 (wave 15): `cap-lookup`'s Linux twin, `fcntl(fd, F_GETFD)`.
+    // N0: `cap-lookup`'s Linux twin, `fcntl(fd, F_GETFD)`.
     v(25, 72, "SYS_FCNTL"),
     v(29, 16, "SYS_IOCTL"),
-    // Wave 15 `disk` lanes: mount the vfat disk at /mnt, then fsync.
+    // `disk` lanes: mount the vfat disk at /mnt, then fsync.
     v(34, 258, "SYS_MKDIRAT"),
     v(40, 165, "SYS_MOUNT"),
     v(56, 257, "SYS_OPENAT"),
@@ -114,12 +114,12 @@ pub const ALLOWED: [Syscall; 34] = [
     v(203, 42, "SYS_CONNECT"),
     v(206, 44, "SYS_SENDTO"),
     v(207, 45, "SYS_RECVFROM"),
-    // Wave 15 `nic-egress`: SO_BROADCAST / SO_BINDTODEVICE.
+    // `nic-egress`: SO_BROADCAST / SO_BINDTODEVICE.
     v(208, 54, "SYS_SETSOCKOPT"),
     v(214, 12, "SYS_BRK"),
     v(215, 11, "SYS_MUNMAP"),
     v(220, 56, "SYS_CLONE"),
-    // The launcher's one call after the install, and since wave 12 also
+    // The launcher's one call after the install, and also
     // vsbench's (`spawn+wait`: `posix_spawn` of itself).
     v(221, 59, "SYS_EXECVE"),
     v(222, 9, "SYS_MMAP"),

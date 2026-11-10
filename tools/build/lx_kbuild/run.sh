@@ -15,7 +15,7 @@
 # kernel from the FULL pinned tree with the modules' exact configuration,
 # lxbench.ko (crates/drivers/lx/glue/bench) and an initramfs holding the same xz_dec.ko and
 # XZTEST.XZ the AzOS volume carries: the "same QEMU, same .ko" baseline
-# (owner rule, wave 13). The full tree is streamed with `git archive` from
+#. The full tree is streamed with `git archive` from
 # the checkout's object store (the sparse checkout is not widened).
 #
 # `build` exits 3 and prints "SKIP: <reason>" when it cannot run here: no

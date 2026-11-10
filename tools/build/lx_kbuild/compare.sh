@@ -3,7 +3,7 @@
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 #
 # AzOS vs Linux on the same QEMU with the same .ko (owner
-# rule, wave 13: be better than Linux, and say where the cost goes).
+# rule: be better than Linux, and say where the cost goes).
 #
 #   tools/build/lx_kbuild/compare.sh            # `make lx-compare`
 #

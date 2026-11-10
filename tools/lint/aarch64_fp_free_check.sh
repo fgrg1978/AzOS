@@ -17,7 +17,7 @@
 # ALLOWED is the complete list of places that legitimately touch FP state:
 # `context_switch` (lazy save of the outgoing task's live user state), the
 # two `fp` helpers (lazy load on first use; fork snapshot), and two
-# boot-only probes that run before any user task exists, and (wave 13) the
+# boot-only probes that run before any user task exists, and the
 # FEAT_SHA256 block function `azos_sha256_ce_blocks`, plain assembly the
 # kernel reaches only through `fp::with_kernel_simd`, and the two halves of the
 # hypervisor world switch (`--features hv`: `azos_hv_enter` saves the host's

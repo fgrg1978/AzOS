@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-"""Derive and check the Zbc CRC-32 constants crates/drivers/lx/glue/lxbase.c uses (wave 13).
+"""Derive and check the Zbc CRC-32 constants crates/drivers/lx/glue/lxbase.c uses.
 
 Computes z^64 mod P, z^96 mod P, floor(z^64 / P) and P bit-reversed in 64
 bits, prints them, and checks the folding algorithm (a model of `clmulr`)

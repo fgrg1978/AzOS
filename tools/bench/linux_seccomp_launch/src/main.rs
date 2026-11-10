@@ -175,7 +175,7 @@ extern "C" fn launch(sp: usize) -> ! {
 
     // vsbench's argv[0] is the program it runs as: `/vsbench`, not this
     // launcher's `/init`. vsbench reads it to start itself again (its
-    // `spawn+wait` lane, wave 12); handed `/init`, that child would re-run
+    // `spawn+wait` lane); handed `/init`, that child would re-run
     // this launcher, whose `prctl`/`seccomp` the filter kills. The rest of
     // the argv is passed on unchanged.
     let mut child_argv = [0usize; 16];

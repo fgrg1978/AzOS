@@ -53,8 +53,8 @@ PKT_UNKNOWN_PROBE = 0x7F  # deliberately not a type the kernel handles
 PKT_ACTUATOR = 0x80
 
 # `PKT_MODE` / `MODE_ID_ESTOP_RESET`: the only rearm path in the tree (see
-# `crates/domains/robot/behavior/src/brain_protocol.rs`). Added 2026-09-25, alongside the
-# owner decision that this frame — sent BARE, exactly as below — is now a
+# `crates/domains/robot/behavior/src/brain_protocol.rs`). Added, alongside the
+# rule that this frame — sent BARE, exactly as below — is now a
 # REQUEST the kernel records but never acts on by itself. See
 # `kernel_estop_release` for the frame that DOES clear the latch: the same
 # `mode_id`, with an operator-signed proof appended.
@@ -366,7 +366,7 @@ def kernel_estop(host: str, port: int, duration: float, gap: float,
     def drain(c):
         # Never stop reading. A peer that holds a connection open without
         # draining creates TCP backpressure that looks exactly like a kernel
-        # transport bug -- it was reported as one on 2026-09-08.
+        # transport bug -- it was reported as one once.
         try:
             c.setblocking(False)
             while c.recv(4096):
@@ -417,7 +417,7 @@ def kernel_estop(host: str, port: int, duration: float, gap: float,
 def mode_request_payload(mode_id: int = MODE_ID_ESTOP_RESET) -> bytes:
     """The historical, unchanged 1-byte `PKT_MODE` payload — a bare REQUEST
     (or, for any other `mode_id`, an ordinary mode change). Never clears the
-    latch on its own after the 2026-09-25 owner decision."""
+    latch on its own."""
     return bytes([mode_id])
 
 
@@ -471,7 +471,7 @@ def kernel_estop_release(host: str, port: int, duration: float, gap: float,
                          operator_priv, psk: bytes, device_id: bytes) -> int:
     """Drive / latch / REQUEST (must not clear) / RELEASE (must clear).
 
-    Proves the 2026-09-25 owner decision end to end over the same TCP brain
+    Proves that rule end to end over the same TCP brain
     link `--kernel-estop` uses: `PKT_ESTOP` latches, a bare `PKT_MODE`
     `MODE_ID_ESTOP_RESET` (phase 3) is recorded but changes nothing — the
     wheels must stay at duty 0 through phase 4 — and only the operator-signed
@@ -601,7 +601,7 @@ def selftest() -> int:
     assert h[-1] == crc8(h[:-1])
 
     # The bare ESTOP_RESET request: still exactly 1 byte, unchanged by the
-    # 2026-09-25 decision — that is the whole point ("keep the wire format").
+    # latch rule — that is the whole point ("keep the wire format").
     req = mode_request_payload()
     assert req == bytes([0xFF]), req
     m = build_packet(PKT_MODE, req)
@@ -878,7 +878,7 @@ def reconnect(host: str, port: int, duration: float) -> int:
         # A client that already closed (or reset) the connection makes this
         # setsockopt fail with EINVAL on macOS: the reset is then moot, and
         # the peer must keep accepting. Unhandled, it killed the peer
-        # mid-row (wave-15 integration: `ring-3 reconnects` red after 51
+        # mid-row (seen in `ring-3 reconnects`: red after 51
         # resets, every later dial refused).
         try:
             c.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))

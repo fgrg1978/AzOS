@@ -11,7 +11,7 @@
 # Run A builds from this checkout. Run B builds from a COPY of it under its
 # own temp root, so the two runs differ in the source directory as well as in
 # the target directory. A result that depends on where the tree is checked out
-# is a DIFFER here. (Until 2026-09-14 both runs built from this checkout, and
+# is a DIFFER here. (Both runs used to build from this checkout, and
 # the script could not see that class: userspace ELF bytes depended on the
 # checkout path, and gate 40 refused a brain_client rebuilt in its snapshot.)
 #

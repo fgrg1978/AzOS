@@ -1,3 +1,3 @@
 # vsbench network lanes, ns/op = instructions under -icount shift=0 (tools/bench/net_lane_gate.py)
-# To be recorded from main d316a8009 (~/azos-backup/main-2026-11-06-b68.bundle), before the queue pair,
+# To be recorded from the tree before the queue pair,
 # at the start of the test phase: `net_lane_gate.py record rv|arm <logs>`.

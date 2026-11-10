@@ -6,7 +6,7 @@ with the shared topology/config key.
 
 # Why this exists
 
-U10-2 (audit unit 10, 2026-09-25): CONFIG.INI lives on the USB-exposed FAT
+CONFIG.INI lives on the USB-exposed FAT
 volume and, unsigned, decides whether the kill switch is armed
 (`estop_gpio_pin`),
 whether an OTA listener spawns at boot (`ota_auto_recv_port`), whether the
@@ -44,7 +44,7 @@ Usage:
     python3 tools/sign/gen_config_sig.py CONFIG.INI --config-v2 --counter N \
         (--device-id <32 hex> | --image <disk image>) --out CONFIG.SIG
 
-# CONFIG.SIG is format v2 (wave 11)
+# CONFIG.SIG is format v2
 
 A bare signature over the file's bytes can be replayed: an older, validly
 signed CONFIG.INI (one with an OTA listener port set, say) copied onto the same

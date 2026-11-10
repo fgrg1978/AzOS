@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-"""check_board_keys.py — a board image never carries the TEST key (wave 11 BOARDIMG).
+"""check_board_keys.py — a board image never carries the TEST key (BOARDIMG).
 
 The Makefile builds two ML services: `$AZOS_OUT/build/mlsrv.elf` for the QEMU disks
 (`--features dev-key`, embeds `tools/keys/test_pub.bin`) and

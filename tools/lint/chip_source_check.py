@@ -3,7 +3,7 @@
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 """Every host binary of a chip-logic crate carries that crate's source.
 
-Wave 12 (DRVPLACE "same source"). A chip crate (crates/drivers/<name>) is
+DRVPLACE "same source". A chip crate (crates/drivers/<name>) is
 written once and hosted twice, in ring 3 and in the kernel. Its build script
 (crates/drivers/chip_source.rs) hashes its src/ and generates the marker
 `AZOS-CHIP-SRC <name> <16 hex>`, which each host prints at start and so

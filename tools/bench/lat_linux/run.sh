@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 #
-# The Linux counterpart of the AzOS `lat:` rows (wave 13, RT7): the same
+# The Linux counterpart of the AzOS `lat:` rows: the same
 # measurement and load as kernel/src/lat_smoke.rs (tools/bench/lat_linux/lat.c),
 # as /init of an initramfs, under the same QEMU arguments as the rows
 # (-smp 1 -icount shift=0,sleep=off; one virtual ns per guest instruction).

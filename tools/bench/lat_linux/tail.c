@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 /*
- * Linux half of the periodic-wake TAIL comparison (wave 13, RT7); the AzOS
+ * Linux half of the periodic-wake TAIL comparison; the AzOS
  * half is kernel/src/smokes/tail_smoke.rs. Same shape, same QEMU (-smp 1
  * -icount shift=0,sleep=off; tools/bench/lat_linux/run.sh tail ...): PAIRS
  * ping-pong pairs of processes on CPU 0 (SCHED_OTHER) pass a 100-byte

@@ -28,7 +28,7 @@ set -uo pipefail
 # bash reads a script while it runs it: an edit to this file during a run (a
 # row fixed in the same worktree, a checkout) moves what its next read finds,
 # and the run dies on a "syntax error" at a line that is fine (two fronts'
-# rows runs, 2026-10-23, after the robust-list rows). So the gate runs from a
+# rows runs, after the robust-list rows). So the gate runs from a
 # copy taken as it starts; CI_CHECK_DIR is the checkout's tools/.
 if [ "${CI_CHECK_SNAP:-}" != "$0" ]; then
     CI_CHECK_DIR="$(cd "$(dirname "$0")/.." && pwd)"; export CI_CHECK_DIR
@@ -49,7 +49,7 @@ rm -f "$0"; unset CI_CHECK_SNAP   # the copy: bash holds it open
 qgrep() { local rc; grep "$@"; rc=$?; cat >/dev/null; return "$rc"; }
 
 CARGO="${CARGO:-cargo}"
-# Every cargo call goes through tools/gate/ci_cargo.py (gate speed, wave 15): it
+# Every cargo call goes through tools/gate/ci_cargo.py (gate speed): it
 # times the call for the row's build/boot split and, for a kernel build, reuses
 # the kernel already built from identical inputs (CI_KCACHE; on and kept
 # between runs under CI_TIER=rows, off otherwise: see "The kernel cache" below).
@@ -76,7 +76,7 @@ AZOS_OUT="${AZOS_OUT:-$(python3 "$REPO_ROOT/tools/lib/out_dir.py")}"; export AZO
 unset CARGO_TARGET_DIR
 KERNEL="$AZOS_OUT/target/riscv64imac-unknown-none-elf/release/kernel"
 
-# The topology/config key every build in this gate embeds (wave 11): the TEST
+# The topology/config key every build in this gate embeds: the TEST
 # key, by name. `crates/core/topology/build.rs` no longer defaults to it, so a
 # build without `TOPOLOGY_PUBKEY_PATH` and without the `dev-key` feature (vf2,
 # k1, fleet, embedded, the featureless rows) fails. Exported once, here, for
@@ -91,7 +91,7 @@ fi
 export TOPOLOGY_PUBKEY_PATH="$REPO_ROOT/tools/keys/test_pub.bin"
 
 # The key every RELEASE image of this gate (vf2, fleet, embedded) embeds
-# (owner decision, wave 15): a BUILD_TYPE_RELEASE build refuses the TEST key,
+#: a BUILD_TYPE_RELEASE build refuses the TEST key,
 # also when its path is given (crates/core/topology/build.rs compares the
 # bytes). A throwaway, non-test Ed25519 pair, kept under build/ (gitignored)
 # so the release kernels stay cached between runs and made once per worktree;
@@ -142,8 +142,8 @@ refuse_icloud_duplicates() {
 refuse_icloud_duplicates
 [ "${CI_DUP_CHECK_ONLY:-0}" = 1 ] && exit 0
 
-# Disk budget (wave 15). A full disk does not stop the gate cleanly: the
-# wave-15 integration gate died at the INA219 rows with every row after them
+# Disk budget. A full disk does not stop the gate cleanly: the
+# Integration gate died at the INA219 rows with every row after them
 # failing for want of space. A full run needs about GATE_DISK_MIN_GB free on
 # the filesystem of the tree (target/ grows, per-job kernels are clones, disks
 # are copied per job and removed as each job is reaped); refuse to start below.
@@ -352,7 +352,7 @@ kbuild() { # kbuild <comma-separated-features> [extra cargo args...]
     # Built now (a row's own build, or an environment the deferral does not
     # cover, e.g. secure boot's PROD_PUBKEY_PATH): it supersedes a pending
     # deferred build, which a later `par` would otherwise flush OVER it and
-    # boot instead (wave 15: the three secure-boot rows booted `qemu` under
+    # boot instead (the three secure-boot rows booted `qemu` under
     # CI_TIER=rows). `.features` names what the binary was built with, for
     # `ci_kernel_check`.
     [ -z "$PAR_JOB" ] && [ -z "${CI_KFLUSHING:-}" ] && [ $# -eq 0 ] && unset CI_KPEND_RV
@@ -471,7 +471,7 @@ build_board() { # build_board <label> <board> [<rustflags>] [<target> <linker>]
            RUSTFLAGS="-C link-arg=-T$ld $isa" "$CARGO" build --release ${tflags[@]+"${tflags[@]}"} \
            --config "build.rustflags=['-C','link-arg=-T$ld']" 2>&1)"; rc=$?
     # The exit status counts here too, as in `build`. Warnings do too, as of
-    # U12-5: this used to check `^error` only, so vf2/k1 — the only two rows
+    # This used to check `^error` only, so vf2/k1 — the only two rows
     # that build a kernel that actually ships — passed with any number of
     # warnings while every other feature combination's build was held to zero.
     if [ "$rc" -ne 0 ] || printf '%s\n' "$out" | qgrep -qE "^error"; then
@@ -503,11 +503,11 @@ build_board() { # build_board <label> <board> [<rustflags>] [<target> <linker>]
 #     environment variable REPLACES that list instead of adding to it, so with
 #     the linker script alone (as `build-fleet` and `build_board` pass it) the
 #     workspace compiles with different flags from every row above. It links
-#     either way (checked 2026-09-14); the difference is the flags, not the link.
+#     either way (checked); the difference is the flags, not the link.
 # The build goes through `build`, so warnings fail it too; the touch before
 # the matrix reaches this target dir as well. `fleet_config_applied` then
 # checks that the constants compiled in came from this config, not `.config`.
-# Wave 11 (DOMAIN, owner decision): config/defconfigs/generic-server-riscv64+board-generic.config and
+# Config/defconfigs/generic-server-riscv64+board-generic.config and
 # embedded.config are Generic; the robot image these rows always built is
 # robot-fleet.config / robot-embedded.config (same profile, USE_ROBOT).
 FLEET_DIR="${FLEET_DIR:-$AZOS_OUT/target/fleet}"
@@ -611,7 +611,7 @@ embedded_config_applied() {
     ok
 }
 
-# ── U12-3: the primary column names a configuration ────────────────────────
+# ── the primary column names a configuration ────────────────────────
 #
 # Every plain `kbuild`/`build` call below this point (no per-scenario
 # KCONFIG_CONFIG of its own) used to build `azos_limits` from the
@@ -779,7 +779,7 @@ aarch64_config_applied() {
     ok
 }
 
-# The board rows (vf2/k1, U12-2): each expands ITS OWN defconfig the way
+# The board rows (vf2/k1): each expands ITS OWN defconfig the way
 # `fleet_config` does, instead of inheriting the primary column's
 # `qemu.config` (or the workspace `.config`) via `build_board`. Keyed off
 # `feat` ("vf2"/"k1") so `build_board` needs no new parameter —
@@ -869,7 +869,7 @@ host_cargo() {
 # nothing and passes. That failure mode is silent and it is why this was worth
 # writing down rather than just adding a grep.
 #
-# Wave 13: cargo runs through `gate_pgroup_run` (tools/gate/gate_pgroup.sh), in a
+# Cargo runs through `gate_pgroup_run` (tools/gate/gate_pgroup.sh), in a
 # process group of its own that an interrupted gate kills whole.
 # ci_debug_dump <name> <text>: with GATE_DEBUG_DIR set, keep a failed row's whole cargo output.
 ci_debug_dump() { [ -n "${GATE_DEBUG_DIR:-}" ] && printf '%s\n' "$2" >"$GATE_DEBUG_DIR/$1.log"; return 0; }
@@ -918,7 +918,7 @@ test_host() {
 #     marker makes a crash indistinguishable from "still working".
 # Disk images are PREREQUISITES, not part of the scenario under test: a
 # failed image build must abort the whole gate loudly, never hand QEMU 32 MB
-# of zeros. Learned 2026-08-23: `mkfs.fat` (dosfstools) lives in
+# of zeros. `mkfs.fat` (dosfstools) lives in
 # Homebrew's sbin, a PATH without it made every regenerated image
 # silently unformattable, and the result was NINE scenario FAILs that read
 # exactly like kernel regressions in the exec path. The `>/dev/null 2>&1`
@@ -971,7 +971,7 @@ job_disk() {
 #
 # Every boot writes BOOTMETA: until the 30 s boot-good mark it counts as an
 # unconfirmed boot, and a row that stops QEMU earlier leaves that count on the
-# volume. Since wave 10 the fourth unconfirmed boot of a one-image volume
+# volume. The fourth unconfirmed boot of a one-image volume
 # enters SAFE MODE (no autorun, actuators held) — so the fourth short row in a
 # row of boots on one image silently tested safe mode instead of its subject
 # (gate 194: `mm: canary (exit frees a live root)` printed `[AUTORUN] REFUSED:
@@ -1039,7 +1039,7 @@ peer_port_image() {
     return $rc
 }
 
-# ── Persisted entropy seed rows (ENTSEED, wave 11) ──────────────────────────
+# ── Persisted entropy seed rows (ENTSEED) ──────────────────────────
 #
 # One boot of the volume under test, either ISA, with or without virtio-rng,
 # with or without the disk. `$ENTSEED_RV_KERNEL` / `$ENTSEED_A64_IMG` name the
@@ -1105,7 +1105,7 @@ entseed_log_sane() { # entseed_log_sane <log> <what>
 # it. The proof is on the volume, read from the host: the stored seed differs
 # after each boot. The lines are the other half: boot 2's own says it mixed,
 # and each says the rewrite was flushed.
-# Canary (wave 11, by hand, reverted): `entropy_seed_store` returns Ok(true)
+# Canary (by hand, reverted): `entropy_seed_store` returns Ok(true)
 # without writing -> both boots print "rewritten and flushed" and the host
 # readback finds the same seed (here: `absent` after boot 1).
 entseed_rotate_row() { # entseed_rotate_row <riscv64|aarch64>
@@ -1153,7 +1153,7 @@ entseed_rotate_row() { # entseed_rotate_row <riscv64|aarch64>
 # is replaced. Boot 2: again, and the replacement is not the record boot 1 read.
 # riscv64 also compares the canary fingerprint (its Phase 16 line); aarch64 has
 # no such readback.
-# Canary (wave 11, by hand, reverted): `SeedLoad::Credited` reported but the
+# Canary (by hand, reverted): `SeedLoad::Credited` reported but the
 # credit flag forced false in `Pool::apply_persisted_seed` -> boot 1 prints
 # "pool unseeded after load" and no canary line.
 entseed_alone_row() { # entseed_alone_row <riscv64|aarch64>
@@ -1259,7 +1259,7 @@ entseed_diskless_row() { # entseed_diskless_row <riscv64|aarch64>
 # differ, and neither may be absent. Anchored on the volume, not on a console
 # line, because a line printed just before the reset can still sit in the
 # console's defer buffer (see `orderly_reboot_row`).
-# Canary (wave 11, by hand, reverted): `entropy_seed_refresh_at_power_off` not
+# Canary (by hand, reverted): `entropy_seed_refresh_at_power_off` not
 # called from the orderly hook -> the two readbacks are equal.
 entseed_orderly_row() { # entseed_orderly_row <riscv64|aarch64>
     local isa="$1" label="$1: seed refreshed at reboot"
@@ -1463,8 +1463,8 @@ blk_idle_row() { # blk_idle_row <riscv64|aarch64>
     ok; rm -f "$log" "$disk"
 }
 
-# (g) The device timeout policy (azos_drv_api::recovery, owner decision
-# 2026-10-23): a command out of its budget resets the disk once, the next
+# (g) The device timeout policy (azos_drv_api::recovery):
+# a command out of its budget resets the disk once, the next
 # timeout latches it dead. Booted on the `blk-stall-canary` kernel (no stall
 # credit), whose budgets the host's stops of the guest DO run out: the stops
 # are the fault injection. `once`: the guest is stopped until one stop lands
@@ -1610,7 +1610,7 @@ dev_reset_verdict() {
 # kernel prints the one skip line and the last 8 sectors, pre-filled with a
 # marker, are byte-for-byte what they were. virtio-rng is present, so a rewrite
 # would otherwise happen.
-# Canary (wave 11, by hand, reverted): the `seed_tail_check` verdict ignored in
+# Canary (by hand, reverted): the `seed_tail_check` verdict ignored in
 # `install_entropy_seed` -> the skip line is absent and the marker is overwritten.
 entseed_noheadroom_row() { # entseed_noheadroom_row <riscv64|aarch64>
     local isa="$1" label="$1: seed spares the filesystem"
@@ -1648,7 +1648,7 @@ PY
 }
 
 # (e) A GPT medium laid out to its end (owner batch 6): no reserved tail, the
-# backup table is there (audit K2-M1), so the records live in the AzOS records
+# backup table is there, so the records live in the AzOS records
 # partition. `build/disk-gpt.img` (tools/image/make_parted_disk.py --gpt) carries
 # disk.img's FAT32 volume in partition 0 and disk.img's tail, the device
 # record included, in the records partition. Two boots of one copy,
@@ -1718,7 +1718,7 @@ entseed_gpt_row() { # entseed_gpt_row riscv64
 # It used to be a mktemp deleted on every path, success or failure. That
 # destroyed the evidence at the one moment it was worth having, and it cost
 # months: the intermittent `userspace: IPC` failure was catalogued as a
-# scheduler wedge of unidentified origin until 2026-09-03, when a run was
+# scheduler wedge of unidentified origin until a run was
 # finally captured whole and turned out to be the ring-3 test DECLARING
 # failure — `[IPCTEST] FAILED: 6 check(s)` — which nobody had ever seen,
 # because waiting only for the success marker makes a declared failure and a
@@ -1820,7 +1820,7 @@ fi
 # prints `skipped (CI_TIER=fast)` in its place. The full tier (the default)
 # runs every row.
 #
-# CI_TIER=rows (wave 15, the N1 tier; `make check1` drives it): only the rows
+# CI_TIER=rows (the N1 tier; `make check1` drives it): only the rows
 # whose key is a line of CI_ROWS (or of the file CI_ROWS_FILE) run, plus the
 # rows they need (tools/gate/gate_needs.tsv, transitively): `par` rows, `build` rows,
 # host suites and the rows written outside those helpers (`ci_row`) alike; every
@@ -1850,7 +1850,7 @@ if [ "$CI_TIER" = rows ]; then
     CI_SELF_RV="$(python3 "$REPO_ROOT/tools/gate/gate_rows.py" --selfbuild rv)" || exit 2
     CI_SELF_A64="$(python3 "$REPO_ROOT/tools/gate/gate_rows.py" --selfbuild arm)" || exit 2
 fi
-# GATE_JOBS (wave 15) is the QEMU job count; CI_JOBS, its older name, still works.
+# GATE_JOBS is the QEMU job count; CI_JOBS, its older name, still works.
 CI_JOBS="${GATE_JOBS:-${CI_JOBS:-4}}"
 case "$CI_JOBS" in ''|*[!0-9]*|0) echo "ci_check: CI_JOBS must be a positive integer"; exit 2 ;; esac
 CI_QEMU_MAX="${GATE_QEMU_MAX:-${CI_QEMU_MAX:-4}}"
@@ -1867,7 +1867,7 @@ export CI_QTAP_DIR CI_QTAP_REG="$CI_QTAP_DIR/main.reg"
 : >"$CI_QTAP_REG"
 export PATH="$CI_QTAP_DIR:$PATH"
 PAR_PGID="$(ps -o pgid= -p $$ | tr -d ' ')"
-# Host commands' own process groups (wave 13): see tools/gate/gate_pgroup.sh.
+# Host commands' own process groups: see tools/gate/gate_pgroup.sh.
 GATE_PGROUP_DIR="$PAR_DIR/pgroups"
 # shellcheck source=tools/gate/gate_pgroup.sh
 . "${REPO_ROOT}/tools/gate/gate_pgroup.sh"
@@ -1918,7 +1918,7 @@ par_ready() { # the row's prep is done: let the gate run on
     local k="$PAR_DIR/$PAR_JOB"
     # The build's `.features` travels with its clone: `ci_kernel_check` reads
     # `${KERNEL}.features`, and without it every boot of the job after the
-    # first read "unknown" (wave 15: `unfit slot survives reboot` failed under
+    # first read "unknown" (`unfit slot survives reboot` failed under
     # CI_JOBS>1, the second boot of a two-boot job, with nothing rebuilt).
     rm -f "$k.kernel.features"
     [ -f "${KERNEL}.features" ] && ci_clone "${KERNEL}.features" "$k.kernel.features"
@@ -1998,7 +1998,7 @@ par_reap() {
         # The job's private kernel copies and disks (`par_ready`, `job_disk`)
         # end with it. Kept, they grew to 17 GiB by the start of [3/4] (a
         # riscv64 kernel with its debug info is ~47 MB, one per job) and the
-        # wave-15 integration gate died of a full disk at the INA219 rows.
+        # Integration gate died of a full disk at the INA219 rows.
         rm -f "$PAR_DIR/$n.kernel" "$PAR_DIR/$n.kernel.features" "$PAR_DIR/$n.a64-kernel" "$PAR_DIR/$n.a64-kernel.img" \
             "$PAR_DIR/$n.a64-kernel.img.features" \
             "$PAR_DIR/$n.disk."* "$PAR_DIR/$n.bacc"
@@ -2434,7 +2434,7 @@ ci_marker() { # ci_marker <marker>
 # `[FATAL]` is the kernel's last line before it shuts down on an exception
 # it cannot handle, a kernel page fault included. A scenario whose checks
 # all matched before that line still ran in a kernel that stopped: the
-# ring-3 e-stop boots did exactly that on 2026-09-15, with every assertion
+# ring-3 e-stop boots did exactly that with every assertion
 # green and a guard-page fault a second later.
 # `PAGE FAULT] OUT OF MEMORY` is in this set rather than in one row's, because
 # it is the one page fault where the program did nothing wrong — it wrote to
@@ -2448,7 +2448,7 @@ ci_marker() { # ci_marker <marker>
 # reliably — the same reason the host test for `user_range_prepare_write` took
 # three attempts. What is proven is that the message does not fire when it
 # should not.
-# `[CONSOLE] dropped` (wave 9): kernel lines that did not fit the buffer they
+# `[CONSOLE] dropped`: kernel lines that did not fit the buffer they
 # wait in while ring 3 owns the console (`uart::console_write_ring3`). A drop
 # can remove exactly the line a row asserts on — `mem quota refused=0` gone
 # would turn the census row falsely green — so any drop fails the row.
@@ -2546,7 +2546,7 @@ qemu_run() { # qemu_run <label> <success-marker> <timeout-s> <qemu-args...>
     # without looking (it happened once, to a whole tier, through an argument
     # shifted away before it was read).
     if [ -z "$marker" ]; then bad; echo "      qemu_run: empty success marker"; return; fi
-    # The same hazard on the failure side (wave 13): an empty QEMU_FAIL_RE
+    # The same hazard on the failure side: an empty QEMU_FAIL_RE
     # matches the first line of any log, so the row reports "scenario
     # reported failure" with no FAIL line and kills QEMU wherever the boot
     # was. A harness that pulled qemu_run out of this file without the
@@ -2647,10 +2647,10 @@ dry_boot_row() {
 # IER = 0 while `IRQ_MODE` stayed set, so `can_read()` polled a ring buffer the
 # ISR never filled again and typed bytes sat in the FIFO. `uart::init()` now
 # programs the device once. Canary: drop that guard in crates/drivers/sys/src/
-# uart.rs and the riscv64 row goes red with "echoed: no". Since wave 7 the
+# uart.rs and the riscv64 row goes red with "echoed: no". The
 # aarch64 kernel calls `uart::enable_irq()` too (PL011 RX interrupt, INTID from
 # the DTB), so its shell reads the ring the RX ISR fills and that canary now
-# applies to it as well (not re-run on aarch64 for wave 7). The aarch64 branch
+# applies to it as well (not re-run on aarch64). The aarch64 branch
 # types PACED, one byte per 50 ms (see the AIA row's comment for why never a
 # flood); the riscv64 branch is unchanged.
 #
@@ -2724,7 +2724,7 @@ shell_help_row() { # shell_help_row <label> <isa: rv|arm>
 }
 
 echo "=== AzOS CI Check ==="
-# U12-3: name the configuration a passing row means something about. Both
+# Name the configuration a passing row means something about. Both
 # SHAs are of the EXPANDED defconfig (post `olddefconfig`), not the raw file,
 # so a stale `depends on`/`default` in Kconfig itself still changes it.
 echo "  primary config  (config/defconfigs/${GATE_DEFC_RV}.config):         $(shasum -a 256 "$PRIMARY_CONFIG" | cut -c1-12)"
@@ -2954,7 +2954,7 @@ else
     bad; printf '%s\n' "$grm_out" | sed -n 1,10p | sed 's/^/      /'
 fi
 
-# aarch64 boots the Image, never the ELF (wave 15): QEMU `virt` hands the
+# aarch64 boots the Image, never the ELF: QEMU `virt` hands the
 # device tree, and with it the command line (`init=`, `canary=`), only to an
 # arm64 `Image` (`kernel.img`, in x0). Booted as an ELF the kernel gets x0 = 0
 # and no DTB (kernel/src/entry/aarch64/asm/boot.S says why), so a row that
@@ -3039,13 +3039,13 @@ echo "[1/4] Building all feature combinations..."
 # there the facade exports arch-api's traits and `ARCH`, not the ISA modules.
 # Shared code that names a module (`azos_arch::cpu::hart_id()`) still builds
 # for riscv64 and aarch64, whose facades re-export those modules, and the arch
-# cfg lint does not see it (it is not a cfg). Wave 15 integration: the per-hart
+# cfg lint does not see it (it is not a cfg). The per-hart
 # loopback guard did exactly that, and only `make ARCH=x86_64 check` failed.
 if ci_row_begin "x86_64: make check"; then
 printf "  %-26s" "x86_64: make check..."
 # Warnings fail it as they fail every riscv64/aarch64 `build` row below (same
 # filter: a build script's `warning: <pkg>@<version>:` line is information).
-# It only checked for errors until wave 15 (GR4), and four x86_64-only
+# It only checked for errors before, and four x86_64-only
 # warnings had piled up unseen.
 if x86_out="$(make ARCH=x86_64 check 2>&1)"; then
     if printf '%s\n' "$x86_out" | grep -E "^warning:" \
@@ -3099,13 +3099,13 @@ ci_row "size budget: microvm" size_microvm_row
 # under the kernel source roots because "rustc only emits warnings when it
 # compiles": four unused-constant warnings once sat unnoticed on a warm cache.
 # The cargo this tree pins (nightly-2026-02-21) REPLAYS a fresh unit's stored
-# warnings on every build. Measured 2026-10-03 on this tree: an unused const
+# warnings on every build. Measured on this tree: an unused const
 # planted in crates/core/abi and, separately, in kernel/src/main.rs printed
 # its `warning:` on the compiling build, again on a 0.08 s fresh rebuild, and
 # again after building another feature set and coming back; `build` below
 # fails on those lines either way. The touch cost every warm gate a rebuild of
 # every crate for each of the ~50 feature sets (264 s of cargo in [1/4], gate
-# of 2026-10-03). If a cargo upgrade stops replaying, that canary is how to see
+# run). If a cargo upgrade stops replaying, that canary is how to see
 # it: plant the const, build twice, and the second build must still warn.
 
 build       "default (QEMU)"      --release
@@ -3141,7 +3141,7 @@ build       "dma-contig-canary"   --release --select dma-contig-canary
 build       "brain-lies-smoke"    --release --select brain-lies-smoke
 build       "actuation-smoke"     --release --select actuation-smoke
 build       "reflex+actuation"    --release --select reflex-smoke,actuation-smoke
-# Wave 8 TLB shootdown probe and its canary (see the "tlb: stale access" rows).
+# Shootdown probe and its canary (see the "tlb: stale access" rows).
 build       "tlb-smoke"           --release --select tlb-smoke
 build       "tlb-local-only"      --release --select tlb-smoke,tlb-local-only
 build       "tlb-bound-canary"    --release --select tlb-smoke,tlb-bound-canary
@@ -3153,25 +3153,25 @@ build       "sup-smoke"           --release --select sup-smoke
 build       "sup-canary"          --release --select sup-canary
 
 # ipc-census is load-bearing diagnostics: the userspace-IPC scenario's
-# comment prescribes it as the wedge-reproduction recipe (K-C25), so it must
+# comment prescribes it as the wedge-reproduction recipe, so it must
 # stay inside the cold-cache warnings gate or it rots silently.
 build       "ipc-census"          --release --select ipc-census
-# Wave 14: the motor-command watchdog record row (`rt_watchdog_record_row`)
+# The motor-command watchdog record row (`rt_watchdog_record_row`)
 # and its canary.
 build       "rtwd-window-smoke"   --release --select rtwd-window-smoke
 build       "rtwd-record-canary"  --release --select rtwd-window-smoke,rtwd-record-canary
-# Wave 11: the supervisor over what the topology starts (`supall_row`) and its
+# The supervisor over what the topology starts (`supall_row`) and its
 # canary.
 build       "supall-smoke"        --release --select supall-smoke
 build       "supall-canary"       --release --select supall-smoke,supall-canary
-# Wave 10: the "behavior ARP sleeps" rows boot `arp-timing` on both ISAs.
+# The "behavior ARP sleeps" rows boot `arp-timing` on both ISAs.
 build       "arp-timing"          --release --select arp-timing
-# Wave 11: the display features `make config` offers (DRV_DISPLAY_RAMFB,
+# The display features `make config` offers (DRV_DISPLAY_RAMFB,
 # DRV_DISPLAY_HDMI in config/subsys/Kconfig.display). No row boots either; building
 # them here is what keeps the options from rotting unseen.
 build       "ramfb"               --release --select ramfb,fb-console,fb-panic-screen
 build       "hdmi"                --release --select vf2,hdmi
-# Wave 11 (SENSORTS): the acquisition-stamp smoke and its frozen-stamp canary
+# The acquisition-stamp smoke and its frozen-stamp canary
 # (the ktest `sensors_imu_stamped_at_acquisition` boots both, on both ISAs:
 # rows `ktest (rv|arm)` and `ktest IMU frozen-stamp canary (rv|arm)`).
 build       "sensor-ts-smoke"     --release --select sensor-ts-smoke
@@ -3179,7 +3179,7 @@ build       "sensor-ts-freeze"    --release --select sensor-ts-freeze
 # ── Per-board ISA extensions, and the guard that keeps them on their board ──
 #
 # The K1 (SpacemiT X60, RVA22) has Zba/Zbb/Zbs, so its build lets the compiler
-# use them ANYWHERE — not only in hand-written `asm!`. The VF2 (JH7110, SiFive
+# use them ANYWHERE — not only in hand-written `asm!`. The VF2 (SiFive
 # U74) is rv64gc and has none of them: one such instruction is an illegal
 # instruction on its first execution. Both binaries are called `kernel`.
 #
@@ -3246,7 +3246,7 @@ fi; ci_row_end
 # Two entry paths, because they differ in exactly the way that broke once:
 # entered at EL1 (QEMU without `virtualization=on`) nothing drops from EL2, so
 # EL1's FP/SIMD permission (CPACR_EL1.FPEN) must be set by the kernel's own
-# boot.S. It was not, until 2026-09-21; the kernel only survived because its
+# boot.S. It was not; the kernel only survived because its
 # minimal kernel_main emitted no FP. The self-check line executes FP on
 # purpose, so a boot that loses that permission traps (EC=0x07) and fails here.
 #
@@ -3276,7 +3276,7 @@ a64_kbuild_out() { # a64_kbuild_out <features>: builds into A64_KERNEL_OUT / A64
     local out ksan
     # Kconfig KASAN: the sanitizer's codegen flags join the linker script in build.rustflags.
     ksan="$(python3 tools/build/kconfig_to_cargo.py --kasan-rustflags --toml "$AARCH64_CONFIG")"
-    # KCONFIG_CONFIG pinned to config/defconfigs/${GATE_DEFC_A64}.config (U12-3): without
+    # KCONFIG_CONFIG pinned to config/defconfigs/${GATE_DEFC_A64}.config: without
     # this override every aarch64 build inherited the exported primary-column
     # KCONFIG_CONFIG above (an ARCH_RISCV64 config before this change existed
     # at all), so `azos_limits` built ARCH_RISCV64's constants for an
@@ -3305,7 +3305,7 @@ a64_kbuild_out() { # a64_kbuild_out <features>: builds into A64_KERNEL_OUT / A64
     # set's own ELF (more crates are linked in than in the no-feature build).
     # The proof is a function of the ELF's bytes and of the checker: an ELF
     # this run already proved (same SHA-256, same checker) is not re-read
-    # (3.3 s each; wave 15 measured ~30 repeats of the plain qemu kernel).
+    # (3.3 s each; ~30 repeats of the plain qemu kernel).
     local fpfree fpkey=""
     if [ -n "${CI_LOG_ABS:-}" ]; then
         fpkey="$CI_LOG_ABS/fpfree/$(cat "$A64_KERNEL_OUT" tools/lint/aarch64_fp_free_check.sh | shasum -a 256 | cut -c1-64)"
@@ -3398,7 +3398,7 @@ else
 fi
 fi; ci_row_end
 
-# ── Trap-path code size (wave 14, LOGLEVEL) ─────────────────────────────────
+# ── Trap-path code size (LOGLEVEL) ─────────────────────────────────
 # The first Rust frames of every trap, the syscall path included, pinned to
 # their size within TRAP_SIZE_SLACK bytes. What LLVM inlines into them sets
 # the registers every syscall saves: an unrelated edit in the kernel crate
@@ -3406,7 +3406,7 @@ fi; ci_row_end
 # and every syscall paid 22 instructions (vsbench `syscall-floor` 195 -> 217
 # ns/op, -icount). `#[inline(never)]` on `handle_exception` fixes that one;
 # this row catches the next. A size that moved on purpose: re-pin it here.
-# Read from the linked ELF (llvm-nm), no QEMU. Canaries (wave 14, by hand,
+# Read from the linked ELF (llvm-nm), no QEMU. Canaries (by hand,
 # reverted): `#[inline(always)]` on `handle_exception` turns the riscv64 row
 # red at 1912 B. Removing the `#[inline(never)]` alone did NOT on that tree:
 # LLVM kept the body out of line (130 B), and that is the point of the
@@ -3440,11 +3440,11 @@ trap_size_row() { # trap_size_row <label> <elf> <symbol-suffix>=<bytes>...
     if [ "$fail" = 0 ]; then ok; else bad; fi
     printf '%b' "$report"
 }
-# Re-pinned in the wave-15 integration: block A (c44e9b85) moved both trap
+# Re-pinned: block A (c44e9b85) moved both trap
 # paths and the row was already red on main (aarch64 1356 B; riscv64
 # trap_handler 54 B, handle_ecall 568 B, then 582 with NRCPUS). vsbench
 # -icount syscall-floor did not move: 180 riscv64, 152 aarch64.
-# Re-pinned 1356 -> 1256 (FX4): 4319c92f (N4, QSBR) moved the interrupt arm
+# Re-pinned 1356 -> 1256 (FX4): 4319c92f (QSBR) moved the interrupt arm
 # out of line (`irq_arm`, #[inline(never)], so the syscall path's frame does
 # not carry the IRQ boundary guard) and added the exception boundary guard
 # inline. Measured on 056b16a1: 1256 B as is, 1460 B with `irq_arm` forced
@@ -3501,7 +3501,7 @@ aarch64_kernel_row() { # aarch64_kernel_row <label> <machine-extra> <expected en
         # kernel/src/smokes/aarch64_sched.rs) and task A/B's (`phase3_task_done`,
         # its pass line or its `[SCHED] FAILED:`). On `-cpu max` the probe
         # usually prints first, so waiting on it alone killed the boot before
-        # the A/B lines below were written (measured 2026-10-22: 3 of 3 runs).
+        # the A/B lines below were written (measured: 3 of 3 runs).
         grep -aq "smp-migrate-probe ran on" "$log" 2>/dev/null \
             && grep -aqE "x20 survived every context switch|\[SCHED\] FAILED:" "$log" 2>/dev/null && break
         grep -aq "AARCH64-TRAP\] unhandled" "$log" 2>/dev/null && break
@@ -3625,7 +3625,7 @@ par "aarch64 kernel boots (EL1)"        aarch64_kernel_row "aarch64 kernel boots
 par "aarch64 kernel boots (EL2)"        aarch64_kernel_row "aarch64 kernel boots (EL2)"        ",virtualization=on"   2 2 "max,pauth=on" "[PAN] boot patch (pan=probed-present): every site msr"
 par "aarch64 kernel boots (EL1, -smp 4)" aarch64_kernel_row "aarch64 kernel boots (EL1, -smp 4)" ""                    1 4 "max,pauth=on" "[PAN] boot patch (pan=probed-present): every site msr"
 
-# ── GICv2 (GIC-400, Cortex-A15 GIC): the same kernel on QEMU `virt,gic-version=2` ──
+# ── GICv2 (Cortex-A15 GIC): the same kernel on QEMU `virt,gic-version=2` ──
 #
 # The Raspberry Pi 5's controller is a GIC-400 (GICv2: MMIO distributor and CPU
 # interface, no redistributor, no ITS), which QEMU's `gic-version=2` stands in
@@ -4198,7 +4198,7 @@ par "hyp: F9 accepted hole boots (arm)" hyp_monitor_row "hyp: F9 accepted hole b
 # Leave $A64_IMG on an ordinary qemu build for the rows below.
 a64_kbuild "qemu" >/dev/null 2>&1 || true
 
-# ── VE (wave 15): the kernel on an Armv8.0 core ─────────────────────────────
+# ── VE: the kernel on an Armv8.0 core ─────────────────────────────
 #
 # Every row above boots `-cpu max`, which is how the kernel once stopped
 # booting on every Armv8.0 core without a red row: boot.S set PSTATE.PAN with
@@ -4229,7 +4229,7 @@ par "aarch64 kernel boots on cortex-a53 (8.0, EL2)" aarch64_kernel_row "aarch64 
 # does not prove it) is past Armv8.5: PAuth (8.3), BTI and MTE (8.5) must be
 # probed present, so a field decoder reading the wrong four bits, or QEMU
 # dropping one, turns the row red. QEMU 11 names no plain 8.5 model
-# (cortex-a710 and neoverse-n2 are Armv9.0). Canary (hand-run 2026-10-22):
+# (cortex-a710 and neoverse-n2 are Armv9.0). Canary (hand-run):
 # each row's marker on the other row's CPU (8.0 marker on `max`, 8.5 marker on
 # cortex-a72) goes red, the marker missing.
 par "aarch64 boots (ARMv8.0)" aarch64_kernel_row "aarch64 boots (ARMv8.0)" "" 1 2 cortex-a72 "[ISA] baseline=armv8.0 lse=probed-absent pan=probed-absent"
@@ -4368,7 +4368,7 @@ par "aarch64 raspi3b boots to the shell" raspi3b_row "aarch64 raspi3b boots to t
 par "aarch64 raspi3b USB via DWC2" raspi3b_row "aarch64 raspi3b USB via DWC2" usb
 par "aarch64 raspi3b reboots via the PM block" raspi3b_row "aarch64 raspi3b reboots via the PM block" reboot
 
-# ── aarch64: PL011 console RX on interrupts (wave 7) ─────────────────────────
+# ── aarch64: PL011 console RX on interrupts ─────────────────────────
 #
 # riscv64's UART RX has been interrupt-driven (PLIC/APLIC -> `uart::irq_handler`
 # -> ring) for a long time; the aarch64 PL011 was polled. `boot_hooks::console_irq`
@@ -4379,7 +4379,7 @@ par "aarch64 raspi3b reboots via the PM block" raspi3b_row "aarch64 raspi3b rebo
 # in the AIA row (never a flood: one IRQ per byte with no line rate made that
 # row's boot bimodal). The number is read back and must be > 0.
 #
-# Canary (hand-run, wave 7): `--features qemu,pl011-rx-irq-canary` leaves the
+# Canary (hand-run): `--features qemu,pl011-rx-irq-canary` leaves the
 # PL011's RX interrupt masked (GIC side still routed and enabled). The shell
 # still answers by polling, and this row goes red on the count, "delivered 0
 # time(s)".
@@ -4434,7 +4434,7 @@ par "aarch64 pl011 rx irq count" pl011_rx_irq_row
 # reaped task, so the row reads HELLO's own TID from its autorun line
 # (`[AUTORUN][MEM] tid=N HELLO.ELF`) and waits for that TID's reap; it used to
 # stop at the first `reaped` of any task, which can come before HELLO prints.
-# Canary (by hand, 2026-10-03, on synthetic logs through `a64_hello_reaped`):
+# Canary (by hand, on synthetic logs through `a64_hello_reaped`):
 # another task reaped before HELLO prints -> still waits, passes once HELLO's
 # own reap appears; no HELLO autorun line -> never reaped, the row fails.
 a64_hello_tid() { # <log>: HELLO.ELF's TID from its autorun line, or nothing
@@ -4575,7 +4575,7 @@ aarch64_net_probe_row() {
     # Wait for the LAST line this row asserts (net-poll actually running),
     # not for its creation: the row used to stop at "Created net-poll task"
     # and then assert "Phase U1 ... started", which is printed ~50 lines
-    # later once the scheduler runs it. Wave 5's boot lines moved it past the
+    # later once the scheduler runs it. Added boot lines moved it past the
     # kill point (gate 187: "created but never actually ran" on a kernel that
     # runs it at boot line 233 when left alone).
     while [ "$i" -lt 60 ]; do
@@ -4707,7 +4707,7 @@ aarch64_dhcp_row() {
 }
 par "aarch64 network: DHCP lease" aarch64_dhcp_row
 
-# IO-QUEUES N1 (wave 15): virtio-net TX doorbell batching. The boot self-check
+# IO-QUEUES N1: virtio-net TX doorbell batching. The boot self-check
 # (Kconfig NET_TX_BATCH_SELFCHECK, kernel/src/boot/net.rs) queues three frames
 # inside one TX batch and counts doorbell decisions (rung, or skipped on the
 # device's NO_NOTIFY): none inside the batch, one at its end. Decisions, not
@@ -6440,7 +6440,7 @@ a64_kbuild "qemu" >/dev/null 2>&1 || true
 #
 # This row used to tolerate exactly one failure named `B/client reported at
 # all`, blamed on an aarch64 cross-hart WAKE defect. **That diagnosis was
-# wrong and cost a week.** The real cause, found 2026-09-25, was a per-board
+# wrong and cost a week.** The real cause, found, was a per-board
 # constant in shared userspace test code: `userspace/tests/ipctest` hardcoded
 # `TICKS_PER_MS = 10_000`, right for riscv64's fixed 10 MHz CLINT and wrong
 # for aarch64, whose `CNTVCT_EL0` ticks at the live `CNTFRQ_EL0` — 1 GHz in
@@ -6533,7 +6533,7 @@ aarch64_ipctest_row() {
     if [ "$fails" -eq 0 ]; then
         ok; rm -f "$log"; return
     fi
-    # TOLERANCE REMOVED 2026-09-25. It used to pass a run whose only failure was
+    # TOLERANCE REMOVED. It used to pass a run whose only failure was
     # named `B/client reported at all`, on the belief that this was an aarch64
     # cross-hart WAKE defect. It was not a wake defect at all — see the comment
     # above the row. The row now demands a clean run, like riscv64's.
@@ -6641,7 +6641,7 @@ aarch64_captest_row() {
     ok
 }
 
-# Wave 11 (SENSORTS), both ISAs: read from the captest boot of the row above
+# SENSORTS, both ISAs: read from the captest boot of the row above
 # (riscv64: "userspace: capabilities"). captest reads each granted sensor
 # through its `sensor` endpoint between two vDSO clock reads and prints
 # its summary line only when every stamp held: on the reader's clock, inside
@@ -6714,7 +6714,7 @@ frame_class_canary_verdict() { # frame_class_canary_verdict <label> <log>
     ok; echo "      canary failed as it must: the frame that reached ring 3 was not the producer's"; rm -f "$log"
 }
 
-# Wave 10 IRQ5, both ISAs: captest binds a line the capability range admits
+# IRQ5, both ISAs: captest binds a line the capability range admits
 # and QEMU `virt`'s controller does not implement (riscv64 source 100: PLIC
 # 1..=95, APLIC 1..=96; aarch64 SPI 1000: past GICD_TYPER.ITLinesNumber) with
 # 510 and with 575. Both must answer -ENODEV, and the kernel reads back, after
@@ -6740,7 +6740,7 @@ irq_refusal_evidence() { # irq_refusal_evidence <log> <line>
     return 0
 }
 
-# aarch64 ring-3 IRQ (wave 8, IRQ3; wave 9 IRQ4): read from the SAME boot as
+# aarch64 ring-3 IRQ: read from the SAME boot as
 # the captest row above — captest's `irq_section` binds the PL031's line
 # (INTID 34, `irq.34` + `mmio.dt:arm,pl031` in the qemu topology) to a port, raises the
 # alarm, and must see: the interrupt delivered to the port; the line held
@@ -6827,7 +6827,7 @@ aarch64_frame_canary_group() {
 }
 par "aarch64 frame canary" aarch64_frame_canary_group
 
-# aarch64 DRV1 (wave 9): the buzzer and INA219 ring-3 drivers on this ISA.
+# aarch64 DRV1: the buzzer and INA219 ring-3 drivers on this ISA.
 # The riscv64 rows `drivers: buzzer` / `drivers: INA219 power monitor` state
 # the test; this is the same kernel smoke (`ring3-drv-smoke`) on the aarch64
 # `build/disk-aarch64-drv.img` (the one aarch64 image carrying the two driver
@@ -7038,9 +7038,9 @@ par "riscv64 ring-3 virtio-rng, refused, window canary" rng3_row rv "riscv64 rin
 a64_kbuild "qemu" || true
 kbuild "qemu" || true
 
-# ── Wave 11: what the kernel itself starts is supervised (both ISAs) ────────
+# ── what the kernel itself starts is supervised (both ISAs) ────────
 #
-# Before wave 11 only the autorun image was supervised; the images the kernel
+# Only the autorun image used to be supervised; the images the kernel
 # spawns because the system declares them died once, unsupervised and
 # unrecorded. They go through `drv_supervisor::spawn_supervised` and are
 # supervised from their start, under the same policy (SUP_RESTART_BURST
@@ -7239,7 +7239,7 @@ par "hung: safe stop action (arm)" hung_row "hung: safe stop action (arm)" arm S
 par "hung: safe stop action, canary (arm)" hung_row "hung: safe stop action, canary (arm)" arm SAFE_STOP yes
 a64_kbuild "qemu" || true
 
-# ── Wave 11 (DRVPLACE): driver placement and the `restart` row key ──────────
+# ── DRVPLACE: driver placement and the `restart` row key ──────────
 #
 # `drvplace_row` boots the drivers disk (a copy of the `.pristine` image on
 # riscv64; rebuilt on aarch64) on a kernel built with `<features>` and reads
@@ -7270,14 +7270,14 @@ a64_kbuild "qemu" || true
 #   restart-canary  `restart-canary` (the manager is shown every row as
 #                `on-failure`): must print `FAIL buzzer restarted under
 #                restart = no`.
-#   buzz-kernel  wave 12: `ring3-drv-smoke` with `buzzer-kernel` (Kconfig
+#   buzz-kernel  `ring3-drv-smoke` with `buzzer-kernel` (Kconfig
 #                DRV_BUZZER_PLACEMENT = kernel): `[DRV1] buzzer PASS` with the
 #                same PWM checks as the ring-3 row, from `(kernel tid=` (the
 #                row says `place = "kernel"` and the driver runs there:
 #                `buzzer_placement_check`), and the kernel
 #                ELF carries the tree's buzzer source marker
 #                (tools/lint/chip_source_check.py; the ring-3 ELFs are checked by
-#                the Makefile when built). Canaries by hand (2026-10-03):
+#                the Makefile when built). Canaries by hand:
 #                gpio_drv.elf -> "carries no marker"; the chip source edited
 #                after the build -> "carries marker <old>"; buzz_drv without
 #                its marker print -> `make build/buzz_drv.elf` fails.
@@ -7428,7 +7428,7 @@ a64_kbuild "qemu" || true
 # the text, so only the NUMBER distinguishes a wired quota from a dead one.
 #
 # It also builds `mem-quota-canary` + `ipc-census` in one boot, a combination
-# the suite had never run. Relevant now because 2026-09-25 moved this exact
+# the suite had never run. Relevant now because a change moved this exact
 # arithmetic out of `scheduler.rs`'s inline fields into
 # `crates/core/mm::budget::PageBudget` — the host tests cover the struct, this row
 # covers the kernel that ships it.
@@ -7511,7 +7511,7 @@ kbuild "qemu"
 # ── fork refusals name themselves, on BOTH ISAs ────────────────────────────
 #
 # `sys_fork_impl` refuses from SIX distinct sites and every one of them
-# returned a bare `-1` until 2026-09-25. That ambiguity cost a week: an
+# returned a bare `-1`. That ambiguity cost a week: an
 # aarch64 `fork+exit` `rc=-1` was mis-filed as a known gap because a `-1` in a
 # log cannot say WHICH site fired (30 runs across 5 committed trees later
 # produced no failure at all — it had been a measurement artefact).
@@ -7599,7 +7599,7 @@ par "aarch64 fork refusal site" fork_refusal_probe_row "aarch64 fork refusal sit
 
 # ── exit: the parent's wait returns after the child's teardown, BOTH ISAs ───
 #
-# Wave 11 (EXIT2). `task_exit_with_code` publishes the exit notice AFTER the
+# EXIT2. `task_exit_with_code` publishes the exit notice AFTER the
 # exit hook and the address-space teardown (Linux's `exit_mm` before
 # `exit_notify`), so a parent that reaps and forks again never races a
 # half-torn-down child. abitest's `check_exit_storm` starts 64 children one at
@@ -7611,7 +7611,7 @@ par "aarch64 fork refusal site" fork_refusal_probe_row "aarch64 fork refusal sit
 #
 # Every number is read back: N >= 64 (each child freed its own address space
 # on its exit path), `reuse` 0 (no slot claim found a previous tenant's
-# address space: the K-C22(B) fallback), `early` 0 (no notice published while
+# address space: the fallback), `early` 0 (no notice published while
 # its task still held its address space), `short` 0 (free pages back when
 # `waitpid` returned).
 #
@@ -7688,7 +7688,7 @@ exit_storm_row() { # <label> <isa: rv|arm>
 par "exit: notice after teardown" exit_storm_row "exit: notice after teardown" rv
 par "aarch64 exit notice order" exit_storm_row "aarch64 exit notice order"  arm
 
-# Wave 12 (EXIT2): an unreaped child's exit notice is kept until its parent
+# An unreaped child's exit notice is kept until its parent
 # reaps it or exits, as Linux keeps a zombie. The notice table has one entry
 # per task slot and a child with a parent is created only while the queued
 # notices leave a slot for it (`exit_note::admits`), so no notice is dropped:
@@ -7700,7 +7700,7 @@ par "aarch64 exit notice order" exit_storm_row "aarch64 exit notice order"  arm
 #
 # Read back: refused, reaped = spawned > 0, drops (`EXIT_STAT_NOTICE_DROPS`) 0,
 # refusals (`EXIT_STAT_NOTICE_REFUSALS`) >= 1. Canary, by hand on both ISAs
-# (2026-10-03): `exit_note::admits` answering true -> refused=no, spawned=512,
+#: `exit_note::admits` answering true -> refused=no, spawned=512,
 # reaped < 512, drops > 0.
 zombie_row() { # <label> <isa: rv|arm>
     local label="$1" isa="$2"
@@ -7857,7 +7857,7 @@ par "aarch64 dead client"        dead_client_row "aarch64 dead client"        ar
 # parent's own port, region and ring handles and must get `-ECAPSTALE` from
 # each (the pass half is `userspace: IPC` and `aarch64 ipctest`). Canary
 # `native-fork-copy-canary` keeps the placeholders, as the reverted
-# 2026-09-21 copy kept the parent's table: the stranger resolves them, and
+# earlier copy kept the parent's table: the stranger resolves them, and
 # this row requires ipctest's own failure line for it. (The hosted runtime's
 # lxhello cannot see this: its parent holds only its row and descriptors, so
 # no placeholder is left to keep.)
@@ -8248,7 +8248,7 @@ par_row foreign_canary_row "foreign: canary, resume drops the frame (arm)" arm
 par_row sysabi_canary_row "sysabi: canary, callee-saved bit lost (rv)"  rv
 par_row sysabi_canary_row "sysabi: canary, callee-saved bit lost (arm)" arm
 
-# ── threads: native thread groups (wave 13, THREADS) ──────────────────────
+# ── threads: native thread groups (THREADS) ──────────────────────
 #
 # abitest's `check_threads` prints seventeen `threads:` checks: two threads
 # and the main thread contend on a futex lock over shared memory (the plain
@@ -8267,8 +8267,8 @@ par_row sysabi_canary_row "sysabi: canary, callee-saved bit lost (arm)" arm
 # `vdso-write-window` row under gate load; with the old check this canary
 # failed it 2/2.
 #
-# The thread storm (abitest's `check_thread_storm`, before these checks;
-# CTXHUNT 2026-10-08): child processes whose spinning threads their exit must
+# The thread storm (abitest's `check_thread_storm`, before these checks):
+# child processes whose spinning threads their exit must
 # stop, threads that exit at once, and children whose thread faults while
 # they exit, 200 rounds. Before the fixes it faulted the kernel in about a
 # second, 10/10 loaded boots on each ISA. `exit-stale-hart-canary` (the exit
@@ -8316,7 +8316,7 @@ threads_row() { # <label> <isa: rv|arm> <features> <ok|privtable|futexnoop|nocle
     done
     kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
     rm -f "$kcopy" "$dcopy"
-    # A kernel canary (CTXHUNT) must break the kernel inside the cap: fault
+    # A kernel canary must break the kernel inside the cap: fault
     # it, or wedge it short of the thread checks (the aarch64 stale-hart
     # canary strands exits instead of faulting).
     if [ "$want" = kbroken ]; then
@@ -8373,7 +8373,7 @@ par_row threads_row "aarch64 threads: stale exit hart"       arm qemu,exit-stale
 par_row threads_row "threads: reap window canary"            rv  qemu,reap-window-canary kbroken
 par_row threads_row "aarch64 threads: reap window canary"    arm qemu,reap-window-canary kbroken
 
-# ── what a thread creates (wave 15, 4a) ─────────────────────────────────────
+# ── what a thread creates (4a) ─────────────────────────────────────
 #
 # abitest's `check_thread_objects` prints four checks: a port a thread made and
 # then exited is still the process's (it was freed with the thread), a thread
@@ -8457,7 +8457,7 @@ par_row thread_objects_row "aarch64 thread objects canary"       arm qemu,thread
 par_row thread_objects_row "aarch64 thread args: regs canary"    arm qemu,thread-regs-canary regs
 par_row thread_objects_row "threads: tls zero canary"            rv  qemu,thread-tls-zero-canary tls
 
-# ── W^X: a process's code and read-only data are not writable (wave 13) ────
+# ── W^X: a process's code and read-only data are not writable ────
 #
 # A fork used to mark every user page copy-on-write, code and read-only data
 # included: a child's store to its own code took the COW break and got a
@@ -8532,7 +8532,7 @@ wx_row() { # <label> <isa: rv|arm> <features> <ok>
 par_row wx_row "wx: store to code faults"            rv  qemu ok
 par_row wx_row "aarch64 wx: store to code faults"    arm qemu ok
 
-# ── Wave 15 (VI): each user page gets its own segment's permissions ─────────
+# ── VI: each user page gets its own segment's permissions ─────────
 #
 # Two PT_LOAD segments sharing a page took the union of their permissions,
 # so the `.rodata` on the last `.text` page was executable. The loader maps
@@ -8654,7 +8654,7 @@ if ci_row_begin "x86_64: user images enter at _azos_entry"; then
     ci_row_end
 fi
 
-# ── mmap: PROT_READ/PROT_WRITE are exact (wave 13, security) ──────────────
+# ── mmap: PROT_READ/PROT_WRITE are exact (security) ──────────────
 #
 # `mmap` mapped every page read-write whatever `prot` said, so a PROT_READ
 # mapping took stores. abitest's `check_mmap_prot` (native): a store to a
@@ -8732,7 +8732,7 @@ par_row mprot_row "aarch64 mmap: PROT_READ read-only"     arm qemu ok
 par_row mprot_row "mmap: prot canary"                     rv  qemu,mmap-prot-canary canary
 par_row mprot_row "aarch64 mmap: prot canary"             arm qemu,mmap-prot-canary canary
 
-# ── Orphans: re-parented to a subreaper or init, BOTH ISAs (wave 13) ────────
+# ── Orphans: re-parented to a subreaper or init, BOTH ISAs ────────
 #
 # When a user task exits, its children go to the nearest live ancestor marked
 # a child subreaper (`DOMAIN_SUBREAPER`, Linux `PR_SET_CHILD_SUBREAPER`),
@@ -8744,7 +8744,7 @@ par_row mprot_row "aarch64 mmap: prot canary"             arm qemu,mmap-prot-can
 # marked child does the same one level down and must be the adopter, init
 # none. Read back: the `init=` line with children=1 and an orphan TID, eleven
 # `ok   orphans:` lines and no `FAIL   orphans:` line. The canary row boots
-# `orphan-reparent-canary` (wave 12's purge, no re-link) and must see both
+# `orphan-reparent-canary` (the purge without the re-link) and must see both
 # adoption checks fail.
 orphan_row() { # <label> <isa: rv|arm> <features> <adopted|canary>
     local label="$1" isa="$2" feats="$3" want="$4"
@@ -8819,7 +8819,7 @@ par_row orphan_row "exit: orphans adopted"           rv  qemu adopted
 par_row orphan_row "aarch64 orphans adopted"         arm qemu adopted
 par_row orphan_row "exit: orphans canary"            rv  qemu,orphan-reparent-canary canary
 par_row orphan_row "aarch64 orphans canary"          arm qemu,orphan-reparent-canary canary
-# The adopter late (CTXHUNT, 2026-10-08): `orphan-late-adopter-canary` returns
+# The adopter late: `orphan-late-adopter-canary` returns
 # the reap of the exiting child 1.5 s late. The orphan waits for the
 # adopter's byte on a pipe, not a second of sleep, so the row stays green;
 # with the old sleep the init and subreaper adoptions fail every boot.
@@ -8831,7 +8831,7 @@ par_row orphan_row "aarch64 orphans late adopter"    arm qemu,orphan-late-adopte
 # Fourth instance of the class that turns a working property into a red row:
 # gate 192b's `ipc: census counters zero` read `[IPCTEST] ALL PA[SCHED-DBG]
 # ASKS-SCHED ...` — a timer-ISR `kprintln!` landed between two 16-byte pieces
-# of a ring-3 write. Since wave 9 the ring-3 writer OWNS the console with
+# of a ring-3 write. The ring-3 writer OWNS the console with
 # interrupts on, and kernel lines from any hart or interrupt handler wait in a
 # buffer it drains (`crates/drivers/sys/src/console_defer.rs`).
 #
@@ -8844,7 +8844,7 @@ par_row orphan_row "aarch64 orphans late adopter"    arm qemu,orphan-late-adopte
 # `-smp 4` covers other-hart task and ISR lines; `-smp 1` covers same-hart
 # preemption and the same-hart ISR.
 #
-# Canaries (2026-09-28): kernel output ignoring ownership -> 640/2000 ring-3
+# Canaries: kernel output ignoring ownership -> 640/2000 ring-3
 # lines spliced at -smp 4, kernel lines torn; base commit 08647ce: 795 and 54
 # (riscv64), 52 at aarch64 -smp 2. The host protocol tests are in
 # tests/host/drivers-tests (`console_ownership`).
@@ -8891,7 +8891,7 @@ par "console: no splice smp4" console_splice_row "console: no splice smp4"      
 par "console: no splice smp1" console_splice_row "console: no splice smp1"      rv 1
 par "aarch64 console: no splice" console_splice_row "aarch64 console: no splice"   arm 2
 
-# ── Console: no writer waits for the UART with interrupts masked (wave 11) ──
+# ── Console: no writer waits for the UART with interrupts masked ──
 #
 # Kernel and ring-3 output goes into a TX ring under the UART lock, and the
 # UART's own TX interrupt moves it to the FIFO (`uart.rs`, "TX ring"). The
@@ -8905,7 +8905,7 @@ par "aarch64 console: no splice" console_splice_row "aarch64 console: no splice"
 # The row wants tx_async=1, no blocking byte in any hold, the fill bound, and
 # the splice count clean. The canary row builds `console-tx-sync` (the old
 # synchronous path) and wants the blocking bytes back above one FIFO load.
-# Measured 2026-10-02: base e8d673e max_masked_wire_bytes 86..128 on both
+# Measured: base e8d673e max_masked_wire_bytes 86..128 on both
 # ISAs; TX ring 0 (fill 16..256); console-tx-sync 86+.
 console_tx_row() { # <label> <isa: rv|arm> <smp> <async|sync>
     local label="$1" isa="$2" smp="$3" mode="$4"
@@ -8975,14 +8975,14 @@ par "aarch64 console: tx-sync can." console_tx_row "aarch64 console: tx-sync can
 kbuild "qemu"
 a64_kbuild "qemu" >/dev/null 2>&1 || true
 
-# ── The motor-command watchdog is on the flight recorder (wave 14) ──────────
+# ── The motor-command watchdog is on the flight recorder ──────────
 #
 # `rt_motor_task`'s watchdog (no motor command for 500 ms -> SAFE STOP) writes
 # a `SAFETY_RT_WATCHDOG` (0x19) record on its transitions only: the first SAFE
 # STOP (durable), the first clear, then one repeats record per window that saw
 # more (`RtWatchdogReports`, crates/core/actuation/src/logger.rs).
 # `rtwd-window-smoke` withholds the behavior task's motor command 0.8 s of
-# every 2 s, so the watchdog flaps on a schedule (before wave 15 B1 the
+# every 2 s, so the watchdog flaps on a schedule (the
 # brainless boot's 2 s dial stalls in the behavior loop did that), and
 # closes a window every 5 s instead of 60. Once the console shows a window's
 # count the boot stops and the recorder file is read off the volume with
@@ -9038,7 +9038,7 @@ rt_watchdog_record_row() { # <label> <isa: rv|arm> <extra features, comma-led or
         kill -0 "$pid" 2>/dev/null || break
         i=$((i + 1)); sleep 0.5
     done
-    # rt-motor is RT: its records (the SAFE STOP's too, since wave 15 RL)
+    # rt-motor is RT: its records (the SAFE STOP's too,)
     # reach the volume through the `log-flush` task, which sys-wdt's ~0.5 s
     # request wakes. The SAFE STOP and the clear are seconds old here; the
     # count was pushed with the line just seen. Host time, no -icount.
@@ -9064,7 +9064,7 @@ rt_watchdog_record_row() { # <label> <isa: rv|arm> <extra features, comma-led or
     # The file THIS boot wrote: `logger_init` opens the serial the boot
     # printed (`boot_latch::apply`). A volume an earlier boot wrote holds that
     # session's LOG00000.BIN, and this boot resumes past it; reading 00000
-    # then judged the other session's records (wave 15: a false FAIL when it
+    # then judged the other session's records (a false FAIL when it
     # had no watchdog records, a false PASS when it had).
     local serial lfile
     serial="$(grep -a "flight recorder resuming at serial [0-9]*" "$log" | sed -n '1s/.*resuming at serial \([0-9]*\).*/\1/p')"
@@ -9120,7 +9120,7 @@ par_row rt_watchdog_record_row "rt watchdog recorded"          rv  ""           
 par_row rt_watchdog_record_row "rt watchdog recorded, canary"  rv  ",rtwd-record-canary"  FAIL
 par_row rt_watchdog_record_row "aarch64 rt watchdog recorded"  arm ""                     PASS
 
-# ── Wave 15 (RL): an RT task never does block I/O ───────────────────────────
+# ── RL: an RT task never does block I/O ───────────────────────────
 #
 # Owner rule. The dev configs (LOG_LEVEL debug) build RT_BLOCK_IO_CHECK in:
 # the block layer panics when a task whose own priority is in the RT band
@@ -9245,7 +9245,7 @@ par_row blk_discard_row "storage: virtio-blk discard canary (rv)"  rv  canary
 par_row blk_discard_row "storage: virtio-blk discard (arm)"        arm pass
 par_row blk_discard_row "storage: virtio-blk discard canary (arm)" arm canary
 
-# ── Wave 15 (GR5): the panic report is not spliced by another CPU's output ──
+# ── GR5: the panic report is not spliced by another CPU's output ──
 #
 # The full gate failed `rt: RT block I/O panics, canary (arm)` once in five:
 # `[AHR!S] Reference!! K pressure: 100586 PaERNEL PANIC` — the AHRS task's
@@ -9271,7 +9271,7 @@ par_row blk_discard_row "storage: virtio-blk discard canary (arm)" arm canary
 #   panic-stop-skip     no stop IPI, no wait: `parked: 0/2` (the report stays
 #                       whole: the console claim alone holds it). A race
 #                       against CPU 1's own tick, which parks it as it always
-#                       did: 0/2 in 25 of 30 boots (rv, arm, x86, 2026-10-10).
+#                       did: 0/2 in 25 of 30 boots (rv, arm, x86).
 #   panic-quiesce-skip  no claim either, as before: the masked CPU writes
 #                       through the report and splices it (30 of 30 boots).
 # A canary row boots up to PANIC_SPLICE_TRIES times and is green on the first
@@ -9320,7 +9320,7 @@ panic_splice_verdict() {
         rereport) [ "$got" = "2 0 1" ] || echo "want 2 0 1 (canary: the report again), got: $got" ;;
     esac
 }
-# Wave 15 (GR6): the `[FATAL]` halt paths (a kernel page fault, an
+# The `[FATAL]` halt paths (a kernel page fault, an
 # unhandled trap) take the panic path's quiesce too (`panic::halt_begin`, on
 # every ISA): the same smoke in its `canary=panic-splice-fatal` mode, where
 # the culprit reads an unmapped stack guard page instead of panicking. Read
@@ -9348,7 +9348,7 @@ fatal_splice_judge() { # fatal_splice_judge <log, \r stripped>: "<whole|spliced|
     fi
     echo "$rep $pk $fl"
 }
-# Owner decision 2026-10-24: a panic inside the panic handler prints one line
+# A panic inside the panic handler prints one line
 # and reboots or halts (kernel/src/panic.rs `nested`). It used to run the
 # whole report again, each pass one handler deeper on the stack, with nothing
 # to stop it. The same smoke in its `canary=panic-nested` mode panics once
@@ -9455,7 +9455,7 @@ a64_kbuild "qemu" >/dev/null 2>&1 || true
 #   nosig:    POLICY.SIG deleted -- the policy REFUSED as unsigned, the bundle
 #             still loaded (its signature is not a sidecar).
 #
-# Canary (by hand, 2026-10-02, both ISAs, before the bundle joined the row):
+# Canary (by hand, both ISAs, before the bundle joined the row):
 # `check_signature` answering `Verified` for any sidecar turns the tampered rows
 # red (the GGUF parse line printed for a flipped file). The bundle half of the
 # tampered row has not been hand-canaried yet: make the loader's signature
@@ -9571,7 +9571,7 @@ a64_kbuild "qemu" >/dev/null 2>&1 || true
 
 # ── Spectre v1: the syscall-table index is masked in the built kernel ───────
 #
-# Wave 11, Kconfig MITIGATION_SPECTRE_V1_INDEX (`azos_limits::nospec`).
+# Kconfig MITIGATION_SPECTRE_V1_INDEX (`azos_limits::nospec`).
 # The mask is a few ALU instructions the compiler is free to drop if the
 # helper is ever "simplified", and nothing at run time would notice, so the
 # canary is the disassembly of `dispatch_slow` (`#[inline(never)]`, so it is a
@@ -9579,7 +9579,7 @@ a64_kbuild "qemu" >/dev/null 2>&1 || true
 # `sltu`+`neg`, aarch64 `csdb`, when the config the kernel was built from has
 # the option on, and neither when it is off.
 #
-# Canary (by hand, 2026-10-02): the same kernels built with the option off
+# Canary (by hand): the same kernels built with the option off
 # (`# CONFIG_MITIGATION_SPECTRE_V1_INDEX is not set`) have neither: the table
 # load indexes with the raw a7/x0 (`slli a7, a0, 3` / `ldr x8, [x8, x0, lsl #3]`).
 spectre_v1_disasm_row() { # <label> <isa: rv|arm>
@@ -9623,7 +9623,7 @@ ci_row "aarch64 spectre v1 mask (disasm)" spectre_v1_disasm_row "aarch64 spectre
 # (tools/gate/image_header.py); the aarch64 kernel's is checked where it is built
 # ("aarch64 kernel (build)").
 #
-# Canary (by hand, 2026-10-22): the same kernel built from the boot.S without
+# Canary (by hand): the same kernel built from the boot.S without
 # the header fails all four checks (magic 93835310, code0 not a jump,
 # image_size and text_offset are instruction bytes).
 image_header_row() { # <label>
@@ -9657,7 +9657,7 @@ ci_row "riscv64 kernel: Image header" image_header_row "riscv64 kernel: Image he
 #     would add up to more);
 #   * exactly one call site in the whole image (a second read of the same
 #     entry anywhere would be a second call: the volatile read cannot be merged).
-# Canary (by hand, 2026-10-02): a second `sqe_snapshot(ring, sq_idx)` in
+# Canary (by hand): a second `sqe_snapshot(ring, sq_idx)` in
 # `run_pass` whose opcode is compared with the first: red, "2 call sites", both
 # ISAs. Removing `#[inline(never)]`: red, "no sqe_snapshot symbol".
 ioring_sqe_once_row() { # <label> <isa: rv|arm>
@@ -9698,7 +9698,7 @@ ci_row "aarch64 ioring: SQE copied once" ioring_sqe_once_row "aarch64 ioring: SQ
 #
 # The aarch64 twin of this pair has existed since the parity program; riscv64
 # — **the ISA this project measures on** — had no row for its kernel fault
-# path at all until 2026-09-25. `[MM] Null pointer guard active` and
+# path at all. `[MM] Null pointer guard active` and
 # `[MM] Stack guard pages active` prove a PTE is gone; neither proves an
 # access TRAPS there rather than reading stale data through a TLB entry the
 # unmap forgot to flush.
@@ -10063,7 +10063,7 @@ aarch64_entropy_row() {
 
 # ── aarch64: the safety watchdog is actually wired to the timer ISR ─────────
 #
-# Until 2026-09-24 aarch64's timer ISR called NOTHING in
+# aarch64's timer ISR called NOTHING in
 # `crates/core/actuation/src/watchdog.rs`. Four consequences, one omission: the
 # liveness counter was unfed, a panicked hart did not stop this hart's
 # actuators, the hardware WDT was never fed, and `hw_init()` was riscv64-only.
@@ -10166,7 +10166,7 @@ fi
 par "aarch64: watchdog wired" aarch64_watchdog_row
 par "aarch64: console routed" aarch64_console_route_row
 par "aarch64: entropy seeds pool" aarch64_entropy_row
-# Persisted entropy seed (ENTSEED, wave 11), same three rows as riscv64's.
+# Persisted entropy seed (ENTSEED), same three rows as riscv64's.
 if a64_kbuild "qemu"; then
     mkdir -p "$CI_LOG_DIR"
     ENTSEED_A64_IMG="$CI_LOG_DIR/kernel-entseed-a64.img"
@@ -10227,12 +10227,12 @@ else
     echo "      the qemu aarch64 kernel did not build"
 fi
 
-# BEHAVIOR'S NETWORK WAITS SLEEP (wave 10, owner decision on INV question 3).
+# BEHAVIOR'S NETWORK WAITS SLEEP.
 #
 # `behavior` (priority 14) resolved the brain's MAC by YIELD-polling the ARP
 # cache for up to CONNECT_ARP_BUDGET_US (500 ms) per dial. A yield hands the
 # hart only to tasks at priority 14 or above, so every lower task on its hart
-# got nothing for the whole budget (wave 9 INV: `aarch64 preemption (qemu)`
+# got nothing for the whole budget (`aarch64 preemption (qemu)`
 # failed behind it). It now sleeps NET_WAIT_POLL_MS (1 ms) between polls,
 # and so do its DHCP, encrypted-link handshake and brain-send waits. The
 # dialer is now the ring-3 behaviour engine (BRAINCLI.ELF, the image's
@@ -10243,15 +10243,15 @@ fi
 # spends the whole budget; `arp-timing` prints how many waits it took:
 # `[ARPTIME] gave up after 500000 us (N spins)`. Sleeping, N cannot exceed
 # 500 000 us / 1 ms = 500 (each wait lasts at least 1 ms of guest time).
-# Yield-polling it was 73,483-503,780 per dial (2026-09-28, both ISAs); the
+# Yield-polling it was 73,483-503,780 per dial (both ISAs); the
 # same boots with the sleep read 200-308. Only behavior dials on this disk
 # (autorun does no networking), so every line is behavior's. Canary, by hand: the behavior dial's closure put back to
 # `azos_sched::task_yield`: FAIL on both ISAs (152,378-503,780 polls).
 #
-# Wave 15 (N7): the wait no longer polls at all. `resolve_peer_mac` registers
+# The wait no longer polls at all. `resolve_peer_mac` registers
 # behavior in `azos_net::wait::ARP_WAITERS` and blocks until the reply's
 # `arp::handle` wakes it or the budget ends, so a wait no reply ends is ONE
-# block: measured 1 1 1 on both ISAs (2026-10-09). The bound is now 3.
+# block: measured 1 1 1 on both ISAs. The bound is now 3.
 # Canary, by hand: the poller's `azos_net::wait::set_hooks` call removed (no
 # hooks, every wait is the 1 ms sleep again): 300-313 (riscv64) and 278-304
 # (aarch64) polls, FAIL.
@@ -10317,7 +10317,7 @@ par -s "aarch64 behavior ARP sleeps" behavior_arp_sleep_row a64
 # today, but a future row should not silently inherit one by accident.
 a64_kbuild "" >/dev/null 2>&1 || true
 
-# ── aarch64: the translation granule is a Kconfig choice (wave 11, PAGESIZE) ──
+# ── aarch64: the translation granule is a Kconfig choice (PAGESIZE) ──
 #
 # config/arch/Kconfig.isa AARCH64_PAGE_16K / _64K, expanded from the same
 # qemu-aarch64 defconfig the 4 KiB rows use. The features come from
@@ -10450,7 +10450,7 @@ par "aarch64 granule 64 KiB" aarch64_granule_row 64
 
 # ── board: the data volume is DERIVED from the topology ─────────────────────
 #
-# Owner decision 2026-09-24: an ELF goes on a board's volume iff the topology
+# An ELF goes on a board's volume iff the topology
 # declares a service it provides. Until this row, no gate row ran
 # `build/disk-board.img` at all, so the drift check in
 # `tools/image/check_board_disk.py` (reads the BUILT image back with `mdir` and
@@ -10671,14 +10671,14 @@ fat_check_readonly_row() {
 }
 par "fs check: a damaged FAT32 boot volume is served read-only" fat_check_readonly_row
 
-# Canary (2026-09-24, by hand): an unconditional early return after the lock checks in
+# Canary (by hand): an unconditional early return after the lock checks in
 # `write_crash_log` — boot 1 panicked identically and never printed the
 # written line; assertion 3 went red. Bucket (a). Reverted.
 
-# ── boot count: an unconfirmed boot's count survives the crash (U05-5) ─────
+# ── boot count: an unconfirmed boot's count survives the crash ─────
 #
 # `wdt::CRASH_COUNTER` is `.bss`; its durable copy is OTA BOOTMETA's
-# `boot_count` (wave 9: `/fat/BOOTCNT.BIN` was a second counter for the same
+# `boot_count` (`/fat/BOOTCNT.BIN` was a second counter for the same
 # fact and is gone). `ota_boot_validate` writes count + 1 early in boot and
 # `ota_mark_boot_good` (sys-wdt, after OTA_BOOT_GOOD_DELAY_S = 30 s of uptime)
 # writes 0. `boot-count-smoke` panics right after the first write when the
@@ -10763,18 +10763,18 @@ par "boot count: survives a crash" boot_count_row
 # Every exit of the row above leaves the smoke kernel built; put back the
 # plain one before any later row boots `$KERNEL`.
 kbuild "qemu"
-# Canaries (2026-09-28, by hand, w8-debt, against /fat/BOOTCNT.BIN), reverted:
+# Canaries (by hand, w8-debt, against /fat/BOOTCNT.BIN), reverted:
 #   (a) `mark_unconfirmed` writes nothing: boot 2 finds no record and panics
 #       like boot 1 ("boot 2 panicked").
 #   (b) `boot_count_mark` without `crash_counter_set`: boot 2 prints the
 #       [BOOTCNT] line but never "Recovering from 1" (second check).
-# Canaries (wave 9, by hand, against BOOTMETA), reverted:
+# Canaries (by hand, against BOOTMETA), reverted:
 #   (B) `prior_unconfirmed` read after this boot's increment: boot 1 prints
 #       "1 unconfirmed" on a fresh volume (first check).
 #   (C) `ota_mark_boot_good` without its `ota_write_boot_meta`: both boots
 #       pass, the readback finds plain boot_count=2 (last check).
 
-# ── safe mode: boot attempts exhausted (owner decision 2026-09-28) ─────────
+# ── safe mode: boot attempts exhausted ─────────
 #
 # `crates/core/ota/src/pure.rs` has the sequence. On a single-image volume
 # (`last_good == active`), boots 1-3 count 1, 2, 3 and boot 4 finds its
@@ -10923,7 +10923,7 @@ if [ "${CI_PKGUP:-0}" = 1 ]; then
     kbuild "qemu"
 fi
 
-# ── boot count: an orderly reboot is not a crash (owner decision 2026-09-28)
+# ── boot count: an orderly reboot is not a crash
 #
 # An orderly reboot or power-off before sys-wdt confirms the boot voids that
 # boot's own unconfirmed mark (`ota_void_unconfirmed_boot`, compare-and-
@@ -11016,8 +11016,8 @@ par "boot count: orderly reboot" orderly_reboot_row
 par "boot count: orderly reboot, unmount canary" orderly_reboot_row canary
 kbuild "qemu"
 
-# ── power-off: the kernel's own sync keeps a written file (owner decision
-#    2026-10-23, Q1) ──────────────────────────────────────────────────────
+# ── power-off: the kernel's own sync keeps a written file
+#    ──────────────────────────────────────────────────────
 #
 # Whoever asks for an orderly power-off (here a kernel task, as the thermal
 # critical trip does: no power service in front), the kernel syncs every
@@ -11267,7 +11267,7 @@ farm_board_row() { # <label> <make target>
 # not see change under them.
 par -s -a -h "board:vf2" host_job_run farm_board_row "board:vf2" vf2-ktest
 par -s -a -h "board:vf2 pstore boot counter" host_job_run farm_board_row "board:vf2 pstore boot counter" vf2-pstore
-# Canaries (2026-10-02, by hand, both ISAs), reverted:
+# Canaries (by hand, both ISAs), reverted:
 #   (A) `pstore::arm` zeroes the region (RAM wiped by the reset): both valid
 #       rows FAIL, boot 2 finds no record and panics again ("5 '[PSTORE]
 #       region reserved' lines, want 2").
@@ -11374,7 +11374,7 @@ rt7_row() { # rt7_row <isa: rv|arm> <mode: contain|spin|reset>
     # Ceiling 600 s: a quiet host reaches the verdict in ~7 s under -icount
     # (one host thread runs both harts); a loaded one stretches that, and the
     # verdict does not depend on it (virtual time). 120 s was too short in the
-    # wave-15 integration gate, where the eight rows run as parallel jobs next
+    # Integration gate, where the eight rows run as parallel jobs next
     # to builds: `rt7: panic contain (rv)` was cut ~2.5 s of virtual time
     # before its Disarm line, with nothing wrong in what it had printed.
     local pid=$! i=0
@@ -11502,10 +11502,10 @@ ci_row "rt7: drone → contain" rt7_drone_default_row
 # the host deschedules a vCPU thread, and under -smp 2 behavior's one-shot
 # `[BENCH-RES]` sweep is rebalanced from dead hart 2 onto hart 0, the control
 # hart, keeping that vCPU CPU-bound across the after window. Serial, 1/10 read
-# "rt-motor lost its period" (145 vs 290 heartbeats, wave 15); with 12 host
+# "rt-motor lost its period" (145 vs 290 heartbeats); with 12 host
 # busy loops 4/7 runs failed and after < before in all 7. Under -icount, 20/20
 # PASS at 493-499 heartbeats per 500 ms in both windows, 10 of them with the
-# sweep spanning the after window (2026-10-06). The sweep has since left
+# sweep spanning the after window. The sweep has since left
 # behavior for its own `bench-boot` task (BOOT_BENCH_PRIORITY, default 28).
 par "rt7: panic contain (rv)" rt7_row rv contain
 par "rt7: panic spin (rv)" rt7_row rv spin
@@ -11515,7 +11515,7 @@ par "rt7: panic reset (rv)" rt7_row rv reset
 par "rt7: panic reset (arm)" rt7_row arm reset
 par "rt7: panic safety (rv)" rt7_row rv safety
 par "rt7: panic safety (arm)" rt7_row arm safety
-# Canaries (2026-10-03, by hand, both ISAs), reverted:
+# Canaries (by hand, both ISAs), reverted:
 #   (A) `panic_policy::decide` without the `preempt_depth` check: both spin
 #       rows FAIL ("want one banner and 'policy=contain verdict=reset
 #       reason=spinlock-held' (0 banners)": the handler printed
@@ -11528,21 +11528,21 @@ par "rt7: panic safety (arm)" rt7_row arm safety
 #       "did not build", and boots nothing.
 # The `reset` rows are the canary for the contain rows (same panic,
 # containment off).
-# Contain rows under -icount (2026-10-06, by hand, both ISAs), reverted:
+# Contain rows under -icount (by hand, both ISAs), reverted:
 #   (D) the contain path spins 300 ms with interrupts off before the
 #       culprit's exit: FAIL "heartbeat stood still too long" (arm 267 ms,
 #       rv 300 ms). Before the smoke anchored its watch on the culprit's
 #       exit, rv PASSed it ("still max 0 us": the watch had closed).
 #   (E) rt-motor's period tripled once a panic is contained: FAIL
 #       "rt-motor lost its period" (arm +167, rv +150 vs +497).
-# Safety rows (wave 13), canaries by hand, reverted:
+# Safety rows, canaries by hand, reverted:
 #   (A) rt-motor not registered as a safety task (rv): FAIL, "want one banner
 #       ... reason=safety-task (0 banners)" — the handler contained rt-motor.
 #   (B) `motor_set_reporting` without its `is_panicked()` refusal (arm): FAIL,
 #       "latch: panicked=true motor_set rc=0 applied=50" — the wheel moved.
 #   (C) did not compile (an undefined function in rt_panic_smoke.rs): the
 #       build FAIL line and "did not build", nothing booted.
-# The buzzer's placement through a fault (wave 13, Phase 4 elasticity):
+# The buzzer's placement through a fault (Phase 4 elasticity):
 # `drv-contain-smoke` (buzzer-kernel), Kconfig PANIC_POLICY_CONTAIN, on the
 # drivers disk. The buzzer's kernel host is supervised (`SupOrigin::KernelHost`,
 # kernel/src/drv_supervisor.rs `start_kernel_host`); the smoke checks the
@@ -11661,8 +11661,8 @@ par_row -s drvcontain_row "rt7: driver contained, demoted (arm)" arm
 par_row -s drvcontain_row "rt7: a move without its record (rv)" rv "qemu,drv-contain-smoke,buzzer-kernel,placement-norecord-canary" FAIL-record
 par_row -s drvcontain_row "rt7: promoted on its deadline, demoted on a fault (rv)" rv "qemu,drv-contain-smoke" deadline
 # The timer-sleeper heap under the interleavings that lost rt-motor's wake
-# with it (gate 185; fixed in wave 5: the retry re-arm, now in
-# `timer_heap::wake_due`, and `peek_live`), wave 13: `timer-heap-smoke` +
+# with it (gate 185; fixed by the retry re-arm, now in
+# `timer_heap::wake_due`, and `peek_live`): `timer-heap-smoke` +
 # `ipc-census`, -smp 4, no disk.
 # Three sleepers per hart (1-7 ms periods) raced by one early-waking racer per
 # hart that never wakes a sleeper whose deadline is due, so a lost timer wake
@@ -11711,7 +11711,7 @@ theap_row() { # theap_row <isa: rv|arm> [features]
 }
 par -s "sched: timer heap raced (rv)" theap_row rv
 par -s "sched: timer heap raced (arm)" theap_row arm
-# NR_CPUS (wave 15, NRCPUS): the CPU ceiling is Kconfig, the DTB's count is
+# NR_CPUS (NRCPUS): the CPU ceiling is Kconfig, the DTB's count is
 # cut to it with a kwarn, and per-CPU state lives in per-CPU areas allocated
 # at boot for the possible CPUs only. Each row builds its own kernel into a
 # private target directory (NR_CPUS changes every per-CPU table, so it must
@@ -11907,7 +11907,7 @@ board_volume_row() {
     printf "  %-26s" "${label}..."
     local out
     rm -f $AZOS_OUT/build/disk-board.img $AZOS_OUT/build/disk-board.img.manifest $AZOS_OUT/build/board_manifest.txt $AZOS_OUT/build/board_elfs.list
-    # A board volume never carries the test key (wave 11 BOARDIMG): the board
+    # A board volume never carries the test key: the board
     # builds its own ML service from a NAMED key. Two refusals first (no key;
     # the test key named by path), each bound to the line only the refusal
     # prints, then the positive build with a key that is not the test key. The
@@ -11969,7 +11969,7 @@ board_volume_row() {
     ok
 }
 ci_row "board: volume = topology" board_volume_row
-# U12-3 proof rows: a fresh build of each column immediately followed by the
+# Proof rows: a fresh build of each column immediately followed by the
 # check that its `azos_limits` came from that column's own defconfig, not
 # from whatever this shell's ambient `.config` (or another column's pinned
 # config) happens to be. `kbuild`/`a64_kbuild` overwrite the shared
@@ -11985,8 +11985,8 @@ isa_guard   "vf2: no B extension" none
 # The K1 builds like the VF2: its GPIO and PWM are real drivers over the device
 # tree's nodes (`gpio_k1.rs`, `pwm_k1.rs`), its I2C the K1 master, and the
 # subsystems with no K1 driver answer "no controller" (SPI, the PDMA) instead of
-# the `compile_error!` that used to refuse the build (U05-4, owner decision
-# V2.3). The B extension guard is the reverse of the VF2's: the K1 has Zba/Zbb/
+# the `compile_error!` that used to refuse the build .
+# The B extension guard is the reverse of the VF2's: the K1 has Zba/Zbb/
 # Zbs and its flags must reach the compiler.
 build_board "k1 (+linker)"        k1 "$K1_ISA"
 board_config_applied "k1 config applied" k1
@@ -12020,7 +12020,7 @@ else
     bad; echo "      could not expand config/defconfigs/robot-embedded-riscv64+board-generic.config with python3 -m olddefconfig"
 fi
 
-# The brain link fails CLOSED outside BUILD_TYPE_DEV (owner 2026-10-23). Its
+# The brain link fails CLOSED outside BUILD_TYPE_DEV. Its
 # rows boot a kernel of the QEMU board built as a release image: the gate's
 # primary config with BUILD_TYPE_RELEASE, so LINK_PROVISIONING_ENFORCED comes
 # from the Kconfig default alone (no cargo feature names it; the symbol is
@@ -12061,7 +12061,7 @@ else
     bad; echo "      $GATE_ROBOT_DEFC_RV as BUILD_TYPE_RELEASE did not expand with LINK_PROVISIONING_ENFORCED=y"
 fi
 
-# ── Topology/config key: a production build names its key (wave 11) ──────
+# ── Topology/config key: a production build names its key ──────
 #
 # `crates/core/topology/build.rs` used to embed
 # `tools/keys/test_pub.bin` whenever `TOPOLOGY_PUBKEY_PATH` was unset, so a
@@ -12080,7 +12080,7 @@ fi
 # Host-target `cargo check` in topology-tests' own workspace (its default
 # feature is `dev-key`; `--no-default-features` drops it), in a target dir of
 # its own so the suite's own build is not invalidated.
-# Canary (by hand, 2026-10-02): make build.rs's `(None, false)` arm return the
+# Canary (by hand): make build.rs's `(None, false)` arm return the
 # test key instead of failing — (a) goes red ("the build did not refuse").
 topology_key_row() {
     printf "  %-26s" "topology key: no default..."
@@ -12118,7 +12118,7 @@ topology_key_row() {
     if [ -z "$why" ]; then ok; else bad; echo "      $why"; fi
 }
 ci_row "topology key: no default" topology_key_row
-# ── A release image refuses the TEST key, by content (owner decision, wave 15) ──
+# ── A release image refuses the TEST key, by content ──
 #
 # BUILD_TYPE_RELEASE: `crates/core/topology/build.rs` fails a bare-metal build
 # whose KCONFIG_CONFIG selects it when the key it would embed is the TEST key,
@@ -12132,7 +12132,7 @@ ci_row "topology key: no default" topology_key_row
 #   (c) the same with the gate's throwaway release key: builds (so (a)/(b)
 #       cannot pass on an unrelated compile error);
 #   (d) the dev (primary) config + the TEST key: builds, dev builds keep it.
-# Canary (by hand, 2026-10-09): drop the `refuse_test_key(&arr)` call in
+# Canary (by hand): drop the `refuse_test_key(&arr)` call in
 # build.rs's explicit-key arm — (a) and (b) go red ("the build did not refuse").
 release_testkey_row() {
     printf "  %-26s" "topology key: release refuses test..."
@@ -12164,11 +12164,11 @@ release_testkey_row() {
 ci_row "topology key: release refuses test" release_testkey_row
 # ── current_cpu_id() against the hardware id, BOTH ISAs ─────────────────────
 #
-# Closes the 2026-09-25 "current_cpu_id() may have lied" finding. The probe
+# Closes the "current_cpu_id() may have lied" finding. The probe
 # (`--features cpuid-probe`: `crates/core/sched/src/cpuid_probe.rs`,
 # `kernel/src/smokes/cpuid_probe.rs`) checks EVERY `current_cpu_id()` call
 # against an id the register cannot reach — riscv64: the `stvec` slot's id
-# word (the logical CPU id), the K-C16 derivation; aarch64:
+# word (the logical CPU id); aarch64:
 # MPIDR_EL1 Aff2:Aff1:Aff0 — and counts `current_user_pt()` calls that loaded
 # another hart's slot. The boot hart also hammers both at the position the
 # fork-refusal probe first sat at (after `arch_wake_secondaries`). ipctest
@@ -12281,7 +12281,7 @@ echo ""
 par_phase_end
 ci_phase "[2/4] host test suites"
 echo "[2/4] Running host test suites..."
-# Every crate in the tree that carries #[test] functions. Until 2026-08-20
+# Every crate in the tree that carries #[test] functions. Previously
 # this stage ran flight-sim and nothing else, so ~650 tests across 22 other
 # crates -- including all 72 OTA tests and the 113 in regression-tests --
 # compiled, passed, and were never once executed by the gate. That is the
@@ -12301,7 +12301,7 @@ HOST_SUITES="flight-sim regression-tests ota-tests sched-policy-tests scsi-tests
          nvme-tests x86-platform-tests fb-tests rings-tests seclog-tests bytepipe-tests idl-tests decisions-tests micro-tests hwbus-tests
          logind-tests stdrt-tests pkg-tests zenoh-tests mcp-tests inspect-tests actuation-tests
          usb-tests usb-hid-tests relibc-azos-tests rpc-tests tpm-tests soc-tests compmgr-tests compose-tests compositor-tests cfi-tests zenohd-tests tls-tests ptpd-tests quic-tests mcpd-tests sshd-tests ethercat-tests infsrv-tests usb-cdc-tests usb-uvc-tests srv-tests ext4-tests"
-# The same hole, one suite at a time: percpu-tests (wave 15) and four suites
+# The same hole, one suite at a time: percpu-tests and four suites
 # from b6d74c00 were never in the list above. Every tracked suite is now either
 # in it or run by a row of its own (lx-loader-tests, below, needs its modules).
 # micro-tests read the micro kernel's Kconfig ($AZOS_OUT/build/micro.config).
@@ -12319,7 +12319,7 @@ for c in $HOST_SUITES; do
         *) host_job test_host "$c" "${REPO_ROOT}/tests/host/${c}" ;;
     esac
 done
-# ── Wave 15 (VA): user-page permission canaries, host side ──────────────────
+# ── VA: user-page permission canaries, host side ──────────────────
 #
 # A permission fix's host test is in its suite above; its canary is a gate
 # feature that puts the hole back. host_canary_row builds the suite with the
@@ -13890,7 +13890,7 @@ host_job host_canary_row "ring-3: translate noted before enable canary" iommu-te
     a_domain_is_noted_translating_only_once_the_unit_took_it
 host_job host_canary_row "dma: failed map frees unconfirmed block canary" dma-tests map-failed-frees-canary \
     a_block_whose_map_may_have_landed_stays_allocated_and_counted
-# Wave 15 (VI): `elf-mixed-page-canary` accepts a page shared by two
+# `elf-mixed-page-canary` accepts a page shared by two
 # segments mapped differently (their union, as before): the refusal test in
 # sched-wake-tests (`elf_bounds_tests`) must fail.
 host_job host_canary_row "elf: mixed-page canary (host)" sched-wake-tests elf-mixed-page-canary \
@@ -14134,7 +14134,7 @@ if re_out="$(make -s ARCH=riscv64 CHECK_DEFCONFIG_riscv64=config/defconfigs/robo
 else bad; printf '%s\n' "$re_out" | grep -E "^error" -A4 | sed -n 1,8p | sed 's/^/      /'; fi
 fi; ci_row_end
 
-# K-C5: aead-link-tests asserts the LINK_PROVISIONING_ENFORCED const in BOTH
+# aead-link-tests asserts the LINK_PROVISIONING_ENFORCED const in BOTH
 # feature states, and the enforced arm only compiles under the feature —
 # without this second run, the exact assertions written to prevent the
 # secure-boot-style silently-absent-policy failure never execute. The plain
@@ -14159,7 +14159,7 @@ test_host_features "aead-link(enforced)" \
 
 # Same two-state argument for the topology. The plain run above is a GENERIC
 # board topology: it asserts no PWM channel, no GPIO pin the drivetrain owns,
-# and — since 2026-09-21 — no motor capability at all. This run is the
+# and — — no motor capability at all. This run is the
 # kernel's `qemu` shape, where `pwm.0`/`gpio.0` ARE granted so the
 # `userspace: capabilities` scenario can watch them be refused, and where the
 # actuation profile declares the drivetrain.
@@ -14172,7 +14172,7 @@ test_host_features "topology(cap-canary)" \
 # and (the plain run above) absent everywhere else.
 test_host_features "topology(disk-part)" \
     "${REPO_ROOT}/tests/host/topology-tests" "disk-part-row"
-# Wave 11 (DRVPLACE): the kernel placement of the INA219 (no INADRV.ELF row)
+# The kernel placement of the INA219 (no INADRV.ELF row)
 # and the gate's `restart` rows (BUZZDRV.ELF always, INADRV.ELF no).
 test_host_features "topology(drvplace)" \
     "${REPO_ROOT}/tests/host/topology-tests" "ina219-kernel,ring3-driver-start"
@@ -14201,7 +14201,7 @@ else
     fi
 fi
 fi; ci_row_end
-# Invariant canaries (wave 13): each removes one floor from
+# Invariant canaries: each removes one floor from
 # `azos_energy` and exactly its invariant tests must fail — I1 (the
 # deadline floor ignores reservations), I6 (the WCET floor is the slowest
 # OPP), I3 (the idle choice ignores the RT slack). The policy canaries (owner
@@ -14421,9 +14421,9 @@ pkg_canary_row neverallow-canary cases::a_manifest_that_breaks_a_neverallow_rule
 test_host_features "topology(lx-server)" \
     "${REPO_ROOT}/tests/host/topology-tests" "lx-server,cap-refusal-canary,profile-actuation,ring3-driver-start,qemu-devices"
 
-# ── The Linux layer's host rows (wave 12, LXL0) ─────────────
+# ── The Linux layer's host rows ─────────────
 #
-# * `lx-emul`: the base skeleton in crates/drivers/lx/ (Apache-2.0 OR GPL-2.0-only since round 47, never a workspace
+# * `lx-emul`: the base skeleton in crates/drivers/lx/ (Apache-2.0 OR GPL-2.0-only, never a workspace
 #   member), its own host tests.
 # * `lx-loader-tests`: the relocatable-module loader the server links, its
 #   encoders against llvm-mc encodings and every relocation of the test module
@@ -14517,11 +14517,11 @@ lx_kconfig_row() {
     ok
 }
 ci_row "lx: Kconfig gates" lx_kconfig_row
-# ── Linux modules built by Linux's Kbuild (wave 13, L1) ────────
+# ── Linux modules built by Linux's Kbuild ────────
 #
 # `tools/build/lx_kbuild/run.sh` runs Kbuild for the three ISAs inside the pinned
 # container (tools/build/lx_kbuild/Containerfile, recorded in tools/build/lx_kbuild/IMAGE;
-# owner decision, round 49: podman), --network=none, the Linux tree mounted
+# podman), --network=none, the Linux tree mounted
 # read-only: lxbase.ko (crates/drivers/lx/glue, GPL-2.0-only, the base) and the upstream
 # lib/xz/xz_dec.ko, plus the xz fixtures, into build/lx/kbuild/.
 #
@@ -14595,17 +14595,17 @@ ci_row "lx: Kbuild modules (container)" lx_kbuild_row "lx: Kbuild modules (conta
 ci_row "lx: Kbuild reproducible" lx_kbuild_row "lx: Kbuild reproducible" repro
 ci_row "lx: Kbuild lint canary" lx_kbuild_row "lx: Kbuild lint canary" canary
 ci_row "lx: ext4 module set loads" lx_kbuild_row "lx: ext4 module set loads" fsset
-# Wave 12 (DRVPLACE): the kernel start of the buzzer (`place = "kernel"` on
+# The kernel start of the buzzer (`place = "kernel"` on
 # its BUZZDRV.ELF row, which is not started at boot).
 test_host_features "topology(drvplace buzzer)" \
     "${REPO_ROOT}/tests/host/topology-tests" "buzzer-kernel,ring3-driver-start"
-# Wave 12: the family tools' rows, with the drivetrain moved to FLIGHT.ELF
+# The family tools' rows, with the drivetrain moved to FLIGHT.ELF
 # (one writer per motor still admitted) and with no capabilities (canary).
 test_host_features "topology(flight drivetrain)" \
     "${REPO_ROOT}/tests/host/topology-tests" "flight-tool-drivetrain,ring3-driver-start"
 test_host_features "topology(family-cap-canary)" \
     "${REPO_ROOT}/tests/host/topology-tests" "family-cap-canary"
-# Wave 13: an interrupted gate kills its host commands' process groups, an
+# An interrupted gate kills its host commands' process groups, an
 # orphan re-parented to launchd included (tools/gate/gate_pgroup.sh). The plain
 # self-test must pass and its canary (group kill disabled) must fail on the
 # orphan; a canary failing for another reason (the gate never exiting) is
@@ -14668,10 +14668,10 @@ else
     # runs on the 256 KiB boot stack.
     #
     # This row reads each frame as the deepest sp gets on any path through the
-    # function (a dataflow over its control flow, tools/lint/stack_frames.py). Until
-    # 2026-09-16 it took the largest single `addi sp`, and LLVM reserves a big
+    # function (a dataflow over its control flow, tools/lint/stack_frames.py).
+    # Taking only the largest single `addi sp` is wrong: LLVM reserves a big
     # frame in two or three steps: `ip::send_flags` measured 2032 of its 3136
-    # bytes. Until 2026-10-24 it read the prologue only, and LLVM shrink-wraps
+    # bytes. Reading the prologue only is wrong too: LLVM shrink-wraps
     # (tests for an early return, then reserves): 1,482 of 5,048 x86_64 frames
     # were short, the trap dispatch's 2,784 B read as 56. A function whose sp
     # the dataflow cannot bound (an alloca, a stack switch) is UNBOUNDED and
@@ -14684,7 +14684,7 @@ else
         # `signed::fill_signed`, called from kernel/src/boot/topology.rs). Its
         # caps buffer is MAX_CAPS_PER_TASK x 24 B, a 12,960 B frame on fleet
         # (512). A 12c69085-based fleet build inlined it into that boot chain;
-        # in wave 15 LLVM kept it out of line and this row went red. A call
+        # LLVM then kept it out of line and this row went red. A call
         # from a task would need this name dropped and the buffer moved off
         # the stack.
         # `install_topology` and the azvol mount (`install_azvol` ->
@@ -14710,7 +14710,7 @@ else
         fi
     }
     # The frame lint above asks whether any ONE function is too big. That is
-    # not what overflows a stack: on 2026-09-15 ten small and medium frames in
+    # not what overflows a stack: ten small and medium frames in
     # one chain did it, with nothing near the limit. This row asks how deep a
     # single trap can go, and it is the row that would have caught that night
     # before the kernel faulted.
@@ -14730,7 +14730,7 @@ else
     #
     # An interrupt taken on top of the deepest syscall used to cost another
     # ~2.8 KiB here -- 288 for its frame, 240 for trap_handler and 2160 for
-    # the deepest chain from the interrupt half. Since 2026-09-16 the handler
+    # the deepest chain from the interrupt half. The handler
     # runs on the hart's own interrupt stack and only the frame lands on the
     # task's, so the reserve is gone. `irq: handlers on their own stack`
     # below is the row that keeps that true.
@@ -14766,7 +14766,7 @@ else
     else ci_skip_rows "stack frames: fleet"; fi
     if [ "$EMBEDDED_BUILT" = "1" ]; then ci_row "stack frames: embedded" frame_row "stack frames: embedded" "$EMBEDDED_KERNEL" 8192
     else ci_skip_rows "stack frames: embedded"; fi
-    # U12-3: $KERNEL here is built from $PRIMARY_CONFIG (see the primary-column
+    # $KERNEL here is built from $PRIMARY_CONFIG (see the primary-column
     # export above), not the workspace `.config` — reading CONFIG_KERNEL_STACK_
     # SIZE_KB from `.config` would be the exact config/binary split this whole
     # change exists to close, reintroduced in one row.
@@ -14862,11 +14862,11 @@ else
     par_row qemu_run "boot: kernel_main completes" "Starting scheduler on boot CPU" 60 -smp 4
     par_row shell_help_row "shell answers help" rv
 
-    # ── Console lockdown: moved (wave 11) ─────────────────────
+    # ── Console lockdown: moved ─────────────────────
     #
     # The rows `lockdown: console unseeded` (rv, arm) booted a lockdown kernel
     # and typed `flight arm` / `pm suspend` at the kernel console's prompt.
-    # Owner decision: under CONFIG_CONSOLE_LOCKDOWN the kernel
+    # Under CONFIG_CONSOLE_LOCKDOWN the kernel
     # console task is not created at all (`[CONSOLE] lockdown: no kernel
     # console task`), so there is no recovery prompt to type at and those rows encoded
     # the old behaviour. Their successor is `sh: lockdown` in the user-shell
@@ -14874,7 +14874,7 @@ else
     # privileged power tool.
 
 
-    # ── M47 / U12-6: `no-ml` was built in [1/4] and booted nowhere ──
+    # ── `no-ml` was built in [1/4] and booted nowhere ──
     #
     # `arch_enter_scheduler` (kernel/src/entry/{riscv64,aarch64}/boot_hooks.rs)
     # prints "[SCHED] Starting scheduler on boot CPU" unconditionally, on the
@@ -14898,11 +14898,11 @@ else
     #
     # All three named features can and do boot on QEMU `virt`; none needed
     # "built, not booted" in the header. (`vf2`/`k1` remain built-never-
-    # booted for the reason `build_board`'s own U12-2 comment above gives —
+    # booted for the reason `build_board`'s own comment above gives —
     # they are real hardware boards, not a QEMU gap — and are outside this
     # feature list.)
     # An interrupt handler runs on the hart's own stack, not on whichever
-    # task was interrupted (2026-09-16). The kernel asserts this from INSIDE
+    # task was interrupted. The kernel asserts this from INSIDE
     # a live timer handler -- `sp` there belongs to the stack the handler is
     # actually on -- and prints the slot it found itself outside of when it
     # is not, which `FAILED:` in QEMU_FAIL_RE catches on every other row too.
@@ -14943,7 +14943,7 @@ else
     QEMU_FAIL_RE="$QEMU_FAIL_RE|Zicboz cbo.zero fast path: enabled" \
         par_row qemu_run "mm: scalar zero without Zicboz" "Zicboz zero-fill self-check: PASS" 60 -smp 4 \
         -cpu rv64,zicboz=off
-    # Entropy (owner decision 61): virtio-rng seeds the pool, and the pool
+    # Entropy: virtio-rng seeds the pool, and the pool
     # reaches a consumer the log can show without revealing it -- the stack
     # canary's fingerprint. Two boots, legacy then modern MMIO transport: each
     # must print the seeded line and the pool-drawn canary line, neither may
@@ -15003,7 +15003,7 @@ else
         ok; rm -f "$CI_LOG_DIR/entropy-1.log" "$CI_LOG_DIR/entropy-2.log"
     }
     par "entropy: virtio-rng seeds the pool" entropy_scenario
-    # Persisted entropy seed (ENTSEED, wave 11): rotation across two boots of
+    # Persisted entropy seed (ENTSEED): rotation across two boots of
     # one volume, a seed that is the only source, and the diskless boot.
     mkdir -p "$CI_LOG_DIR"
     ENTSEED_RV_KERNEL="$CI_LOG_DIR/kernel-entseed-rv"
@@ -15040,7 +15040,7 @@ else
         echo "      the blk-stall-canary kernel did not build"
     fi
     kbuild "qemu"
-    # Wave 15 (TOPOSIGN follow-up): the product profiles default to
+    # The product profiles default to
     # TOPOLOGY_SOURCE_SIGNED_REQUIRED and halt without the signed topology, so
     # their QEMU boots get a volume carrying one: the plain disk plus that
     # profile's topology (its .config and kconfig_to_cargo features), bound
@@ -15052,7 +15052,7 @@ else
     # flight recorder.
     #
     # A release robot kernel enforces the brain link (Kconfig
-    # LINK_PROVISIONING_ENFORCED, on outside BUILD_TYPE_DEV, owner 2026-10-23):
+    # LINK_PROVISIONING_ENFORCED, on outside BUILD_TYPE_DEV):
     # it halts without a link key. So the volume gets a throwaway one in the
     # reserved tail (tools/sign/link_key_provision.py, a fresh random key per image,
     # never a key from tools/keys), unless the third argument is `keyless`:
@@ -15075,7 +15075,7 @@ else
     # on the RAM sizes it is for; one image serves both, the PMM sizes itself
     # from the device tree.
     #
-    # The census row reads the 64 MiB boot (owner 2026-10-21: INSPECT on every
+    # The census row reads the 64 MiB boot (INSPECT on every
     # profile, proven on the smallest; the 16 MiB boot halts before the tree
     # exists, at the topology's memory admission, on main too): the public
     # tree published, the admin
@@ -15130,7 +15130,7 @@ else
     # FATAL line names a receipt (`decision N`, N >= 1; a refusal stored
     # nowhere prints 0, which the marker does not take). With a key the same
     # kernel loads it and reaches the scheduler: a gate wired to always refuse
-    # fails that row. Canary (2026-10-23, run by hand): a dev-key bypass of the
+    # fails that row. Canary (run by hand): a dev-key bypass of the
     # gate in kernel/src/boot/persist.rs (`&& !cfg!(feature = "qemu")`, the feature
     # that carries `dev-key`) boots the keyless kernel past it, "booting
     # anyway", and this row goes red; so does `default n` on the symbol.
@@ -15190,7 +15190,7 @@ else
             done
         fi
         # SIGTERM first, SIGKILL if QEMU is still there 2 s later: a plain
-        # `kill; wait` held this row ~15 min after its 30 s watch (2026-10-08).
+        # `kill; wait` held this row ~15 min after its 30 s watch.
         kill "$pid" 2>/dev/null; sleep 2; kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null
         wait "$pid" 2>/dev/null
         if grep -aqE "$bad_re" "$log"; then
@@ -15212,7 +15212,7 @@ else
        && product_gatekey_disk "$FLEET_CONFIG" $AZOS_OUT/build/disk-fleet-gatekey.img; then
         # Alone: on a loaded host TCG stretches timer_isr past its WCET bound,
         # the `[WCET] VIOLATION` lines overflow the console buffer while ring 3
-        # holds it, and `[CONSOLE] dropped` fails the row (seen 2026-10-03 with
+        # holds it, and `[CONSOLE] dropped` fails the row (seen with
         # four jobs and other fronts' QEMUs running).
         par -s "fleet: boots in 1 GiB" fleet_boot_scenario
     else
@@ -15242,11 +15242,11 @@ else
     # The other half: nothing outside the kernel image is executable.
     #
     # `vmm::init` maps ALL of RAM `KERNEL_RWX` — it must, since it runs before
-    # `enable_paging()` and the kernel executes out of that memory. Until
-    # 2026-09-08 `enforce_wx` tightened only the image, leaving ~121 MiB of a
+    # `enable_paging()` and the kernel executes out of that memory.
+    # `enforce_wx` alone tightens only the image, leaving ~121 MiB of a
     # 128 MiB board writable AND executable in the kernel's own table: the
-    # heap, every frame `pmm` hands out, every task stack. Owner decision that
-    # day; `strip_exec_outside_image` takes the X off after paging is live.
+    # heap, every frame `pmm` hands out, every task stack.
+    # `strip_exec_outside_image` takes the X off after paging is live.
     #
     # A separate scenario rather than a second marker on the one above because
     # they are separate properties and a single grep can only prove one. Its
@@ -15277,8 +15277,8 @@ else
     #     and its verdict, and only sometimes. CAUSE NOT IDENTIFIED.
     #
     #     Scoped, not assumed: with a disk AND a NIC — the `brain lies`
-    #     configuration — the verdict prints immediately (checked standalone,
-    #     2026-09-06). So the three re-enabled wire sends are not what stalls,
+    #     configuration — the verdict prints immediately (checked standalone).
+    #     So the three re-enabled wire sends are not what stalls,
     #     and the four networked scenarios this gate does run are not sitting
     #     on the unexplained path. What is unexplained is the diskless+NIC boot
     #     under host contention, which is the one nothing asserts.
@@ -15459,7 +15459,7 @@ else
 
     # ── Secure boot: all three verdicts, against a pinned TEST key ──────
     #
-    # Until 2026-08-21 this was one scenario asserting "SECURE-BOOT] FATAL"
+    # This used to be one scenario asserting "SECURE-BOOT] FATAL"
     # against an image with no signature sidecar, and it was green for the
     # wrong reason. `crates/core/ota/build.rs` embeds tools/keys/prod_pub.bin when
     # that file exists and QUIETLY falls back to an all-zero key when it does
@@ -15501,7 +15501,7 @@ else
     # gate observed only accepting is indistinguishable from no gate at all.
     #
     #   recovery — slot A unsigned exactly as in the control, but a SIGNED
-    #             KERN_R.BIN alongside it. Owner decision 99: the refusal must
+    #             KERN_R.BIN alongside it. The refusal must
     #             steer the next boot at recovery and reset, not halt. Paired
     #             with the control by construction — same kernel, same slot-A
     #             verdict, one extra file, opposite outcome.
@@ -15585,7 +15585,7 @@ sys.exit(0 if (len(key) == 32 and any(key) and key in img) else 1)
         -drive file=$AZOS_OUT/build/disk-badsig.img,if=none,format=raw,id=hd0 \
         -device virtio-blk-device,drive=hd0
 
-    # RECOVER (owner decision 99): the refusal must not be the end of the board.
+    # RECOVER: the refusal must not be the end of the board.
     #
     # Until this row, `secure-boot-enforced` answered every rejected slot with
     # `loop { wfi() }` — correct as a containment decision and terminal as a
@@ -15684,7 +15684,7 @@ sys.exit(0 if (len(key) == 32 and any(key) and key in img) else 1)
     }
     par "secure boot falls to R" secure_boot_recovery_scenario
 
-    # RECORD THE SLOTS WE ARE NOT RUNNING (owner decision, 2026-09-19).
+    # RECORD THE SLOTS WE ARE NOT RUNNING.
     #
     # `ota_boot_validate_pure` rolled back to `last_good` UNCONDITIONALLY. So
     # an attacker who can write the inactive slot — remote OTA, or a
@@ -15876,7 +15876,7 @@ sys.exit(0 if (len(key) == 32 and any(key) and key in img) else 1)
     }
 
     aarch64_secure_boot_recovery() {
-        # RECOVER (owner decision 99), on aarch64 the reset is PSCI
+        # RECOVER, on aarch64 the reset is PSCI
         # SYSTEM_RESET rather than SBI. Three lines in order, so its own
         # function rather than `a64_qemu_run` (which asserts one marker).
         #
@@ -15963,7 +15963,7 @@ sys.exit(0 if (len(key) == 32 and any(key) and key in img) else 1)
     unset CI_EXPECT_A64
 
     # Runs AFTER the secure-boot block on purpose: `a64_kbuild "qemu,pci"` deletes
-    # and rebuilds $A64_KERNEL/$A64_IMG. Gate 182e (2026-09-26) had this row
+    # and rebuilds $A64_KERNEL/$A64_IMG. Gate 182e had this row
     # spliced between `secboot signed` and `secboot bad sig`, so `bad sig`
     # booted a kernel WITHOUT secure-boot-enforced and with the prod pubkey:
     # "key does not match trusted key ... booting anyway" instead of FATAL.
@@ -16216,7 +16216,7 @@ sys.exit(0 if (len(key) == 32 and any(key) and key in img) else 1)
     make_disk $AZOS_OUT/build/disk-captest.img
     rm -f "$CI_LOG_DIR/userspace-capabilities.log"
 
-    # Wave 10 IRQ5: where captest's line was routed and taken. captest runs
+    # Where captest's line was routed and taken. captest runs
     # as `autorun`, pinned to logical CPU 3 (`AUTORUN_HART`); the kernel prints
     # the route at the bind (`[IRQ] ring-3 line 11 -> hart H (owner tid T,
     # pinned P, ...)`) and, at the first ACK after it, the CPU whose handler
@@ -16250,7 +16250,7 @@ sys.exit(0 if (len(key) == 32 and any(key) and key in img) else 1)
         return 0
     }
 
-    # riscv64 ring-3 IRQ (wave 9, IRQ4): read from the SAME boot as the row
+    # riscv64 ring-3 IRQ: read from the SAME boot as the row
     # above, the riscv64 twin of `aarch64 ring-3 irq`. captest binds the
     # goldfish RTC's line (source 11; `irq.11` + `mmio.dt:google,goldfish-rtc` in the qemu
     # topology) to a port and must see: the interrupt delivered; the line held
@@ -16262,7 +16262,7 @@ sys.exit(0 if (len(key) == 32 and any(key) and key in img) else 1)
     # (`azos_drv_irqchip::user_irq`). A `FAIL irq:` line also turns the row
     # above red (captest prints `FAILED:`).
     #
-    # Canaries (hand-run, wave 9): `--features qemu,irq-mask-canary` (no mask
+    # Canaries (hand-run): `--features qemu,irq-mask-canary` (no mask
     # on delivery) -> `FAIL  irq: line held masked until ACK`;
     # `--features qemu,irq-ack-canary` -> `FAIL  irq: second interrupt
     # delivered after ACK`.
@@ -16317,7 +16317,7 @@ sys.exit(0 if (len(key) == 32 and any(key) and key in img) else 1)
     }
     par "userspace: frame canary" rv_frame_canary_group
 
-    # The same captest boot on `virt,aia=aplic-imsic` (wave 10 IRQ5): APLIC in
+    # The same captest boot on `virt,aia=aplic-imsic`: APLIC in
     # MSI mode + per-hart IMSIC files, no PLIC. The route is the APLIC
     # source's `target` (hart index), each secondary enables the wired
     # identities in its own IMSIC file (`user_irq::hart_ready`), the mask is
@@ -16441,7 +16441,7 @@ sys.exit(0 if (len(key) == 32 and any(key) and key in img) else 1)
     }
     par "userspace: denial RECORDED" cap_denial_record_scenario
 
-    # The partition-scoped `block` capability from ring 3, on a PARTITIONED medium (wave 9). Every other
+    # The partition-scoped `block` capability from ring 3, on a PARTITIONED medium. Every other
     # image is a bare FAT32 medium, so the partition table, the FAT32 mount at
     # a partition's start and a partition-scoped `block` endpoint had host
     # tests and no boot. `build/disk-parted.img` is the captest volume inside
@@ -16450,7 +16450,7 @@ sys.exit(0 if (len(key) == 32 and any(key) and key in img) else 1)
     # probe that reads the refusal back off the flight recorder.
     #
     # captest writes RELATIVE sectors 0 and 63 of partition 1 (io_ring block
-    # entries) and is refused relative 64. Wave 10: the row also grants
+    # entries) and is refused relative 64. The row also grants
     # `block.part.0` READ, and captest reads partition 0's FAT32 boot sector
     # and both partitions' sizes, each entry naming its partition by the
     # endpoint's badge. After QEMU exits the image is read on the host: the two
@@ -16579,18 +16579,18 @@ PY
         -drive file=$AZOS_OUT/build/disk-abitest.img,if=none,format=raw,id=hd0 \
         -device virtio-blk-device,drive=hd0
 
-    # The vDSO write is masked (wave 13, RT7). `vdso_update` claims the page
+    # The vDSO write is masked. `vdso_update` claims the page
     # by making `seq` odd; every ring-3 clock read retries while it is odd.
-    # Wave 13 also called it from idle with interrupts ON (3fcdc041): a tick
+    # Also called it from idle with interrupts ON (3fcdc041): a tick
     # inside the write preempted idle with `seq` odd, and a ring-3 reader on
     # that hart (abitest's `children_of` deadline loop) outranked idle and
     # spun forever — 1 in 10-20 loaded boots. `vdso-write-window` holds the
     # write open (200,000 spins: ~13 ms on an idle host, more under load,
     # longer than a 10 ms tick) so a tick inside it is all but certain; abitest
     # must still finish. Every ring-3 clock read and every IPI to the writing
-    # hart waits for it: measured 2026-10-08, idle host, a clock read 8.5 ms
+    # hart waits for it: measured, idle host, a clock read 8.5 ms
     # mean (134/200 over 1 ms), a new thread's first instruction 13-27 ms late
-    # in 8 of 40 creations. abitest's timing must not assume less. Canary (by hand, 2026-10-04, rv, host load 25-46): the
+    # in 8 of 40 creations. abitest's timing must not assume less. Canary (by hand, rv, host load 25-46): the
     # mask removed -> 3/3 hang right after "sleep_until_ns(past) did not
     # block", hart 3 in ring 3 inside `vdso_now_ns`; with it 5/5 PASS.
     kbuild "qemu,vdso-write-window"
@@ -16608,9 +16608,9 @@ PY
 
     # ── Single hart (-smp 1) ────────────────────────────────────────────
     #
-    # Until 2026-09-03 this gate had NOT ONE `-smp 1` scenario: every other
-    # `-smp` here says 4. That gap let a serious defect live, fixed on
-    # 2026-08-30: several tasks are created with EXPLICIT affinity to a
+    # A gate without a `-smp 1` scenario misses a serious defect: every other
+    # `-smp` here says 4. The defect:
+    # several tasks are created with EXPLICIT affinity to a
     # hart, and that pin is not bounded by the DTB count; with one hart, six
     # tasks -- `autorun` among them -- were queued on non-existent CPUs
     # (`per_cpu_queues=[0,3,1,2]`) and the user program never started, with
@@ -16622,8 +16622,8 @@ PY
     # of sleeping until their next period. Under strict priority on a single
     # hart they trade the CPU between themselves forever and nothing at
     # normal priority ever runs; with four harts it did not show, because
-    # the RT tasks spread out and left harts free. Closed as K-C27
-    # (2026-09-03): the daemons now block on WaitReason::Timer at their
+    # the RT tasks spread out and left harts free. Closed:
+    # the daemons now block on WaitReason::Timer at their
     # design rates. Canary before enabling: the pre-fix kernel loaded
     # LATBENCH.ELF at -smp 1 and never executed one line of it in 120 s;
     # the fixed kernel completes in about a second. This scenario is what
@@ -16657,34 +16657,34 @@ PY
     # host load, not the kernel. The 180 s limit is a hang detector, not a
     # measurement.
     #
-    # EXPECTED STATE TODAY: green. One wedge class closed 2026-08-24 (K-C25);
-    # the second (K-C26, below) did not reproduce in 32 runs on 2026-09-08, so
+    # EXPECTED STATE TODAY: green. One wedge class closed;
+    # the second (below) did not reproduce in 32 runs, so
     # a red here is no longer covered by it — see that block before deciding
     # what a failure means. The
-    # chain, for the record: the original failures (K-C11 fork regs,
-    # server-side wakes) were closed by K-C17/K-C19 (state+stamp word) and
-    # K-C24 ('Blocked does not mean parked'). What remained presented as
+    # chain, for the record: the original failures (fork regs,
+    # server-side wakes) were closed by the state+stamp word and
+    # the 'Blocked does not mean parked' fix. What remained presented as
     # "~1 exchange/s throughput, hidden by ipc-trace" and was NOT slowness:
     # the QEMU `-icount` hunt (deterministic virtual time) showed phase A
     # completing 1600/1600 in ~30 s, and the extended ipc-census caught the
-    # real residue — a K-C24 stamp landing between do_schedule's switch-away
+    # real residue — a stamp landing between do_schedule's switch-away
     # sweep and context_switch.S clearing `context_saving` parks the task as
     # Blocked+WAKE_STAMP+saved, a state with NO consumer for one-shot wakes
     # (the fast-IPC reply fires exactly once). Clients wedged serially on
-    # that, which read as throughput. Fix: the K-C25 reaper
+    # that, which read as throughput. Fix: the reaper
     # (`sched_word::reap_orphaned_stamp` + `reap_stamped_sleepers()` on the
     # timer tick, counted as `late_dispatch` in wake_counters); 4 new host
     # tests in sched-wake-tests (75 total) pin the protocol, and the
     # falsified-hypothesis log (TCP handshake yield-storm — fixed anyway;
     # host App Nap — no effect) is not repeated here.
     #
-    # K-C26 (2026-08-24) — DID NOT REPRODUCE, 2026-09-08. Read this before
+    # A wedge that DID NOT REPRODUCE. Read this before
     # writing off a red here.
     #
     # This block used to say "usually green, NOT guaranteed ... treat a red as
     # the documented open bug, not a regression", citing ~1 wedge per handful
-    # of runs. That licence is withdrawn: 32 runs of this exact scenario on
-    # 2026-09-08 produced ZERO wedges and zero declared failures. Every run
+    # of runs. That licence is withdrawn: 32 runs of this exact scenario
+    # produced ZERO wedges and zero declared failures. Every run
     # completed the full phase A (`[IPCTEST] all=1600 of 1600 OK`,
     # `server served=1600 accept_fail=0`), so it was the recipe's workload and
     # not a lighter one. 0/32 bounds the rate under ~9% (rule of three); the
@@ -16697,11 +16697,11 @@ PY
     # WHAT WAS NOT ESTABLISHED. Absence over 32 runs is not closure, and this
     # does not identify what closed it. 20 of the 32 ran with
     # `preempt::depth()` forced to 0 — the counter still maintained, nothing
-    # consulting it, which is exactly the pre-K-C29 scheduler behaviour — and
-    # still did not wedge. So K-C29 is NOT what keeps this green, which
+    # consulting it, which is exactly the earlier scheduler behaviour — and
+    # still did not wedge. So that change is NOT what keeps this green, which
     # contradicts `crates/core/sync/src/preempt.rs`'s own causal claim (corrected
-    # there too). K-C27 (yield-polling daemons fixed at the workload) and
-    # K-C28 (the `sepc`/`sstatus` window) both landed after this comment was
+    # there too). The yield-polling daemons' fix at the workload and
+    # the `sepc`/`sstatus` window fix both landed after this comment was
     # written and were NOT disabled by that mutation; either is a better
     # candidate, and neither has been tested.
     #
@@ -16830,14 +16830,14 @@ PY
     QEMU_FAIL_RE='\[FATAL\]|TOPO\] Memory admission: [0-9]' \
         par "topology: memory overcommit refused" kq "qemu,mem-admission-canary" "topology: memory overcommit refused" "Memory admission REFUSED: Memory(Overcommit" 60 -smp 1
     kbuild "qemu"
-    # Wave 9: the line carries the forking-row and instance counts; the shape
+    # The line carries the forking-row and instance counts; the shape
     # is pinned, not the numbers.
     par_row qemu_run "topology: memory admitted, DMA pool" "TOPO\] Memory admission: [0-9]* ring-3 row(s) ([0-9]* locked, [0-9]* forking), [0-9]* instance(s): " 60 -smp 1
 
-    # ── Wave 9: a row's `instances` bounds its live spawns ──
+    # ── a row's `instances` bounds its live spawns ──
     #
     # `instances = N` (default 1) bounds the live SPAWNED or EXEC'd instances
-    # of a row's image; fork children are not instances (owner decision: the
+    # of a row's image; fork children are not instances (the
     # memory budget and the admitted COW copy bound them). abitest spawns
     # `EPSRV.ELF` (its row declares no `instances`, so 1) and, while that
     # server is alive, spawns it again: the second spawn must be refused, and
@@ -16852,7 +16852,7 @@ PY
         -drive file=$AZOS_OUT/build/disk-abitest.img,if=none,format=raw,id=hd0 \
         -device virtio-blk-device,drive=hd0
 
-    # ── Kconfig LOCKED_HUGE_LEAVES (wave 11, PAGESIZE): 2 MiB leaves ──────
+    # ── Kconfig LOCKED_HUGE_LEAVES (PAGESIZE): 2 MiB leaves ──────
     #
     # The base page stays 4 KiB; a `mem = "locked"` row may declare
     # `mem_huge_mib = N`, reserved at boot (2 MiB-aligned) and mapped at exec
@@ -16912,7 +16912,7 @@ PY
     QEMU_FAIL_RE="$QEMU_FAIL_RE|TOPO\] Memory admission: [0-9]" \
         par "mem: huge row, option off" kq "qemu,huge-leaves-smoke" "mem: huge row, option off" "Memory admission REFUSED: row [0-9]* (UHELLO.ELF) declares mem_huge_mib = 4 but this kernel was built without LOCKED_HUGE_LEAVES" 60 -smp 1
 
-    # ── Wave 15 (KTEST): the in-kernel tests, one boot per ISA ───────────────
+    # ── KTEST: the in-kernel tests, one boot per ISA ───────────────
     #
     # `--features qemu,ktest` compiles every `azos_ktest::ktest!` test and the
     # runner (kernel/src/ktest.rs): after boot init, before any secondary hart
@@ -16938,7 +16938,7 @@ PY
     #   safety_geofence_breach_latches_estop  safety: geofence sees GPS
     #   sched_deferred_tick_counted_as_preemption  sched: deferred tick
     #                                       counted (rv|arm), pinned to CPU 1
-    #   spin_wait_cas_semantics,            (new, wave 15 N2) SpinWait on the
+    #   spin_wait_cas_semantics,            (new) SpinWait on the
     #   spin_lock_contended_cross_cpu       path the boot selected; two CPUs
     #                                       contend one SpinLock
     #                                       (the rows booted -smp 2)
@@ -16972,7 +16972,7 @@ PY
     #   mm_zone_no_cross_type_reuse   zone-share-canary (a freed table frame keeps no zone)
     #   motor_commander_exit_stops_its_wheels  commander-exit-nostop-canary
     #                                 (a dead commander's wheel is taken, not
-    #                                 stopped; wave 15, owner decision)
+    #                                 stopped)
     #   a_dead_engines_drivetrain_command_is_stopped_and_the_loop_runs
     #                                 commander-exit-nostop-canary (the dead
     #                                 behaviour engine's command stands)
@@ -17755,14 +17755,14 @@ CPU 5 lacks hwcap bits"
     par "ktest kcall contain canary (rv)" ktest_row "ktest kcall contain canary (rv)" rv "" "kernel_named_act_call_is_refused_under_containment" "canary=kcall-contain-skip"
     par "ktest kcall contain canary (arm)" ktest_row "ktest kcall contain canary (arm)" arm "" "kernel_named_act_call_is_refused_under_containment" "canary=kcall-contain-skip"
     # powermon-mint: the power read's call to the ring-3 INA219 host goes
-    # through a capability minted into the reader's own table (review R2-1).
+    # through a capability minted into the reader's own table.
     par "ktest powermon mint canary (rv)" ktest_row "ktest powermon mint canary (rv)" rv "" "a_power_read_leaves_no_capability_with_the_reader" "canary=powermon-mint"
     par "ktest powermon mint canary (arm)" ktest_row "ktest powermon mint canary (arm)" arm "" "a_power_read_leaves_no_capability_with_the_reader" "canary=powermon-mint"
     # powermon-unbounded: a power read waits on a ring-3 host that does not
-    # answer for as long as it takes (review R2-4).
+    # answer for as long as it takes.
     par "ktest powermon unbounded canary (rv)" ktest_row "ktest powermon unbounded canary (rv)" rv "" "a_power_read_of_a_hung_host_is_bounded" "canary=powermon-unbounded"
     par "ktest powermon unbounded canary (arm)" ktest_row "ktest powermon unbounded canary (arm)" arm "" "a_power_read_of_a_hung_host_is_bounded" "canary=powermon-unbounded"
-    # call-no-lend: a waiting reader lends the call task no priority (review F5).
+    # call-no-lend: a waiting reader lends the call task no priority.
     par "ktest powermon no lend canary (rv)" ktest_row "ktest powermon no lend canary (rv)" rv "" "a_power_read_of_a_hung_host_is_bounded" "canary=call-no-lend"
     par "ktest powermon no lend canary (arm)" ktest_row "ktest powermon no lend canary (arm)" arm "" "a_power_read_of_a_hung_host_is_bounded" "canary=call-no-lend"
     # arm-tpidr-all-tasks: only a Linux task's TPIDR_EL0 is kept, not a
@@ -17853,7 +17853,7 @@ CPU 5 lacks hwcap bits"
     KTEST_RT_CANARIED="sched_stack_guards_unmapped chaos_frame_alloc_no_leak decision_admission_recorded decision_cap_denial_recorded why_resolves_a_refused_reservation ioring_fsync_completes_after_flush camera_one_encode_per_frame preempt_count_survives_irq_nesting irq_storm_is_contained motor_commander_exit_stops_its_wheels mm_fdt_reserved safety_geofence_breach_latches_estop cap_table_full_refuses_with_a_record crash_core_refusal_is_a_decision_record hung_task_detector_reports_a_blocked_owner_wait refusal_flood_costs_no_other_domain stuck_cpu_detector_names_the_cpu"
     par "ktest runtime canaries (rv)" ktest_row "ktest runtime canaries (rv)" rv "" "$KTEST_RT_CANARIED" "$KTEST_RT_CANARIES"
     par "ktest runtime canaries (arm)" ktest_row "ktest runtime canaries (arm)" arm "" "$KTEST_RT_CANARIED" "$KTEST_RT_CANARIES"
-    # Wave 15 (N1, lockdep-lite): `canary=lockdep-abba` takes the test's two
+    # `canary=lockdep-abba` takes the test's two
     # SpinLocks in both orders (`lockdep_lock_order_consistent`);
     # `canary=lockdep-spin-blk` holds a SpinLock across a block-layer read
     # (`lockdep_no_spinlock_across_block_io`, the rt7 shape). Neither
@@ -17884,13 +17884,13 @@ CPU 5 lacks hwcap bits"
     # slow-path branch (kernel/src/entry/aarch64/pan_patch.rs); only
     # `a64_pan_sites_patched` goes not ok. aarch64 only.
     par "ktest pan-patch-skip canary (arm)" ktest_row "ktest pan-patch-skip canary (arm)" arm "" "a64_pan_sites_patched" "canary=pan-patch-skip"
-    # Wave 15 (plan 7b): `canary=chaos-inert` arms no injection point, so
+    # `canary=chaos-inert` arms no injection point, so
     # every `chaos_*` test but the parser's reports `not ok` (one boot: the
     # inert registry would also hide `chaos-leak`, which rides above).
     KTEST_CHAOS_INERT="chaos_disk_io_error_recorded chaos_frame_alloc_no_leak chaos_heap_alloc_refused chaos_ipc_send_refused chaos_spurious_irq_tolerated chaos_timer_wake_late_is_not_a_storm chaos_timer_wake_late_not_lost"
     par "ktest chaos-inert canary (rv)" ktest_row "ktest chaos-inert canary (rv)" rv "" "$KTEST_CHAOS_INERT" "canary=chaos-inert"
     par "ktest chaos-inert canary (arm)" ktest_row "ktest chaos-inert canary (arm)" arm "" "$KTEST_CHAOS_INERT" "canary=chaos-inert"
-    # Wave 15 (C2): `console_rt_lines_only_append` (an RT task's kernel lines
+    # `console_rt_lines_only_append` (an RT task's kernel lines
     # and ring-3 console writes take the append-only console path and never
     # wait for the wire). Its
     # runtime canary `canary=rt-console-own` sends the probe's lines to the
@@ -17914,7 +17914,7 @@ CPU 5 lacks hwcap bits"
     KTEST_SOAK_RE="^# chaos: timer-wake rate=8 checked=[0-9]+ fired=[1-9][0-9]*\$"
     par "ktest chaos soak (rv)" ktest_row "ktest chaos soak (rv)" rv "" "" "$KTEST_SOAK" "$KTEST_SOAK_RE"
     par "ktest chaos soak (arm)" ktest_row "ktest chaos soak (arm)" arm "" "" "$KTEST_SOAK" "$KTEST_SOAK_RE"
-    # Wave 15 (N1c): the SpinLock hold bound enforced in instruction time.
+    # The SpinLock hold bound enforced in instruction time.
     # The other ktest rows boot on TCG wall time, where a hold is whatever
     # the host made of it, so LOCKDEP_HOLD_ENFORCE is off on BOARD_QEMU and
     # the holds over LOCK_MAX_HOLD_US are notes. These rows build the ktest
@@ -18025,7 +18025,7 @@ CPU 5 lacks hwcap bits"
     par "ktest chaos storm canary, -icount (arm)" ktest_icount_row "ktest chaos storm canary, -icount (arm)" arm ",chaos-storm-canary" \
         "$KTEST_HOLD_SMP1 chaos_timer_wake_late_is_not_a_storm"
 
-    # Wave 15 (N2): `SpinWait` (arch/api spin.rs) off the
+    # `SpinWait` (arch/api spin.rs) off the
     # extension, on CPUs QEMU builds without it. The plain `ktest (rv)` row
     # already boots QEMU's rv64, which has Zawrs and no Zacas (`[SPIN] cas:
     # lr/sc; wait: lr+wrs.nto`); `ktest (arm)` boots `-cpu max` (LSE).
@@ -18052,7 +18052,7 @@ CPU 5 lacks hwcap bits"
         "ktest spin fallback (arm, cortex-a53)" arm "" "" "" "$KTEST_SPIN_A53_RE"
     par "ktest spin claim canary (rv)" ktest_cpu_row rv64,zawrs=false \
         "ktest spin claim canary (rv)" rv "" "" "canary=spin-ext-claim" "$KTEST_SPIN_CLAIM_RE"
-    # Wave 15 (N2b): the probe sites are rewritten once at boot
+    # The probe sites are rewritten once at boot
     # (kernel/src/boot/spin_patch.rs); the plain ktest rows check every site
     # holds the probe's word (`spin_sites_patched`, `[SPIN] boot patch`).
     #   ktest spin-patch-skip canary (rv|arm)  canary=spin-patch-skip: no
@@ -18074,7 +18074,7 @@ CPU 5 lacks hwcap bits"
         "copyout_refused_in_kernel_context" "canary=copyout-raw-kernel-ctx"
     par "ktest copyout canary (arm)" ktest_row "ktest copyout canary (arm)" arm "" \
         "copyout_refused_in_kernel_context" "canary=copyout-raw-kernel-ctx"
-    # Wave 15 (N3): the QEMU defconfigs build the queued SpinLock (Kconfig
+    # The QEMU defconfigs build the queued SpinLock (Kconfig
     # SPINLOCK_IMPL=mcs), which every plain ktest row runs; the test-and-set
     # build is its canary. Same kernel otherwise, every other test ok,
     # `spin_lock_fifo_bounded` alone not ok: four CPUs on one lock, waiters
@@ -18107,7 +18107,7 @@ CPU 5 lacks hwcap bits"
     # canary the same boot is `ktest runtime canaries`' status 1.
     KTEST_STATUS_CANARIES="canary=decision-skip,ktest-exit-pass"
     # `decision-skip` also leaves `irq_storm_is_contained` without the irq-budget
-    # record it looks for (the test reads the decision log since wave 15 L5).
+    # record it looks for (the test reads the decision log).
     KTEST_STATUS_CANARIED="decision_admission_recorded decision_cap_denial_recorded irq_storm_is_contained why_resolves_a_refused_reservation"
     ktest_status_canary_row() { # ktest_status_canary_row <ktest_row|x86_ktest_row> <its args...>
         local fn="$1"; shift
@@ -18248,7 +18248,7 @@ CPU 5 lacks hwcap bits"
     par "ktest sched canary (rv)" ktest_row "ktest sched canary (rv)" rv "" "$KTEST_SCHED_CANARIED" "$KTEST_SCHED_CANARIES"
     par "ktest sched canary (arm)" ktest_row "ktest sched canary (arm)" arm "" "$KTEST_SCHED_CANARIED" "$KTEST_SCHED_CANARIES"
 
-    # ── Wave 15 (X5): x86_64 in QEMU (`-M microvm`, PVH entry) ───────────────
+    # ── X5: x86_64 in QEMU (`-M microvm`, PVH entry) ───────────────
     #
     # `make x86_64` (X86_64_SELECT adds to the configuration), booted by hand-made
     # QEMU lines like the Makefile's `qemu-x86_64`. These rows attach no
@@ -18259,7 +18259,7 @@ CPU 5 lacks hwcap bits"
     #                               scheduler, the shell prompt; no panic,
     #                               no FAILED, no x86 trap report; COM1's
     #                               output went through the TX ring by the
-    #                               THR-empty interrupt (C1; the canary
+    #                               THR-empty interrupt (the canary
     #                               X86_64_SELECT=console-tx-sync prints
     #                               "polled" and fails it)
     #   x86_64: smp 2               CPU 1 started by INIT-SIPI-SIPI, takes its
@@ -18480,7 +18480,7 @@ CPU 5 lacks hwcap bits"
     # PMU probe must name no counter (`azos_arch_api::pmu::amd_decode`'s
     # family gate) and the liveness check reads counters through their MSRs,
     # never `rdpmc`, which TCG answers with #UD: the boot reaches the shell
-    # with the TSC standing in for cycles. Canary (by hand, 2026-10-23): the
+    # with the TSC standing in for cycles. Canary (by hand): the
     # family gate dropped, the legacy four are assumed and, with `rdpmc` in
     # the liveness check, the boot traps right after the mitigation line.
     par "x86_64: PMU probe, EPYC without the hypervisor bit" x86_boot_row "x86_64: PMU probe, EPYC without the hypervisor bit" 1 "EPYC,-hypervisor" \
@@ -18531,7 +18531,7 @@ CPU 5 lacks hwcap bits"
     par "stack chain: x86_64 robot" x86_stack_row "stack chain: x86_64 robot" chain use-robot
     # The same two on the gate's aarch64 kernel (the generic cell's), with its
     # 304-byte trap frame (`TrapFrame`'s size assert, kernel/src/entry/aarch64/
-    # mod.rs). Until 2026-10-24 only riscv64 and x86_64 kernels had them.
+    # mod.rs). Only riscv64 and x86_64 kernels have them.
     a64_stack_row() { # a64_stack_row <label> <frames|chain>
         if ! a64_kbuild ""; then
             printf "  %-26s" "${1}..."; bad; echo "      the aarch64 kernel did not build"; return
@@ -18717,7 +18717,7 @@ CPU 5 lacks hwcap bits"
     # interrupt that woke a sleeping waiter. The canary kernel is the same image
     # without DRV_AHCI: the controller enumerates (8086:2922) and nothing drives
     # it, so there is no `[AHCI]` line and no mount (the disk is on no other bus).
-    # First boot (2026-10-23, ahci-ncq-fua-trim): the PASS, NCQ-off and no-TRIM
+    # First boot (ahci-ncq-fua-trim): the PASS, NCQ-off and no-TRIM
     # boots were run by hand with this function's QEMU line and their logs
     # replayed through its greps; the function itself has not run under `par`.
     #
@@ -19943,7 +19943,7 @@ CPU 5 lacks hwcap bits"
         "$KTEST_LOCKDEP_CANARIED" "$KTEST_LOCKDEP_CANARIES"
     # GR3: see `ktest exit status canary (rv)`; x86_64's clean status is 1.
     # KTEST_STATUS_CANARIED already names `irq_storm_is_contained` (every ISA
-    # reads the irq-budget record since wave 15 L5).
+    # reads the irq-budget record).
     par "ktest exit status canary (x86)" ktest_status_canary_row x86_ktest_row "ktest exit status canary (x86)" "" \
         "$KTEST_STATUS_CANARIED" "$KTEST_STATUS_CANARIES"
     # N4: see `ktest rcu canaries (rv)`.
@@ -19981,7 +19981,7 @@ CPU 5 lacks hwcap bits"
     par "ktest sched canary (x86)" x86_ktest_row "ktest sched canary (x86)" "" \
         "$KTEST_SCHED_CANARIED" "$KTEST_SCHED_CANARIES"
 
-    # ── Wave 15 (XU): x86_64 userspace (ring 3 from a FAT volume) ───────────
+    # ── XU: x86_64 userspace (ring 3 from a FAT volume) ───────────
     #
     # The x86_64 images (`make userspace-x86_64`, bound by
     # build/image_hashes_x86_64.rs) on a virtio-blk-device in microvm's
@@ -20429,7 +20429,7 @@ CPU 5 lacks hwcap bits"
     par "x86_64 captest canary, no hard reservation" x86_autorun_row captestcanary
     par "x86_64 frame canary" x86_autorun_row framecanary
 
-    # ── Wave 15 (GR5): the panic report is not spliced (see the rv/arm rows,
+    # ── GR5: the panic report is not spliced (see the rv/arm rows,
     # `panic_splice_row`, for the property and the read). Same smoke and
     # canaries on x86_64, -smp 2; judged by `panic_splice_judge`.
     x86_panic_splice_row() { # x86_panic_splice_row <label> <want: pass|stop|splice|fatal|fatalskip|nested|rereport> [kernel command line]
@@ -20557,7 +20557,7 @@ CPU 5 lacks hwcap bits"
     par "panic: backtrace symbolized (arm)" panic_backtrace_row "panic: backtrace symbolized (arm)" arm
     par "panic: backtrace symbolized (x86)" panic_backtrace_row "panic: backtrace symbolized (x86)" x86
 
-    # ── Wave 15 (DAIF): the interrupt-mask primitives are compiler barriers ──
+    # ── DAIF: the interrupt-mask primitives are compiler barriers ──
     #
     # aarch64's `read_daif`/`write_daif`/`enable_irq` were `nomem`, so LLVM
     # could move plain loads and stores across `ARCH.disable_all()` /
@@ -20627,12 +20627,12 @@ CPU 5 lacks hwcap bits"
     # The row stays because the FAILURE guard below is what it is really worth:
     # it prints from the `ipc-census` dump and must be zero.
     #
-    #   * `mem quota refused` — owner decision 102's per-task frame budget must
+    #   * `mem quota refused` — the per-task frame budget must
     #     not bind a legitimate program (2048 pages against a measured peak of
     #     512 for vsbench).
     kbuild "qemu,ipc-census"
     fresh_disk $AZOS_OUT/build/disk-ipctest.img
-    # Chain E commit 3 (2026-10-11): the placement-histogram audit
+    # Chain E commit 3: the placement-histogram audit
     # (`scheduler::hist_check`, compiled by ipc-census) prints HIST_DRIFT when a
     # recorded key and the live one disagree for 10 ms; the IPC hand-off now
     # stores keys crosswise, so a drift here fails the row instead of scrolling.
@@ -20713,7 +20713,7 @@ CPU 5 lacks hwcap bits"
     # KNOWN GAP, measured twice rather than assumed. This marker proves reflex
     # RAN and logged; it does not prove the motors were COMMANDED. Stubbing
     # `MotorServer::speed` to return 0 without calling `motor_stop` leaves
-    # this scenario GREEN (2026-09-07).
+    # this scenario GREEN.
     #
     # A marker at the actuation gate was tried on the same day and removed: it
     # does not discriminate either. `rt_motor_task` writes the motors every
@@ -20732,7 +20732,7 @@ CPU 5 lacks hwcap bits"
         -drive file=$AZOS_OUT/build/disk-reflex.img,if=none,format=raw,id=hd0 \
         -device virtio-blk-device,drive=hd0
 
-    # THE GAP ABOVE, CLOSED 2026-09-09. The scenario proves reflex REACTED;
+    # THE GAP ABOVE, CLOSED. The scenario proves reflex REACTED;
     # this one proves it COMMANDED the motors.
     #
     # `[ACTSMOKE]` prints the duty the actuation itself left on the PWM
@@ -20806,10 +20806,10 @@ CPU 5 lacks hwcap bits"
     }
     par "userspace: reflex COMMANDS" reflex_actuation_scenario
 
-    # ── 2026-09-25 owner decisions Q1.4/Q1.3: gate fails closed; actuation record ──
-    # Gate rows for Q1.4 (fail-closed motor gate) and Q1.3 (actuation record),
-    # owner decisions 2026-09-25. NOT wired into tools/gate/ci_check.sh — delivered as
-    # text per the task brief (tools/gate/ci_check.sh is off-limits to this agent).
+    # ── gate fails closed; actuation record ──
+    # Gate rows for the fail-closed motor gate and the actuation record.
+    # NOT wired into tools/gate/ci_check.sh — kept as
+    # text, to slot in.
     # Written to slot in beside `reflex_actuation_scenario` (tools/gate/ci_check.sh,
     # ~line 4076), reusing its exact QEMU invocation and helpers:
     #   - kbuild()   tools/gate/ci_check.sh ~line 47  — build, fail loudly on error
@@ -20842,7 +20842,7 @@ CPU 5 lacks hwcap bits"
     #
     # Circularity note (why the fail-closed row does NOT prove itself by "motors
     # never move"): with the gate genuinely skipped, `autorun_task` still starts
-    # ring-3 code today (the boot-refusal half of Q1.4 is a DIFFERENT boundary —
+    # ring-3 code today (the boot-refusal half of the fail-closed gate is a DIFFERENT boundary —
     # see the delivered kernel/src/main.rs diff, not yet applied because this
     # agent may not touch that file). So `reflex.elf` still runs and still
     # commands the wheels; what must change is the DUTY that command leaves on
@@ -20851,15 +20851,15 @@ CPU 5 lacks hwcap bits"
     # lands and no ring-3 program starts at all — asserting the NUMBER inside
     # the line survives that future change and keeps discriminating.
 
-    # ── Row 1: Q1.4 — the actuation gate fails closed ──────────────────────────
+    # ── Row 1: the actuation gate fails closed ──────────────────────────
     #
     # Baseline build (gate installed) must show `ask=30 duty=30` (REFLEX.ELF's own
-    # BACKUP_SPEED_PCT through the `motor.drive` op; until 2026-09-26 the
-    # daemon could only reach `motor_direction_typed`'s kernel-fixed 50%, and
+    # BACKUP_SPEED_PCT through the `motor.drive` op; the
+    # daemon cannot reach `motor_direction_typed`'s kernel-fixed 50%, and
     # this row encoded that 50 — the envelope-clamped
     # reflex backup speed — see reflex_actuation_scenario's own comment for why
     # 50, not the raw ask, is what a working gate leaves on the channel).
-    # `gate-skip-smoke` build (gate NOT installed): since Q1.4 autorun refuses
+    # `gate-skip-smoke` build (gate NOT installed): autorun refuses
     # to start REFLEX.ELF at all, so the half asserts the refusal + the
     # kernel-side writer clamped to 0 — it used to expect `duty=0` for the
     # SAME command — `gate_speed`'s `None` arm now clamps instead of passing the
@@ -20956,7 +20956,7 @@ CPU 5 lacks hwcap bits"
             echo "      line — the feature did not wire the way this row assumes."
             echo "      log kept: $skip_log"; return
         fi
-        # Q1.4 (owner decision, landed 2026-09-26): with no actuation gate
+        # With no actuation gate
         # installed, `autorun` REFUSES to start any ring-3 program at all —
         # REFLEX.ELF is never loaded, so the "same command now reads 0" line
         # this row used to look for cannot be printed on this build. The
@@ -21006,7 +21006,7 @@ CPU 5 lacks hwcap bits"
         ok; rm -f "$baseline_log" "$skip_log"
     }
 
-    # ── Row 2: Q1.3 — an admitted actuation command reaches the telemetry ring ─
+    # ── Row 2: an admitted actuation command reaches the telemetry ring ─
     #
     # Same baseline boot (gate armed, `actuation-smoke` on) already commands both
     # wheels via reflex. `[ACTREC]` (crates/domains/robot/safety-core/src/actuation.rs,
@@ -21073,7 +21073,7 @@ CPU 5 lacks hwcap bits"
             echo "      log kept: $log"; return
         fi
         # Positive: the record hook does not flood — the tree already learned
-        # this the hard way for a marker at the GATE hook (2026-09-07, see
+        # this the hard way for a marker at the GATE hook (see
         # actuation.rs's own note: ~2300 prints/boot with no discrimination).
         # A held command must be at most MOTOR_RECORD_BUDGET_PER_WINDOW (4) per
         # motor per ~1s window, not one per control tick — so over a boot that
@@ -21095,7 +21095,7 @@ CPU 5 lacks hwcap bits"
     # (c) did not compile. All three were exercised for real during this task
     # (see the report), not merely asserted:
     #
-    #   Q1.4 fail-closed, host test `no_gate_installed_clamps_every_speed_to_
+    #   Fail-closed, host test `no_gate_installed_clamps_every_speed_to_
     #   zero_not_passthrough` (tests/host/behavior-tests/src/lib.rs):
     #     (a) discriminates — revert `crates/domains/robot/robot/src/motor.rs`'s
     #         `gate_speed`'s `None => 0` to `None => speed_pct`: RED,
@@ -21110,14 +21110,14 @@ CPU 5 lacks hwcap bits"
     #     (b) does not discriminate — N/A for this property: there is no
     #         "records but ignores the gate" middle state for a return value.
     #
-    #   Q1.3 record-on-change, host test `a_change_is_recorded_but_a_repeat_is_
+    #   Record-on-change, host test `a_change_is_recorded_but_a_repeat_is_
     #   not`:
     #     (a) discriminates — make `motor_set_reporting`'s
     #         `if changed { record_motor_change(...) }` unconditional: RED,
     #         `left: 2 / right: 1` (the repeat was recorded too).
     #     (b) does not discriminate — the ALREADY-REJECTED precedent this
     #         design deliberately avoided: a marker at the GATE hook itself
-    #         (`actuation.rs`'s own comment, 2026-09-07) fired ~2300 times per
+    #         (`actuation.rs`'s own comment) fired ~2300 times per
     #         boot whether or not any ring-3 program commanded anything (2328
     #         baseline vs 2308 with the handler stubbed to actuate nothing) —
     #         a check that always passes. This task's own QEMU row above
@@ -21128,7 +21128,7 @@ CPU 5 lacks hwcap bits"
     par "safety: actuation gate fails closed" gate_fails_closed_scenario
     par "safety: actuation record reaches the ring" record_reaches_the_ring_scenario
 
-    # ── config: unsigned CONFIG.INI fails closed (owner V1.4, 2026-09-26) ────
+    # ── config: unsigned CONFIG.INI fails closed (owner V1.4) ────
     # CONFIG.INI on the USB-exposed FAT volume decides the kill-switch pin,
     # link encryption, an OTA listener, bench_boot and autorun. It is now
     # signed with the topology key (CONFIG.SIG); a tampered sidecar must boot
@@ -21137,7 +21137,7 @@ CPU 5 lacks hwcap bits"
     kbuild "qemu"
     rm -f $AZOS_OUT/build/disk-configtamper.img
     make_disk $AZOS_OUT/build/disk-configtamper.img
-    # Wave 11: the marker names the reason (a v2 sidecar whose signature does
+    # The marker names the reason (a v2 sidecar whose signature does
     # not verify), so a refusal for any other reason cannot pass the row.
     par_row qemu_run "config: tampered CONFIG.SIG fails closed" "(CONFIG.SIG did not verify) — fell back to factory defaults" 90 \
         -smp 4 -global virtio-mmio.force-legacy=false \
@@ -21147,7 +21147,7 @@ CPU 5 lacks hwcap bits"
 
     # ── config: CONFIG.SIG v2 — a replay is refused, a lost signature latches ──
     #
-    # Wave 11. CONFIG.SIG used to be a bare signature over
+    # CONFIG.SIG used to be a bare signature over
     # CONFIG.INI's bytes: an older, validly signed pair copied back verified,
     # and deleting CONFIG.SIG left the kill switch at its "unconfigured"
     # sentinel with one boot-log line. v2 signs the device id (reserved tail
@@ -21162,7 +21162,7 @@ CPU 5 lacks hwcap bits"
     #      `estop_is_active=1`, and the durable record written. Floor still 2.
     #   3. CONFIG.SIG deleted: latched again, reason "CONFIG.SIG absent".
     # Every boot's marker is a line only its own path prints.
-    # Canaries (by hand, 2026-10-02): the `c >= f` guard in
+    # Canaries (by hand): the `c >= f` guard in
     # `config_authority_decision` made `true` -> boot 2 loads the replay (no
     # "below the floor" line, red); the `_ if f == 0` arm made `_` -> boot 3
     # takes defaults without latching (red). The host table is in config-tests.
@@ -21257,7 +21257,7 @@ CPU 5 lacks hwcap bits"
     par_row config_authority_row "config: replay refused, lost sig latches"         rv
     par_row config_authority_row "aarch64 config: replay refused, lost sig latches" arm
 
-    # ── topology: the signed capability topology from the volume (wave 15) ──
+    # ── topology: the signed capability topology from the volume ──
     #
     # Kconfig TOPOLOGY_SOURCE (QEMU default SIGNED_OR_BUILTIN): the kernel
     # installs /fat/CAPS.TOM + CAPS.SIG and /fat/SCHED.TOM when CAPS.SIG
@@ -21410,7 +21410,7 @@ PY
     par_row toposign_row "aarch64 topology: signed set, tampered refused" arm ""                         PASS
     par_row toposign_row "aarch64 topology: verify skipped (canary)"      arm ",topo-verify-skip-canary" FAIL
 
-    # ── topology: anti-replay — the binding in the signed CAPS.TOM (wave 15) ──
+    # ── topology: anti-replay — the binding in the signed CAPS.TOM ──
     #
     # One signature covers both files; CAPS.TOM binds SCHED.TOM's hash, the
     # device id and a counter. Each mode boots files that are validly signed
@@ -21509,7 +21509,7 @@ PY
     par_row toposign_bind_row "aarch64 topology: wrong device"          arm device ""                        PASS
     par_row toposign_bind_row "aarch64 topology: device (canary)"       arm device ",topo-device-canary"     FAIL
 
-    # ── topology: SIGNED_REQUIRED halts without the set (wave 15) ──────────
+    # ── topology: SIGNED_REQUIRED halts without the set ──────────
     #
     # A kernel built with CONFIG_TOPOLOGY_SOURCE_SIGNED_REQUIRED boots the
     # plain disk (no CAPS.TOM/SCHED.TOM): the REFUSED line naming the policy,
@@ -21543,7 +21543,7 @@ PY
         fi
         # From scratch: the record is read back off LOG00000.BIN, and an
         # image an earlier boot wrote (`make` calls it up to date) holds that
-        # session's file there (`rt_watchdog_record_row`, wave 15).
+        # session's file there (`rt_watchdog_record_row`).
         rm -f "$base"; make_disk "$base"
         cp "$base" "$img"
         if [ "$isa" = rv ]; then
@@ -21765,7 +21765,7 @@ PY
     # `envelope-smoke` does. The frame is still sent, so the dispatch's `else`
     # arm is exercised — it is the RECORD that is unasserted, not the path.
     # Start the lying peer, boot a disk+NIC kernel against it, wait for the
-    # peer's verdict, and tear both down. Extracted 2026-09-08 so the record
+    # peer's verdict, and tear both down. Extracted so the record
     # scenario below does not become a second copy of the boot sequence — the
     # part with the race in it, which is the part worth having once.
     #
@@ -21858,7 +21858,7 @@ PY
                 && grep -aqE "$PEER_BOOT_DONE_RE" "$log" 2>/dev/null; then
                 break
             fi
-            # The same, for a verdict only the PEER can print (wave 9: the
+            # The same, for a verdict only the PEER can print (the
             # brain opening a record the client sealed after its own REKEY).
             if [ -n "${PEER_BOOT_PEER_DONE_RE:-}" ] \
                 && grep -aqE "$PEER_BOOT_PEER_DONE_RE" "$blog" 2>/dev/null; then
@@ -21934,8 +21934,8 @@ PY
             echo "      peer said: $(tail -2 "$blog" 2>/dev/null | tr "\n" " ")"
             echo "      logs kept: $log $blog"; return
         fi
-        # Negative: the empty 0x8A must ARM containment, never clear it. Until
-        # 2026-09-06 it read `unwrap_or(DEGRADE_CLEAR)` and a truncated frame
+        # Negative: the empty 0x8A must ARM containment, never clear it.
+        # It once read `unwrap_or(DEGRADE_CLEAR)` and a truncated frame
         # disarmed containment — resetting a CONTAINED level to FULL through
         # the same atomic the assertion above just proved was set.
         if grep -aq "degraded mode cleared" "$log" 2>/dev/null; then
@@ -22020,8 +22020,8 @@ PY
     # motors driven — from a userspace ELF, through typed capabilities.
     #
     # `userspace/services/brain_client` is the only program in the tree that does the
-    # whole loop, and until 2026-09-08 NOTHING booted its image: it was built
-    # on every run and started by no scenario. Booting it by hand that day
+    # whole loop, and before this scenario NOTHING booted its image: it was built
+    # on every run and started by no scenario. Booting it by hand
     # immediately found a live defect (the ARP microbenchmarks were writing the
     # gateway's MAC into the live cache), which is the argument for this
     # scenario existing at all.
@@ -22049,7 +22049,7 @@ PY
         rm -f $AZOS_OUT/build/disk-braincli.img $AZOS_OUT/build/disk-braincli-linkkey.img $AZOS_OUT/build/braincli_linkkey.bin
         make_disk $AZOS_OUT/build/disk-braincli-linkkey.img
 
-        # Wave 9 (P3): brain_client runs the encrypted link, whose
+        # Brain_client runs the encrypted link, whose
         # ephemeral keys come from the entropy pool — so virtio-rng — and the
         # peer runs the brain side of it (`--link-key`, AzOSRobotBrain's
         # secure_channel; AZOS_BRAIN_DIR as for `tools/gate/link_peer.py`). The
@@ -22109,7 +22109,7 @@ PY
     }
     par -s "userspace: ring-3 drives motors" ring3_actuation_scenario   # the brain peer on a host port of its own
 
-    # THE ENGINE NEVER DRIVES ON A MISSING VERDICT (owner decision 2026-09-28,
+    # THE ENGINE NEVER DRIVES ON A MISSING VERDICT (
     # fail closed). The same boot as above with BEHAVIOR.MBL's bytes changed on
     # the disk: the service refuses the bundle (bad signature), has no model to
     # run, and every Infer call is NO_RESOURCE. L1 then holds a stop, so the
@@ -22194,7 +22194,7 @@ PY
             echo "      run make $AZOS_OUT/build/image_hashes.rs, then rebuild the kernel."; return
         fi
 
-        # Wave 9: the peer opens every connection with the encrypted-link HELLO (the
+        # The peer opens every connection with the encrypted-link HELLO (the
         # client sends nothing before one) and resets it after the reply.
         PEER_BOOT_QEMU_EXTRA="-device virtio-rng-device" \
         run_brain_peer_boot "$log" "$blog" $AZOS_OUT/build/disk-braincli-linkkey.img 1 \
@@ -22312,7 +22312,7 @@ PY
             echo "      logs kept: $log $blog"; return
         fi
 
-        # THE SAME LATCH THROUGH THE io_ring (owner decision 81): the engine
+        # THE SAME LATCH THROUGH THE io_ring: the engine
         # submits the brain's command as one `Motor::command` OP_CALL entry and
         # prints each completion as `ioring command status=<s> outcome=<o>
         # flags=<f>`. Served OK before the e-stop, never OK after it, and
@@ -22357,7 +22357,7 @@ PY
     }
     par -s "userspace: ring-3 e-stop" ring3_estop_scenario   # the brain peer on a host port of its own
 
-    # RING 3's BRAIN LINK IS THE ENCRYPTED ONE (wave 9, owner decision P3).
+    # RING 3's BRAIN LINK IS THE ENCRYPTED ONE.
     #
     # brain_client used to verify the HMAC envelope directly under the PSK,
     # with its replay floor only in RAM, per connection. It now runs the same
@@ -22381,10 +22381,10 @@ PY
     #     so the rekey is the CONFIG.INI clock's; the key can only shorten
     #     the hour (`azos_crypto::secure_channel::rekey_interval_secs`, host-tested).
     #
-    # Canary, 2026-09-28 (wave 9): `link::handshake` short-circuited to return
+    # Canary: `link::handshake` short-circuited to return
     # `true` without a handshake and `seal_frame` sending the bare frame
     # (the pre-wave HMAC-only client, since deleted). See the ENT report for what printed.
-    # Canary, 2026-09-28 (wave 10, ENT2): `brain_client_rekey_secs=10` dropped
+    # Canary: `brain_client_rekey_secs=10` dropped
     # from the image's CONFIG.INI (default hour): RED, "brain_client's own
     # REKEY did not complete", no REKEY line on either side.
     ring3_encrypted_link_scenario() {
@@ -22454,7 +22454,7 @@ PY
     }
     par -s "userspace: ring-3 link encrypted" ring3_encrypted_link_scenario   # the brain peer on a host port of its own
 
-    # NO FRESH KEYS, NO LINK (wave 9, owner decision P9).
+    # NO FRESH KEYS, NO LINK.
     #
     # The same image booted WITHOUT virtio-rng: the pool stays unseeded, so
     # the kernel-hosted `entropy` endpoint answers NOT_READY (outcome 3) and brain_client, which
@@ -22464,7 +22464,7 @@ PY
     # durable SAFETY_ENTROPY_UNSEEDED_REFUSED record) and brain_client's FATAL
     # with the kernel's answer in it — then on the session line's absence.
     #
-    # Canary, 2026-09-28 (wave 9): the handler's `!got` branch disabled, so an
+    # Canary: the handler's `!got` branch disabled, so an
     # unseeded pool hands out its zero buffer as "entropy". See the ENT report.
     ring3_entropy_refused_scenario() {
         brain_peer_required || return 0
@@ -22606,7 +22606,7 @@ PY
         # **Why the reference point is the last non-zero duty and not the
         # console line.** This asked that the final `duty=0` come AFTER
         # "[BRAIN] ESTOP received", which assumes the wheels cannot stop before
-        # the handler announces itself. They can, and on 2026-09-11 they
+        # the handler announces itself. They can, and they
         # started to: `estop_activate()` now installs the stop as the standing
         # action, so the control loop on another hart applies 0 inside the
         # window between the latch and the `kprintln` three statements later.
@@ -22641,8 +22641,8 @@ PY
     }
     par -s "safety: brain e-stop (tcp)" brain_estop_tcp_scenario   # the brain peer on a host port of its own
 
-    # ── 2026-09-25 owner decision Q1.2: e-stop release needs operator authority ──
-    # Gate rows for the 2026-09-25 owner decision: "the brain may REQUEST an
+    # ── e-stop release needs operator authority ──
+    # Gate rows for the rule: "the brain may REQUEST an
     # e-stop release; it may never CLEAR the latch." Delivered as TEXT, to be
     # spliced into tools/gate/ci_check.sh by the owner/coordinator (I do not own that
     # file). Written in its own style, using its EXISTING helpers verbatim:
@@ -22673,7 +22673,7 @@ PY
         # DIRECTLY and leaves its flight recorder ending LATCHED; `make` then
         # sees an up-to-date target and hands that dirty image over, the boot
         # restores the latch, and PKT_ESTOP becomes a no-op ("already latched
-        # is already done") — gate 182f, 2026-09-26. Fresh image, every time.
+        # is already done"). Fresh image, every time.
         rm -f $AZOS_OUT/build/disk-brainestop.img
         make_disk $AZOS_OUT/build/disk-brainestop.img
         cp $AZOS_OUT/build/disk-brainestop.img "$img"
@@ -22776,7 +22776,7 @@ PYEOF
         fi
 
         # THE BARE REQUEST MUST NOT HAVE CLEARED IT — key line 1. Failure-only
-        # string: the OLD (pre-2026-09-25) behaviour printed "ESTOP cleared by
+        # string: the OLD (earlier) behaviour printed "ESTOP cleared by
         # MODE command" here instead, which this positive check would simply not
         # find, so a regression reads as this assertion failing, not as a
         # different string appearing.
@@ -22873,7 +22873,7 @@ PYEOF
             echo "      reachable from a real kernel image."
             return
         fi
-        # Wave 11 (DOMAIN): the latch and its release moved from
+        # The latch and its release moved from
         # `azos_behavior::safety` to `azos_actuation::estop`
         # (behavior re-exports it), so that is the symbol's path now.
         if ! grep -q "14azos_actuation5estop13estop_release" "$syms"; then
@@ -22893,7 +22893,7 @@ PYEOF
     # were defects rather than missing test scaffolding:
     #
     #  1. `sys-wdt`, which owned this poll until the edge interrupt and the
-    #     `kill-switch` task replaced it (2026-10-23), NEVER RAN UNDER LOAD. Priority 20 —
+    #     `kill-switch` task replaced it, NEVER RAN UNDER LOAD. Priority 20 —
     #     the lowest in the system bar idle — under strict priority with no
     #     aging. Measured with a probe verified present in the binary: it
     #     entered and iterated on an idle boot and did not execute one
@@ -22956,7 +22956,7 @@ PYEOF
         # where the switch was pressed. The stop is applied by the actuation
         # gate, which can zero a wheel BEFORE the watchdog task gets to print,
         # so "the wheel stopped because of the press" must be measured against
-        # the press. Gate 78 (2026-09-19) failed on exactly that: press at 532,
+        # the press. Gate 78 failed on exactly that: press at 532,
         # right wheel zeroed at 537, watchdog record at 538, left wheel at 540 —
         # both wheels stopped after the press, and the row still called it
         # "THE KILL SWITCH DID NOT HOLD".
@@ -23041,7 +23041,7 @@ PYEOF
         # was applied after the press, and the stop wrote it (`ACTREC`, every
         # write, not change-only) after the press. The last `ACTSMOKE` line
         # itself may come BEFORE the press: the wheels here toggle 80/0 with
-        # the peer's command age, and since the edge interrupt (2026-10-23)
+        # the peer's command age, and since the edge interrupt
         # the latch lands within a millisecond of the press, often while the
         # wheel already reads 0, so the change-only marker has nothing new to
         # print. It came after the press under the 500 ms poll by accident.
@@ -23070,7 +23070,7 @@ PYEOF
     }
     par -s "safety: kill switch (gpio)" killswitch_gpio_scenario   # the brain peer on a host port of its own
 
-    # The latch survives a reset. Owner decision, 2026-09-13: boot reads the
+    # The latch survives a reset. Boot reads the
     # last `SAFETY_ESTOP` in the flight recorder and starts latched if the last
     # session ended latched.
     #
@@ -23285,7 +23285,7 @@ PYEOF
         par "aarch64: latch record flushed" latch_flush_scenario arm
     fi
 
-    # FAT32 journal barriers under a power cut that REORDERS (wave 7, STOR).
+    # FAT32 journal barriers under a power cut that REORDERS (STOR).
     #
     # The row above cuts at the last flush, which never reorders, so it cannot
     # see a missing ordering barrier. `fat-barrier-smoke` checks BARRIER.DAT
@@ -23385,7 +23385,7 @@ PYEOF
     }
     par "storage: journal power cuts" fat_barrier_scenario
 
-    # MMC flush on an SDHCI-v3 host (wave 7, STOR). `mmc.rs` is compiled
+    # MMC flush on an SDHCI-v3 host (STOR). `mmc.rs` is compiled
     # for QEMU under `mmc-pci` and bound to `sdhci-pci`'s BAR 0; the block
     # device stays virtio. `mmc_flush_smoke` (kernel/src/smokes/storage.rs): write -> flush Ok
     # with at least one CMD13 status read -> read back; a write past the
@@ -24036,7 +24036,7 @@ PYEOF
     #
     # 49 verified stable across five runs from different builds. If a
     # subsystem is legitimately added or removed, this number changes with it
-    # -- deliberately, so the change has to be noticed. 49 -> 41 (2026-10-24),
+    # -- deliberately, so the change has to be noticed. 49 -> 41,
     # each with the code it measured: ipc.signal_send/_pending (ipc::signal and
     # its retired syscalls deleted), ipc.channel_send_recv/_full_send/
     # _create_destroy (the v1 message channel deleted), ipc.lease_active_count
@@ -24045,7 +24045,7 @@ PYEOF
     #
     # Not covered: the throughput and latency scenarios end to end, which need
     # a live brain server on the host (their console harness had no
-    # caller and was deleted on 2026-10-24).
+    # caller and was deleted).
     fresh_disk $AZOS_OUT/build/disk-uhello.img
     par_row qemu_run "bench: all 41 measurements" "robot run_all done emitted=41 " 180 \
         -smp 4 -global virtio-mmio.force-legacy=false \
@@ -24092,7 +24092,7 @@ PYEOF
     rm -f "$sup_window_cfg"
 
 
-    # ── DRV1 (wave 9): the buzzer and the INA219, in ring 3 ────────────
+    # ── DRV1: the buzzer and the INA219, in ring 3 ────────────
     #
     # The functional test of the two drivers placed in user space,
     # run by a kernel task (`ring3_drv_smoke`) through the kernel API
@@ -24109,7 +24109,7 @@ PYEOF
     # `endpoint.buzzer`, `PowerMon` on `endpoint.powermon`). Only
     # `build/disk-drv.img` carries the two images.
     #
-    # Wave 10 (DRV2): the INA219's integrated charge over a 3 s window must be
+    # The INA219's integrated charge over a 3 s window must be
     # 1500 mA times the measured window within 50..=150% (it is weighted by the
     # driver's clock, not by a nominal cadence). Both fail as
     # `[DRV1] <driver> FAIL:`.
@@ -24145,7 +24145,7 @@ PYEOF
         -smp 4 -global virtio-mmio.force-legacy=false \
         -drive file=$AZOS_OUT/build/disk-drv.img,if=none,format=raw,id=hd0 \
         -device virtio-blk-device,drive=hd0
-    # Wave 11: the buzzer's ring-3 host killed under the component manager's
+    # The buzzer's ring-3 host killed under the component manager's
     # supervision (`supall_row`, defined beside the aarch64 drivers row), and its canary.
     par_row supall_row "drivers: moving driver supervised" rv "" PASS
     par_row supall_row "drivers: moving driver supervised, canary" rv ",supall-canary" FAIL
@@ -24154,7 +24154,7 @@ PYEOF
     par_row hung_row "hung: restart action, canary (rv)" rv RESTART yes
     par_row hung_row "hung: safe stop action (rv)" rv SAFE_STOP no
     par_row hung_row "hung: safe stop action, canary (rv)" rv SAFE_STOP yes
-    # Wave 11 (DRVPLACE): the INA219 in the kernel placement (same readings
+    # The INA219 in the kernel placement (same readings
     # as `drivers: INA219 power monitor`), its two canaries, and the topology
     # row key `restart` as the component manager reads it (`drvplace_row`,
     # defined beside the aarch64 rows).
@@ -24169,7 +24169,7 @@ PYEOF
     #
     # Each seccomp image profile is bound to the SHA-256 of the exact ELF the
     # build ships (crates/core/sched/src/seccomp.rs, build/image_hashes.rs), never to
-    # the name it is opened under (owner decision 2026-09-14). Two images from
+    # the name it is opened under. Two images from
     # the Makefile, both after `bench: all 41 measurements` so no scenario above
     # inherits the cap-deny-smoke kernel the second one builds. The host half,
     # every binary renamed and replaced, is tests/host/seccomp-tests.
@@ -24286,8 +24286,8 @@ PYEOF
     kbuild "qemu"
 
     # Shared verdict of the idle-wakes rows (both ISAs), on `delta` timer
-    # interrupts over the 30 s window. Wave 13, owner decision round 50:
-    # hart 0's idle keepalive runs only while a watchdog is armed.
+    # interrupts over the 30 s window.
+    # Hart 0's idle keepalive runs only while a watchdog is armed.
     #   * no watchdog (QEMU): THRESHOLD delta <= IDLE_WAKES_MAX_30S. Measured
     #     band: 0 on every run (bench-minimal, 30 s windows, host QEMU
     #     census 1-4: riscv64 and aarch64, -smp 1 x5 and -smp 4 x3 each); the
@@ -24327,7 +24327,7 @@ PYEOF
             echo "      is waking with nothing to do — log kept: $log"
         fi
     }
-    # ── 2026-09-25 owner decision Q3.2: idle is truly tickless ───────────────
+    # ── idle is truly tickless ───────────────
     #
     # `timebase::set_next_tick_smart` clamped every timer to `now + 1/sched_hz`,
     # so an idle hart woke at sched_hz forever while the scheduler's comments
@@ -24342,8 +24342,8 @@ PYEOF
     # between the two bands so a regression to the periodic clamp failed here
     # rather than sliding through on host-load noise.
     #
-    # Wave 11 ONESHOT: 9/9/9 wakeups/s on c1afd98 and 9/9/9 after the one-shot
-    # change (the empty-queue re-arm fix of 2026-09-26 is what took it from 74
+    # 9/9/9 wakeups/s on c1afd98 and 9/9/9 after the one-shot
+    # change (the empty-queue re-arm fix is what took it from 74
     # to 9). THRESHOLD 20/s: twice the measured band. Canary, by hand: idle
     # harts armed with the busy cap (`set_next_tick_tickless` ignoring
     # `hart_idle`) read 73/s here and 68/s on the aarch64 row — FAIL on both.
@@ -24352,7 +24352,7 @@ PYEOF
     # increment per timer-ISR entry on every hart) via the ELF's symbol table
     # and a live GDB-stub attach (`-s`, never `-S`: the CPU is not halted, the
     # read is a snapshot of a running system). Wall-clock, so NOT `-icount`.
-    # Wave 13 (ENERGY): the 9.3-9.6/s floor measured on 9dc76dd9 was hart 0's
+    # The 9.3-9.6/s floor measured on 9dc76dd9 was hart 0's
     # fixed 100 ms idle keepalive. Round 50 (owner) ties it to an armed
     # watchdog; the verdict and the measured bands are `idle_wakes_verdict`'s.
     tickless_idle_wakeups_row() { # [wdt]: the simulated-watchdog build
@@ -24371,7 +24371,7 @@ PYEOF
         # Leading zeros stripped: nm prints 16 hex digits (000000008067d338),
         # gdb echoes the address back as 0x8067d338: — the grep in
         # read_ticks() below keys on gdb's spelling. With the zeros kept
-        # both reads came back empty (hand run, 2026-09-26).
+        # both reads came back empty (hand run).
         addr=$(nm "$KERNEL" 2>/dev/null | grep "watchdog10TICK_COUNT" | sed -n '1{s/ .*//p;}' | sed 's/^0*//')
         if [ -z "$addr" ]; then
             bad; echo "      watchdog::TICK_COUNT symbol not found in $KERNEL"; return
@@ -24416,13 +24416,13 @@ PYEOF
     par -s "riscv64: idle wakeups/s (tickless)" tickless_idle_wakeups_row   # gdb on 1234, wall clock
     par -s "riscv64: idle keepalive (simulated WDT)" tickless_idle_wakeups_row wdt   # gdb on 1234
 
-    # ── net-poll in IRQ mode: zero idle iterations (wave 8 FORKX, wave 9) ────
+    # ── net-poll in IRQ mode: zero idle iterations ────
     #
     # With a virtio-net-pci NIC in MSI-X mode, `net_poll_task` sleeps with no
     # timer while no TCP connection has a clock deadline (`tcp::tick_needed()`
     # false): only an RX MSI or a `tcp::set_timer_kick` wake gives it work,
     # plus a 60 s self-heal ceiling. Before that it woke 10 times a second
-    # (300 in 30 s, measured wave 8); a 1 ms poll-mode timer is ~600/s.
+    # (300 in 30 s, measured); a 1 ms poll-mode timer is ~600/s.
     #
     # The numbers are read back like the tickless row's, via the ELF's symbol
     # table and a live GDB attach: `NET_POLL_ITERS` (one increment per loop
@@ -24431,7 +24431,7 @@ PYEOF
     # starts 2 s after the task's own first line and lasts 30 s, so it ends
     # before the 60 s ceiling can fire. An iteration an RX MSI or a kick
     # explains is work, not a timer: the boot's own SNTP client (Kconfig
-    # NTP_CLIENT, the net-clients task, 2026-10-17) resolves its server and
+    # NTP_CLIENT, the net-clients task) resolves its server and
     # asks it the time in the window, and slirp's two answers woke the poller
     # twice (main ac10a4be: 2 iterations, read as a timer by the old
     # `delta == 0`). The verdict is the rest — iterations minus MSI wakes
@@ -24446,7 +24446,7 @@ PYEOF
     #
     # Canary (`netpoll-idle-timer-canary`): the IRQ mode keeps the poll
     # mode's period, the leftover re-arm this row is for; the row must read
-    # hundreds of unexplained iterations and fail. Measured 2026-10-24 (load
+    # hundreds of unexplained iterations and fail. Measured (load
     # 20-24): the row 4 iterations, 2 MSI wakes, 2 kicks, 0 on a timer; the
     # canary 14 790 iterations, 14 788 on a timer. Compile-error bucket: a
     # build failure is its own FAIL.
@@ -24546,7 +24546,7 @@ PYEOF
     # sites in the scheduler). A build that compiles is not a build that works,
     # and this one had never executed a single instruction.
     #
-    # CLOSED 2026-09-24. `context_switch_rvv.S` now clears `context_saving`
+    # CLOSED. `context_switch_rvv.S` now clears `context_saving`
     # with the same `fence rw, w` + `sb` release tail as the scalar switch, so
     # all twelve `cfg` sites are deleted and `azos_sched/rvv` no longer
     # exists. An rvv build takes the identical scheduler path.
@@ -24568,7 +24568,7 @@ PYEOF
     par "rvv: vector path runs" kq "qemu,CONFIG_RV_V_PROBE=y" "rvv: vector path runs" "Phase 11 complete" 120 \
         -smp 4 -cpu rv64,v=true,vlen=256,elen=64
 
-    # ── rvv: vector state isolated across tasks (2026-09-26) ─────────────────
+    # ── rvv: vector state isolated across tasks ─────────────────
     # rvv_ctx_save/restore indexed VEC_STATES[] by Task+120 = ctx.tp (the hart
     # id), not Task.tid (offset 128); every context switch under `rvv` handed
     # one task's v0-v31 to another. Fixed by threading offset_of!(Task, tid)
@@ -24655,8 +24655,8 @@ PYEOF
         # on BOTH gate 187's and gate 188's kernels (5+5 hand runs). Gate 188
         # failed on that slow mode (killed at 60 s, still in boot Phase D).
         # A real UART is bounded (115200 baud ≈ 11.5 k bytes/s); a handful of
-        # bytes proves the property. Paced: 5/5 delivered in ~1 s. Before
-        # wave 11, no input read "delivered 0 time(s)". Since then identity 10
+        # bytes proves the property. Paced: 5/5 delivered in ~1 s.
+        # No input reads "delivered 0 time(s)" on RX alone. Identity 10
         # also carries the console's TX interrupt (`uart::enable_tx_irq`), so
         # the count is nonzero with no input too: the `[1-9]` check below
         # proves UART interrupts cross APLIC -> IMSIC, not RX ones in
@@ -24885,7 +24885,7 @@ PYEOF
     # riscv64 half of `behavior_arp_sleep_row` (defined with the aarch64 rows).
     par -s "network: behavior ARP sleeps" behavior_arp_sleep_row rv
 
-    # ── Worst-case wake-up latency under load (wave 11, LAT) ──────────────
+    # ── Worst-case wake-up latency under load (LAT) ──────────────
     #
     # cyclictest/timerlat in the kernel (`kernel/src/lat_smoke.rs`): a
     # priority-1 task on hart 0 sleeps to an absolute 1 ms deadline 2000
@@ -24895,7 +24895,7 @@ PYEOF
     # virtual time per guest instruction, so the numbers do not move with
     # host load (they are not bit-exact: a virtio-blk completion lands where
     # the host thread delivers it). The verdict line is the kernel's:
-    # `[LAT] PASS` when max <= BOUND_NS (100 us, both ISAs, since wave 11
+    # `[LAT] PASS` when max <= BOUND_NS (100 us, both ISAs,
     # ONESHOT; it was 12 ms, the 10 ms tick plus 20%, while a timer sleeper
     # on a busy hart waited for the next tick — `BOUND_NS`'s doc), `[LAT]
     # FAIL` (only that path prints it) otherwise. The row also requires every
@@ -24907,16 +24907,16 @@ PYEOF
     # site as the worst interrupts-masked window both on the console
     # (`[LATTRACE] run irq top1`) and through the introspection tree's
     # `latency/irqsoff` (`[LATTRACE] inspect ...`). Measured by
-    # hand when this landed (wave 11): plain riscv64 max 7.5-8.0 ms, aarch64
+    # hand when this landed: plain riscv64 max 7.5-8.0 ms, aarch64
     # 9.85 ms; canary 19.8 ms / 19.7 ms with the tracer at the canary line.
     # After ONESHOT (three runs each): riscv64 max 17.9-18.4 us (Sstc),
-    # aarch64 11.5-12.8 us. Wave 13, load paced by lat-rt (20 boots each):
+    # aarch64 11.5-12.8 us. Load paced by lat-rt (20 boots each):
     # riscv64 max 4.4-15.8 us, aarch64 3.6-7.3 us.
     #
     # The periodic-arm canary rows build `oneshot-canary`: the arming from
     # before ONESHOT (no reprogram at block time; aarch64's tick handler
     # programs `now + period` only). They must print `[LAT] FAIL`.
-    # Wave 13: the riscv64 canary passed 9 of 20 boots while the smoke's load
+    # The riscv64 canary passed 9 of 20 boots while the smoke's load
     # slept on timers of its own (each such deadline made the tick handler
     # program the nearest sleeper, lat-rt's included); paced by lat-rt it
     # fails 18 of 20 (the 2: the boot's 1 ms rt-motor sleeper on hart 0) and
@@ -24993,12 +24993,12 @@ PYEOF
             bad; echo "      the load did not all run: ${load:-no load line}"
             echo "      log kept: $log"; return
         fi
-        # Wave 15 (FM), owner rule F1: a `lat-fat` kernel counts FAT32 device
+        # A `lat-fat` kernel counts FAT32 device
         # I/O the FAT writer issued while it held a Mutex (`[LAT] fat
         # pi_io=`; it takes none itself, so any is FAT32's own). It
         # must be 0; the PICANARY rows (a Mutex held across each FAT update,
         # the VF shape) must count some. Anchored on the whole value.
-        # Wave 15 (PI): `pi_io_all` counts the same for EVERY task (the exec
+        # `pi_io_all` counts the same for EVERY task (the exec
         # bounce buffer and KERNEL_FD_TABLE were the last two, from
         # MLSRV.ELF's spawn and its file opens);
         # it must be 0 too. A PISITE:<lock> canary row puts that one lock back
@@ -25012,7 +25012,7 @@ PYEOF
                 bad; echo "      no '[LAT] fat pi_io=<n> pi_io_all=<n>' line"; echo "      log kept: $log"; return
             fi ;;
         esac
-        # Wave 15 (RL), owner rule F1: virtio-blk waits for a completion with
+        # virtio-blk waits for a completion with
         # no driver Mutex held (`BLK_LOCK` only around submit/reap). A
         # `lat-fat` kernel prints `[LAT] blk waits=<n> waits_locked=<n>`;
         # the PASS rows need waits > 0 and waits_locked = 0, the BLKCANARY
@@ -25025,7 +25025,7 @@ PYEOF
                 bad; echo "      no '[LAT] blk waits=<n> waits_locked=<n>' line: ${blk_line:-none}"; echo "      log kept: $log"; return
             fi ;;
         esac
-        # Wave 15 (BR): FAT32 device I/O the FAT writer issued with
+        # FAT32 device I/O the FAT writer issued with
         # preemption off (`[LAT] fat preempt_off_io=`, a count: it does not
         # follow host load). Every `lat-fat` kernel these rows boot must
         # print 0; the `FAT spinlock canary` rows below must count some.
@@ -25093,7 +25093,7 @@ PYEOF
             fi
             return
         fi
-        # PERIODIC (wave 11 ONESHOT canary): the kernel built with the timer
+        # PERIODIC (ONESHOT canary): the kernel built with the timer
         # arming from before the one-shot change must fail the bound. Anchored
         # on the line only the failure path prints.
         if [ "$expect" = PERIODIC ]; then
@@ -25136,7 +25136,7 @@ PYEOF
     par_row -s lat_wake_row "lat: riscv64 periodic-arm canary" rv "qemu,oneshot-canary" PERIODIC
     par_row -s lat_wake_row "lat: aarch64 periodic-arm canary" arm "qemu,oneshot-canary" PERIODIC
 
-    # The console's interrupts-masked window (wave 13, RT7): the lat smoke's
+    # The console's interrupts-masked window: the lat smoke's
     # load prints a ~100-byte line every other period, and with `lat-trace`
     # the tracer names the worst masked windows by site. Every window at a
     # console site (`crates/drivers/sys/src/uart.rs`) must be at most
@@ -25144,8 +25144,8 @@ PYEOF
     # lock (`kernel_print`) and copied into the TX ring in blocks
     # (`TxRing::put`): measured 1,800 ns riscv64, 1,935 ns aarch64, the same
     # in 5 runs each. Before, one line's hold was 9.7 us (formatting under
-    # the lock), longer than the timer-ISR entry. Canary (by hand,
-    # 2026-10-04): `console-format-in-lock` -> 14,800 ns riscv64, 8,774 ns
+    # the lock), longer than the timer-ISR entry. Canary (by hand):
+    # `console-format-in-lock` -> 14,800 ns riscv64, 8,774 ns
     # aarch64, red. Compile errors: the build's own FAIL line. The smoke
     # prints every site the run's tracks kept (the 64 longest), not the
     # worst five: since other sites passed 7 us (2026-10) a 2 us console
@@ -25153,7 +25153,7 @@ PYEOF
     # row waits for the smoke's verdict line, which follows the summary.
     #
     # The run's interrupts-masked windows against the RT contract (front
-    # irq-windows, 2026-10-24): every window the tracer closed while the smoke
+    # irq-windows): every window the tracer closed while the smoke
     # measured, on every site, is at most Kconfig LOCK_MAX_HOLD_US (100 us on
     # the gate's cells, 50 us HWCLASS_EMBEDDED: the bound the lockdep hold
     # rows enforce, read by the kernel from its own .config). The kernel
@@ -25262,7 +25262,7 @@ PYEOF
     par_row -s masked_window_row "lat: riscv64 irq-off canary" rv "qemu,lat-irqsoff-canary" irqsoff-canary
     par_row -s masked_window_row "lat: aarch64 irq-off canary" arm "qemu,lat-irqsoff-canary" irqsoff-canary
 
-    # ── Wake-up latency under FAT32 writes (wave 15, VF) ──────────────────
+    # ── Wake-up latency under FAT32 writes (VF) ──────────────────
     #
     # The lat smoke with `lat-fat`: its disk load rewrites /fat/LATFAT.BIN
     # (6 KiB: chain allocation, free, journal barriers) every 1.37 ms, not
@@ -25273,7 +25273,7 @@ PYEOF
     # ran with preemption off on the writer's hart — and under -icount the
     # length followed host load: one cause of the intermittent `rt7: panic
     # contain` row, whose contained panic appends CRASH.LOG on the control
-    # hart. Then a `Mutex` (VF), measured (tracer on, 2026-10-09): preempt-off max riscv64
+    # hart. Then a `Mutex` (VF), measured (tracer on): preempt-off max riscv64
     # 9.93 ms -> 11.5 us, aarch64 1.70 ms -> 11.4 us; wake max riscv64
     # 9.79 ms -> 9.2 us, aarch64 1.25 ms -> 8.1 us. Now (FM) no lock at all
     # across the FAT update's I/O: per-FAT-sector claims (see below).
@@ -25333,7 +25333,7 @@ PYEOF
             bad; echo "      the FAT writer or the hog did not run:"; grep -a '^\[LAT\] load ' "$clean" | sed 's/^/      /'
             echo "      log kept: $log"; return
         fi
-        # The verdict is a COUNT (wave 15, BR): FAT device I/O the FAT writer
+        # The verdict is a COUNT (BR): FAT device I/O the FAT writer
         # issued with preemption off. The window's LENGTH is not a verdict:
         # under -icount the virtual clock still runs while the host serves
         # the virtio-blk request (and jumps to the next timer when the hart
@@ -25360,20 +25360,20 @@ PYEOF
     par_row -s fat_lat_canary_row "lat: riscv64 FAT spinlock canary" rv "qemu,fat-mutate-spin-canary"
     par_row -s lat_wake_row "lat: aarch64 wake-up, FAT writes" arm "qemu,use-robot,lat-fat" PASS
     par_row -s fat_lat_canary_row "lat: aarch64 FAT spinlock canary" arm "qemu,fat-mutate-spin-canary"
-    # Wave 15 (FM), owner rule F1: `FAT_MUTATE` (a Mutex held across the
+    # `FAT_MUTATE` (a Mutex held across the
     # FAT update's virtio-blk I/O) is gone; FAT-sector claims (fat32.rs
     # `fat_sector_claim`) hold nothing across I/O. The rows above require
     # `pi_io=0`; these canaries hold a Mutex across each FAT update again
     # and must count the I/O under it.
     par_row -s lat_wake_row "lat: riscv64 FAT PI-across-I/O canary" rv "qemu,fat-mutate-pi-canary" PICANARY
     par_row -s lat_wake_row "lat: aarch64 FAT PI-across-I/O canary" arm "qemu,fat-mutate-pi-canary" PICANARY
-    # Wave 15 (RL), owner rule F1: virtio-blk's `BLK_LOCK` is not held
+    # virtio-blk's `BLK_LOCK` is not held
     # across the device request (submit under it, wait without it). The
     # rows above require `waits_locked=0`; these canaries hold it across
     # each wait again and must count the waits under it.
     par_row -s lat_wake_row "lat: riscv64 virtio-blk lock-across-wait canary" rv "qemu,blk-lock-wait-canary" BLKCANARY
     par_row -s lat_wake_row "lat: aarch64 virtio-blk lock-across-wait canary" arm "qemu,blk-lock-wait-canary" BLKCANARY
-    # Wave 15 (PI), owner rule F1 for every task: the exec/spawn bounce
+    # For every task, the exec/spawn bounce
     # buffer is a claim (no Mutex held across its read) and KERNEL_FD_TABLE is never held across
     # a descriptor's device I/O. The PASS rows above require `pi_io_all=0`;
     # each canary puts one of them back and the site must name it.
@@ -25382,7 +25382,7 @@ PYEOF
     par_row -s lat_wake_row "lat: riscv64 KERNEL_FD_TABLE PI-across-I/O canary" rv "qemu,use-robot,lat-fat,fd-table-pi-canary" PISITE:KERNEL_FD_TABLE
     par_row -s lat_wake_row "lat: aarch64 KERNEL_FD_TABLE PI-across-I/O canary" arm "qemu,use-robot,lat-fat,fd-table-pi-canary" PISITE:KERNEL_FD_TABLE
 
-    # ── aarch64: idle wakeups/s (tickless), wave 11 ONESHOT ─────────────────
+    # ── aarch64: idle wakeups/s (tickless), ONESHOT ─────────────────
     #
     # The aarch64 half of `tickless_idle_wakeups_row` (riscv64 block): the same
     # bench-minimal boot, the same 30 s wall-clock window, the same counter
@@ -25391,11 +25391,11 @@ PYEOF
     # lldb's `gdb-remote`, because there is no aarch64 gdb on the host. Port
     # 1236, not the riscv64 row's 1234.
     #
-    # Measured (wave 11, three 30 s windows each): 9/9/9 wakeups/s on c1afd98
+    # Measured (three 30 s windows each): 9/9/9 wakeups/s on c1afd98
     # and 9/9/9 after the one-shot change — hart 0's 100 ms idle keepalive
     # plus the boot's own sleepers, the riscv64 band. THRESHOLD 20/s, as
     # there; the same canary (idle armed with the busy cap) read 68/s: FAIL.
-    # Wave 13 (ENERGY): same verdict as the riscv64 row (`idle_wakes_verdict`).
+    # Same verdict as the riscv64 row (`idle_wakes_verdict`).
     # No aarch64 Linux image on the host: the Linux figure there is riscv64's.
     tickless_idle_wakeups_row_aarch64() { # [wdt]: the simulated-watchdog build
         local mode="${1:-}" feats="qemu,bench-minimal"
@@ -25460,7 +25460,7 @@ PYEOF
     par -s "aarch64: idle wakeups/s (tickless)" tickless_idle_wakeups_row_aarch64   # gdb on 1236, wall clock
     par -s "aarch64: idle keepalive (simulated WDT)" tickless_idle_wakeups_row_aarch64 wdt   # gdb on 1236
 
-    # ── A64CLK: the aarch64 kernel runs on the VIRTUAL counter/timer (wave 11) ─
+    # ── A64CLK: the aarch64 kernel runs on the VIRTUAL counter/timer ─
     #
     # The kernel reads `CNTVCT_EL0` and programs `CNTV_CVAL_EL0`/`CNTV_CTL_EL0`
     # (PPI 27), as Linux does at EL1, instead of `CNTPCT_EL0`/`CNTP_*` (PPI 30).
@@ -25586,7 +25586,7 @@ PYEOF
     }
     par "aarch64: one clock under CNTVOFF" a64clk_cntvoff_row
 
-    # ── SCHED-RT: RT band budget, EDF + CBS, run-time admission (wave 11) ──
+    # ── SCHED-RT: RT band budget, EDF + CBS, run-time admission ──
     #
     # `kernel/src/rt_smoke.rs` (feature `sched-rt-smoke`) runs four checks on
     # hart 0 under `-smp 1 -icount shift=0,sleep=off` (instruction counts) and
@@ -25710,7 +25710,7 @@ PYEOF
     par_row sched_rt_row "sched-rt: aarch64 exemption canary" arm "qemu,rt-exempt-canary" exempt
     par_row sched_rt_row "sched-rt: aarch64 class walk skips DL canary" arm "qemu,dispatch-skip-class-canary" edf
 
-    # ── SCHED-RT near the admission bound (wave 15, VB) ──
+    # ── SCHED-RT near the admission bound (VB) ──
     #
     # `kernel/src/rt_util_smoke.rs` (feature `sched-rt-util`) loads a hart up
     # to what run-time admission accepts and counts every late job, under
@@ -25738,7 +25738,7 @@ PYEOF
     # while hart 0 spins (up to 50 ms per tick). Every idle path halts (rv
     # and arm `wfi`, x86 `hlt`); the lock is per CPU since
     # SCHED_TIMER_HEAP_PER_CPU. Canary: that symbol off brings back 292/375
-    # and 280/375 misses (riscv64, 2026-10-09); on, 0/375 at shift 0 and 1.
+    # and 280/375 misses (riscv64); on, 0/375 at shift 0 and 1.
     # Canaries: `rt-util-cbs-canary` (no budget charging) fails `overrun`;
     # `rt-util-wake-canary` (the CBS wake rule tests q/t, the bandwidth,
     # instead of q/d, the density) fails `suspend`; the levels canary boots
@@ -25826,7 +25826,7 @@ PYEOF
     par_row sched_rt_util_row "sched-rt-util: aarch64 levels canary" arm 1 "qemu,sched-rt-util" mixed "canary=sched-dl-in-level"
     par_row sched_rt_util_row "sched-rt-util: riscv64 hart 1" rv 2 "qemu,sched-rt-util" PASS
 
-    # ── Priority inversion through fast IPC (wave 11 PIFAST) ──
+    # ── Priority inversion through fast IPC ──
     #
     # `kernel/src/smokes/pifast_smoke.rs`: a priority-13 kernel client calls a
     # priority-24 server through SYS_IPC_CALL (582, the real dispatch
@@ -25837,7 +25837,7 @@ PYEOF
     # serving at the client's 13 (the donation is why), `[PIFAST] FAIL`
     # otherwise — a line only that path prints.
     #
-    # Measured before the donation existed (wave 11, three runs per ISA): p99
+    # Measured before the donation existed (three runs per ISA): p99
     # 1.98 ms (one hog burst), 249-250 of 1000 calls over the bound, worst
     # 1.1-1.6 s (the boot's `behavior` task, priority 14, also sits between
     # client and server while it runs its bench sweep). With it (three runs
@@ -25930,7 +25930,7 @@ PYEOF
     par_row pifast_row "pifast: aarch64 inversion" arm "qemu,pifast-smoke" PASS
     par_row pifast_row "pifast: aarch64 no-donation canary" arm "qemu,pifast-donation-canary" CANARY
 
-    # ── Multi-source port wait (wave 11, PORTWAIT) ────────────────────────
+    # ── Multi-source port wait (PORTWAIT) ────────────────────────
     #
     # ipctest's phase P on both ISAs: a waiter binds a far timer to a port;
     # the timer, re-armed 100 ms ahead, must be the next event of
@@ -25941,16 +25941,16 @@ PYEOF
     # line; the rest of ipctest is judged by the ipctest rows above. The
     # phase had nine verdicts while it also bound a `Cap<Channel>` (three of
     # them the relay's); the v1 channel and its port source are gone
-    # (2026-10-13), and so are those four.
+    #, and so are those four.
     #
     # Canary (`portwait-timer-canary`): a timer bind answers 0 and arms
     # nothing. The row must then read `FAIL  P/the timer source fired`
     # (printed only by the failure path), after the 5 s outer deadline of the
     # timer wait, while the io_ring verdict, which follows that wait, stays
-    # `ok` (the phase ran past it). Measured when this landed (wave 11): the
+    # `ok` (the phase ran past it). Measured when this landed: the
     # timer 1.0 ms late, the timeout 0.9 ms late on riscv64, 1.1 / 1.9 ms on
     # aarch64; the canary's timer wait answered 0 after 5.00 s on both
-    # (2026-10-24, main ac10a4be: 1.95 / 1.29 ms and 1.29 / 1.10 ms, the
+    # (main ac10a4be: 1.95 / 1.29 ms and 1.29 / 1.10 ms, the
     # canary 5.002 s and 5.003 s). Compile-error bucket: a build failure is
     # its own FAIL.
     portwait_row() { # portwait_row <label> <isa: rv|arm> <features> <expect: PASS|CANARY>
@@ -26046,7 +26046,7 @@ PYEOF
     # scenario that covers TCP handshake and RX checksum validation in both
     # directions. Has its own harness because it drives two QEMU processes.
     # vsbench: the same ring-3 work on both kernels, and the check that step 9
-    # actually names. Until 2026-09-07 the parity claim rested on one manual
+    # actually names. The parity claim rested on one manual
     # run recorded by hand; nothing re-ran it, and the Linux half
     # was not built by `make userspace` — long enough for that lane to grow a
     # comment saying the reap "should be taken back in" and dead code marked
@@ -26063,7 +26063,7 @@ PYEOF
     #
     # The ring lanes (`ring-*`, `ioring-*`) are measured a second time on the
     # gate kernel and on Linux under `-accel tcg,thread=single -icount
-    # shift=0,sleep=off` (owner decision 2026-09-28): under MTTCG a parked
+    # shift=0,sleep=off`: under MTTCG a parked
     # gate column's ring exchange waits on a halted vCPU's host-thread wake,
     # which scales with host load. That pass prints its own table in
     # instructions per op and must pass assertions 1-3 as well; see
@@ -26080,7 +26080,7 @@ PYEOF
     }
     par -s "bench: vsbench vs Linux" vsbench_row   # wall-clock lanes, two kernels
 
-    # Receipts default (owner 2026-10-22): DECISION_RECORDS_DEV, the decision
+    # Receipts default: DECISION_RECORDS_DEV, the decision
     # ring and every record site, is on in every preset but HWCLASS_EMBEDDED on
     # the condition that it costs at most 1% (10 per mille). The gate kernel is
     # built with it off and on from the same qemu.config and both boot the ipc
@@ -26088,7 +26088,7 @@ PYEOF
     # pipe, file-dup, spawn+wait) under -icount at one hart, and compares the
     # retired instructions per op where both columns print them, else the
     # guest ns/op (tools/bench/vsbench_cost.sh, which prints the per-lane table;
-    # measured 2026-10-22: at most 6 per mille, spawn+wait, whose instruction
+    # measured: at most 6 per mille, spawn+wait, whose instruction
     # count moves ~1 per mille between two runs of one kernel). At one hart a
     # wake never lands on another CPU, so the migrating-wake record does not
     # fire here: the row bounds the record sites the lanes pass on one CPU.
@@ -26168,8 +26168,8 @@ PYEOF
     # under -icount (where ns/op is an instruction count), may not cost more than the
     # baseline in tools/bench/net_lane_baseline.tsv (`tools/bench/net_lane_gate.py`);
     # the Linux column prints beside them. The baseline is recorded from the tree
-    # before the queue pair, main at d316a8009 (the bundle
-    # ~/azos-backup/main-2026-11-06-b68.bundle), at the start of the test phase:
+    # before the queue pair, main at d316a8009,
+    # at the start of the test phase:
     # recording needs QEMU, which waits for that phase, so until then a lane the
     # baseline does not hold is skipped and printed as SKIP. riscv64 runs the net and
     # tcp sections through vsbench_compare.sh, aarch64 through vsbench_aarch64.sh;
@@ -26228,7 +26228,7 @@ PYEOF
     }
     par -s -n 2 "network: two-node TCP" net_pair_row   # two QEMUs on one link
 
-    # ── Wave 15 (FIX1): a loopback delivery survives a preemption inside it ──
+    # ── FIX1: a loopback delivery survives a preemption inside it ──
     #
     # The product column's `udp-roundtrip` (vsbench, -icount) lost a reply:
     # the loopback recursion guard in `ip::send_flags` was ONE global flag,
@@ -26244,7 +26244,7 @@ PYEOF
     # udp-roundtrip number. Canary: `loopback-guard-canary` puts the old
     # global flag back without the guard, and the lane must report the lost
     # round trip (only the failure prints `udp-rt: ...`). Compile-error
-    # bucket: a build failure is its own FAIL. 2026-10-24: both rv rows hung
+    # bucket: a build failure is its own FAIL. Both rv rows hung
     # in boot — the probe's reschedule inside the boot network self-test
     # (Kconfig BOOT_SELFTESTS, which the gate turns on) switched away from
     # `kernel_main`, so `arch_enter_scheduler` never set `sie.STIE`; the
@@ -26315,7 +26315,7 @@ PYEOF
     par -s "net: loopback canary (rv)" loopback_preempt_row rv qemu,loopback-preempt-probe,loopback-guard-canary canary
     par -s "net: loopback canary (arm)" loopback_preempt_row arm qemu,loopback-preempt-probe,loopback-guard-canary canary
 
-    # ── The user shell (wave 11), both ISAs ──────────────────────
+    # ── The user shell, both ISAs ──────────────────────
     #
     # These rows TYPE. Each boots the gate kernel with `build/disk-sh.img` /
     # `build/disk-aarch64-sh.img` (the drivers base plus SH.ELF and
@@ -26324,7 +26324,7 @@ PYEOF
     # one byte per 20 ms, on both ISAs), and then requires every marker. A
     # line `^C` sends 0x03 and waits for the prompt to come back; `#wait RE`
     # waits for an extended regex in the log; `#sleep N` waits N seconds;
-    # `#intr` sends 0x03 without waiting for anything (wave 13: `^C` to a
+    # `#intr` sends 0x03 without waiting for anything (`^C` to a
     # Linux job reading the console, which the shell's prompt never follows);
     # `!line` is typed without waiting for a prompt after it. `USH_FAULTS=N` requires exactly N
     # deliberate user-fault kills (see the check below). `USH_FORBID` is an extended
@@ -26378,7 +26378,7 @@ PYEOF
         fi
         [ "$LX_BUSYBOX_STATE" = yes ]
     }
-    # Wave 13: `LXTHR.ELF` built (`make lxthreads`, zig) and its volumes made.
+    # `LXTHR.ELF` built (`make lxthreads`, zig) and its volumes made.
     lx_threads_ready() {
         if [ -z "${LX_THREADS_STATE:-}" ]; then
             LX_THREADS_STATE=no
@@ -26572,7 +26572,7 @@ PYEOF
             stall_report
         fi
     }
-    # Wave 15 (TRACE, static keys): the W^X canary. `trace-wx-canary` makes
+    # The W^X canary. `trace-wx-canary` makes
     # the static-key patcher write a site through the EXECUTABLE text
     # mapping instead of its never-executable alias (azos_mm::text_poke).
     # W^X must refuse it: the boot dies on a kernel store fault, and the
@@ -26617,7 +26617,7 @@ PYEOF
     }
     # The shell volumes, rebuilt once per run, here. The first row that needs
     # one only builds it when no `.pristine` exists, so a snapshot left by an
-    # earlier run on an older tree was booted as-is (2026-10-03: LXHELLO.ELF
+    # earlier run on an older tree was booted as-is (LXHELLO.ELF
     # "not permitted" after a merge changed the image's rows). Not FATAL here:
     # a volume that does not build is reported by the rows that use it.
     # USB mass storage with its volume (Kconfig USB_STORAGE_VOLUME): a stick on
@@ -26816,7 +26816,7 @@ args vk1 'vk 2'" 40 \
         # The input server (Kconfig INPUTD, on in the QEMU defconfigs): `input
         # watch` takes the focus and prints what the virtio keyboard sends, the
         # keys that make console bytes included (`q`, `x`) and the ones that do
-        # not (F5, F6); the next watch moves the focus; Ctrl+Alt+Delete is never
+        # not (F6); the next watch moves the focus; Ctrl+Alt+Delete is never
         # printed, takes the focus (`focus lost`) and is counted (`sak 1`). The
         # input server is the one arbiter of the keyboard: the shell gets it
         # only while nobody holds the focus (the commands themselves were typed
@@ -27089,7 +27089,7 @@ kill 2" 120 \
         # the foreground job itself (`console_signal`), whatever the
         # priorities. The `[SPAWN][PRIO]` line pins the number the tool
         # actually ran at (shell 26, tool 27).
-        # Wave 14: the `[SPAWN][PRIO]` line of a spawn that applied its row's
+        # The `[SPAWN][PRIO]` line of a spawn that applied its row's
         # priority as declared is debug output (`spawn-log`); both rows ask
         # for it, and so do the `linux:` rows below that wait for `row=<ELF>`
         # (static ELF, busybox sh, busybox Kconfig row and its canary,
@@ -27130,7 +27130,7 @@ echo after-reboot
 power suspend" 150 \
             "[AUTHORITY] sched_hz set REFUSED" "[AUTHORITY] pm suspend REFUSED" "(recorded)" \
             "power: sched_hz refused" "power: suspend refused"
-        # Owner decision 2026-10-23 (Q1): an orderly power-off or reboot makes
+        # An orderly power-off or reboot makes
         # what was written durable on both layers. POWER.ELF asks `Power::sync`
         # first; the kernel's orderly path then syncs every volume again,
         # flushes the boot disk and shuts down its controller and the
@@ -27140,7 +27140,7 @@ power suspend" 150 \
         # not in the typed line). The reboot row is the same path through
         # `Power::reboot` on one QEMU. No canary here: the time the shell takes
         # to start POWER.ELF is longer than FS_WRITEBACK_MAX_AGE_MS on a loaded
-        # host, so `fs-wb` may write the file first (measured 2026-10-23: the
+        # host, so `fs-wb` may write the file first (measured: the
         # sync-skip canary kept the file). The deterministic canary is the
         # kernel smoke's (`power-off: the kernel's sync keeps a written file`).
         # QEMU's virtio-blk cannot tell the device half (its cache is the
@@ -27172,7 +27172,7 @@ power reboot
 wc < /fat/DUR.TXT" 240 \
             "[POWER] sync by tid" "power: filesystems synced" "[ORDERLY] filesystems: " "[ORDERLY] disk: flush " \
             "[POWER] reboot by tid" "1 1 11"
-        # Wave 12: the other privileged families' tools (`FLIGHT.ELF`,
+        # The other privileged families' tools (`FLIGHT.ELF`,
         # `BEHAVIOR.ELF`, `CONFIG.ELF`, `OTA.ELF`), each through the
         # endpoint its row grants, running the console's
         # own command bodies; and `ps` (TOOLBOX.ELF) over the introspection
@@ -27180,7 +27180,7 @@ wc < /fat/DUR.TXT" 240 \
         # reversible operations: arm then disarm, a layer off then on, a key
         # set then read back, the status and a rollback that a fresh volume
         # answers "already on the last good slot". `ps` holds the full task
-        # view (`Cap<Task>` READ on "tasks", owner round 48), so it lists a
+        # view (`Cap<Task>` READ on "tasks"), so it lists a
         # task that is not its own descendant: an idle task (PPID 0, PRI 31,
         # running), whatever its TID: since the camera's capture task (B2)
         # is created first, the idle tasks no longer start at TID 1.
@@ -27233,7 +27233,7 @@ exit 1
 !exit 1
 #wait $RECOVERY_PROMPT_RE" 180 \
             "exited: restarting" "[compmgr] restart SH.ELF" "[compmgr] give-up TERMD.ELF" "[CONSOLE] console program /fat/TERMD.ELF gave up: recovery console (" "re:$RECOVERY_PROMPT_RE"
-        # ── The Linux personality (wave 12) ──────────────────────
+        # ── The Linux personality ──────────────────────
         # `LXHELLO.ELF` is a static Linux ELF (`userspace/tests/lxhello`, our
         # own C, no C library) run from the shell under its row's
         # `abi = "linux"` (`linux-abi-test`). It checks its initial stack
@@ -27333,7 +27333,7 @@ cat /fat/RTOUT.TXT"
                 "$lx_rt_script" 150 "${lx_rt_markers[@]}"
             USH_KERNEL="$lx_rt_kc" USH_DISK=lxabi USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "linux: hosted spawn canary, no startup block ($ush_isa)" "$ush_isa" "$ush_feat,linux-abi-test,spawn-log,hosted-startup-canary" FAIL \
                 "$lx_rt_script" 150 "${lx_rt_markers[@]}"
-            # The fork child's descriptors and capabilities (wave 13, NATFORK;
+            # The fork child's descriptors and capabilities (NATFORK;
             # `crates/core/syscall/src/natfork.rs`) are the hosted fork's now:
             # a native process has no fork of its own, and the runtime copies
             # its process with `SYS_FOREIGN_FORK`. A child inherits its
@@ -27409,14 +27409,14 @@ echo after-lx" 120 \
             "lxhello
 echo after-lx" 120 \
             "lx: hello from a static Linux ELF" "lx: done failures=0"
-        # Shared open file descriptions (round 48): a descriptor inherited
+        # Shared open file descriptions: a descriptor inherited
         # across fork, or dup'ed, shares one offset with its original, as in
         # Linux. LXHELLO's child writes "a" to an inherited /tmp descriptor,
         # the parent then writes "b"; the file must read "ab" (the main row
         # above). Canary `fd-private-offset-canary`: every dup gets a private
         # copy of the offset, the parent overwrites the child's byte and the
         # file reads "b".
-        # Wave 13 (security): LXHELLO's `mprot:` checks (a store to PROT_READ
+        # LXHELLO's `mprot:` checks (a store to PROT_READ
         # memory, and to memory `mprotect` made read-only, faults; PROT_EXEC is
         # refused; a PROT_NONE mapping is made usable). Canary
         # `mmap-prot-canary`: read-write mappings, `mprotect` a no-op.
@@ -27459,7 +27459,7 @@ echo after-lx" 150 \
 echo after-lx" 150 \
                 "lx: thread pointer kept across switches ok"
         fi
-        # Wave 13 (SIGNALS): the main row above runs LXHELLO's signal checks
+        # The main row above runs LXHELLO's signal checks
         # (a handler at kill's return with siginfo, the FP file and every
         # register back after rt_sigreturn, a mask holding a signal pending,
         # SIGCHLD at a child's exit, a default action ending a task with
@@ -27480,7 +27480,7 @@ echo after-lx" 150 \
             "lxhello
 echo after-lx" 150 \
             "lx: sigpipe ok"
-        # Wave 13 (orphans): LXHELLO's `stage_orphans` — a child marked with
+        # LXHELLO's `stage_orphans` — a child marked with
         # `prctl(PR_SET_CHILD_SUBREAPER)` adopts the grandchild its own child
         # leaves behind (`getppid`, `wait4(-1)`; the main row above). Canary
         # `orphan-reparent-canary`: nothing is re-parented, the grandchild's
@@ -27489,7 +27489,7 @@ echo after-lx" 150 \
             "lxhello
 echo after-lx" 150 \
             "lx: orphan adopted by its subreaper ok"
-        # Wave 13: the shell is a child subreaper. `lxhello orphan` (a job)
+        # The shell is a child subreaper. `lxhello orphan` (a job)
         # forks a grandchild and exits at once; the grandchild sees its parent
         # move off the dead job (`lx: orphan ppid=N adopted`, exit 90), and the
         # shell, idle at its prompt, reaps it and says so (`[reaped] tid N,
@@ -27512,7 +27512,7 @@ echo after-orphan" 120 \
 #sleep 2
 echo after-orphan" 120 \
             "lx: orphan forked, parent exits" "lx: orphan ppid=0 not adopted" "after-orphan"
-        # Wave 13 (THREADS): `LXTHR.ELF` (`make lxthreads`: our C, static
+        # `LXTHR.ELF` (`make lxthreads`: our C, static
         # musl by zig cc) uses pthreads as any Linux program does: four
         # threads contend on a mutex (futex wait/wake), each keeps its own
         # `__thread` value, all are joined (musl waits on a futex and on the
@@ -27545,7 +27545,7 @@ echo after-lxthr \$?" 150 \
                 "lxthr: FUTEX_CMP_REQUEUE refuses a changed word with EAGAIN ok" \
                 "lxthr: every requeued waiter runs after the target's wake ok" \
                 "lxthr: done failures=0" "after-lxthr 0"
-            # Wave 13 (SIGNALS) canaries over the same run: a process-directed
+            # Canaries over the same run: a process-directed
             # signal always to the leader (which blocks it); a tgkill posted
             # as the process's (an unblocked thread takes it); wait4 reporting
             # a signalled child as exited 128 + n.
@@ -27578,7 +27578,7 @@ echo after-lxthr \$?" 150 \
                 "lxthr: leader-exit child wedged" \
                 "lxthr: a leader's pthread_exit releases its clear-tid word FAIL" \
                 "lxthr: done failures=1"
-            # Wave 15: a Linux execve from a thread that is not the leader
+            # A Linux execve from a thread that is not the leader
             # (musl pthreads; the check is LXTHR's `exec_from_thread`): the
             # kernel ends the other three threads (the leader in a timed
             # sleep, one in a condition wait with no deadline, one in a timed
@@ -27597,7 +27597,7 @@ echo after-lxthr \$?" 150 \
                 "lxthr
 echo after-lxthr \$?" 150 \
                 "lxthr: execve from a thread: the exec'ing thread is the only one left (gettid == getpid) FAIL"
-            # Wave 15 (K2): a Linux writev is ONE transfer (LXTHR's
+            # A Linux writev is ONE transfer (LXTHR's
             # `writev_atomic`: a thread's 50 + 3000-byte writev waits whole
             # for pipe room; main's 40-byte write lands before it, never
             # between its segments). Canary `writev-per-segment-canary` (one
@@ -27611,7 +27611,7 @@ echo after-lxthr \$?" 150 \
         else
             printf "  %-26s%s\n" "linux: pthreads ($ush_isa)..." "SKIP (make lxthreads failed; see $CI_LOG_DIR/lxthreads-build.log)"
         fi
-        # Wave 14 (security): a fork shares a read-only page with its child as
+        # A fork shares a read-only page with its child as
         # it is; the child's mprotect(RW) made the leaf writable in place and
         # its store landed in the parent's frame. LXHELLO forks after making a
         # page read-only; the child mprotects it read-write and stores, and
@@ -27626,7 +27626,7 @@ echo after-lx" 150 \
             "lxhello
 echo after-lx" 150 \
             "lx: mprot: the parent's read-only page is unchanged ok"
-        # Wave 15 (TRACE): the kernel tracer read live from ring 3. Per-CPU
+        # The kernel tracer read live from ring 3. Per-CPU
         # lock-free SPSC rings in one Cap<Trace>-gated region
         # (crates/core/rings/src/region/trace.rs, crates/core/trace); TRACECTL.ELF
         # maps it (the tracer's ops), sets the class mask and drains
@@ -27829,7 +27829,7 @@ echo after-tamper \$?" 150 \
                 "busybox sh -c 'echo bb-tamper-\$(echo ran)'
 echo after-tamper \$?" 150 \
                 "changed between its hash and its load (digest mismatch)"
-            # Wave 13 (SIGNALS): an interactive BusyBox `sh`. The shell lends
+            # An interactive BusyBox `sh`. The shell lends
             # the console to its foreground Linux job (SPAWN_F_CONSOLE_IN):
             # ash reads typed lines through the kernel's line discipline
             # (they were end of file before), and `^C` while `sleep` runs is
@@ -27883,7 +27883,7 @@ echo after-bb-int \$?"
                     printf "  %-26s%s\n" "$bb_k ($ush_isa)..." "SKIP (the x86_64 ring-3 runtime answers no execve)"
                 done
             else
-                # Wave 13: `execve` into ANOTHER row. With `linux-exec-row-test`
+                # `execve` into ANOTHER row. With `linux-exec-row-test`
                 # BUSYBOX.ELF's row holds `/fat` and the grant to exec
                 # LXHELLO.ELF, whose row holds only `/tmp`: BusyBox writes /fat,
                 # then execs LXHELLO, which runs under LXHELLO's row (its /fat
@@ -27905,7 +27905,7 @@ echo after-x \$?"
                     "$exec_refused_script" 150 \
                     "execve REFUSED: row BUSYBOX.ELF holds no launch grant for LXHELLO.ELF (exec-grant record)"
             fi
-            # Wave 13: the BusyBox row is a deployment's, not only the gate's.
+            # The BusyBox row is a deployment's, not only the gate's.
             # A kernel built from a `.config` with USERSPACE_GPL + BUSYBOX
             # (the one `make busybox` used) and NO test feature carries the
             # row and the shell's grant: BusyBox runs from the shell.
@@ -27914,7 +27914,7 @@ echo after-x \$?"
             bb_cfg_rv="$AZOS_OUT/target/linux-busybox.config"
             bb_cfg_arm="$AZOS_OUT/target/linux-busybox-aarch64.config"
             # Regenerated every run, as lx_busybox_ready does for riscv64: a
-            # copy cached in target/ outlives new Kconfig symbols (wave 14:
+            # copy cached in target/ outlives new Kconfig symbols (e.g.
             # MM_REGIONS_PER_SPACE missing broke this row's build).
             sed -e 's/^# CONFIG_USERSPACE_GPL is not set$/CONFIG_USERSPACE_GPL=y/' "$AARCH64_CONFIG" >"$bb_cfg_arm"
             (cd "$REPO_ROOT" && KCONFIG_CONFIG="$bb_cfg_arm" python3 -m olddefconfig >/dev/null 2>&1)
@@ -27948,19 +27948,19 @@ echo after-prod \$?" 150 \
 
     # ── sh: lockdown (both ISAs) ───────────────────────────────────────────
     #
-    # Successor of SEC2's `lockdown: console unseeded` rows (owner round 38:
-    # lockdown = no kernel console). A kernel built from the primary column's
+    # Successor of SEC2's `lockdown: console unseeded` rows (lockdown =
+    # no kernel console). A kernel built from the primary column's
     # config with only CONFIG_CONSOLE_LOCKDOWN turned on, in a target dir of
     # its own (the option changes `azos_limits`; in the shared dir it
     # would rebuild every crate twice per gate), booted with the shell volume.
     # Needs: no kernel console task (its line), the user shell answering, the
     # console's `pm suspend` absent from it (`command not found`), and the
     # privileged tools REFUSED at `SYS_SPAWN_EX` — the lockdown shell row holds
-    # no launch grant on `POWER.ELF` nor (wave 12) on `FLIGHT.ELF` — with the
+    # no launch grant on `POWER.ELF` nor on `FLIGHT.ELF` — with the
     # refusal recorded. Forbidden: anything only the kernel console prints
     # (the recovery prompt, `user shell pending`; the row waits past
     # `SH_START_TIMEOUT_S` first), and any of the three having run.
-    # Canaries (by hand, 2026-10-03, rv): the lockdown row with `SH_CAPS` (the
+    # Canaries (by hand, rv): the lockdown row with `SH_CAPS` (the
     # launch grant kept): `not permitted` missing and the rate is set; the
     # kernel console task created under lockdown: its lockdown line missing
     # and `user shell pending` printed.
@@ -28504,7 +28504,7 @@ busybox sh -c 'x=box; echo bb-\$x-ok'
     # (`safe-mode-smoke` crashes boots 1-3 after their unconfirmed mark), then
     # boot 4 must print the recovery reason and the recovery prompt, and must not start
     # the user shell: the component manager's `[compmgr] start SH.ELF` line
-    # (printed in every build, debug or not) is forbidden. Wave 14: it replaces the
+    # (printed in every build, debug or not) is forbidden. It replaces the
     # spawn's `SH.ELF profile` line, which a release build no longer prints.
     # Canary `safe-mode-launch-canary` (the boot launcher ignores safe mode):
     # boot 4 starts the shell and the row must be red on that line.
@@ -28939,7 +28939,7 @@ sys.exit(0 if "login: alice" in t else 1)' "$log" || missing="$missing [login: a
     kbuild "qemu" >/dev/null 2>&1 || true
     a64_kbuild "qemu" >/dev/null 2>&1 || true
 
-    # ── Generic domain: a kernel without the robot crates (wave 11) ─────────
+    # ── Generic domain: a kernel without the robot crates ─────────
     #
     # Every row above builds the robot worked example: the shipped defconfigs
     # select PRESET_ROBOT (USE_ROBOT), so the Kconfig-derived features carry
@@ -28955,7 +28955,7 @@ sys.exit(0 if "login: alice" in t else 1)' "$log" || missing="$missing [login: a
     # `llvm-nm` finds no symbol of a robot crate in the ELF. Both checks are
     # run on the robot kernel of the same ISA first and must FIND robot crates
     # and symbols there, so a query that went blind cannot pass.
-    # Canary (hand-run, wave 11): appending `use-robot` to the Generic
+    # Canary (hand-run): appending `use-robot` to the Generic
     # feature list prints `FAIL ... robot symbols in the Generic kernel` with
     # the symbol count; the compile-error bucket is a .config that selects
     # USE_ROBOT built without the feature (kernel/src/main.rs's guard).
@@ -29214,7 +29214,7 @@ sys.exit(0 if "login: alice" in t else 1)' "$log" || missing="$missing [login: a
         host_job linux_off_row "linux off: canary, the Linux kernel is flagged ($lo_isa)" "$lo_isa" FAIL
     done
 
-    # ── Energy-aware scheduling, stages E0-E2 (wave 12 ENERGY) ─────
+    # ── Energy-aware scheduling, stages E0-E2 ─────
     #
     # `kernel/src/smokes/energy_smoke.rs` (feature `energy-smoke`, which turns
     # on Kconfig ENERGY's `energy` feature and gives the built-in topology a
@@ -29315,7 +29315,7 @@ sys.exit(0 if "login: alice" in t else 1)' "$log" || missing="$missing [login: a
         par_row energy_row "energy: $en_name validate canary" "$en_isa" "qemu,energy-validate-canary" refuse
         par_row energy_row "energy: $en_name dispatch canary" "$en_isa" "qemu,energy-util-canary" util
         par_row energy_row "energy: $en_name switch-out canary" "$en_isa" "qemu,energy-switchout-canary" util
-        # Wave 13: the balanced fake model opts in to the
+        # The balanced fake model opts in to the
         # DeadlineFloor governor and the TEO-like idle governor. Canaries: the
         # deadline floor ignores reservations (gov); the idle choice ignores
         # the RT slack (idle); the kernel's RT-slack input reads "none" (idle).
@@ -29425,7 +29425,7 @@ sys.exit(0 if "login: alice" in t else 1)' "$log" || missing="$missing [login: a
         par_row thermal_row "thermal: $th_name floor canary" "$th_isa" "qemu,thermal-floor-canary" floor
     done
 
-    # ── Wave 15 (VA): the vDSO page is never writable, both ISAs ───────────
+    # ── VA: the vDSO page is never writable, both ISAs ───────────
     #
     # Every address space maps the ONE vDSO frame read-only. mprotect(RW) on it
     # set the write bit in place while the frame had no other counted holder,
@@ -29444,7 +29444,7 @@ echo after-lx" 150 \
             "lx: mprot: mprotect(RW) on the vDSO is refused ok" "lx: mprot: a store to the vDSO faults ok"
     done
 
-    # ── Wave 15 (VI): signals across an exec from a thread, both ISAs ───────
+    # ── VI: signals across an exec from a thread, both ISAs ───────
     #
     # LXHELLO's `stage_exec_signals`: a fork child's thread that is not its
     # leader execs; the new image holds the child's PID, both pending signals
@@ -29469,7 +29469,7 @@ echo after-lx" 150 \
             "lx: exec-sig: the process's pending signal is kept ok"
     done
 
-    # ── Wave 15: robust futex lists and a process signal on an ending thread ─
+    # ── robust futex lists and a process signal on an ending thread ─
     #
     # LXHELLO's `stage_robust`: a fork child's raw CLONE_THREAD thread
     # registers a robust list (set_robust_list) and ends with SYS_exit (not
@@ -29549,7 +29549,7 @@ hv_guest_judge() {
 }
 par -h "hv: guest banner judge" hv_guest_judge
 
-# ── hv: the riscv64 guest entry under H (S6, QEMU `-cpu rv64,h=on`) ───────────
+# ── hv: the riscv64 guest entry under H (QEMU `-cpu rv64,h=on`) ───────────
 #
 # `Hypervisor::enter` of riscv64 (arch/riscv/src/ext/hv/guest.rs)
 # is the first code that runs a guest: the CSRs it loads, `hfence.gvma`, the
@@ -29583,7 +29583,7 @@ hv_guest_enter_rv() {
 }
 par -h -s "hv: riscv64 guest enters (h=on)" hv_guest_enter_rv
 
-# ── The module loader end to end (wave 12, LXL0; both ISAs) ────
+# ── The module loader end to end (both ISAs) ────
 #
 # `lx-server` kernels (Kconfig LINUX_DRIVERS + LX_SERVER_SKELETON) start the
 # empty Linux driver server LXSRV.ELF from its topology row; only
@@ -29774,7 +29774,7 @@ PY
                 why="a FAIL/REFUSED line for a Linux module"
             else v=PASS; fi ;;
         hwcap|hwcap-canary|zknh)
-            # The vDSO hwcap word this QEMU model must produce (wave 13;
+            # The vDSO hwcap word this QEMU model must produce (
             # each ISA numbers its bits from 0): aarch64 `-cpu max`: crc32
             # aes pmull sha2 atomics (bits 0-4); riscv64 default `rv64`: zbb
             # zbc (bits 0-1); `-cpu rv64,zknh=true`: + zknh (bit 3).
@@ -29859,7 +29859,7 @@ par_row lx_module_row "lx: Kbuild fixture canary (rv)"         rv  "qemu,CONFIG_
 par_row lx_module_row "lx: Kbuild xz_dec.ko runs (arm)"        arm "qemu,CONFIG_LINUX_DRIVERS=y,lx-server"        linux        PASS
 par_row lx_module_row "lx: Kbuild module tamper refused (arm)" arm "qemu,CONFIG_LINUX_DRIVERS=y,lx-server"        linux-tamper PASS
 par_row lx_module_row "lx: Kbuild fixture canary (arm)"        arm "qemu,CONFIG_LINUX_DRIVERS=y,lx-server"        linux-other  FAIL
-# Wave 13: the vDSO hwcap word (ID registers / device tree), lxbase's CRC
+# The vDSO hwcap word (ID registers / device tree), lxbase's CRC
 # path chosen from it, the kernel SHA-256 path, and lxsrv's counter frequency
 # equal to the kernel's. The canary clears the CRC32 bit: lxbase must fall
 # back to its tables (and still decode correctly), so the row goes red.
@@ -29868,9 +29868,9 @@ par_row lx_module_row "lx: hwcap + zknh SHA-256 (rv)"          rv  "qemu,CONFIG_
 par_row lx_module_row "lx: hwcap (arm)"                        arm "qemu,CONFIG_LINUX_DRIVERS=y,lx-server"        hwcap        PASS
 par_row lx_module_row "lx: hwcap canary, CRC32 bit cleared (arm)" arm "qemu,CONFIG_LINUX_DRIVERS=y,lx-server,hwcap-clear-canary" hwcap-canary FAIL
 par_row lx_module_row "lx: hwcap canary, Zbc bit cleared (rv)"    rv  "qemu,CONFIG_LINUX_DRIVERS=y,lx-server,hwcap-clear-canary" hwcap-canary FAIL
-# ── RC input and geofence wired into the safety path (wave 15) ─────────────
+# ── RC input and geofence wired into the safety path ─────────────
 #
-# Owner decision: the RC receiver and the geofence were inert (no byte source
+# The RC receiver and the geofence were inert (no byte source
 # fed the SBUS decoder, nothing called `geofence_set` on a normal boot). Both
 # are now Kconfig subsystems (config/subsys/Kconfig.robot RC_INPUT / GEOFENCE, robot
 # default y, kernel features `rc-input` / `geofence`), and these rows prove

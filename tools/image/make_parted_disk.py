@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-"""Build the gate's partitioned disk images (wave 9; GPT: records partition).
+"""Build the gate's partitioned disk images (GPT: records partition).
 
 Usage: make_parted_disk.py [--gpt | --part1 VOL.img] SRC.img OUT.img
 
@@ -18,7 +18,7 @@ the FAT32 boot sector at LBA 0). Without `--gpt`, OUT is a classic-MBR medium:
   last 8 sectors         the reserved tail `kernel/src/reserved_tail.rs` keeps
                          (TAIL_SECTORS), inside no partition,
                          copied from SRC's own tail: it holds the device
-                         record CONFIG.SIG v2 is bound to (wave 11), so the
+                         record CONFIG.SIG v2 is bound to, so the
                          volume's signed CONFIG.INI stays this device's
 
 With `--gpt`, OUT is a GPT medium laid out to its end, as gdisk and Linux

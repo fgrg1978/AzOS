@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-# The gate's short tiers (wave 15). `make ci` is the full gate (N2).
+# The gate's short tiers. `make ci` is the full gate (N2).
 #
 #   tools/gate/gate_tier.sh n0   `make check` for riscv64, aarch64 and x86_64 (generic, robot, microvm), the
 #                           output-dir lint (tools/lint/out_dir_lint.py), the gate

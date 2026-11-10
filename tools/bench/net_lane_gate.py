@@ -13,8 +13,7 @@ binary, so it has the tight tolerance; the TCP lanes run against a host peer
 beside the guest and are not bit-exact, so their tolerance is wide
 (`TOLERANCE_PERMILLE`).
 
-The baseline is recorded from the tree before the queue pair (main at
-d316a8009, the bundle ~/azos-backup/main-2026-11-06-b68.bundle), at the start of
+The baseline is recorded from the tree before the queue pair, at the start of
 the test phase; until then a lane without a baseline is skipped. A baseline
 recorded after the change would make whatever the change costs the reference. `check` fails a lane that is missing from the log or that costs more than the
 baseline by `tolerance_permille`, and skips (exit 0, "SKIP") a lane the
