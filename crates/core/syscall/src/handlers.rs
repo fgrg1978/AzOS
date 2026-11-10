@@ -871,7 +871,7 @@ fn holds_companion_link_grant() -> bool {
 /// the operator's signed clear can still arrive over the link that carries it.
 /// Every other socket of that task, and every other task, stays refused.
 fn companion_link_exempt(holds_grant: bool, dest: Option<V4Peer>, peer: Option<V4Peer>) -> bool {
-    holds_grant && dest.is_some() && dest == peer
+    !cfg!(feature = "link-exempt-canary") && holds_grant && dest.is_some() && dest == peer
 }
 
 /// May the caller write socket `fd` (a stream socket it owns) although

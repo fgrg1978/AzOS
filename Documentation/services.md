@@ -1107,7 +1107,7 @@ degraded mode refuses every motor write); a drone never has its motors cut in th
 engine starts no manoeuvre and the kernel hands a server-driven flight (Auto, PosHold) to the
 flight failsafe, which holds position and, after `HANDOFF_HOLD_US`, lands; a humanoid holds
 its posture, which with no posture code stops its joints through the same degraded mode. A
-reconnect lifts none of it: the operator's signed degrade clear lifts the ground profiles'
+reconnect lifts none of it, and containment does not close the link: the engine's socket to the configured companion is exempt from the untyped socket refusal (the grant is the `authority` endpoint, so no other task and no other socket of the engine), so the operator's clear can arrive and a lost session can be dialled again. The operator's signed degrade clear lifts the ground profiles'
 stop, and a drone's handoff lapses on a new session after one that ended or went silent, or on
 the operator's clear, and when the drone is disarmed (a landing begun continues; a missing
 verdict coming back lifts nothing). An e-stop still cuts under every profile.

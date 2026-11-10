@@ -9,6 +9,9 @@ description = "Host-side tests for crates/core/syscall/src/handlers.rs. Excluded
 # Run with:  cd tests/host/syscall-tests && cargo test --release
 
 [features]
+# Mirrors azos_syscall's (the pulled-in handlers.rs): the companion link is not
+# exempt from containment.
+link-exempt-canary = []
 # Gate canary (syscall-tests `fs_tree_caps`): a stat, listing or statfs through a directory
 # capability does not tell the filesystem the directory's root.
 beneath-root-canary = []

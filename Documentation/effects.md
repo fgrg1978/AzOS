@@ -166,6 +166,13 @@ shared by every domain with an actuator.
   joints). The per-profile effects are `azos_behavior::containment`, which the
   engine compiles too. Only the operator's signed degrade clear lifts a
   containment.
+- A contained robot can still send on the companion link, so that clear can
+  arrive: containment refuses every untyped socket write (connect, send,
+  sendto), except those of the task that holds the `authority` endpoint grant
+  (the behaviour engine's row, the only one seeded with it) on a stream socket
+  connected to the configured companion (CONFIG.INI `behavior_server_ip` and
+  `behavior_server_port`; none configured, nothing is exempt). Another socket of
+  that task, a connect elsewhere, and every other task stay refused.
 - The UART bridge (VF2) is the companion's TCP-independent e-stop channel: the
   robot's install claims and initialises the line (independent of `NET`) and
   says at boot whether it is ready (the SoC UART answered and looped a byte

@@ -1131,7 +1131,7 @@ Source: `crates/core/syscall/src/link_key.rs`,
 
 There are two kinds of authenticated link.
 
-**Companion link** (robot domain). The link lives in the ring-3 behaviour engine (`COMPCLI.ELF`); the kernel's part is the `linkkey` endpoint and the UART e-stop reader. A 32-byte pre-shared key is provisioned into
+**Companion link** (robot domain). The link lives in the ring-3 behaviour engine (`COMPCLI.ELF`); the kernel's part is the `linkkey` endpoint and the UART e-stop reader. While containment is armed, that engine's socket to the configured companion (CONFIG.INI `behavior_server_ip:port`) is the one network write still admitted, identified by the `authority` endpoint grant and by the peer address, never by name; it carries the operator's signed clear, and every other socket write of every task stays refused. A 32-byte pre-shared key is provisioned into
 reserved tail sector 0 of the boot medium, as a record with a magic, a version
 and an integrity tag (`tools/sign/link_key_provision.py`). That sector is outside
 the FAT volume and the USB mass-storage export never reports it, so a USB host

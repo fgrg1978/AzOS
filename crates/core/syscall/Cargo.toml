@@ -52,6 +52,10 @@ azos_linux_abi = { workspace = true, optional = true }
 azos_crypto = { workspace = true }
 
 [features]
+# Gate canary (syscall-tests `unit6_contain`): no write is exempt from
+# containment, the companion link's included
+# (`a_contained_engine_writes_only_its_companion_socket` goes red).
+link-exempt-canary = []
 # Gate canary (syscall-tests `fs_tree_caps`): a stat, listing or statfs through a directory
 # capability does not tell the filesystem the directory's root.
 beneath-root-canary = []

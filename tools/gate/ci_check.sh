@@ -12425,6 +12425,7 @@ host_job host_canary_row "fs: a seam without the root serves beneath it canary (
 host_job host_canary_row "fs: a change beneath a directory asks the server first canary" fs-tests mutate-floor-canary a_change_beneath_a_directory_is_refused_before_the_server_is_asked
 host_job host_canary_row "fs: a change by name drops the floor canary" fs-tests mutate-floor-canary a_change_by_name_through_a_backend_that_follows_links_is_refused_beneath_a_floor
 host_job host_canary_row "fs: the tree ops do not tell the root canary (syscall)" syscall-tests beneath-root-canary the_ops_that_change_the_tree_name_the_directory_they_are_rooted_at
+host_job host_canary_row "containment: the companion link exempt canary (syscall)" syscall-tests link-exempt-canary a_contained_engine_writes_only_its_companion_socket
 host_job host_canary_row "linux: the personality's stat and listing ask no tree canary (syscall)" syscall-tests linux-path-unfloored-canary the_personality_stats_and_lists_beneath_the_covering_tree
 host_job host_canary_row "ext4: an open's badge is its slot canary" ext4-tests badge-slot-canary a_badge_from_an_earlier_server_reaches_nothing
 host_job host_canary_row "ext4: a late block completion taken canary" ext4-tests stale-completion-canary a_late_completion_is_dropped
@@ -21863,10 +21864,10 @@ PY
         # process won a race the test should not have had.
         local i=0
         while [ "$i" -lt 240 ]; do
-            # Either peer's own verdict: the lying script's "sent 5 frames", or
+            # Either peer's own verdict: the lying script's "sent N frames", or
             # the serving peer's second ActuatorCmd (its script is two long, so
             # that is the point where both branches have been exercised).
-            grep -aq "sent 5 frames\|ActuatorCmd 'reverse'\|phase 3 done\|reconnect done\|FAIL no-robot" "$blog" 2>/dev/null && break
+            grep -aq "sent [0-9]* frames\|ActuatorCmd 'reverse'\|phase 3 done\|reconnect done\|contained-clear script complete\|FAIL no-robot" "$blog" 2>/dev/null && break
             # The kill-switch scenario's peer never stops driving, so its
             # verdict is the kernel's: the smoke task says when it is done.
             grep -aq "ESTOPGPIO] DONE" "$log" 2>/dev/null && break
@@ -21899,6 +21900,31 @@ PY
         done
         kill "$qpid" 2>/dev/null; wait "$qpid" 2>/dev/null
         kill "$bpid" 2>/dev/null; wait "$bpid" 2>/dev/null
+    }
+
+    # A fresh operator keypair (a fixed seed, apart from the secure-boot key) under
+    # <keydir>, its public half provisioned into <img> as /fat/OPERATOR.PUB.
+    operator_key_provision() {
+        local img="$1" keydir="$2"
+        mkdir -p "$keydir"
+        python3 - "$keydir" <<'PYEOF'
+import sys
+try:
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from cryptography.hazmat.primitives import serialization
+except ImportError:
+    print("error: install the 'cryptography' package: pip install cryptography",
+          file=sys.stderr)
+    sys.exit(1)
+d = sys.argv[1]
+seed = bytes([0x37] * 32)
+priv = Ed25519PrivateKey.from_private_bytes(seed)
+pub = priv.public_key().public_bytes(
+    encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw)
+open(f"{d}/operator_priv.bin", "wb").write(seed)
+open(f"{d}/operator_pub.bin", "wb").write(pub)
+PYEOF
+        mcopy -o -i "$img" "$keydir/operator_pub.bin" ::OPERATOR.PUB
     }
 
     companion_lies_scenario() {
@@ -21942,8 +21968,13 @@ PY
         # jitter 38 ms, the peer PASS, no DEGRADE line). The settle is now a
         # 20 s ceiling ending at the kernel's verdict on the DEGRADE frame,
         # armed OR cleared, so the negative check below still sees a clear.
-        PEER_BOOT_DONE_RE='degraded mode (armed|cleared)' \
-            run_companion_peer_boot "$log" "$blog" $AZOS_OUT/build/disk-companionlies.img 20
+        # The sixth frame is the operator's signed clear: the robot, contained by
+        # the third, still has to receive it over the link.
+        local keydir="$CI_LOG_DIR/companion-lies-keys"
+        operator_key_provision $AZOS_OUT/build/disk-companionlies.img "$keydir"
+        PEER_BOOT_DONE_RE='degraded mode cleared by verified operator authority' \
+            run_companion_peer_boot "$log" "$blog" $AZOS_OUT/build/disk-companionlies.img 20 \
+            --wait 90 --operator-priv "$keydir/operator_priv.bin"
 
         if grep -aq "FAIL no-robot" "$blog" 2>/dev/null; then
             bad; echo "      the robot never connected — no SYN reached the peer."
@@ -21967,13 +21998,24 @@ PY
         # Negative: the empty 0x8A must ARM containment, never clear it.
         # It once read `unwrap_or(DEGRADE_CLEAR)` and a truncated frame
         # disarmed containment — resetting a CONTAINED level to FULL through
-        # the same atomic the assertion above just proved was set.
-        if grep -aq "degraded mode cleared" "$log" 2>/dev/null; then
-            bad; echo "      a DEGRADE frame with no reason byte CLEARED containment"
-            echo "      logs kept: $log $blog"; return
-        fi
+        # the same atomic the assertion above just proved was set. The only
+        # clear is the operator's signed one, after the arming.
         if ! grep -aq "degraded mode armed — reason byte missing" "$log" 2>/dev/null; then
             bad; echo "      the empty DEGRADE frame did not arm containment"
+            echo "      logs kept: $log $blog"; return
+        fi
+        local armed_line cleared_line
+        armed_line=$(grep -an "degraded mode armed — reason byte missing" "$log" | sed -n 1p | cut -d: -f1)
+        cleared_line=$(grep -an "degraded mode cleared" "$log" | sed -n 1p | cut -d: -f1)
+        if [ -n "$cleared_line" ] && [ "$cleared_line" -lt "$armed_line" ]; then
+            bad; echo "      containment was cleared before the empty DEGRADE frame armed it"
+            echo "      logs kept: $log $blog"; return
+        fi
+        # The sixth frame: contained, the robot still takes the operator's signed
+        # clear over the link and lifts containment.
+        if ! grep -aq "degraded mode cleared by verified operator authority" "$log" 2>/dev/null; then
+            bad; echo "      the operator's signed clear never lifted containment"
+            echo "      peer said: $(tail -2 "$blog" 2>/dev/null | tr "\n" " ")"
             echo "      logs kept: $log $blog"; return
         fi
         # A link-state frame (0x8C) is the engine's own report; one that arrives on
@@ -21994,6 +22036,62 @@ PY
         ok; mv -f "$log" "$log.green"; mv -f "$blog" "$blog.green"   # the last green pair, to diff a red one against
     }
     par -s "userspace: the companion lies" companion_lies_scenario   # the companion peer on a host port of its own
+
+    # A contained robot receives the operator's signed clear over the companion
+    # link. Containment refuses every untyped write; the behaviour engine's
+    # socket to the configured companion is the one that stays open. The
+    # peer arms containment, keeps the link silent past the engine's next
+    # cycles (a refused send would end the session there), then sends the
+    # operator's signed clear.
+    # Canary: with the exemption dropped (`link-exempt-canary` in
+    # azos_syscall) the engine's next send is refused, its session ends and
+    # the clear never arrives; the host row `containment: the companion link
+    # exempt canary (syscall)` holds the same switch.
+    contained_clear_scenario() {
+        companion_peer_required || return 0
+        local label="safety: contained, signed clear over the link lifts it"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local log="$CI_LOG_DIR/contained-clear.log"
+        local blog="$CI_LOG_DIR/contained-clear-peer.log"
+        local img="$AZOS_OUT/build/disk-containedclear.img"
+        local keydir="$CI_LOG_DIR/contained-clear-keys"
+        rm -f "$log" "$blog" "$img"
+        kbuild "qemu,use-robot"
+        make_disk "$img"
+        operator_key_provision "$img" "$keydir"
+        PEER_BOOT_DONE_RE='degraded mode cleared by verified operator authority' \
+            run_companion_peer_boot "$log" "$blog" "$img" 20 \
+            --contained-clear --operator-priv "$keydir/operator_priv.bin" --wait 90
+        if grep -aq "FAIL no-robot" "$blog" 2>/dev/null; then
+            bad; echo "      the robot never connected."
+            echo "      logs kept: $log $blog"; return
+        fi
+        if grep -aqiE "panic|\[FATAL\]" "$log" 2>/dev/null; then
+            bad; echo "      kernel panic or fatal exception:"; grep -aiE -m3 "panic|\[FATAL\]|\[PAGE FAULT\]" "$log" | sed "s|^|      |"
+            echo "      logs kept: $log $blog"; return
+        fi
+        local armed_line cleared_line lost_line
+        armed_line=$(grep -an "degraded mode armed — reason 1" "$log" | sed -n 1p | cut -d: -f1)
+        cleared_line=$(grep -an "degraded mode cleared by verified operator authority" "$log" | sed -n 1p | cut -d: -f1)
+        if [ -z "$armed_line" ]; then
+            bad; echo "      the peer's DEGRADE frame never armed containment"
+            echo "      peer said: $(tail -2 "$blog" 2>/dev/null | tr "\n" " ")"
+            echo "      logs kept: $log $blog"; return
+        fi
+        if [ -z "$cleared_line" ] || [ "$cleared_line" -le "$armed_line" ]; then
+            bad; echo "      the signed clear did not lift containment (armed line ${armed_line}, cleared ${cleared_line:-none})"
+            grep -a "companion_client\] \(Send failed\|Disconnected\|Recv error\)" "$log" | sed -n 1,3p | sed "s|^|      |"
+            echo "      logs kept: $log $blog"; return
+        fi
+        lost_line=$(grep -an "companion_client\] Send failed" "$log" | sed -n 1p | cut -d: -f1)
+        if [ -n "$lost_line" ] && [ "$lost_line" -gt "$armed_line" ] && [ "$lost_line" -lt "$cleared_line" ]; then
+            bad; echo "      the engine lost its session while contained"
+            echo "      logs kept: $log $blog"; return
+        fi
+        ok; rm -f "$log" "$blog" "$img"; rm -rf "$keydir"
+    }
+    par -s "safety: contained, signed clear over the link lifts it" contained_clear_scenario   # the companion peer on a host port of its own
 
     # The record half of the same frame, which the scenario above states it
     # does not cover: `log_safety_violation` writes the flight recorder, not
@@ -22749,28 +22847,7 @@ PY
         rm -f $AZOS_OUT/build/disk-companionestop.img
         make_disk $AZOS_OUT/build/disk-companionestop.img
         cp $AZOS_OUT/build/disk-companionestop.img "$img"
-        mkdir -p "$keydir"
-        python3 - "$keydir" <<'PYEOF'
-import sys
-try:
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-    from cryptography.hazmat.primitives import serialization
-except ImportError:
-    print("error: install the 'cryptography' package: pip install cryptography",
-          file=sys.stderr)
-    sys.exit(1)
-d = sys.argv[1]
-# Fixed seed: reproducible across runs, and distinct from
-# tools/keys/test_priv.bin (secure boot) so the two authorities cannot be
-# confused if a future change accidentally shared state between them.
-seed = bytes([0x37] * 32)
-priv = Ed25519PrivateKey.from_private_bytes(seed)
-pub = priv.public_key().public_bytes(
-    encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw)
-open(f"{d}/operator_priv.bin", "wb").write(seed)
-open(f"{d}/operator_pub.bin", "wb").write(pub)
-PYEOF
-        mcopy -o -i "$img" "$keydir/operator_pub.bin" ::OPERATOR.PUB
+        operator_key_provision "$img" "$keydir"
     }
 
     # ── Row 1: request does not clear, signed release does (QEMU, companion link) ──

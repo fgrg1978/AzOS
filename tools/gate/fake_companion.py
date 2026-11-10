@@ -77,6 +77,8 @@ RELEASE_PURPOSE_HOLD = 2
 DEVICE_ID_BYTES = 16
 
 DEGRADE_LEVEL_CONTAINED = 3
+DEGRADE_CLEAR = 0
+DEGRADE_REASON_PROBE = 1
 
 # ActuatorCmd payload, transcribed from `apply_actuator_cmd` in
 # `userspace/services/companion_client/src/main.rs`:
@@ -471,6 +473,75 @@ def mode_release_payload(priv_key_path, nonce: int, device_id: bytes,
     return bytes([mode_id]) + nonce_be + sig
 
 
+RELAX_CONTEXT = b"AZOS-RELAX-v1"
+RELAX_BODY_MAX = 8
+
+
+def relax_message(device_id: bytes, kind: int, body: bytes, nonce: int) -> bytes:
+    """The bytes an operator signs to relax frame `kind` with `body`:
+    `estop::relax_message`'s contract, restated from its `pub` constants."""
+    if len(device_id) != DEVICE_ID_BYTES or len(body) > RELAX_BODY_MAX:
+        raise ValueError("bad device id or body length")
+    return (RELAX_CONTEXT + device_id + bytes([kind, len(body)])
+            + body.ljust(RELAX_BODY_MAX, b"\0") + nonce.to_bytes(8, "big"))
+
+
+def signed_degrade_clear(priv_key_path, nonce: int, device_id: bytes) -> bytes:
+    """The `PKT_DEGRADE` clear with the operator's warrant: `DEGRADE_CLEAR (1) ||
+    nonce (8, big-endian) || Ed25519 signature (64)`, the signature over
+    [`relax_message`]."""
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    priv_raw = open(priv_key_path, "rb").read()
+    if len(priv_raw) != 32:
+        raise ValueError(f"operator private key must be 32 bytes, got {len(priv_raw)}")
+    body = bytes([DEGRADE_CLEAR])
+    sig = Ed25519PrivateKey.from_private_bytes(priv_raw).sign(
+        relax_message(device_id, PKT_DEGRADE, body, nonce))
+    return build_packet(PKT_DEGRADE, body + nonce.to_bytes(8, "big") + sig)
+
+
+def contained_clear(host: str, port: int, wait: float, gap: float,
+                    operator_priv, psk: bytes, device_id: bytes) -> int:
+    """Arm containment over the link, stay silent for a while, then send the
+    operator's signed clear. The engine's session has to survive the
+    containment for the clear to arrive: the robot's other writes are refused
+    while it holds."""
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind((host, port))
+    srv.listen(1)
+    port = announce_port(host, srv)
+    srv.settimeout(wait)
+    try:
+        conn, addr = srv.accept()
+    except socket.timeout:
+        print("[fake-companion] FAIL no-robot — nothing connected", flush=True)
+        return 2
+    print(f"[fake-companion] robot connected from {addr[0]}", flush=True)
+    conn = SealedConn.accept(conn, psk)
+    if conn is None:
+        return 4
+    try:
+        clear = signed_degrade_clear(operator_priv, 1, device_id)
+    except (OSError, ValueError, ImportError) as e:
+        print(f"[fake-companion] FAIL could not build the signed clear: {e}", flush=True)
+        return 4
+    with conn:
+        conn.settimeout(5.0)
+        try:
+            conn.sendall(build_packet(PKT_DEGRADE, bytes([DEGRADE_REASON_PROBE])))
+            print("[fake-companion] sent DEGRADE (arm containment)", flush=True)
+            time.sleep(max(gap, 3.0))
+            conn.sendall(clear)
+            print("[fake-companion] sent signed DEGRADE clear", flush=True)
+            time.sleep(max(gap, 3.0))
+        except OSError as e:
+            print(f"[fake-companion] link error {e}", flush=True)
+            return 3
+    print("[fake-companion] PASS contained-clear script complete", flush=True)
+    return 0
+
+
 def kernel_estop_release(host: str, port: int, duration: float, gap: float,
                          operator_priv, psk: bytes, device_id: bytes) -> int:
     """Drive / latch / REQUEST (must not clear) / RELEASE (must clear).
@@ -651,6 +722,36 @@ def selftest() -> int:
     except ImportError:
         print("[fake-companion] selftest: 'cryptography' not installed, skipping "
               "the release-proof framing check", file=sys.stderr)
+
+    # The signed degrade clear: the kernel's `relax_message` layout, checked
+    # with the library that signs it.
+    try:
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        import tempfile, os as _os
+        seed = bytes(range(32))
+        with tempfile.NamedTemporaryFile(delete=False) as tf:
+            tf.write(seed)
+            priv_path = tf.name
+        try:
+            dev = bytes(range(0xA0, 0xB0))
+            frame = signed_degrade_clear(priv_path, 7, dev)
+        finally:
+            _os.unlink(priv_path)
+        assert frame[2] == PKT_DEGRADE and frame[3] == 1 + 8 + 64 and frame[4] == 0, frame[:5]
+        body = frame[5:-1]
+        assert body[0] == DEGRADE_CLEAR and body[1:9] == (7).to_bytes(8, "big")
+        msg = relax_message(dev, PKT_DEGRADE, bytes([DEGRADE_CLEAR]), 7)
+        assert len(msg) == len(RELAX_CONTEXT) + 16 + 2 + RELAX_BODY_MAX + 8
+        Ed25519PrivateKey.from_private_bytes(seed).public_key().verify(body[9:], msg)
+        try:
+            Ed25519PrivateKey.from_private_bytes(seed).public_key().verify(
+                body[9:], relax_message(dev, PKT_DEGRADE, bytes([DEGRADE_CLEAR]), 8))
+        except Exception:
+            pass
+        else:
+            raise AssertionError("a relax warrant verified for another nonce")
+    except ImportError:
+        pass
 
     print("[fake-companion] selftest ok — framing matches companion_protocol.rs")
     return 0
@@ -927,8 +1028,12 @@ def main() -> int:
                     help="drive / latch / bare ESTOP_RESET (must NOT clear) / "
                          "operator-signed ESTOP_RESET (must clear) -- the "
                          "end to end")
+    ap.add_argument("--contained-clear", action="store_true",
+                    help="arm containment over the link, then send the operator's "
+                         "signed DEGRADE clear (needs --operator-priv)")
     ap.add_argument("--operator-priv", type=str, default=None,
-                    help="--kernel-estop-release only: path to the 32-byte "
+                    help="--kernel-estop-release, --contained-clear and the lying "
+                         "script's signed clear: path to the 32-byte "
                          "raw Ed25519 seed of the operator authority's "
                          "PRIVATE key (the matching public half is what the "
                          "kernel loads from /fat/OPERATOR.PUB)")
@@ -963,6 +1068,12 @@ def main() -> int:
     if args.kernel_drive:
         return kernel_estop(args.host, args.port, args.duration, args.gap, psk,
                             send_estop=False)
+    if args.contained_clear:
+        if not args.operator_priv:
+            print("error: --contained-clear requires --operator-priv PATH", file=sys.stderr)
+            return 1
+        return contained_clear(args.host, args.port, args.wait, args.gap,
+                               args.operator_priv, psk, load_device_id(args.image))
     if args.kernel_estop_release:
         if not args.operator_priv:
             print("error: --kernel-estop-release requires --operator-priv PATH",
@@ -994,7 +1105,12 @@ def main() -> int:
         return 4
     with conn:
         conn.settimeout(5.0)
-        for label, frame, expect in script_lies():
+        frames = script_lies()
+        if args.operator_priv:
+            frames.append(("the operator's signed degrade clear",
+                           signed_degrade_clear(args.operator_priv, 1, load_device_id(args.image)),
+                           "lift containment: the link is the one write a contained robot still makes"))
+        for label, frame, expect in frames:
             conn.sendall(frame)
             print(f"[fake-companion] sent {label} "
                   f"({len(frame)} B) — expect: {expect}", flush=True)
@@ -1004,7 +1120,7 @@ def main() -> int:
         # DIFFERENT failure mode — scenario 1, not this one — and would muddle
         # which behaviour the log is showing.
         time.sleep(2.0)
-    print("[fake-companion] PASS sent 5 frames", flush=True)
+    print(f"[fake-companion] PASS sent {len(frames)} frames", flush=True)
     return 0
 
 
