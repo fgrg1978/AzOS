@@ -206,7 +206,7 @@ impl Interrupts for Aarch64 {
 
     #[inline]
     fn send_ipi(&self, target_hart: usize) {
-        // M39 (coordinator / U10-5, audit): this used to hand-roll its own
+        // this used to hand-roll its own
         // `ICC_SGI1R_EL1` encoding — Aff0/Aff1 only, no Aff2/Aff3/RS, and
         // no `dsb ishst` before the write. `gic::send_sgi`/`sgi1r_encode`
         // (`arch/aarch64::gic`) is the tested, complete encoder

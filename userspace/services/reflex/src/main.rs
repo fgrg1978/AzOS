@@ -47,7 +47,7 @@ const TILT_ESTOP_MG: i32 = 700;
 // QEMU that was a log line; on the robot it is a collision, and it is the
 // reason this daemon is here at all.
 //
-// Until `drive` (U11-12) existed, the motor ABI could not express a
+// Until `drive` existed, the motor ABI could not express a
 // (direction, speed) pair in one call — `speed` drives forward only,
 // `direction` drives at a kernel-fixed 50% only — so this daemon ran every
 // reflex at 50% rather than the 30/40 it was designed to ask for. `drive`
@@ -239,7 +239,7 @@ fn motor_stop() {
 
 /// Reverse both motors briefly, at the daemon's own chosen speed.
 ///
-/// Through the `Motor` interface's `drive` (U11-12): direction AND speed in one
+/// Through the `Motor` interface's `drive`: direction AND speed in one
 /// call, on the wheels the endpoints name. See the note on the motor
 /// speed constants above for why this used to run at a kernel-fixed 50%.
 fn motor_backup() {

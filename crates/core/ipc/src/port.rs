@@ -142,7 +142,7 @@ pub enum PortSourceKind {
     /// An absolute deadline, in nanoseconds on the time counter.
     Timer(u64),
     /// An endpoint's notices, by its packed `(index, generation)` reference
-    ///: pending when no send capability to it is left.
+    /// pending when no send capability to it is left.
     Endpoint(u32),
     /// The calls queued on an endpoint, by its packed reference: pending
     /// when a call found its queue empty.
@@ -832,7 +832,7 @@ pub fn port_bind_object_as(
 ///    revoke or move leaves the table's bindings alone. A task that serves
 ///    an endpoint and also holds a send capability (`WRITE` only) to it keeps
 ///    the binding its receive capability made when it revokes the send one,
-///    so the endpoint's no-senders notice still reaches the port (N5b).
+///    so the endpoint's no-senders notice still reaches the port.
 ///  * Neither, for a capability without `READ`: every bind takes `READ`
 ///    ([`port_bind_object`]'s callers), so such a capability made no binding
 ///    and its revoke or move leaves the table's bindings alone. A server
@@ -1499,7 +1499,7 @@ pub fn port_wait_begin_at(r: u32, tid: u32, now_ns: u64, deadline_ns: u64) -> Re
 /// - `Ok(event)`: taken;
 /// - `Err(Empty)`: the port is live and nothing is ready (another waiter
 ///   took the event, the wake was spurious or a timer re-arm's, the block
-///   was refused, K-C29, or a deadline ended it);
+///   was refused, or a deadline ended it);
 /// - `Err(Cap(Stale))`: the port was destroyed or released while this task
 ///   was registered (answered without polling); `r` no longer names the live
 ///   port; the port at `r` drew its generation under another epoch (a later
@@ -1547,7 +1547,7 @@ pub fn port_wait_end(slot: PortWaitSlot, tid: u32, r: u32) -> Result<PortEvent, 
 /// an event is taken or the deadline passes. `block` receives `None` to block
 /// on `WaitReason::Port(r)`, `Some(until)` to block on `WaitReason::Timer`
 /// until that instant, and answers whether the scheduler **refused** the block
-/// (K-C29). `now` reads the time counter in nanoseconds. The number of turns is not bounded: every turn is a
+///. `now` reads the time counter in nanoseconds. The number of turns is not bounded: every turn is a
 /// block, and the deadline bounds them. Answers:
 /// - `Ok(Some(event))`: taken;
 /// - `Ok(None)`: the deadline passed with nothing ready;
@@ -1732,7 +1732,7 @@ impl From<crate::cap::CapError> for PortCapError {
 /// `objref::grant_packed`. Must not be called with a cap-table lock held.
 pub fn port_create_cap(tid: u32) -> Option<crate::cap::Cap<crate::cap::targets::Port>> {
     let (r, _epoch) = create_core(tid as usize)?;
-    // `RW_DELEGATE` (O3.4): the creator may copy and
+    // `RW_DELEGATE`: the creator may copy and
     // gift its own port.
     match objref::grant_packed::<crate::cap::targets::Port>(tid, CapPerms::RW_DELEGATE, r) {
         Some(cap) => Some(cap),

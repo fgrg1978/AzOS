@@ -66,7 +66,7 @@ pub(crate) fn telemetry_task(_: usize) {
     let telem_interval: u64 = azos_drv_sys::timebase::freq() / 10;
 
     loop {
-        // K-C27: sleep to the 10 Hz design rate. The old "yield 10 times
+        // sleep to the 10 Hz design rate. The old "yield 10 times
         // (~100 ms)" assumed each yield waited a scheduler tick; a yield
         // with nothing outranking us returns immediately, so this loop was
         // a best-effort-band spinner.

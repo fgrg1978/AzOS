@@ -2486,7 +2486,7 @@ fn net_lane(abi: &(impl Abi + Net + Proc), floor_ns: u64) {
 }
 
 /// TCP bulk, both directions, against a host peer over QEMU user networking
-///: `tcp-bulk-tx` (the guest sends [`TCP_BULK_BYTES`]) and
+/// `tcp-bulk-tx` (the guest sends [`TCP_BULK_BYTES`]) and
 /// `tcp-bulk-rx` (the guest receives them). One op is one KiB, so ns/op is
 /// guest nanoseconds per KiB, and under `-icount shift=0` (the TCP pass of
 /// `tools/bench/vsbench_compare.sh` always runs so) instructions per KiB: the
@@ -3350,7 +3350,7 @@ fn run<A: Abi + Handles + Ipc + Mem + Net + Proc + Shell + Vdso + Threads + Uacc
     // 4e. The user shell's primitives (`bench_core::Shell`), both
     //     sides. Appended before the closing floor, so no lane above moves.
     if lanes.on(b"shell") { shell_lanes(abi, floor_ns); }
-    // N0: the cross-AS pipe ping-pong and the handle lookup, both
+    // the cross-AS pipe ping-pong and the handle lookup, both
     // sides, appended inside `shell` before the closing floor.
     if lanes.on(b"shell") {
         pipe_pingpong_lane(abi, floor_ns);

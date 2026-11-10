@@ -210,7 +210,7 @@ _entry_after_header:
     msr     CPACR_EL1, x9
     isb
 
-    // ── PSTATE.PAN = 1, on BOTH entry paths (O3.2) ───────
+    // ── PSTATE.PAN = 1, on BOTH entry paths ───────
     //
     // Same bug class as CPACR_EL1 above, found the same way (this task's
     // own pan-probe feature, run against a scratch USER-tagged page):
@@ -554,7 +554,7 @@ _aarch64_secondary_entry:
     msr     CPACR_EL1, x9
     isb
 
-    // PAN and SCTLR_EL1 are ALSO banked per-PE (O3.2) — same reason as
+    // PAN and SCTLR_EL1 are ALSO banked per-PE — same reason as
     // CPACR_EL1 above, and probed the same way as the primary's (Armv8.0 has
     // no FEAT_PAN): the boot word, SPAN cleared where PAN is in use.
     movz    x9, #{sctlr_lo}

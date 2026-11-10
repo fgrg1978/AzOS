@@ -5,7 +5,7 @@
 // `class` is unconditional: `Task::sched_class_raw` and the topology
 // admission path use `SchedClass`.
 pub mod class;
-/// N6: the scheduling context and the dispatch-class model (pure).
+/// the scheduling context and the dispatch-class model (pure).
 pub mod sc;
 /// The fair class's arithmetic: EEVDF (pure, host-tested).
 pub mod eevdf_core;
@@ -21,7 +21,7 @@ pub mod rt_receipt;
 pub mod timer_heap;
 pub mod wake_list;
 pub mod scheduler;
-/// ASIDs with generations; the switch-time TLB keep/flush decision (N12).
+/// ASIDs with generations; the switch-time TLB keep/flush decision.
 pub mod asid;
 /// The resource-partition tag follows the task: the per-hart cache and the
 /// fit rule of the switch-time write (Ssqosid `srmcfg` and its peers).
@@ -155,7 +155,7 @@ pub fn wakelat_worst() -> (u32, u32, u32, u32, u32, u32, u32) {
     scheduler::wakelat::worst()
 }
 
-/// N6: the dispatch classes over the per-CPU ready queues, and each task's SC.
+/// the dispatch classes over the per-CPU ready queues, and each task's SC.
 pub use scheduler::classes;
 pub use scheduler::{setup_stack_guard_pages, stack_guard_readback, stack_guard_addr};
 

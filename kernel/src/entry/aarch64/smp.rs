@@ -95,7 +95,7 @@ pub(crate) fn wake_secondaries(num_cpus: usize) {
 
                 // ── MARKER: this hart's own TTBR0/TTBR1 readback ─────────
                 //
-                // U01-1/U01-2 (audit): proves this secondary attached the
+                // proves this secondary attached the
                 // REAL kernel table into TTBR1 (not the early-boot alias)
                 // and the DEVICE-ONLY root into TTBR0 (not the full kernel
                 // table) — no feature flag needed, this runs on every boot.

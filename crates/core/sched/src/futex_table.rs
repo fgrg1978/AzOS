@@ -49,7 +49,7 @@
 //! same lock, even when it finds nobody. A waker that stored before the
 //! check makes the check fail; one that stores after it finds the row. The
 //! TID-directed wake goes out after the lock is released, and a waiter that
-//! has not blocked yet is stamped (K-C9), so its block returns at once.
+//! has not blocked yet is stamped, so its block returns at once.
 //!
 //! The check and the filing are one hold, with nothing in between: the look
 //! at the word ([`Look`]: its key AND its value; for a word of a shm region
@@ -661,7 +661,7 @@ pub enum WaitResult {
     ValueChanged,
     /// The word could not be read: nothing was filed.
     Fault,
-    /// The scheduler refused to block (K-C29). Nothing is left filed.
+    /// The scheduler refused to block. Nothing is left filed.
     Refused,
     /// The task was asked to stop (exit_group, a kill). Nothing is left filed.
     Stopped,
@@ -686,7 +686,7 @@ pub trait FutexEnv {
     /// The timebase counter, in the units `deadline` is in.
     fn now(&self) -> u64;
     /// Block the calling task on `WaitReason::Timer(deadline)`; `true` when
-    /// the scheduler refused to block (K-C29).
+    /// the scheduler refused to block.
     fn block(&self, deadline: u64) -> bool;
     /// Wake `tid` if it is blocked on `WaitReason::Timer(deadline)` (stamping
     /// it if it has not blocked yet). Must be callable from an interrupt.

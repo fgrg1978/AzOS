@@ -442,8 +442,8 @@ pub extern "C" fn aarch64_trap_entry(frame: &mut TrapFrame) -> u64 {
             Some(LatTrapExit(spsr, core::panic::Location::caller()))
         }
     };
-    // Lockdep (N1): no lock held when this returns to EL0.
-    // QSBR (Kconfig RCU_QSBR, N4): a syscall or exception does nothing unless
+    // Lockdep: no lock held when this returns to EL0.
+    // QSBR (Kconfig RCU_QSBR): a syscall or exception does nothing unless
     // this is an RT CPU (RCU_NOCBS_CPUS); the interrupt arm has its own
     // boundary, out of line (`crate::trap::irq::arm`).
     let _rcu = azos_sync::qsbr::TrapBoundary::exception(|| frame.came_from_user());

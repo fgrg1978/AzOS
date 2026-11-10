@@ -174,7 +174,7 @@ fn sensor_slow_task(_: usize) {
 /// CH_BARO, runs complementary filter, and publishes estimated attitude to
 /// CH_ATTITUDE.
 ///
-/// K-C27: the 100 Hz used to be claimed by "1 yield per iteration at 100 Hz
+/// the 100 Hz used to be claimed by "1 yield per iteration at 100 Hz
 /// scheduler", which was false — `task_yield()` returns immediately when the
 /// caller is the highest-priority runnable task, so this loop spun at
 /// whatever rate the host emulated and, at priority 14, monopolised hart 1

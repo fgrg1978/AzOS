@@ -100,7 +100,7 @@ pub fn sys_port_poll_typed(cap_raw: u64, out_ptr: u64) -> i64 {
     if out_ptr == 0 {
         return Errno::EINVAL.to_syscall_ret();
     }
-    // U07-2: validated BEFORE `port_poll_cap`, which DEQUEUES the event on
+    // validated BEFORE `port_poll_cap`, which DEQUEUES the event on
     // success — the same order `sys_port_wait_typed` (577) already uses.
     // Without this, a bad `out_ptr` discovered only after the dequeue loses
     // the event: the caller gets `-EFAULT` and the port never re-delivers it.
@@ -532,7 +532,7 @@ pub fn sys_port_bind_typed(port_raw: u64, source_type: u64, source: u64, key: u6
 /// then block — on `WaitReason::Port(reference)` with no deadline and no armed
 /// timer source, on `WaitReason::Timer` until the earlier of the two otherwise
 /// — and take an event in the hold that deregisters. Turns are not counted:
-/// the deadline bounds them. A block the scheduler refuses (K-C29) that
+/// the deadline bounds them. A block the scheduler refuses that
 /// brings nothing answers `-EBUSY` at once, instead of spinning to the deadline.
 pub fn sys_port_wait(cap_raw: u64, out_ptr: u64, deadline_ns: u64) -> i64 {
     use azos_abi::cap::{CapHandle, CapPerms};

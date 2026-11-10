@@ -58,7 +58,7 @@ azos_limits = { path = "../../../crates/core/limits" }
 # logical CPU ids to hart ids through it.
 azos_percpu = { path = "../../../crates/core/percpu" }
 bitflags = "2"
-# M38/U10-3: arch/aarch64/src/mmu/mod.rs (pulled in via #[path] below)
+# arch/aarch64/src/mmu/mod.rs (pulled in via #[path] below)
 # uses PagePerms/MmuError from this crate directly, unlike arch-riscv64's own
 # mmu.rs (bitflags only) — azos_arch_api is itself pure no_std and
 # host-compatible (see its own Cargo.toml description), so pulling it in adds

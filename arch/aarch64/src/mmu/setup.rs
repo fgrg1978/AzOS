@@ -104,7 +104,7 @@ use crate::mmu::{MAIR_IDX_DEVICE, MAIR_IDX_NORMAL, MAIR_VALUE};
 
 /// `TCR_EL1.AS` (bit 36) — 0 selects an 8-bit ASID, 1 selects 16-bit.
 ///
-/// M41 (coordinator / U10-7, audit): every `switch_pt`/`write_ttbr0_el1`
+/// every `switch_pt`/`write_ttbr0_el1`
 /// call in this crate already carries a full `u16` ASID
 /// (`api_impl::Mmu::switch_pt`, `sysregs::write_ttbr0_el1`) — the Rust
 /// side has always been able to express 256..65535, hardware was just
@@ -134,7 +134,7 @@ const TCR_VALUE: u64 = G.tsz()             // T0SZ → walk starts at L1 (25 at 
 
 /// `ID_AA64MMFR0_EL1.PARange` (bits `[3:0]`) — the encoded field value IS
 /// the `TCR_EL1.IPS` value to program (ARM ARM: same encoding, 0..=7, NOT
-/// a bit count needing translation). M41: without this, `IPS` stayed `0`
+/// a bit count needing translation). without this, `IPS` stayed `0`
 /// (32-bit physical addresses only) on every CPU regardless of what it
 /// actually supports — RAM at or above 4 GiB is architecturally
 /// unmappable under stage-1 translation until this is set, independent of
@@ -405,7 +405,7 @@ pub unsafe fn enable_identity_map(cfg: IdentityMapConfig) {
         l1.0[ram_root] = (cfg.l2 as u64) | TABLE_DESC;
 
         sysregs::write_mair_el1(MAIR_VALUE);
-        // M41: IPS from THIS CPU's own ID_AA64MMFR0_EL1.PARange, not the
+        // IPS from THIS CPU's own ID_AA64MMFR0_EL1.PARange, not the
         // `0` (32-bit PAs only) `TCR_VALUE` alone encodes — see
         // `tcr_value_for_this_cpu`'s doc.
         sysregs::write_tcr_el1(tcr_value_for_this_cpu());
@@ -481,7 +481,7 @@ pub unsafe fn enable_kernel_map(ttbr0_pa: usize) {
         // reported either — the vector base is high too. That is exactly how
         // a secondary died here: it printed its way to this call
         // and never returned.
-        // M41: this PE's own IPS (`tcr_value_for_this_cpu`, not the bare
+        // this PE's own IPS (`tcr_value_for_this_cpu`, not the bare
         // `TCR_VALUE` constant) — PARange can in principle differ per PE
         // (asymmetric SoC), and even where it does not, `IPS = 0` on every
         // secondary the same way it used to be on the primary is the same

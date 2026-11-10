@@ -402,7 +402,7 @@ const RESOURCE_GPIO_FREE:  &[u8] = b"gpio.20";
 // Granted READ only — see the CapSpec below for why write access to this one
 // address is a safety matter and not a convenience.
 const RESOURCE_I2C_IMU:    &[u8] = b"i2c.0.0x68";
-// U06-9: the brain-link PSK, one per board, the kernel-hosted
+// the brain-link PSK, one per board, the kernel-hosted
 // `linkkey` interface (`azos_devif`): the bare interface name, no resource --
 // `"linkkey.0"` names nothing and is refused rather than minting the
 // singleton under a name that looks like it selected something.
@@ -1015,7 +1015,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
                 perms: CapPerms::READ,
                 target: MaybeStr::from_bytes(RESOURCE_FRAME), transfer: false, ops: 0,
         },
-            // U06-9: the ring-3 door onto the reserved-sector
+            // the ring-3 door onto the reserved-sector
             // brain-link PSK (the kernel-hosted `linkkey` endpoint). `brain_client` is
             // the one holder that reads it; every other autorun program
             // (`GPIODRV.ELF`/`REFLEX.ELF`) simply never calls the syscall

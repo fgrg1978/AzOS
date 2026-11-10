@@ -9,7 +9,7 @@ use crate::*;
 /// Decouples network I/O from the behavior loop so incoming packets (TCP, UDP,
 /// ARP, DHCP) are processed promptly regardless of behavior loop timing.
 ///
-/// K-C27: polls on a 1 kHz nominal timer block, not on `task_yield()`. The
+/// polls on a 1 kHz nominal timer block, not on `task_yield()`. The
 /// old header claimed "~100 Hz (1 yield = 10 ms at 100 Hz scheduler)" —
 /// false: a yield returns immediately when nothing outranks the caller, so
 /// this loop spun flat out at priority 12 and monopolised hart 3 against
@@ -199,7 +199,7 @@ static NET_POLL_TID: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU
 
 /// Interrupt path, every ISA: a PCI NIC took an MSI that
 /// `virtio::net::msi_irq` or `net_queue::pci_msi_irq` (e1000e, igc) accepted. Wake `net_poll_task` out of its timer
-/// sleep; if it is not asleep yet, the wake is stamped (K-C9) and its next
+/// sleep; if it is not asleep yet, the wake is stamped and its next
 /// block returns at once, so an RX MSI landing while it drains is not lost.
 /// Returns whether a task was dispatched.
 pub(crate) fn net_msi_wake() -> bool {
@@ -213,7 +213,7 @@ pub(crate) fn net_msi_wake() -> bool {
 /// Install the network's scheduler hooks (set-once, `.data.ro_after_init`):
 /// boot, at the net-poll task's creation, before the seal.
 ///
-/// N7: tasks waiting on a network event (handshake, window, ARP reply, DNS
+/// tasks waiting on a network event (handshake, window, ARP reply, DNS
 /// answer, accept) block until the receive path wakes them instead of
 /// sleeping 1 ms and looking again, on every NIC mode: before the poller runs
 /// nothing can deliver those events anyway. A TCP deadline armed outside the

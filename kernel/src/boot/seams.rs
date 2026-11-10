@@ -18,7 +18,7 @@ static LINUX_RUNTIME_ELF: &[u8] = include_bytes!(concat!(env!("AZOS_OUT"), "/bui
 #[cfg(all(feature = "linux-runtime", not(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "x86_64"))))]
 compile_error!("Kconfig LINUX_RUNTIME hosts the Linux personality on riscv64, aarch64 and x86_64 only");
 
-/// Allocate and publish the vDSO page (M01): the shared timing page every
+/// Allocate and publish the vDSO page: the shared timing page every
 /// user process maps read-only at `VDSO_USER_BASE` so ring 3 can read
 /// kernel time data without an ecall/svc.
 ///

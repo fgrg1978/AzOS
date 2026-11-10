@@ -91,7 +91,7 @@ beh_test_drivers = { path = "shims/drivers" }
 # does — it needs a `SpinLock::get_mut_unchecked` this crate's own
 # `cap_test_sync` (line above) deliberately omits, so it cannot share the
 # `azos_sync` alias this crate uses for everything else. See
-# `shims/robot`'s own doc. Motor-gate/record suite (Q1.3/Q1.4).
+# `shims/robot`'s own doc. Motor-gate/record suite.
 azos_robot = { path = "shims/robot", package = "beh_test_robot" }
 azos_robot_sensors = { path = "shims/robot_sensors", package = "beh_test_robot_sensors" }
 azos_limits = { path = "shims/limits", package = "beh_test_limits" }

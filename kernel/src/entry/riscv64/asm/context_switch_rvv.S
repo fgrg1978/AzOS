@@ -13,7 +13,7 @@
 #
 # Task::context (TaskContext) is at offset 0 of Task.
 #
-# ── `tp` under rvv: deliberately absent, and now harmless (K-C16) ────────────
+# ── `tp` under rvv: deliberately absent, and now harmless ────────────
 #
 # This file has no CTX_TP offset and never touches `tp`, unlike
 # context_switch.S, which saves and restores it to keep `current_cpu_id()`

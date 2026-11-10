@@ -185,7 +185,7 @@ pub fn with_kernel_simd<R>(f: impl FnOnce() -> R) -> R {
 }
 
 /// `fork()`: the calling task's current user FP state, for the child.
-/// Masks IRQs itself: the syscall arm runs with IRQs enabled (O3.1), and a
+/// Masks IRQs itself: the syscall arm runs with IRQs enabled, and a
 /// switch between "is it live here" and the register read would read another
 /// task's registers (or none) on another hart.
 pub fn snapshot_current() -> FpState {

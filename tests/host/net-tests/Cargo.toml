@@ -51,7 +51,7 @@ azos_limits = { path = "../../../crates/core/limits" }
 # host suite already in the gate, so the client under test parses with the
 # kernel's own parser.
 azos_tftp = { path = "../../../crates/net/tftp" }
-# Real crate: `tcp.rs::generate_isn` (U06-6) calls
+# Real crate: `tcp.rs::generate_isn` calls
 # `azos_crypto::hkdf::hmac_sha256` directly, so the pulled-in file
 # needs the real HMAC-SHA256, not a shim.
 azos_crypto = { path = "../../../crates/core/crypto" }

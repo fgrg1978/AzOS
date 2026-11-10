@@ -2896,7 +2896,7 @@ fn check_spawn() {
             sys::sleep(1);
         }
         expect_eq(b"waitpid(spawned child) returns its TID", got, child);
-        // V1.8: a seccomp denial KILLS the task
+        // a seccomp denial KILLS the task
         // (Linux strict, exit code 128+31 = 159) instead of answering -1.
         expect_eq(
             b"spawned uhello is killed by seccomp (exit 159): its profile refused the fast IPC call",

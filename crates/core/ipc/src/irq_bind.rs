@@ -953,7 +953,7 @@ const _: () = {
     assert!(irq_line_grantable(32) && irq_line_grantable(1019), "an SPI is not grantable");
 };
 
-/// Mint a `Cap<Irq>` naming interrupt line `irq`. U03-2/U03-8: the first
+/// Mint a `Cap<Irq>` naming interrupt line `irq`. the first
 /// minter this kind has ever had, and the range check the audit asked for
 /// alongside it — an out-of-range line is refused here rather than accepted
 /// and left for `irq_bind`/`PORT_SRC_IRQ` to reject later against a

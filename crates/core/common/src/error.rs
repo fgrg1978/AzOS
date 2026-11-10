@@ -27,7 +27,7 @@ pub enum KernelError {
     /// An architecture-level PTE encode call rejected inputs the kernel
     /// itself constructed (e.g. `ArchApi::pte_make_leaf` on a COW break,
     /// `mm::cow::handle_cow_fault`) — never a consequence of anything the
-    /// faulting task did. Kept distinct from `InvalidArg` (U09-11): a
+    /// faulting task did. Kept distinct from `InvalidArg`: a
     /// caller that logs "the program did something wrong" for `InvalidArg`
     /// must not say that here, the same way `kernel/src/entry/riscv64/trap.rs`'s COW-fault arm
     /// already carves `OutOfMemory` out for the same reason. Added instead

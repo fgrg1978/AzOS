@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Indexed binary min-heap of timer sleepers (U02-3): the structure behind
+//! Indexed binary min-heap of timer sleepers: the structure behind
 //! `wait::wake_expired_timers` and `scheduler::nearest_timer_deadline`.
 //!
 //! One entry per pool slot at most (`pos[slot]` is its heap index or

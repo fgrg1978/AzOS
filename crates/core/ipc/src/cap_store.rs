@@ -1471,7 +1471,7 @@ fn move_locked(
     // warrant tree: the parent it was derived from stays its parent.
     let ext = sender.ext_of(handle).ok_or(CapError::Stale)?;
     let warrant = sender.warrant_of(handle).ok_or(CapError::Stale)?;
-    // `TRANSFER` gates the move to a different task (O3.4): checked before
+    // `TRANSFER` gates the move to a different task: checked before
     // anything is touched, same as the free-slot check below.
     if !perms.contains(crate::cap::CapPerms::TRANSFER) {
         return Err(CapError::MissingPerms);

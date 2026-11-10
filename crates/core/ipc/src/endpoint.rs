@@ -891,7 +891,7 @@ pub fn endpoint_create_cap(
     perms: CapPerms,
 ) -> Option<crate::cap::Cap<crate::cap::targets::Endpoint>> {
     let r = create_core(tid, None, true)?;
-    // `DELEGATE` (O3.4): the creator of an anonymous
+    // `DELEGATE`: the creator of an anonymous
     // endpoint may copy and gift it. This is distinct from
     // `endpoint_inherit_at_fork` (never `TRANSFER`) and from a NAMED
     // endpoint's grant (`endpoint_named_cap`, topology-controlled — see
@@ -1331,7 +1331,7 @@ impl Dest {
 
 /// [`endpoint_dest_for`], with the endpoint's reference: what the fast call
 /// queues on. Takes no lock: the capability
-/// read is lock-free (N4) and the endpoint's identity word is read in a QSBR
+/// read is lock-free and the endpoint's identity word is read in a QSBR
 /// read section ([`lookup_ref`]).
 #[inline]
 pub fn endpoint_resolve(caller_tid: u32, cap_raw: u32) -> Result<Dest, EndpointCapError> {
@@ -2141,7 +2141,7 @@ pub fn endpoint_inherit_at_fork(parent_tid: u32, child_tid: u32) -> usize {
     }
     let mut minted = 0usize;
     for &r in &matches[..n] {
-        // `WRITE` only, no `TRANSFER` (O3.4): the
+        // `WRITE` only, no `TRANSFER`: the
         // child may send to its parent, but may not hand that right to a
         // third party via `move_cap`, which refuses any cap lacking
         // `TRANSFER`. See the struct-level doc above for why `WRITE` alone is

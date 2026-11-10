@@ -344,7 +344,7 @@ sched-reap-event = []
 # (The `rvv` feature was REMOVED.) It existed to compile the
 # `context_saving`-dependent code out of `scheduler.rs`, because
 # `context_switch_rvv.S` never cleared the flag. That file now clears it with
-# the same `fence rw, w` + `sb` release tail as `context_switch.S` (K-C23), so
+# the same `fence rw, w` + `sb` release tail as `context_switch.S`, so
 # an rvv build takes the identical scheduler path and there is nothing left to
 # gate. Do not reintroduce it: the twelve `cfg` sites it fed were a
 # double-dispatch hole (K-C24 disabled) in a build `k1` transitively selected.

@@ -213,7 +213,7 @@ pub const SSTATUS_SIE: usize = 1 << 1;
 pub const SSTATUS_SPIE: usize = 1 << 5;
 pub const SSTATUS_SPP: usize = 1 << 8;
 /// `sstatus.SUM` (bit 18) — Supervisor User Memory access. 0 (this crate's
-/// boot value; nothing here ever sets it — U07-7/O3.2, audit) means S-mode
+/// boot value; nothing here ever sets it) means S-mode
 /// faults on ANY access to a `U=1` PTE, full stop; the copy_* routines in
 /// `crates/core/sched::process` never hit this today because they translate a
 /// user VA to its physical frame and access it through the kernel's own

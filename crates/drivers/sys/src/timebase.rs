@@ -383,7 +383,7 @@ pub fn set_next_tick(_hart: u32) {
     program(now() + TIMER_FREQ / sched_hz_get(), false);
 }
 
-/// M03: Tickless timer — schedule the timer at the earliest useful deadline.
+/// Tickless timer — schedule the timer at the earliest useful deadline.
 ///
 /// `nearest_deadline` is the earliest pending `WaitReason::Timer(t)` deadline
 /// from the scheduler (pass `azos_sched::nearest_timer_deadline()`).
@@ -496,7 +496,7 @@ pub fn idle_keepalive_us() -> Option<u64> {
 /// Ceiling on how long a genuinely idle NON-hart-0 hart may go without its
 /// own timer firing, when nothing is sleeping and nothing is ready to run on
 /// it. The real wake path for such a hart is the cross-hart IPI/SGI
-/// (`cpu_enqueue_locked` → `Interrupts::send_ipi`, K-C15) — this ceiling is a
+/// (`cpu_enqueue_locked` → `Interrupts::send_ipi`) — this ceiling is a
 /// self-heal bound against a missed or lost doorbell, not the intended wake
 /// mechanism, so it is set far outside any latency budget this kernel
 /// measures (vsbench's worst-case `ipc-rt` lane is single-digit
@@ -505,7 +505,7 @@ pub fn idle_keepalive_us() -> Option<u64> {
 /// benchmark would notice.
 const IDLE_HART_CEILING_US: u64 = 60_000_000;
 
-/// M04: true tickless — schedule the timer for a hart whose idle/busy state
+/// true tickless — schedule the timer for a hart whose idle/busy state
 /// is already known to the caller.
 ///
 /// `nearest_deadline` is `azos_sched::nearest_timer_deadline()`, as for

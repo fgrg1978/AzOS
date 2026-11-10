@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Pure decision logic for `EXIT_NOTE` bookkeeping (U02-6).
+//! Pure decision logic for `EXIT_NOTE` bookkeeping.
 //!
 //! No `unsafe`, no global state: `scheduler::note_exit` holds the real
 //! `EXIT_NOTE` lock and calls the real `idx_for_tid` as the `is_alive`
@@ -241,7 +241,7 @@ mod tests {
 
     #[test]
     fn insert_evicts_an_orphan_before_a_live_notice() {
-        // U02-6: one live parent's notice and three orphans; a new live
+        // one live parent's notice and three orphans; a new live
         // notice takes an orphan's slot, never the live one.
         let mut t: [ExitNote; 4] = [(1, 10, 0), (99, 20, 0), (98, 30, 0), (97, 40, 0)];
         let alive = alive_set(&[1, 2]);

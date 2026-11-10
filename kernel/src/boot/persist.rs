@@ -127,7 +127,7 @@ pub(crate) fn recover_persistent_state() {
             azos_crypto::ct::secure_zero(&mut key_buf);
         }
 
-        // U06-9: the ring-3 door onto this same reserved
+        // the ring-3 door onto this same reserved
         // sector (the `linkkey` endpoint, `crates/core/syscall/src/link_key.rs`).
         // Registered right after the load above so the hook re-reads the
         // exact same sector this boot just logged the state of, through the

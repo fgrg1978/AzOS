@@ -724,7 +724,7 @@ pub(crate) fn seed_row(tid: u32, row: usize) -> Seeded {
         if azos_topology::builder::login_call_withheld(cap, topo.logins().len()) {
             continue;
         }
-        // O3.4: `transfer = true` in the topology row (or its `t` letter) is
+        // `transfer = true` in the topology row (or its `t` letter) is
         // the only way a SEEDED (not self-created) capability carries
         // `TRANSFER` — `cap_seed.rs` itself never adds it, so a row that says
         // nothing stays non-transferable, same as a fork-minted endpoint

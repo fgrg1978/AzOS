@@ -269,7 +269,7 @@ _azos_drop_to_el1:
     msr     CPACR_EL1, x10
 
     // PSTATE.PAN is set by boot.S after the eret, on both entry paths, under
-    // the same probe as SPAN (O3.2).
+    // the same probe as SPAN.
     mov     x10, #0x3C5             // SPSR_EL2 = EL1h, DAIF masked
     msr     SPSR_EL2, x10
 

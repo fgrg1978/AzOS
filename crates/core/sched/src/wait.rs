@@ -27,11 +27,11 @@ pub fn task_block(reason: WaitReason) {
 /// to a caller and this enum is what lets one tell them apart:
 ///
 ///   * [`BlockOutcome::Returned`] — the task either really slept and was
-///     woken, or consumed a `wake_pending` stamp (K-C9) that a waker left in
+///     woken, or consumed a `wake_pending` stamp that a waker left in
 ///     the window before it committed to `Blocked`. Both are "the wait
 ///     happened"; a caller that re-tests its condition and finds it unmet is
 ///     seeing an ordinary spurious wake and should go round again.
-///   * [`BlockOutcome::Refused`] — K-C29: preemption was disabled on this
+///   * [`BlockOutcome::Refused`]: preemption was disabled on this
 ///     hart, so `block_current` declined to park the task at all. **No time
 ///     passed and no event occurred.** A caller must not report its awaited
 ///     event on this path.
@@ -213,7 +213,7 @@ pub enum WakeAction {
     /// Not the addressee. Keep scanning; touch nothing.
     Skip,
     /// Addressee found, but it has **not** committed to `Blocked` yet.
-    /// Stamp `wake_pending` (K-C9) so its imminent `block_current()` consumes
+    /// Stamp `wake_pending` so its imminent `block_current()` consumes
     /// the wake instead of sleeping through it. Stop scanning.
     StampPending,
     /// Addressee found and `Blocked`, but on a reason the caller did not
@@ -291,7 +291,7 @@ pub const fn wake_action(is_addressee: bool, is_blocked: bool, reason_matches: b
 // wake whenever the addressee had made itself wake-able but had not yet
 // reached `task_block()` — a real SMP window, because the waker runs on
 // another hart. `scheduler::wake_task_by_tid` selects by TID, so it can stamp
-// `wake_pending` (K-C9) in that window and `block_current()` consumes it.
+// `wake_pending` in that window and `block_current()` consumes it.
 //
 // Do NOT "unify" the broadcast wakes above into this: they have no addressee
 // TID, and a not-yet-blocked task has `wait_reason == None`, so a sweep-based
@@ -300,7 +300,7 @@ pub const fn wake_action(is_addressee: bool, is_blocked: bool, reason_matches: b
 
 /// Wake the server task blocked waiting for a fast IPC call (by server TID).
 ///
-/// K-C10: converted to the TID-directed path. `WaitReason::FastIpcServer(t)`
+/// converted to the TID-directed path. `WaitReason::FastIpcServer(t)`
 /// carries the server's own TID, so TID and predicate agree by construction.
 ///
 /// Fast IPC only (`SYS_IPC_FAST_CALL`).
@@ -345,7 +345,7 @@ pub fn wake_fast_ipc_client_tid(caller_tid: u32, handle: u64) {
 /// Queueing an event on the port, or destroying or releasing it, detaches the
 /// registered waiters under `PORTS` and calls this for each after releasing
 /// it. The addressee is known, so a waiter that registered but has not
-/// committed to `Blocked` yet is stamped (K-C9) and its block consumes the
+/// committed to `Blocked` yet is stamped and its block consumes the
 /// stamp: the lost wakeup a sweep cannot close (see [`wake_action`]).
 ///
 /// The predicate matches the exact reference: a task with this TID blocked on
@@ -370,7 +370,7 @@ pub fn wake_port_waiter(tid: u32, port_ref: u32) {
 /// port with an armed timer source, blocks on `WaitReason::Timer(until)` so
 /// the timer interrupt ends its sleep; an event on the port wakes it here. The
 /// shape of `vdso_notify`'s timed notify wake: TID-directed, so a waiter that
-/// registered but has not blocked yet is stamped (K-C9) and its block returns
+/// registered but has not blocked yet is stamped and its block returns
 /// at once. The predicate matches any `Timer` reason: the addressee's port
 /// registration is what names the wait, and a task blocks in one syscall at a
 /// time. A wake that lands after the waiter deregistered and entered another

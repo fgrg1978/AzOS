@@ -61,7 +61,7 @@ const MAX_OPTIONS: usize = 64;
 /// How long `dhcp_start` waits for an OFFER, and separately for an ACK,
 /// before giving up.
 ///
-/// U06-3: this used to be "200 iterations of `yield_fn()`", not a duration —
+/// this used to be "200 iterations of `yield_fn()`", not a duration —
 /// on an idle hart a yield returns immediately, so both phases together
 /// closed in well under a millisecond of wall time; SLIRP synthesises the
 /// OFFER inside the `send` call, so the gate never exercised the timeout at
@@ -848,7 +848,7 @@ pub fn dhcp_start(yield_fn: fn()) -> bool {
     // Phase 1: send DISCOVER
     dhcp_discover();
 
-    // Wait for OFFER, up to DHCP_PHASE_TIMEOUT_TICKS of wall time (U06-3).
+    // Wait for OFFER, up to DHCP_PHASE_TIMEOUT_TICKS of wall time.
     use super::ip;
     let mut buf = [0u8; ip::ETH_MTU];
     let mut src_ip   = [0u8; 4];
@@ -882,7 +882,7 @@ pub fn dhcp_start(yield_fn: fn()) -> bool {
     // Phase 2: send REQUEST
     dhcp_request(offered_ip, server_ip);
 
-    // Wait for ACK, same deadline shape as the OFFER phase (U06-3).
+    // Wait for ACK, same deadline shape as the OFFER phase.
     let mut got_ack = false;
     let deadline = azos_drv_sys::timebase::now() + DHCP_PHASE_TIMEOUT_TICKS;
     while azos_drv_sys::timebase::now() < deadline {

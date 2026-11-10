@@ -20,7 +20,7 @@
 //! `pmp_regions()` is safe to call at any privilege level; it returns the
 //! *intended* policy for display / audit.
 //!
-//! # AzOS PMP policy (audit finding, U10-10: 7 entries programmed, not
+//! # AzOS PMP policy (audit finding: 7 entries programmed, not
 //! # "8" as an earlier version of this header claimed — `N_PMP_REGIONS`
 //! # below is 6, plus one hard-coded catch-all `pmp_configure` appends)
 //!
@@ -35,7 +35,7 @@
 //! 6  everything else               ---    DENY (catches stray accesses)
 //! ```
 //!
-//! **Known-broken as written (U10-10, audit) — `pmp_configure` has no
+//! **Known-broken as written — `pmp_configure` has no
 //! caller anywhere in this tree, so none of this is live policy today.**
 //! PMP matching is lowest-index-wins: region 0's range `[0, firmware_end)`
 //! covers this platform's MMIO window too (both start at physical `0`),

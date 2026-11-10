@@ -7,7 +7,7 @@
 //! words a CPU, so that any one queue could hold every task. That is 1 MiB of
 //! each fleet CPU's per-CPU area (4096 tasks) and 64 MiB at 64 CPUs, for at
 //! most `MAX_TASKS` entries in the whole system: a task is in at most one
-//! queue at a time (the `queued` claim, K-C12). A list needs one link per
+//! queue at a time (the `queued` claim). A list needs one link per
 //! TASK, not per queue slot: a single `MAX_TASKS`-long link array shared by
 //! every queue of every CPU, plus three words per queue. Linux does the same
 //! (`sched_entity.run_node` / `rt_rq` lists threaded through the task).

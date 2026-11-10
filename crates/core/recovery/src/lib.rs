@@ -43,7 +43,7 @@ use azos_ipc::authority_policy;
 const MAX_LINE:  usize = 256;
 const MAX_ARGS:  usize = 8;
 
-/// K-C27: park a listening/receiving loop for ~10 ms instead of yielding.
+/// park a listening/receiving loop for ~10 ms instead of yielding.
 /// A bare `task_yield()` in a wait-for-something loop returns immediately
 /// whenever nothing outranks the caller, turning the loop into a spinner
 /// that starves every lower-priority task on its hart. 100 Hz polling is
@@ -69,7 +69,7 @@ fn readline(buf: &mut [u8; MAX_LINE]) -> usize {
     const UART_POLL_INTERVAL: u64 = azos_drv_sys::timebase::TIMER_FREQ / 50;
     let mut pos = 0usize;
     loop {
-        // Poll until a character is available. K-C27: sleep between polls —
+        // Poll until a character is available. sleep between polls —
         // the old bare `task_yield()` made an idle shell a priority-13
         // spinner that, wherever placement put it, starved everything below
         // priority 13 on that hart once the RT daemons stopped masking it.
@@ -769,7 +769,7 @@ pub fn recovery_run() -> ! {
     azos_drv_sys::kconsoleln!("AzOS shell — type 'help' for commands");
     azos_drv_sys::kconsoleln!();
 
-    // U11-5: seed the console's own endpoints before the first command can
+    // seed the console's own endpoints before the first command can
     // possibly run. See `authority.rs` module doc — commenting this call out
     // is the RED canary for `reboot`/`shutdown`'s authority gate.
     authority::seed_console_authority();

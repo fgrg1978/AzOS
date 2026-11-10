@@ -52,7 +52,7 @@ pub const TAIL_SECTORS: u32 = 8;
 /// record, written from the host by `tools/sign/link_key_provision.py`, never by
 /// the kernel.
 pub const LINK_KEY: u32 = 0;
-/// U09-8 — the persisted entropy seed (V1.2):
+/// U09-8 — the persisted entropy seed:
 /// refuse to derive session keys on an unseeded pool, but persist a seed
 /// across boots so a board with no TRNG can be seeded from its second boot on.
 /// Format: `azos_crypto::entropy::{seed_file_encode, seed_file_decode}`, one

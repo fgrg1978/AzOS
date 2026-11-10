@@ -419,7 +419,7 @@ fn send_flags(
 
     // ── Egress: which link, which next hop (RFC 1122 §3.3.1) ───────────────
     //
-    // U06-4: **there was no route beyond the local segment.** Every
+    // **there was no route beyond the local segment.** Every
     // destination was ARPed directly regardless of subnet, and an off-link
     // host (`dns.rs`'s `8.8.8.8` default, a brain or OTA host on another
     // network) drew a broadcast ARP request nobody on the link could answer.
@@ -512,7 +512,7 @@ fn emit(
                 // packet was ACCEPTED. See `enqueue_for_arp` for what that
                 // costs and what is dropped instead. Keyed on the link and
                 // the next hop (the gateway when off-link), matching what
-                // `arp::send_request_on` asked for — U06-4.
+                // `arp::send_request_on` asked for.
                 arp::send_request_on(eg.ifindex, our_mac, our_ip, &eg.next_hop);
                 return enqueue_for_arp(eg.ifindex, our_mac, &eg.next_hop, &frame[ETH_HDR..ETH_HDR + total_len]);
             }

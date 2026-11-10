@@ -49,7 +49,7 @@
 //!
 //! Linux keeps the queue in an rb-tree augmented with the subtree's minimum
 //! deadline (O(log n) pick). Here the *membership* of a ready queue is the
-//! per-priority ready lists (`ready_list.rs`): `queued` (K-C12), the removal
+//! per-priority ready lists (`ready_list.rs`): `queued`, the removal
 //! paths, the claim audit and the K-C24/K-C26 re-enqueues are written against
 //! them, and they stay the truth. `eevdf_tree.rs` is the *order* over that
 //! membership: an AVL tree keyed by virtual deadline, each node carrying the

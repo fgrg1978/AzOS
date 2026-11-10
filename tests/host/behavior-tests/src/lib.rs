@@ -1479,7 +1479,7 @@ mod log_storage_mock {
         pub fail_next_fsyncs: usize,
         /// The `serial` argument of every `open()` call, in call order — so
         /// a test can pin WHICH serial `logger_init` opened, not just how
-        /// many times it opened something. Added (U08-3): before
+        /// many times it opened something. Added: before
         /// then every session opened 0, 1, 2, ... from its own start, so the
         /// call-order index and the serial always agreed and nothing needed
         /// to tell them apart.
@@ -3720,7 +3720,7 @@ mod estop_latch_survives_a_reset {
 
 #[cfg(test)]
 mod logger_serial_survives_a_reboot {
-    //! U08-3: **the flight recorder must not
+    //! **the flight recorder must not
     //! erase the previous session's records on every boot.** Before this
     //! decision, `logger_init` always opened serial 0 with TRUNCATE
     //! (`open_flags::TRUNCATE` in `kernel/src/boot/robot.rs`'s `KernelLogStorage`)

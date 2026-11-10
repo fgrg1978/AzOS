@@ -277,7 +277,7 @@ pub(crate) fn fast_ipc_call_wait(
     // the wake-then-block this arm always did).
 
 
-    // **WHY blocking once is not enough (K-C10).** The fix for
+    // **WHY blocking once is not enough.** The fix for
     // the lost-wakeup race stamps `wake_pending` on a task that
     // has not reached `task_block` yet, and `block_current`
     // consumes that stamp by returning *immediately*. So this
@@ -524,7 +524,7 @@ pub fn syscall_verdict(num: u64) -> SyscallEntry {
         azos_sched::filter::FilterVerdict::Linux if azos_limits::LINUX_ABI => {
             return SyscallEntry::Linux;
         }
-        // V1.8: kill, not `-1` — see
+        // kill, not `-1` — see
         // `handlers::seccomp_deny_kill`'s doc for why the logic lives there.
         // `seccomp_deny_kill` must NOT be `#[cold]`: that attribute on the
         // callee reshaped THIS function's register allocation and block layout
@@ -849,7 +849,7 @@ fn fast_ipc_reply_words(handle: u64, words: [u64; 4]) -> i64 {
         // `_slot_idx`: only the ipc-trace build reads it, and the
         // warning gate compiles without that feature.
         azos_ipc::FastIpcReply::Woke { caller_tid, slot_idx: _slot_idx } => {
-            // **WHY the wake is addressed by TID (K-C10).** A
+            // **WHY the wake is addressed by TID.** A
             // sweep-keyed wake would match on
             // `WaitReason::FastIpcClient(handle)`, which only exists
             // once the client is already `Blocked`. `SYS_IPC_CALL`
@@ -965,7 +965,7 @@ static SYSCALL_TABLE: [Handler; SYSCALL_TABLE_LEN] = syscall_table!(
         SYS_CAP_CLOSE => crate::caps::sys_cap_close(a0),
         SYS_CAP_DERIVE => crate::caps::sys_cap_derive(a0, a1, a2, a3),
         SYS_CAP_REVOKE => crate::caps::sys_cap_revoke(a0),
-        // N6b: a task's dispatch class; RT and DL need a time warrant.
+        // a task's dispatch class; RT and DL need a time warrant.
         SYS_SCHEDCTL => crate::schedctl::sys_schedctl(a0, a1, a2, a3, a4, a5),
         // D6: the foreign-ABI family (`crate::foreign`).
         SYS_FOREIGN_ENTRY => crate::foreign::sys_foreign_entry(a0, a1),
@@ -981,7 +981,7 @@ static SYSCALL_TABLE: [Handler; SYSCALL_TABLE_LEN] = syscall_table!(
         // through them — they are simply not reachable from ring 3 by a number
         // any more. There is no `sys_open`: an open names a directory.
 
-        // M02: the register form of the IPC call family — register-passing,
+        // the register form of the IPC call family — register-passing,
         // ≤32 bytes, zero-copy.
 
         // SYS_IPC_CALL, register form: client side. a0 = a `Cap<Endpoint>`,

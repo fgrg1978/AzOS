@@ -169,7 +169,7 @@ const _: () = assert!(
 /// IS a hart id (`tp`), so the two bounds are one.
 const MAX_HARTS: usize = azos_percpu::NR_CPUS;
 
-// K-C29: `azos_sync::preempt` keeps one preemption-depth slot per hart and
+// `azos_sync::preempt` keeps one preemption-depth slot per hart and
 // indexes it by `hart_id()` with NO clamp; `PER_CPU` and every other
 // scheduler table are indexed by `current_cpu_id()` the same way. All of them
 // now take their length from the one Kconfig symbol `NR_CPUS` (they were
@@ -655,7 +655,7 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
 }
 
 /// The idle-poll hook (`timebase::set_idle_poll_hook`): a deadline only the
-/// timer interrupt observes is pending — an orphaned wake stamp (K-C25).
+/// timer interrupt observes is pending — an orphaned wake stamp.
 fn idle_poll_wanted() -> bool {
     azos_sched::stamp_pending()
 }

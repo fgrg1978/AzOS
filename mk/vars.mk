@@ -513,7 +513,7 @@ VSBENCH_ELF_AARCH64   := $(AARCH64_DIR)/vsbench.elf
 # nothing (wrong path, moved crate) is silent, and would reopen this same hole
 # somewhere new. hello and syscall_test are pure assembly and link no libsys,
 # so they are deliberately not covered here.
-# U12-8: iCloud sync leaves a conflicting file as "name N.ext" or "name N"
+# iCloud sync leaves a conflicting file as "name N.ext" or "name N"
 # (seen at the repo root: `.config 2` .. `.config 5`). A bare $(wildcard) or
 # `find` returns that duplicate as its own whitespace-separated word, and
 # `make` then treats it as a SEPARATE prerequisite — "No rule to make target

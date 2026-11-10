@@ -243,7 +243,7 @@ fn cmd_ota_recv(port: u16) {
     // Accept + header loop: retry on probe connections that close before sending
     // a valid header (e.g. health-check probes, accidental connections).
     let (client_fd, header) = 'accept_loop: loop {
-        // Wait for next TCP connection. K-C27: sleep between accept polls —
+        // Wait for next TCP connection. sleep between accept polls —
         // this task runs at NET_POLL_PRIORITY (12) pinned to hart 2, and the
         // old bare `task_yield()` made an idle listener starve everything
         // below priority 12 on that hart for as long as no client connected.
@@ -273,7 +273,7 @@ fn cmd_ota_recv(port: u16) {
                 azos_net::socket_close(cfd);
                 break 'recv_hdr false;
             }
-            // K-C27: a client that connects and stalls before sending the
+            // a client that connects and stalls before sending the
             // 24-byte header must not pin this hart; 10 ms polls are
             // invisible against the sender's own pacing.
             listen_poll_sleep();
@@ -424,7 +424,7 @@ fn cmd_ota_recv(port: u16) {
 
     azos_fs::vfs_close(&mut fd_table, file_fd);
     azos_net::socket_close(client_fd);
-    // listen_fd stays open — U11-2, this task keeps accepting connections
+    // listen_fd stays open, this task keeps accepting connections
     // for the life of the 'session loop, not just one transfer.
 
     if remaining > 0 {

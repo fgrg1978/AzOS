@@ -62,7 +62,7 @@ fn spawn(r: u32, owner_tid: u32) -> Option<u32> {
 
 /// Wake a parked poller. The predicate accepts any wait: the poller blocks in
 /// one place only, and a wake that lands before it has committed to blocking
-/// must be stamped (K-C9), which a predicate on the not-yet-set wait reason
+/// must be stamped, which a predicate on the not-yet-set wait reason
 /// would refuse.
 fn wake(poller_tid: u32) {
     let _ = azos_sched::scheduler::wake_task_by_tid(poller_tid, &|_| true);

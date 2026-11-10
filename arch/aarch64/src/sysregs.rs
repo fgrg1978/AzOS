@@ -295,7 +295,7 @@ pub fn install_ttbr0_flush_local(root_phys: usize) {
     }
 }
 
-/// Read `TTBR0_EL1` back. U01-1/U01-2 (audit): `install_device_only_ttbr0`
+/// Read `TTBR0_EL1` back. `install_device_only_ttbr0`
 /// (`crates/core/mm::vmm`) writes the device-only root straight to the register
 /// via `ARCH.switch_pt` and returns only a page COUNT, not the root's own
 /// physical address — and `crates/core/mm` is out of this migration's file
@@ -392,7 +392,7 @@ pub fn write_tcr_el1(val: u64) {
     }
 }
 
-/// Read `ID_AA64MMFR0_EL1`. M41 (coordinator / U10-7, audit): `TCR_EL1.IPS`
+/// Read `ID_AA64MMFR0_EL1`. `TCR_EL1.IPS`
 /// (the physical-address-range field this crate's `mmu::setup::TCR_VALUE`
 /// left at `0` — 32-bit PAs only, so RAM above 4 GiB could never be
 /// mapped) must be programmed from THIS register's `PARange` field
@@ -461,7 +461,7 @@ pub fn read_tcr_el1() -> u64 {
 /// to attach each secondary to whichever of the two tables the primary has
 /// most recently published — see `kernel::entry::aarch64::
 /// aarch64_secondary_ttbr1_attach` and `SECONDARY_TTBR1_PA`'s own doc
-/// (audit) for why a secondary needed a THIRD publish point rather
+/// for why a secondary needed a THIRD publish point rather
 /// than reusing the boot-alias one. The kernel DOES execute through this
 /// mapping from `enable_paging` onward — every kernel-mode fetch/access at
 /// a high VA on every PE resolves through whatever this register (or its
@@ -546,7 +546,7 @@ pub const SCTLR_EL1_ATA0: u64 = 1 << 42;
 /// keeps whatever it was (its architectural reset value, effectively
 /// permanently 0 unless software sets it — which nothing here did). Clear
 /// (0) so every EL0->EL1 exception SETS `PAN`, matching riscv64's `sstatus.
-/// SUM` starting clear (U07-7): EL1 cannot read/write an EL0-taggeed page
+/// SUM` starting clear: EL1 cannot read/write an EL0-taggeed page
 /// by accident, only inside an explicit [`UserAccess`] window.
 pub const SCTLR_EL1_SPAN: u64 = 1 << 23;
 /// `SCTLR_EL1.UMA` (bit 9): EL0 may read and write `DAIF`.

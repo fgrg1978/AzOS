@@ -118,7 +118,7 @@ pub mod launch_cap;
 
 // ── Hand-written stand-ins (see module doc) ────────────────────────────────
 
-// ── Hand-written stand-in: trace ring (V1.8) ───────────────────────────────
+// ── Hand-written stand-in: trace ring ───────────────────────────────
 //
 // The real `trace_event` (`crates/core/ipc/src/trace.rs`) reads
 // `azos_arch::cpu::hart_id()` and `azos_drv_sys::timebase::now()`;

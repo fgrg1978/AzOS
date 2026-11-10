@@ -540,7 +540,7 @@ pub const SAFETY_MM_QUOTA_FAULT: u8 = 0x1F;
 pub const OPERATOR_KEY_FP_BYTES: usize = LOG_PAYLOAD_BYTES - 4;
 
 /// The IMU has been invalid/stale for longer than `safety::
-/// IMU_INCOHERENT_AFTER_TICKS` (V1.6). Written
+/// IMU_INCOHERENT_AFTER_TICKS`. Written
 /// ONCE per stretch of invalidity by `safety::check_common`, not once per
 /// tick the condition continues. `action_code` is unused (0); `detail`
 /// carries the elapsed tick count at the moment it latched.

@@ -316,7 +316,7 @@ mod tlb_hw;
 // lock's wait loop answers it (`SpinWait::wait_service`).
 mod shootdown_wait;
 
-// M38/U10-3: VMSAv8-64 PTE attribute encode/decode is the aarch64-side twin
+// VMSAv8-64 PTE attribute encode/decode is the aarch64-side twin
 // of `mmu` above — pure bit arithmetic, no `cfg(target_arch)` gate anywhere
 // in the file, and exactly the kind of mistake that is silent: the ret2usr
 // fix landed here (`attr_bits` now sets PXN unconditionally whenever

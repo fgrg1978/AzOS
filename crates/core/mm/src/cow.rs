@@ -529,7 +529,7 @@ fn fork_cow_l2<const CONCURRENT: bool>(
                     break None;
                 }
                 // Parent: clear WRITE, set COW marker. By compare-and-swap
-                //: a thread of the process may break or unmap this
+                // a thread of the process may break or unmap this
                 // page meanwhile (the fork holds its layout lock, not its
                 // faults). Then the reference goes back and the entry is
                 // taken again as it now is.
@@ -692,7 +692,7 @@ fn cow_break_once(pt: usize, fault_addr: usize) -> KResult<bool> {
 
     // Allocate, uninitialised: the `copy_nonoverlapping` right below
     // overwrites every byte before anything can read this page, so
-    // `alloc_page`'s zero-fill (U09-11) would be ~1500 RV64 instructions
+    // `alloc_page`'s zero-fill would be ~1500 RV64 instructions
     // spent producing 4 KiB that the copy immediately discards — 8 KiB
     // written (zero, then copy) to land 4 KiB of live data. `alloc_page` is
     // still correct for the pager's zero page (`pager::AnonPager`), which has no data
@@ -723,7 +723,7 @@ fn cow_break_once(pt: usize, fault_addr: usize) -> KResult<bool> {
         Ok(w) => w,
         Err(_) => {
             let _ = pmm::free_page(PhysAddr::new(new_phys));
-            // Distinct from the null-guard `InvalidArg` above (U09-11):
+            // Distinct from the null-guard `InvalidArg` above:
             // this is `pte_make_leaf` — an arch-level encode call — refusing
             // inputs THIS FUNCTION built (`new_phys` fresh from the PMM,
             // `broken`'s perms carried over from an already-valid PTE). The

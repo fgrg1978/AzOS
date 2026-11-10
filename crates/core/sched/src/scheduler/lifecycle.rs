@@ -579,7 +579,7 @@ pub fn try_task_create_init(
                     // against a future path that Zombifies mid-transition.
                     // (The wake stamp lives in `state_word` now — cleared
                     // together with the state reset below, atomically.)
-                    // K-C12: a stale `queued` (previous occupant died while
+                    // a stale `queued` (previous occupant died while
                     // an entry of its own still sat in a ready queue) would
                     // make this brand-new task permanently un-enqueueable —
                     // `cpu_enqueue` would refuse it forever as a duplicate.
@@ -590,7 +590,7 @@ pub fn try_task_create_init(
                     task.fork_entry   = 0;
                     task.fork_user_sp = 0;
                     task.fork_satp    = 0;
-                    // K-C21: same hygiene for the exec hand-off. A stale
+                    // same hygiene for the exec hand-off. A stale
                     // `exec_ctx_ready` (previous occupant published an exec
                     // it never consumed — no such path exists today, but the
                     // flag must not be the thing that assumption hangs on)
@@ -631,7 +631,7 @@ pub fn try_task_create_init(
                     // occupant still held (one that died without passing the
                     // dispatch tail's reap) leaves its hart's set and ledger.
                     rt::release(idx);
-                    // N6: the slot's SC starts over in its priority's class.
+                    // the slot's SC starts over in its priority's class.
                     classes::on_slot_reset(idx, priority);
                     // A reused slot is in no thread group.
                     crate::group::slot_reset(idx);
@@ -783,13 +783,13 @@ pub fn try_task_create_init(
                 // `target_cpu` may differ from the creating CPU (priority-aware
                 // assignment or explicit affinity) — always go through the locked
                 // wrapper.
-                // K-C12: a brand-new task can never be a duplicate (its
+                // a brand-new task can never be a duplicate (its
                 // `queued` flag was just cleared), so a refusal here can only
                 // mean the ring is genuinely full. Fail the creation instead
                 // of returning a task index for something that is in no ready
                 // queue and will never run: `fork()` reports -1, which its
                 // caller already handles, and the pool slot goes back.
-                // N7: nothing of the previous occupant's wait-graph state
+                // nothing of the previous occupant's wait-graph state
                 // survives (its effective attribute, its boost floor, an
                 // object that still names the slot as owner). Before the
                 // enqueue, outside POOL_LOCK: a graph reset takes the graph
@@ -1027,7 +1027,7 @@ azos_common::ro_hook! {
     /// are ready, enters a WFI idle loop (timer interrupts will call
     /// `schedule()` to pick up future tasks).
     ///
-    /// K-C6: deliberately does NOT free the task's pool slot (`TASK_VALID`) or
+    /// deliberately does NOT free the task's pool slot (`TASK_VALID`) or
     /// clear `PER_CPU[cpu].current_idx` — this function is still executing ON
     /// the exiting task's own stack, so doing either here would let another
     /// hart's `alloc_slot()` (e.g. via `fork()`) reuse and dispatch a brand new
@@ -1665,9 +1665,9 @@ unsafe fn member_exit(idx: usize, tid: u32, lead: u32, code: i32) -> ! {
     crate::domain::leave(task_mut(idx).take_domain());
     let _ = crate::group::member_gone(lead, tid);
     wake_task_by_tid(lead, &|r| matches!(r, WaitReason::Timer(_)));
-    // N7b: the wait graph forgets the task here, with interrupts on.
+    // the wait graph forgets the task here, with interrupts on.
     classes::on_task_exit(idx);
-    // N7d: after the graph's owner-died hand-over, the held table forgets
+    // after the graph's owner-died hand-over, the held table forgets
     // the locks this task dies holding (the panic policy's `mutex-held`).
     azos_sync::held::held_forget(tid);
     // And the claim table (rule F1) the same way.
@@ -1698,7 +1698,7 @@ pub fn task_exit_with_code(code: i32) -> ! {
     if !cfg!(feature = "exit-irq-masked-canary") {
         azos_arch::ARCH.enable_all();
     }
-    // K-C29: exit cannot be refused and cannot be deferred. A task exiting
+    // exit cannot be refused and cannot be deferred. A task exiting
     // inside a critical section is a bug in that task — it is not coming back
     // to drop its guard — but refusing to switch away from a Zombie strands
     // the hart, which is worse. Force the depth to 0 and continue; the counter
@@ -1832,12 +1832,12 @@ pub fn task_exit_with_code(code: i32) -> ! {
             note_exit(idx, code);
             crate::prof::add(14, t_ph);
 
-            // N7b: the wait graph forgets the task here, with interrupts on.
+            // the wait graph forgets the task here, with interrupts on.
             classes::on_task_exit(idx);
-            // N7d: the held table forgets the locks it dies holding.
+            // the held table forgets the locks it dies holding.
             azos_sync::held::held_forget(exit_tid);
             azos_sync::claim::held_forget(exit_tid);
-            // K-C6: mark Zombie only — TASK_VALID stays true and
+            // mark Zombie only — TASK_VALID stays true and
             // PER_CPU[cpu].current_idx keeps pointing at `idx` (see the
             // function doc above) until do_schedule() can safely free it.
             {
@@ -1867,7 +1867,7 @@ pub fn task_exit_with_code(code: i32) -> ! {
 
 /// Voluntarily yield the CPU to the next ready task.
 ///
-/// K-C29: a yield issued inside a critical section is refused, not deferred.
+/// a yield issued inside a critical section is refused, not deferred.
 /// Yielding while holding a spinlock cannot make progress by yielding — the
 /// hart is being asked to stop running the only task that can release the
 /// lock. Keeping the holder on the hart is what frees it. This is also the
@@ -1920,7 +1920,7 @@ fn yield_as(why: SwitchReason) {
 #[wcet(30_us)]
 pub fn schedule() {
     let cpu = current_cpu_id();
-    // K-C29: the preemption check is NOT here. It sits at each of the two
+    // the preemption check is NOT here. It sits at each of the two
     // `do_schedule` sites below, *after* the tick bookkeeping — runtime
     // accounting and the RT band / CBS charge all have to
     // happen whether or not this hart is in
@@ -1928,7 +1928,7 @@ pub fn schedule() {
     // lost all of it; see the deletion note further down this file.
     unsafe {
         let current_idx = PER_CPU[cpu].current_idx.load(Ordering::Relaxed);
-        // K-C6: a lingering Zombie — task_exit() found no ready task and is
+        // a lingering Zombie — task_exit() found no ready task and is
         // idling in its own WFI loop, still on its own stack — must not be
         // treated as "the task currently running" here. Crediting a dead
         // task's runtime/deadline stats is wrong, and worse: the RT/time-
@@ -2048,9 +2048,9 @@ pub fn start() -> ! {
 
         // Lockdep: the boot context hands over holding nothing.
         azos_sync::lockdep::switch(None, next_idx);
-        // QSBR (Kconfig RCU_QSBR, N4): a context switch is a quiescent state.
+        // QSBR (Kconfig RCU_QSBR): a context switch is a quiescent state.
         azos_sync::qsbr::switch();
-        // N12: re-tag `next`'s ASID if a rollover took it; set the flush word.
+        // re-tag `next`'s ASID if a rollover took it; set the flush word.
         crate::asid::prepare_switch(next as *mut Task);
         // Switch to first task (no current task to save).
         context_switch(core::ptr::null_mut(), next as *mut Task);
@@ -3698,7 +3698,7 @@ pub(super) unsafe fn reap_zombie_on_switch(old_idx: usize) {
     #[cfg(feature = "ctx-probe")]
     ctx_probe::check_reap(current_cpu_id(), old_idx);
     let old = task_mut(old_idx);
-    // K-C6: `task_exit()` marks the task Zombie but deliberately does
+    // `task_exit()` marks the task Zombie but deliberately does
     // NOT free its pool slot (TASK_VALID) or clear
     // PER_CPU[cpu].current_idx itself — at that point it is still
     // executing ON this exact task's own stack (task_exit() calls

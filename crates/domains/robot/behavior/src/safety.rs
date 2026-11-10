@@ -140,7 +140,7 @@ pub enum SafetyViolation {
     /// Robot has crossed the circular geofence boundary (E03).
     GeofenceViolation,
     /// The IMU has been invalid/stale for longer than
-    /// [`IMU_INCOHERENT_AFTER_TICKS`] (V1.6).
+    /// [`IMU_INCOHERENT_AFTER_TICKS`].
     SensorIncoherent,
 }
 

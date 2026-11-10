@@ -105,7 +105,7 @@ unsafe fn preempt_facts(cpu: usize, idx: usize) -> preempt::Running {
 #[inline]
 unsafe fn wake_preempt_check(cpu: usize, idx: usize) {
     let cur_idx = PER_CPU[cpu].current_idx.load(Ordering::Relaxed);
-    // A task in `current_idx` that is no longer `Running` (a Zombie, K-C6; a
+    // A task in `current_idx` that is no longer `Running` (a Zombie; a
     // blocker past its commit) is about to leave the CPU on its own: the
     // pick that follows takes the best ready task, so it is not preempted.
     let cur = if cur_idx < MAX_TASKS
@@ -153,12 +153,12 @@ fn wait_reason_tag(r: WaitReason) -> u8 {
 /// Moves it from Running → Blocked, then reschedules.
 pub fn block_current(cpu: usize, reason: WaitReason) {
     if cpu >= MAX_CPUS { return; }
-    // Lockdep (Kconfig LOCKDEP, N1): every task sleep (timed, WaitQueue,
+    // Lockdep (Kconfig LOCKDEP): every task sleep (timed, WaitQueue,
     // IPC) passes here; a SpinLock held, IRQs off or interrupt context is
     // reported with the lock's class and site. No instruction when off.
     azos_sync::lockdep::might_sleep("scheduler block");
 
-    // K-C29: refuse to park a task that is inside a critical section.
+    // refuse to park a task that is inside a critical section.
     //
     // CHECKED FIRST, on purpose — before the `sstatus` write below, before
     // `context_saving` is set, before `wait_reason` is published, and before
@@ -258,7 +258,7 @@ pub fn block_current(cpu: usize, reason: WaitReason) {
             // it).
             task.context_saving.store(true, Ordering::Relaxed);
 
-            // K-C17: publish the REASON before the state. A waker only reads
+            // publish the REASON before the state. A waker only reads
             // `wait_reason` after observing `Blocked` with Acquire, and
             // `Blocked` is only ever published by the Release CAS inside
             // `commit_blocked_or_consume_wake` below — that pairing is what
@@ -398,7 +398,7 @@ fn wake_window_of(tid: u32) -> bool {
 /// CPU's own `do_schedule()`.
 /// Which CPU should a task being woken be enqueued on?
 ///
-/// **WHY this is not just `0` (K-C14).** All three wake paths
+/// **WHY this is not just `0`.** All three wake paths
 /// (`try_wake_task`, `wq_wake_by_tid`, `wake_task_by_tid`) used to send every
 /// unpinned task to **CPU 0**, unconditionally. `find_least_loaded_cpu()` had
 /// existed in this file all along and none of them called it.
@@ -441,7 +441,7 @@ unsafe fn wake_target_cpu(idx: usize, task: &Task) -> usize {
         azos_energy::Placement::Legacy => if let Some(p) = task.pinned() {
             p.min(ncpu() - 1)
         } else {
-            // K-C12: "emptiest hart" is not the same question as "hart that will
+            // "emptiest hart" is not the same question as "hart that will
             // dispatch this task". A woken task parked behind permanently
             // higher-priority work is a lost task, not a slow one — the same
             // defect K-C14 half-fixed by moving off the hardcoded CPU 0.
@@ -617,13 +617,13 @@ pub fn try_wake_task(idx: usize, pred: &dyn Fn(&WaitReason) -> bool) {
     unsafe {
         if !TASK_VALID[idx].load(Ordering::Relaxed) { return; }
         let task = task_mut(idx);
-        // K-C19: the Blocked→Ready transition is a CAS — exactly one waker
+        // the Blocked→Ready transition is a CAS — exactly one waker
         // can win it, and the Acquire/Release pairing inside guarantees the
         // `wait_reason` the predicate reads is the one the blocker published
-        // (K-C17). `stamp_if_unblocked = false`: this is the broadcast path;
+        //. `stamp_if_unblocked = false`: this is the broadcast path;
         // a sweep cannot tell its addressee from any other task about to
         // sleep, so it must never stamp (see wait.rs).
-        // K-C24: `saved` gates dispatch — a Blocked task whose context is
+        // `saved` gates dispatch — a Blocked task whose context is
         // not yet saved is still RUNNING (unswitched block) and must be
         // stamped, never enqueued. See `sched_word::wake_transition`.
         // `saved` read after `Blocked` is seen (inside the transition).
@@ -688,10 +688,10 @@ pub fn wq_wake_by_tid(tid: u32) {
             //    task committed (the old lost-wake half-window).
             //  * Blocked on WaitQueue: dispatch (CAS Blocked→Ready; the
             //    Acquire pairing guarantees the reason read is the published
-            //    one — K-C17).
+            //    one).
             //  * Blocked on something else (e.g. a Timer): genuine mismatch,
             //    not the K-C9 race — no stamp, this is not our task anymore.
-            // K-C24: see try_wake_task — an unsaved Blocked target is still
+            // see try_wake_task — an unsaved Blocked target is still
             // running and gets a stamp, not an enqueue.
             let saved_seen = core::cell::Cell::new(true);
             let reason_first = (wake_window_of(tid) && WAKE_REASON_FIRST.load(Ordering::Relaxed)).then(|| {
@@ -846,7 +846,7 @@ pub fn wq_wake_by_tid(tid: u32) {
 /// touches the ready queue only via `cpu_enqueue_locked` (IRQ-safe, takes
 /// `CPU_LOCKS[target_cpu]`, so it cannot race the target CPU's own
 /// `do_schedule()`), and the target CPU is routinely not the caller's. The
-/// stamp is a lock-free CAS on the task's own `state_word` (K-C19), so it
+/// stamp is a lock-free CAS on the task's own `state_word`, so it
 /// cannot deadlock against an interrupted critical section.
 ///
 /// The policy lives in `wait::wake_action()` — a pure function with the full
@@ -1093,7 +1093,7 @@ fn note_unsaved_stamp(idx: usize, saved: bool, wt: crate::task::sched_word::Wake
 }
 
 /// A wake was stamped onto a task still switching away, and no tick has
-/// reaped it yet (K-C25). Only a timer interrupt runs the reaper, so while
+/// reaped it yet. Only a timer interrupt runs the reaper, so while
 /// this is set an idle hart must not sleep to its ceiling: the kernel's
 /// idle-poll hook (`timebase::set_idle_poll_hook`) reads [`stamp_pending`].
 /// Hart 0's fixed 100 ms keepalive used to be the reaper's last
@@ -1301,13 +1301,13 @@ pub(super) fn wake_by_slot_as(
         if let Some(i) = slot {
             let task = task_mut(i);
 
-            // K-C19: decision and transition are one CAS protocol now —
+            // decision and transition are one CAS protocol now —
             // `wake_transition` enforces the `wait::wake_action` truth table
             // (its doc still holds), with the two windows closed:
             // a stamp can no longer land after the addressee committed to
             // Blocked, and a dispatch CAS can be won by exactly one waker.
             // The Acquire pairing inside replaces the old K-C17 fence.
-            // K-C24: `saved` keeps an unswitched-block target (Blocked but
+            // `saved` keeps an unswitched-block target (Blocked but
             // still executing) out of the ready queues — stamp instead.
             let saved_seen = core::cell::Cell::new(true);
             let wt = wake_transition(&task.state_word, || still_holds(i, tid), || pred(&task.wait_reason.load()), true, || {
@@ -1320,7 +1320,7 @@ pub(super) fn wake_by_slot_as(
                 WakeTransition::Stamped => {
                     note_unsaved_stamp(i, saved, WakeTransition::Stamped);
                     WAKE_STAMPED.fetch_add(1, Ordering::Relaxed);
-                    // K-C9/K-C10: the addressee had not committed to Blocked
+                    // the addressee had not committed to Blocked
                     // yet; its commit CAS will now fail, consume the stamp,
                     // and skip the block.
                     return WakeOut::NotWoken;
@@ -1449,7 +1449,7 @@ fn nearest_timer_deadline_sweep_where(keep: impl Fn(usize) -> bool) -> Option<u6
             if !TASK_VALID[i].load(Ordering::Relaxed) || !keep(i) { continue; }
             let task = task_ref(i);
             // Acquire pairs with block_current's Release commit: it publishes
-            // the `wait_reason` (and deadline) we read next (K-C17).
+            // the `wait_reason` (and deadline) we read next.
             if task.state_acquire() != TaskState::Blocked { continue; }
             if let WaitReason::Timer(deadline) = task.wait_reason.load() {
                 // The instant the heap fires it at (QoS timer slack).

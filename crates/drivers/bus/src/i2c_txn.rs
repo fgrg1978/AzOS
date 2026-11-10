@@ -35,7 +35,7 @@
 //! Read commands are pushed only while the RX FIFO has room for their bytes,
 //! so the receive FIFO cannot overflow, and no `IC_DATA_CMD` write is made
 //! without `IC_STATUS.TFNF` (a DesignWare controller silently drops a write
-//! to a full TX FIFO, U05-6).
+//! to a full TX FIFO).
 //!
 //! ISA-neutral and free of MMIO: the registers come through [`DwRegs`], so
 //! `tests/host/drivers-tests` runs this file against a modelled controller.

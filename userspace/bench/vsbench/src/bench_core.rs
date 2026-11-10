@@ -885,7 +885,7 @@ pub trait Scale {
     fn floor_call();
 }
 
-/// N0: resolve a handle this task already holds, in its own table.
+/// resolve a handle this task already holds, in its own table.
 ///
 /// AzOS: `SYS_CAP_INFO` on the bench endpoint capability, a read of the
 /// task's capability table. Linux: `fcntl(fd, F_GETFD)` on a held file

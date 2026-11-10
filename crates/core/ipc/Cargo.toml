@@ -64,7 +64,7 @@ text-poke-wx-canary = []
 # real build.
 inspect-view-canary = []
 default = []
-# M40: gates `seed_one_cap_outcome`'s actuation arms the
+# gates `seed_one_cap_outcome`'s actuation arms the
 # same way `crates/core/topology`'s parser and builder already gate the word
 # "motor" / the `CapSpec` rows — a non-actuating build must have ZERO live
 # paths to mint a drivetrain capability, not just zero declared ones.

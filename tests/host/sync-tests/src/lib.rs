@@ -109,8 +109,8 @@ pub mod isr_depth;
 #[path = "../../../../crates/core/sync/src/qsbr_core.rs"]
 pub mod qsbr_core;
 
-// The interfaces of the wait graph (N7), the kernel mutex (N8),
-// and the PI futex seam (N10). Stubs: only their
+// The interfaces of the wait graph, the kernel mutex,
+// and the PI futex seam. Stubs: only their
 // fixed, already-implemented parts are tested here (the attribute order,
 // the futex word protocol, the Kconfig-off behaviour).
 #[path = "../../../../crates/core/sync/src/pi_attr.rs"]
@@ -244,7 +244,7 @@ mod interface_tests {
     }
 }
 
-// N10: the PI futex word state machine, and every PiFutexOps path that does
+// the PI futex word state machine, and every PiFutexOps path that does
 // not reach the wait graph (no pi_state: the graph's bodies are N7's).
 #[cfg(test)]
 mod pi_futex_tests {
@@ -844,7 +844,7 @@ mod mutex_io_tests {
     }
 }
 
-/// N8: the kernel mutex without a scheduler (host): the owner-word states,
+/// the kernel mutex without a scheduler (host): the owner-word states,
 /// exclusion, the slow unlock a marked word forces, and rule F1's release
 /// around a device wait. No probes are registered here, so no path enters
 /// the wait graph.
@@ -1042,7 +1042,7 @@ mod kmutex_tests {
 /// ```
 pub fn preempt_guard_is_not_send() {}
 
-/// `kmutex::MutexGuard` must be `!Send` (N8): the owner word names the task
+/// `kmutex::MutexGuard` must be `!Send`: the owner word names the task
 /// that took the mutex, and only that task releases it.
 ///
 /// ```compile_fail
@@ -2308,7 +2308,7 @@ mod tests {
         });
     }
 
-    /// N7d: a task that exits holding Mutexes leaves the held table: the
+    /// a task that exits holding Mutexes leaves the held table: the
     /// exit path's `held_forget` drops all its entries, and only its own.
     #[test]
     fn held_forget_drops_a_dead_holder_only() {
@@ -2523,7 +2523,7 @@ mod spin_tests {
         assert!(L.try_lock().is_some(), "the lock stayed held");
     }
 
-    /// N3: after contention under the queued lock no CPU still holds a node
+    /// after contention under the queued lock no CPU still holds a node
     /// (the waiter frees its own on acquire).
     #[test]
     fn qspinlock_nodes_freed_after_contention() {
@@ -2549,7 +2549,7 @@ mod spin_tests {
         }
     }
 
-    /// N3: a fast path that lands on a free word with a pending waiter gives
+    /// a fast path that lands on a free word with a pending waiter gives
     /// the lock back and waits its turn: the pending waiter goes first. A
     /// trylock never takes a word with a waiter on it.
     #[test]

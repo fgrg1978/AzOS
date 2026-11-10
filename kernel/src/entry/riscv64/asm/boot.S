@@ -231,7 +231,7 @@ _secondary_start:
     ld sp, 0(t0)
     beqz sp, secondary_halt
 
-    # Set trap vector — K-C16: this hart's OWN slot, not the generic vector.
+    # Set trap vector: this hart's OWN slot, not the generic vector.
     # Each slot carries its hart id in the word just below the entry point, so
     # the trap entry can rebuild the kernel tp after a trap from U-mode
     # instead of trusting the tp ring 3 handed it.  stvec is a per-hart CSR

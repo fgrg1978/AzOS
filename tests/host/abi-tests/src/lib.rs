@@ -308,7 +308,7 @@ mod error_tests {
         assert_eq!(Errno::ECAPSTALE as i64, 202);
     }
 
-    /// U07-6: `crates/core/syscall`'s handlers have returned `-99` as their own
+    /// `crates/core/syscall`'s handlers have returned `-99` as their own
     /// `E_PERM` (`handlers.rs::E_PERM`, 30 call sites) since before this
     /// table existed. This pins the value AND that the table now resolves
     /// it — before this fix, `Errno::from_syscall_ret(-99)` was `None`

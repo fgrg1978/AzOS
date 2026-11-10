@@ -418,7 +418,7 @@ policy             = \"fair\"
         assert_eq!(list[0].target.as_str(), "msi.0");
     }
 
-    // M40: `motor` is a profile word; without `profile-actuation`
+    // `motor` is a profile word; without `profile-actuation`
     // the parser refuses it and no Motor cap mints — this test is profile-only.
     #[cfg(feature = "profile-actuation")]
     #[test]
@@ -493,7 +493,7 @@ caps = []
 
     /// **One writer per motor.** Two tasks each holding WRITE on motor 0 are
     /// two command sources for one wheel, with nothing between them.
-    // M40: `motor` is a profile word; without `profile-actuation`
+    // `motor` is a profile word; without `profile-actuation`
     // the parser refuses it and no Motor cap mints — this test is profile-only.
     #[cfg(feature = "profile-actuation")]
     #[test]
@@ -514,7 +514,7 @@ caps = [ { kind = \"endpoint\", target = \"motor.0\", perm = \"w\" } ]
 
     /// The id, not the spelling: `motor.00` and `motor.+0` mint motor 0
     /// (`cap_seed::parse_dotted` is a `u32` parse), so they conflict with it.
-    // M40: `motor` is a profile word; without `profile-actuation`
+    // `motor` is a profile word; without `profile-actuation`
     // the parser refuses it and no Motor cap mints — this test is profile-only.
     #[cfg(feature = "profile-actuation")]
     #[test]
@@ -536,7 +536,7 @@ caps = [ { kind = \"endpoint\", target = \"motor.0\", perm = \"w\" } ]
 
     /// What the rule does not refuse: readers alongside the writer, one
     /// writer per wheel, and one task naming its own motor twice.
-    // M40: `motor` is a profile word; without `profile-actuation`
+    // `motor` is a profile word; without `profile-actuation`
     // the parser refuses it and no Motor cap mints — this test is profile-only.
     #[cfg(feature = "profile-actuation")]
     #[test]
@@ -617,7 +617,7 @@ caps = [
         assert!(matches!(r, Err(ParseError::MissingField)));
     }
 
-    // M40: `motor` is a profile word; without `profile-actuation`
+    // `motor` is a profile word; without `profile-actuation`
     // the parser refuses it and no Motor cap mints — this test is profile-only.
     #[cfg(feature = "profile-actuation")]
     #[test]
@@ -2562,7 +2562,7 @@ mod cap_seed_bridge_tests {
     /// exactly those minted caps -- the part A requirement, end to end:
     /// `Topology` decl -> bridge -> `cap_store` sees the right badge under
     /// each interface's own op classes.
-    // M40: `motor` is a profile word; without `profile-actuation`
+    // `motor` is a profile word; without `profile-actuation`
     // the parser refuses it and no Motor cap mints -- this test is profile-only.
     #[cfg(feature = "profile-actuation")]
     #[test]
@@ -2641,7 +2641,7 @@ mod cap_seed_bridge_tests {
     /// and 3 are real slots in `azos_robot`'s four-motor table, and a minted
     /// `motor.2` would be authority over that slot. The two wheels still mint,
     /// in the same table.
-    // M40: the `motor` endpoint is a profile target; without
+    // the `motor` endpoint is a profile target; without
     // `profile-actuation` the parser refuses it and no wheel mints -- this
     // test is profile-only.
     #[cfg(feature = "profile-actuation")]
@@ -2666,7 +2666,7 @@ mod cap_seed_bridge_tests {
         let tid = fresh_tid();
         assert!(crate::cap_seed::seed_one_cap(tid, CapKind::Endpoint, CapPerms::READ, "sensor.imu")
             .is_none());
-        // U03-2: `Cap<Irq>` HAS a minter now; line 0 is the one
+        // `Cap<Irq>` HAS a minter now; line 0 is the one
         // it refuses (SBI/M-mode reserved), so that is the "skipped" case here.
         assert!(crate::cap_seed::seed_one_cap(tid, CapKind::Device, CapPerms::READ, "irq.0").is_none());
         assert!(crate::cap_seed::seed_one_cap(tid, CapKind::Endpoint, CapPerms::RW, "motor.left")
@@ -2794,7 +2794,7 @@ mod cap_seed_bridge_tests {
     /// The negative half declares one wheel only. That is not a hypothetical
     /// shape: `default_minimal()` is a development default and the production
     /// path parses a signed `CAPS.TOML`, which can name `motor.0` alone.
-    // M40: the `motor` endpoint is a profile target; without
+    // the `motor` endpoint is a profile target; without
     // `profile-actuation` the parser refuses it -- this test is profile-only.
     #[cfg(feature = "profile-actuation")]
     #[test]

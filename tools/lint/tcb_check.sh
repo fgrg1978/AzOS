@@ -394,7 +394,7 @@ for c in $CORE_CRATES; do
                 findings="${findings}  ${core_pkg} -> ${scaf_pkg}\n"
             fi
         done
-        # Q2.3: core may not depend on profile, the same shape of rule as
+        # core may not depend on profile, the same shape of rule as
         # core-may-not-depend-on-scaffolding above, checked separately so a
         # scaffolding regression and a profile regression are never confused
         # in the count (they carry different baselines and different owners).

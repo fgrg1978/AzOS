@@ -19,7 +19,7 @@ pub mod udp;
 pub mod seq;
 pub mod tcp;
 pub mod wait;
-// N8: one receive pass at a time (`net_poll`'s owner bit).
+// one receive pass at a time (`net_poll`'s owner bit).
 pub mod rx_owner;
 // Interfaces whose NIC queue a ring-3 program took (`ty::NIC_QUEUE`).
 pub mod nic_queue;
@@ -270,7 +270,7 @@ pub fn net_nic_added(nic: usize) -> Option<IfIndex> {
 /// queued: the caller should run another pass soon rather than wait for an
 /// interrupt that, with RX interrupts off for the drain, will not come.
 pub fn net_poll() -> bool {
-    // N8: one pass at a time, whoever calls. A caller that finds a pass in
+    // one pass at a time, whoever calls. A caller that finds a pass in
     // progress returns at once; the owner runs one more pass for it.
     if azos_limits::CANARY_RUNTIME && RX_OWNER_BYPASS.load(core::sync::atomic::Ordering::Relaxed) {
         return net_poll_pass();
@@ -278,7 +278,7 @@ pub fn net_poll() -> bool {
     RX_OWNER.run(net_poll_pass)
 }
 
-/// The owner of the receive pass (N8): see [`rx_owner`].
+/// The owner of the receive pass: see [`rx_owner`].
 static RX_OWNER: rx_owner::PassOwner = rx_owner::PassOwner::new();
 
 /// Runtime canary `net-rx-two-consumers` (Kconfig `CANARY_RUNTIME` only):
@@ -304,7 +304,7 @@ static RX_PASS_CYCLES: core::sync::atomic::AtomicU64 = core::sync::atomic::Atomi
 static RX_PASS_FRAMES: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 /// `net_poll` calls that found another pass in progress and left it a
-/// request instead of draining (N8), since boot.
+/// request instead of draining, since boot.
 pub fn rx_pass_contended() -> u64 {
     RX_OWNER.contended()
 }
@@ -397,7 +397,7 @@ fn net_poll_pass() -> bool {
         RX_PASS_CYCLES.fetch_add(dt, core::sync::atomic::Ordering::Relaxed);
         RX_PASS_FRAMES.fetch_add(drained as u64, core::sync::atomic::Ordering::Relaxed);
     }
-    // End of the pass (N6): the ACKs this drain held leave now, one per
+    // End of the pass: the ACKs this drain held leave now, one per
     // connection, however many of its segments arrived in the pass —
     // inside the TX batch, so they share its doorbell.
     if tcp::TCP_DELACK_PASS_FLUSH {
@@ -509,7 +509,7 @@ pub fn net_info() {
             q.tx_frames, q.tx_doorbells, q.tx_skipped, q.tx_dropped,
             q.rx_frames, q.rx_doorbells, q.rx_skipped, q.irqs);
     }
-    // N8: `net_poll` calls that found a pass in progress and left the owner
+    // `net_poll` calls that found a pass in progress and left the owner
     // a request rather than draining beside it.
     let (cy, fr) = (RX_PASS_CYCLES.load(core::sync::atomic::Ordering::Relaxed),
                     RX_PASS_FRAMES.load(core::sync::atomic::Ordering::Relaxed));
@@ -532,7 +532,7 @@ pub fn net_set_ip(ip: [u8; 4], mask: [u8; 4], gw: [u8; 4]) {
     // every segment silently.
     tcp::set_our_ip(ip);
 
-    // M21 / U06-5: pre-resolve the gateway through the SAME solicited path
+    // pre-resolve the gateway through the SAME solicited path
     // `ip::send`'s cache miss uses (`arp::send_request` + `ARP_PENDING`),
     // instead of leaving its first binding to whichever frame arrives
     // first. `arp.rs`'s own comment says "the gateway, which was inserted

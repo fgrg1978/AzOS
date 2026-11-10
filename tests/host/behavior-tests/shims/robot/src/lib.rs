@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! Host stand-in for `azos_robot`, used only by `tests/host/behavior-tests`'
-//! motor-gate/record suite (Q1.3/Q1.4).
+//! motor-gate/record suite.
 //!
 //! **The motor layer is the real one.** `motor.rs` and `pid.rs` are the files
 //! from `crates/domains/robot/robot/src`, pulled in with `#[path]` — the same technique

@@ -219,7 +219,7 @@ pub fn net_get_mask() -> [u8; 4] {
     [255, 255, 255, 0]
 }
 
-/// `super::net_get_gateway` (U06-4): `ip::send_flags` reads this to pick the
+/// `super::net_get_gateway`: `ip::send_flags` reads this to pick the
 /// next-hop MAC for an off-subnet destination instead of ARPing the
 /// destination directly. Settable — unlike `net_get_mask`/`net_get_ip`,
 /// which are fixed — so a routing test can configure "no gateway" (all
@@ -401,7 +401,7 @@ pub fn net_random_fill(buf: &mut [u8]) -> bool {
     }
 }
 
-/// The waiter queues `tcp`, `arp` and `dns` notify (N7). No hooks are
+/// The waiter queues `tcp`, `arp` and `dns` notify. No hooks are
 /// registered here, so every wait is the caller's own `yield_fn`, as before.
 #[allow(dead_code)]
 #[path = "../../../../crates/net/stack/src/wait.rs"]
@@ -477,7 +477,7 @@ mod checksum_sum {
     }
 }
 
-/// N8: the owner bit that makes `net_poll`'s receive pass single-consumer.
+/// the owner bit that makes `net_poll`'s receive pass single-consumer.
 #[allow(dead_code)]
 #[path = "../../../../crates/net/stack/src/rx_owner.rs"]
 mod rx_owner;
@@ -907,7 +907,7 @@ mod tcp_rx {
         s
     }
 
-    /// One segment in, as one `net_poll` pass: the ACK it holds (N6) leaves
+    /// One segment in, as one `net_poll` pass: the ACK it holds leaves
     /// when the pass ends, as the kernel's poller sends it.
     pub(crate) fn deliver(seg: &[u8]) {
         tcp::handle_checked(&PEER_IP, &OUR_IP, seg);
@@ -1051,7 +1051,7 @@ mod tcp_rx {
 
     // ── Handshake ────────────────────────────────────────────────────────────
 
-    /// U13-4: renamed from `..._and_the_isn_is_not_predictable` — the body
+    /// renamed from `..._and_the_isn_is_not_predictable` — the body
     /// only ever pinned the state transition, not unpredictability. That
     /// property now has its own test, below:
     /// `one_observed_isn_no_longer_lets_an_attacker_predict_another`.
@@ -1096,7 +1096,7 @@ mod tcp_rx {
         assert_ne!(a, b, "the ISN must vary with the connection 4-tuple");
     }
 
-    /// U06-6 / U13-4: the real canary for the FNV → HMAC-SHA256 replacement.
+    /// the real canary for the FNV → HMAC-SHA256 replacement.
     ///
     /// `different_peers_do_not_receive_the_same_initial_sequence_number`
     /// above is satisfied by a plain counter; it does not touch RFC 6528
@@ -1278,7 +1278,7 @@ mod tcp_rx_state {
         );
     }
 
-    /// U06-7 / U13-5: a SYN trickle must not deafen the listener for as long
+    /// a SYN trickle must not deafen the listener for as long
     /// as it lasts.
     ///
     /// The test above only ever delivers ONE burst and never moves the
@@ -1325,7 +1325,7 @@ mod tcp_rx_state {
         }
     }
 
-    /// M26: `find_conn`'s one-slot hint must agree with the full scan on
+    /// `find_conn`'s one-slot hint must agree with the full scan on
     /// EVERY lookup — a fresh connection, many repeats on the same
     /// 4-tuple, a distinct second connection (a hint miss), and a slot
     /// closed and reused — and it must turn "many consecutive segments on
@@ -2441,7 +2441,7 @@ mod tcp_blind_attacker {
     /// **A blind attacker's payload must not enter the stream through the
     /// out-of-order queue.**
     ///
-    /// U06-1 / U13-1: before the fix in `tcp.rs::handle`, a segment's payload
+    /// before the fix in `tcp.rs::handle`, a segment's payload
     /// reached `process_inbound_payload` (and its OOO store, `:2031-2035` in
     /// the audit's line numbers) regardless of whether the ACK field was
     /// acceptable — so landing `seq` inside the ~64 KiB receive window was
@@ -4181,7 +4181,7 @@ mod arp_cache {
         assert_eq!(raw::count(), 0);
     }
 
-    /// U13-7 / M21: the canary for the empty-cache dial after one unsolicited
+    /// the canary for the empty-cache dial after one unsolicited
     /// request.
     ///
     /// `a_request_for_our_address_is_learned_and_answered` above pins the
@@ -6922,7 +6922,7 @@ mod dns_resolver {
         );
     }
 
-    /// M24 / U06-8: a resolution waits up to `NET_DNS_TIMEOUT_MS` for the
+    /// a resolution waits up to `NET_DNS_TIMEOUT_MS` for the
     /// answer, and a caller that spun for that long would pin its hart.
     /// `resolve_with_yield` lets the caller (the `Net` interface's `resolve`,
     /// the NTP client task) cooperate with the scheduler instead; this pins
@@ -7778,7 +7778,7 @@ mod ntp_client {
         );
     }
 
-    /// M24 / U06-8: the sync waits `NTP_MAX_RETRIES * (2 + retry)` seconds
+    /// the sync waits `NTP_MAX_RETRIES * (2 + retry)` seconds
     /// for a reply, and a caller that spun for that long would pin its hart.
     /// `ntp_sync_with_yield` lets the caller (the NTP client task) cooperate
     /// with the scheduler instead; this pins that it actually calls
@@ -8163,7 +8163,7 @@ mod arp_tx_queue {
         assert_eq!(sent, 1);
     }
 
-    /// U06-4: an off-subnet destination resolves through the GATEWAY, not
+    /// an off-subnet destination resolves through the GATEWAY, not
     /// the destination itself — there was no route beyond the local segment
     /// at all, so a host like `dns.rs`'s default `8.8.8.8` drew a broadcast
     /// ARP request nobody on this link could ever answer.
@@ -8683,7 +8683,7 @@ pub mod fuzz_entry {
     }
 }
 
-/// N7: a task waiting on the network is woken by the segment that
+/// a task waiting on the network is woken by the segment that
 /// changes what it waits for, instead of sleeping 1 ms and looking again.
 ///
 /// The kernel's hooks are replaced by fakes: "block until the deadline" is

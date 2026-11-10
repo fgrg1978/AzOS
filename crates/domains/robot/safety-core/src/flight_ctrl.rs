@@ -80,7 +80,7 @@ impl ContainedPanicLanding {
 /// Reads attitude, RC/target, runs cascaded PID, computes mixer output,
 /// and drives ESC channels.  Checks failsafes each iteration.
 ///
-/// K-C27: runs at a nominal 1 kHz on a timer block, not at yield speed.
+/// runs at a nominal 1 kHz on a timer block, not at yield speed.
 /// The loop already computes `dt_us` from real CLINT time precisely because
 /// its iteration rate was never a constant; sleeping between ticks changes
 /// only how often it samples, not any control mathematics. See

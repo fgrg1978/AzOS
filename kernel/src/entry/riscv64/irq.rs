@@ -374,7 +374,7 @@ fn handle_interrupt_inner(_frame: &mut TrapFrame, cause: usize) {
                 }
             }
 
-            // M03: Schedule next timer at the nearest deadline (tickless).
+            // Schedule next timer at the nearest deadline (tickless).
             // Falls back to periodic tick if no tasks are sleeping on a timer.
             let hart = azos_arch::Cpu::hart_id(&azos_arch::ARCH);
             azos_drv_sys::timebase::set_next_tick_smart(
@@ -461,7 +461,7 @@ fn handle_interrupt_inner(_frame: &mut TrapFrame, cause: usize) {
             crate::entry::riscv64::ext::hv::guest_external(azos_arch::Cpu::hart_id(&azos_arch::ARCH) as usize);
         }
         INT_SOFTWARE_S => {
-            // IPI received. Today the only sender is (K-C15)
+            // IPI received. Today the only sender is
             // `cpu_enqueue_locked`, ringing a hart that has just been given a
             // ready task.
             //
@@ -491,7 +491,7 @@ fn handle_interrupt_inner(_frame: &mut TrapFrame, cause: usize) {
             cpu::clear_sip_ssip();
             #[cfg(feature = "ipc-census")]
             azos_sched::wakelat_ipi_recv();
-            // K-C15: the whole point of the doorbell. Without this the hart
+            // the whole point of the doorbell. Without this the hart
             // wakes from `wfi()`, finds nothing has asked it to do anything,
             // and goes straight back to sleep with a runnable task sitting in
             // its own queue. (The panic handler's stop IPI is this same

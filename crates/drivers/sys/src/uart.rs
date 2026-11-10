@@ -1082,7 +1082,7 @@ pub static CONSOLE: com16550_pio::Com16550Console = com16550_pio::Com16550Consol
 /// Never enabled in a shipping build; `kernel/Cargo.toml` gates it behind
 /// `console-route-canary`, which also pulls `qemu`.
 ///
-/// U07-1: [`console_write_ring3`] has not always called `write_bytes` once
+/// [`console_write_ring3`] has not always called `write_bytes` once
 /// per line (it used to be once per 16-byte FIFO load), so prefixing
 /// every CALL would splice `CANARY>` into the middle of a line whenever a
 /// writer splits one. [`CANARY_AT_LINE_START`] makes the prefix a per-LINE

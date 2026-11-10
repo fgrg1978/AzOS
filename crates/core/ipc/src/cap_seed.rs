@@ -218,7 +218,7 @@ pub fn seed_one_cap_ops(
         // zero and would silently create an unrelated one; a refusal at boot
         // is a message, a wrong grant is not.
         CapKind::Endpoint => match azos_devif::parse_target(target) {
-            // M40: the drivetrain's endpoints are minted only by a build with
+            // the drivetrain's endpoints are minted only by a build with
             // the actuation profile, as the `Motor` kind was.
             #[cfg(not(feature = "profile-actuation"))]
             Some((iface, _)) if iface.key == azos_devif::key::MOTOR => None,
@@ -546,7 +546,7 @@ mod tests {
 
         // Has a minter, and the minter says no — a malformed target. A
         // kernel-hosted `pwm` endpoint stands in for any always-minted kind
-        // (`motor` is gated behind `profile-actuation`, M40, and this
+        // (`motor` is gated behind `profile-actuation`, and this
         // property does not depend on it).
         assert_eq!(
             seed_one_cap_outcome(tid, CapKind::Endpoint, CapPerms::WRITE, "pwm.left"),

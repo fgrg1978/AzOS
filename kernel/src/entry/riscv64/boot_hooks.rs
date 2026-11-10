@@ -591,7 +591,7 @@ pub fn arch_enter_scheduler(hart_id: usize) -> ! {
     kprintln!();
     let _ = azos_arch::ARCH.disable_all();
 
-    // U01-4: open the SCHED_LIVE gate before anything re-enables interrupts
+    // open the SCHED_LIVE gate before anything re-enables interrupts
     // below — same ordering as `entry::aarch64::boot_hooks::arch_enter_
     // scheduler`. `trap_resched()` (kernel/src/entry/riscv64/irq.rs) now checks this
     // first and returns early while it is false, so SIE_SEIE/SIE_SSIE

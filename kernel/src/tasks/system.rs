@@ -59,7 +59,7 @@ fn vdso_refresh_on_wake() {
 /// report is riscv64's (CLINT counters with no aarch64 equivalent).
 pub(crate) fn idle_task(_arg: usize) {
     loop {
-        // QSBR (Kconfig RCU_QSBR, N4): an idle CPU is in an extended
+        // QSBR (Kconfig RCU_QSBR): an idle CPU is in an extended
         // quiescent state, so a tickless one never holds a grace period.
         // Gate canary `canary=rcu-idle-qs-skip`: it never says so, and the
         // stall detector must catch it (ktest `rcu_idle_cpu_is_quiescent`).

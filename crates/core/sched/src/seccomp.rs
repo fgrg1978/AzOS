@@ -534,7 +534,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             SYS_RING_SETUP, SYS_RING_ENTER,
             SYS_MO_CREATE, SYS_MO_MAP,
             // `SYS_IPC_CALL` on two kernel-hosted endpoints: `link_key_init`
-            // reads the brain-link PSK from `linkkey` (U06-9), and each
+            // reads the brain-link PSK from `linkkey`, and each
             // Handshake draws the randomness for its ephemeral key and
             // record nonce seed from `entropy`. Without it the
             // encrypted link cannot start and the client refuses to run.

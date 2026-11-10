@@ -276,7 +276,7 @@ impl ArchFrame for TrapFrame {
     /// once at the task's first entry to U-mode), not `x0`: kept, or every
     /// exec'd native image would fall off the lean syscall path for good. `tp`
     /// is zeroed too: the kernel re-derives its own from `stvec` on every trap
-    /// from U-mode (K-C16). Gate canary `exec-regs-canary`: the old file is
+    /// from U-mode. Gate canary `exec-regs-canary`: the old file is
     /// kept and abitest's `exec: the new image starts with every register zero`
     /// goes red.
     fn exec_enter(&mut self, ctx: &azos_sched::ExecHandoff) -> u64 {

@@ -1663,7 +1663,7 @@ pub mod tid_alloc;
 #[path = "../../../../crates/core/sched/src/resident_histogram.rs"]
 pub mod resident_histogram;
 
-// U02-3: the indexed timer min-heap behind the timer sleepers. Pure logic;
+// the indexed timer min-heap behind the timer sleepers. Pure logic;
 // its `#[cfg(test)]` module (ordering, re-arm, cancel, top-of-range
 // comparison, random ops against the sweep model) runs here.
 #[path = "../../../../crates/core/sched/src/timer_heap.rs"]

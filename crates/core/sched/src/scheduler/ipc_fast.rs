@@ -539,7 +539,7 @@ unsafe fn direct_switch_block<const FAST: bool>(cpu: usize, ti: usize, reason: W
         // Lockdep: as in `do_schedule`'s tail (the blocked task runs again).
         azos_sync::lockdep::switch(Some(cur), ti);
         azos_sync::qsbr::switch();
-        // N12: as in `do_schedule`'s tail.
+        // as in `do_schedule`'s tail.
         crate::asid::prepare_switch(next as *mut Task);
         context_switch(task as *mut Task, next as *mut Task);
         // Resumed: woken and dispatched like any other blocked task. Where it

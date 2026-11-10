@@ -113,7 +113,7 @@ static FAILS: AtomicU32 = AtomicU32::new(0);
 // not `set_task_exit_hook` was registered — a canary that does not
 // discriminate is worse than none, because it reads as coverage. Root
 // cause: `scheduler::do_schedule` frees `TASK_VALID` for a Zombie's
-// slot on the very same context switch that leaves its stack (K-C6),
+// slot on the very same context switch that leaves its stack,
 // essentially immediately after exit — not after some later reaping
 // pass — so `cap_store::occupied(tid)` (which resolves `tid` through
 // `TASK_VALID` first) reads 0 within a few instructions of exit

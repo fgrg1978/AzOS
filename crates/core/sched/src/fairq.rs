@@ -10,7 +10,7 @@
 //!
 //! A fair task (priority `RT_PRIORITY_THRESHOLD..IDLE_PRIORITY`) is queued
 //! exactly as before: in its priority level's ready list, under its hart's
-//! lock, with the `queued` claim (K-C12) and the level's bit in the ready
+//! lock, with the `queued` claim and the level's bit in the ready
 //! bitmap. The lists remain the membership truth, so the removal paths, the
 //! claim audit and the K-C24/K-C26 re-enqueues are untouched. What changed is
 //! the *order*: the pick takes the task [`eevdf_tree::Tree::pick`](crate::eevdf_tree::Tree::pick)

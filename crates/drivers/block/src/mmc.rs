@@ -256,7 +256,7 @@ pub fn mmc_flush_evidence() -> (u32, u32) {
 /// (`mmc_read`, `mmc_write`, `mmc_flush`) owns its controller from its turn
 /// to its last `INT_TRANSFER_DONE` — two harts interleaving
 /// `SDHCI_ARGUMENT`/`SDHCI_COMMAND` writes would each read back the other's
-/// data (U05-8) — but holds the queue's `Mutex` only while it writes the
+/// data — but holds the queue's `Mutex` only while it writes the
 /// registers that start a command ([`Turn::program`]). Every device wait
 /// (`wait_inhibit`, `wait_events`, the CMD13 polls) runs in [`Turn::wait`]
 /// with no lock held, and a second caller sleeps in the queue until its turn

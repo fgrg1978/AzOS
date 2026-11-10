@@ -367,7 +367,7 @@ pub trait FileSystem: Sync {
     /// load an entire file into the heap on every open and, through
     /// [`write_all`], rewrite it whole on every close: a 64 KiB CRASH.LOG
     /// append reads 64 KiB, allocates up to 128 clusters, writes 64 KiB,
-    /// frees 128 — for one append (U09-5c). A caller ported to `read_at` /
+    /// frees 128 — for one append. A caller ported to `read_at` /
     /// `write_at` pays for the bytes it touches, not the whole file.
     fn read_at(&self, key: &InodeKey, offset: u64, dst: &mut [u8]) -> usize;
 

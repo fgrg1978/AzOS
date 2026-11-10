@@ -435,7 +435,7 @@ fn supervisor_task(_: usize) {
             (Some(slot), _) => respawn(slot),
             // The timer sweep ends the wait at the earliest due restart; an
             // exit hook's wake ends it earlier. A wake that lands before the
-            // block is stamped and the block returns at once (K-C9), so the
+            // block is stamped and the block returns at once, so the
             // re-test above never misses one.
             (None, Some(due)) => azos_sched::task_block(WaitReason::Timer(due)),
             (None, None) => azos_sched::task_block(WaitReason::Timer(u64::MAX)),

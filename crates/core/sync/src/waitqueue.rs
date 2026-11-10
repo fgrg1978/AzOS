@@ -22,7 +22,7 @@
 ///   3. On `wake_one()` / `wake_all()`, the wake callback is called for
 ///      each waiter TID, moving them back to Ready.
 ///
-/// The internal lock is `crate::spinlock::SpinLock` (K-C29). This used to be
+/// The internal lock is `crate::spinlock::SpinLock`. This used to be
 /// a hand-rolled TTAS spin — a bare `AtomicBool` plus `compare_exchange_weak`
 /// plus `core::hint::spin_loop()`, with no preempt guard at all. That is
 /// exactly the defect `SpinLock` itself was fixed for: the timer tick could

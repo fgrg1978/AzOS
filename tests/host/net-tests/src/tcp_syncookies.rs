@@ -5,7 +5,7 @@
 //! third leg that carries the cookie back becomes the connection.
 //!
 //! **Canary**: built with `CONFIG_TCP_SYNCOOKIES=n`, the listener reaps its
-//! oldest half-open connection instead (U06-7), and every test here fails:
+//! oldest half-open connection instead, and every test here fails:
 //! the flood's oldest handshake no longer completes, and the third leg of a
 //! handshake nobody holds draws a reset.
 

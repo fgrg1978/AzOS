@@ -336,7 +336,7 @@ pub fn ttbr1_alias_verify() -> (u64, u64, bool) {
 /// Attaches this PE's `TTBR1_EL1` to the REAL kernel page table
 /// ([`SECONDARY_TTBR1_PA`]) — the same table hart 0's own `TTBR1_EL1` holds
 /// after `azos_mm::vmm::enable_paging`, carrying W^X, NX-outside-image
-/// and the stack guards. U01-1 (audit): this used to attach
+/// and the stack guards. this used to attach
 /// `azos_arch::mmu::setup::TTBR1_BOOT_VALUE`, the early-boot alias
 /// `aarch64_early_ttbr1_alias` builds — a flat RWX mapping with none of
 /// those protections, and never replaced on THIS register because the
@@ -376,7 +376,7 @@ pub extern "C" fn aarch64_secondary_ttbr1_attach() -> u64 {
         azos_arch::sysregs::tlbi_vmalle1is();
         core::arch::asm!("isb", options(nostack));
     }
-    // U01-1: publish a REAL readback of TTBR1_EL1, for the boot CPU's own
+    // publish a REAL readback of TTBR1_EL1, for the boot CPU's own
     // check — see CORE_TTBR1's own doc. `current_cpu_id()` is valid here:
     // `boot.S` publishes TPIDR_EL1 before this call (see that file's own
     // comment).
@@ -435,7 +435,7 @@ pub extern "C" fn aarch64_secondary_mmu_init() {
     // `enable_kernel_map` grants EL0 FP again; back to the lazy-FP resting
     // state (see `aarch64_early_mmu_init`).
     let cpacr = fp::set_resting_state();
-    // U01-2: publish a REAL readback (not the value we asked
+    // publish a REAL readback (not the value we asked
     // `enable_kernel_map` to install) for the boot CPU's own check — see
     // CORE_TTBR0's own doc.
     let hart = azos_sched::smp::current_cpu_id();
@@ -574,7 +574,7 @@ pub const TIMER_PPI_ENABLED: u32 = if cfg!(feature = "a64clk-ppi-canary") {
 pub static TICK_COUNT: AtomicU64 = AtomicU64::new(0);
 
 /// The clock's rate, published once by `kernel_main` so [`handle_irq`] can
-/// convert ticks to milliseconds for the vDSO page (M01). 0
+/// convert ticks to milliseconds for the vDSO page. 0
 /// until published — `handle_irq` treats that as "not ready yet" and skips
 /// the vDSO update for that tick rather than dividing by it.
 pub static VDSO_TIMEBASE_HZ: AtomicU64 = AtomicU64::new(0);
@@ -593,7 +593,7 @@ pub static TICK_PER_HART: [AtomicU64; crate::MAX_HARTS] =
 /// OWN `TTBR0_EL1` — published by the boot CPU, read by every secondary's
 /// `aarch64_secondary_mmu_init` BEFORE that secondary's own MMU is on.
 ///
-/// U01-1/U01-2 (audit): this used to be `azos_mm::vmm::kernel_pagetable()`
+/// this used to be `azos_mm::vmm::kernel_pagetable()`
 /// — the SAME table now installed in `TTBR1_EL1` — published right after
 /// `enable_paging()` but BEFORE `boot_hooks::arch_hardware_init` calls
 /// `azos_mm::vmm::install_device_only_ttbr0()` a few lines later. A
@@ -618,7 +618,7 @@ pub static TICK_PER_HART: [AtomicU64; crate::MAX_HARTS] =
 /// to read pre-MMU.
 pub static SECONDARY_TTBR0_PA: AtomicUsize = AtomicUsize::new(0);
 
-/// U01-1 (audit): physical address of the kernel's REAL page table to
+/// physical address of the kernel's REAL page table to
 /// attach into a secondary's `TTBR1_EL1` — published by the boot CPU right
 /// after its OWN `TTBR1_EL1` is switched from the early-boot alias
 /// (`azos_arch::mmu::setup::TTBR1_BOOT_VALUE`, see that static's own doc)
@@ -636,7 +636,7 @@ pub static SECONDARY_TTBR0_PA: AtomicUsize = AtomicUsize::new(0);
 /// Before this static is published (`0`), [`aarch64_secondary_ttbr1_attach`]
 /// refuses and `boot.S` parks the PE (K1 L9). It used to fall back to
 /// `TTBR1_BOOT_VALUE` — the alias — which is what every
-/// secondary attached to before this fix (U01-1): the alias table is a flat
+/// secondary attached to before this fix: the alias table is a flat
 /// RWX identity mapping, so the W^X split, the NX-outside-image sweep and
 /// the stack guards `boot_hooks::arch_hardware_init` applies to the REAL
 /// kernel table (`crates/core/mm::vmm::KERNEL_PT`) covered hart 0 only. A
@@ -684,7 +684,7 @@ pub static SECONDARY_TTBR1_PA: AtomicUsize = AtomicUsize::new(0);
 /// publishes this, so that fallback is defense in depth, not a load-
 /// bearing path.
 ///
-/// U01-2 (audit): this used to be published (`azos_mm::vmm::
+/// this used to be published (`azos_mm::vmm::
 /// kernel_pagetable()`, the SAME table now in `TTBR1_EL1`) BEFORE
 /// `boot_hooks::arch_hardware_init` calls `install_device_only_ttbr0()`,
 /// and never updated afterward — so the first switch into an idle kernel
@@ -719,7 +719,7 @@ pub static CORE_MPIDR: [AtomicU64; crate::MAX_HARTS] =
 pub static CORE_HART_ID: [AtomicU64; crate::MAX_HARTS] =
     [const { AtomicU64::new(u64::MAX) }; crate::MAX_HARTS];
 
-/// U01-1/U01-2 (audit): this core's OWN readback of `TTBR0_EL1`/`TTBR1_EL1`,
+/// this core's OWN readback of `TTBR0_EL1`/`TTBR1_EL1`,
 /// published right after [`aarch64_secondary_ttbr1_attach`] /
 /// [`aarch64_secondary_mmu_init`] install them — the boot CPU's online-
 /// readback loop compares these against [`SECONDARY_TTBR0_PA`] (the

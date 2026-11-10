@@ -677,7 +677,7 @@ pub fn record_seccomp_audit_for(tid: u32, syscall_nr: u16) {
     }
 }
 
-/// V1.8: what `dispatch.rs`'s `FilterVerdict::
+/// what `dispatch.rs`'s `FilterVerdict::
 /// Deny` arm does — Linux strict-mode `SECCOMP_RET_KILL_PROCESS` semantics
 /// for an unlisted syscall from a confined task, in place of the old `-1`
 /// (`E_PERM`) return. U07-6 named that `-1` as indistinguishable from a
@@ -688,7 +688,7 @@ pub fn record_seccomp_audit_for(tid: u32, syscall_nr: u16) {
 ///
 /// **Lives here, not in `dispatch.rs`,** so a host test can call it directly:
 /// `dispatch.rs` is `include_str!`'d as text by this crate's test suite
-/// (U14-8), never compiled, so nothing there can be driven or observed by a
+///, never compiled, so nothing there can be driven or observed by a
 /// real test — only string-matched. `dispatch.rs`'s `Deny` arm calls this
 /// and nothing else (`both_the_deny_arm_and_this_function_agree` below pins
 /// that by source text).
@@ -879,7 +879,7 @@ const EXEC_MAX_BYTES: usize = 128 * 1024;
 /// streamed), never read as a prefix.
 ///
 /// A [`Claim`](azos_sync::claim::Claim), not a lock held across a device wait
-///: the Linux `execve` and `SYS_SPAWN_EX` own it across the file
+/// the Linux `execve` and `SYS_SPAWN_EX` own it across the file
 /// read that fills it, a device wait, and a `Mutex` held there boosts a task
 /// that is waiting on the disk. A claim's exchange mutex is held for the
 /// instant of taking and giving it; a contender sleeps with nothing held.
@@ -1391,7 +1391,7 @@ pub fn mint_badged_recording(
     r
 }
 
-/// `SYS_SCHEDCTL`'s capability step (N6b): `cap_raw` names, in `tid`'s own
+/// `SYS_SCHEDCTL`'s capability step: `cap_raw` names, in `tid`'s own
 /// table, a live capability to the kernel-hosted `time` endpoint with `WRITE`.
 /// A refusal is recorded under `ty::ENDPOINT`, here, where the capability
 /// is resolved (the arm in `crate::schedctl` only maps codes).
@@ -1576,7 +1576,7 @@ fn grant_opened_file(fd: i64, perms: azos_abi::cap::CapPerms) -> i64 {
     use azos_abi::error::Errno;
     use azos_ipc::cap::targets::File;
     let tid = azos_sched::current_task_tid();
-    // O3.4: a file the task opened itself is giftable (DELEGATE), like a socket.
+    // a file the task opened itself is giftable (DELEGATE), like a socket.
     match azos_ipc::cap_store::grant::<File>(tid, perms.union(azos_abi::cap::CapPerms::DELEGATE), fd as u32) {
         Some(cap) => cap.raw().as_raw() as i64,
         None => {
@@ -2820,7 +2820,7 @@ pub fn sys_recvfrom_syscall(fd: u64, buf_ptr: u64, len: u64, addr_ptr: u64) -> i
 #[inline(never)]
 fn recvfrom_bounced(fd: u64, buf_ptr: u64, count: usize, addr_ptr: u64) -> i64 {
     {
-        // U07-2: both destinations validated BEFORE the destructive
+        // both destinations validated BEFORE the destructive
         // `socket_recvfrom` — it takes the datagram off the socket's queue,
         // so discovering `buf_ptr` or `addr_ptr` is bad only afterwards
         // would drop the datagram for good with the caller told `-EFAULT`.
@@ -2914,7 +2914,7 @@ pub fn sys_recv_syscall(fd: u64, buf_ptr: u64, len: u64, _flags: u64) -> i64 {
     // top, ran past the 12 KiB a kernel task stack has above its guard page:
     // every ring-3 e-stop boot ended in a kernel page fault.
     //
-    // N8: only when no net-poll task runs. When it does, it is the receive
+    // only when no net-poll task runs. When it does, it is the receive
     // path's consumer (RX interrupt or its poll period), and a drain from
     // here would only queue a request on its pass (`azos_net::rx_owner`).
     if !azos_net::poller_running() {
@@ -2936,7 +2936,7 @@ fn end_of_stream() -> i64 {
 /// that hold: inlined, the buffer is back in the caller's frame.
 #[inline(never)]
 fn recv_bounced(fd: u64, buf_ptr: u64, count: usize) -> i64 {
-    // U07-2: validated BEFORE the destructive `socket_recv` — it dequeues
+    // validated BEFORE the destructive `socket_recv` — it dequeues
     // from the socket's receive buffer, so a bad `buf_ptr` discovered only
     // after the recv succeeded would lose the data for good.
     if azos_sched::current_user_pt() != 0
@@ -2993,7 +2993,7 @@ pub fn sys_socket_typed(domain: u64, sock_type: u64, proto: u64) -> i64 {
         return fd;
     }
     let tid = azos_sched::current_task_tid();
-    // O3.4: a socket the task opened itself is giftable
+    // a socket the task opened itself is giftable
     // (DELEGATE); abitest moves one to epsrv over the 582 exchange.
     match azos_ipc::cap_store::grant::<Socket>(tid, CapPerms::RW_DELEGATE, fd as u32) {
         Some(cap) => cap.raw().as_raw() as i64,
@@ -3973,7 +3973,7 @@ fn cap_lookup_shm(resource: u32) -> i64 {
 #[inline(always)]
 fn cap_lookup_in_own_table(kind: azos_abi::cap::CapType, resource: u32) -> i64 {
     use azos_abi::error::Errno;
-    // N4: lock-free with Kconfig RCU_QSBR (`cap_store::read_own_table`).
+    // lock-free with Kconfig RCU_QSBR (`cap_store::read_own_table`).
     match azos_ipc::cap_store::read_own_table(|t| t.lookup(kind, resource)) {
         Some(Some(h)) => h.as_raw() as i64,
         // Holds no such capability. NOT recorded as a capability denial: a

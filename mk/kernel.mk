@@ -66,7 +66,7 @@ build-fleet: $(IMAGE_HASHES_BOARD) $(OUT_BUILD)/disk-board-fleet.img
 # Build the minimal hello.elf user-space test binary + GPIO ring-3 driver.
 # ── VisionFive 2 targets ──────────────────────────────────────────────────────
 
-# U12-2: expand config/defconfigs/robot-sbc-riscv64+vf2.config the way `aarch64:` expands its own
+# expand config/defconfigs/robot-sbc-riscv64+vf2.config the way `aarch64:` expands its own
 # profile, instead of building from whatever the workspace `.config` happens
 # to hold. Before this, `vf2:` never read config/defconfigs/robot-sbc-riscv64+vf2.config at all — only
 # comments referenced it — so a VF2 image built after `make defconfig-generic-sbc-riscv64-dev`
@@ -175,7 +175,7 @@ vf2-console:
 
 # ── SpacemiT K1 (BananaPi BPI-F3) targets ────────────────────────────────────
 
-# U12-2: same fix as $(VF2_KCONFIG) above, for K1's own profile.
+# same fix as $(VF2_KCONFIG) above, for K1's own profile.
 K1_KCONFIG := $(OUT_BUILD)/k1.config
 
 # The fleet profile expanded on its own: `build-fleet` expands it
@@ -372,7 +372,7 @@ x86_64: $(X86_64_KCONFIG) $(IMAGE_HASHES_X86_64)
 
 .PHONY: aarch64
 
-# U12-8: see the LIBSYS_SRC comment above — same iCloud-duplicate hazard,
+# see the LIBSYS_SRC comment above — same iCloud-duplicate hazard,
 # same fix, inlined rather than a shared variable so a board Kconfig rule
 # defined earlier in this file (`$(VF2_KCONFIG)`/`$(K1_KCONFIG)`) does not
 # depend on a `:=` assignment that has not been parsed yet.

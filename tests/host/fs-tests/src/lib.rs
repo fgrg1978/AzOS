@@ -373,7 +373,7 @@ fn vfs_root_once() {
 /// rejection test's bad BPB was never even parsed, and it passed by
 /// accident (`Ok(())` from the early-out, not from validation). This is not
 /// a test-only convenience: production has no automatic "the card changed"
-/// detection either (U09-6), so a real remount needs exactly this sequence
+/// detection either, so a real remount needs exactly this sequence
 /// — unmount, THEN mount the new medium — and modelling a swap as anything
 /// less here would test a discipline nothing enforces.
 #[cfg(test)]
@@ -6454,7 +6454,7 @@ mod concurrent_fat_mutators {
 
     /// **Two allocators, one FAT sector.** A scanned, found cluster 3 free and
     /// is writing its mark; B scans the same sector meanwhile. Unclaimed, B
-    /// sees 3 free too and both files would own cluster 3 (U09-2).
+    /// sees 3 free too and both files would own cluster 3.
     #[test]
     fn two_allocators_in_one_fat_sector_get_distinct_clusters() {
         let _g = serial();

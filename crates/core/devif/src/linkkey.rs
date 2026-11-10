@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! The `LinkKey` interface: the brain-link PSK, for the one ring-3 task that
-//! speaks the link (U06-9).
+//! speaks the link.
 //!
 //! The key lives in a reserved sector no USB host can address; the kernel
 //! reads it for the holder of `READ` on the kernel-hosted `linkkey` endpoint.

@@ -311,7 +311,7 @@ pub fn rt_motor_task(_: usize) {
         // restarts (a deterministic fault), not lifetime one-off transients.
         txn_note_tick_complete();
 
-        // K-C27: sleep until the next control tick instead of yield-polling.
+        // sleep until the next control tick instead of yield-polling.
         // The old `task_yield()` here made this loop run ~215,000 iterations
         // per second under QEMU TCG (32M scheduler entries in a 150 s run),
         // which monopolised hart 0 for the whole boot: under strict priority

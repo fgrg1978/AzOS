@@ -13,7 +13,7 @@
 //!
 //! **No lost wake-up.** The slot is armed before the condition is read. An
 //! event that lands between that read and the block finds the TID and wakes a
-//! task that is still running; the scheduler stamps that wake (K-C9) and the
+//! task that is still running; the scheduler stamps that wake and the
 //! block that follows returns at once. Same protocol as `net_timer_kick`.
 //!
 //! **Memory order: a store-buffer (Dekker) pair.** Each side stores and then

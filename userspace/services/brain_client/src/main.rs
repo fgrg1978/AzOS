@@ -1284,7 +1284,7 @@ static mut BRAIN_PK: Option<[u8; 32]> = None;
 /// kernel's own link reads (`kernel/src/main.rs`), and the brain's pinned
 /// static key from the same endpoint.
 ///
-/// U06-9: this used to open `/fat/LINK.KEY` directly — the
+/// this used to open `/fat/LINK.KEY` directly — the
 /// SAME bytes the kernel's own load read, back off the exported FAT volume
 /// the reserved sector exists to take them off of. The kernel stopped
 /// keeping a FAT copy that day (`kernel/src/reserved_tail.rs`,
@@ -1444,7 +1444,7 @@ fn run() {
     motor_ring_init();
     recv_buf_init();
 
-    // V1.9: refuse to start without the link key (or without the brain's
+    // refuse to start without the link key (or without the brain's
     // pinned key, when the topology pins one). The link is only ever a Noise
     // session keyed from it; without it there is nothing to run, and this is
     // the gate's autorun and the one ring-3 network client that drives the

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-// V1.8 / U07-6: a seccomp filter denial ends the
+// a seccomp filter denial ends the
 // program (Linux strict-mode `SECCOMP_RET_KILL_PROCESS` semantics), it does
 // not return `-1`. `dispatch.rs`'s `FilterVerdict::Deny` arm calls
 // `handlers::seccomp_deny_kill` and nothing else — see that function's doc
@@ -66,7 +66,7 @@ fn the_kill_exit_code_is_128_plus_sigsys() {
 
 /// **One door.** `dispatch.rs`'s `Deny` arm calls `seccomp_deny_kill` and
 /// does not also return, record, or kill by any other route — checked by
-/// source text because this crate never compiles `dispatch.rs` (U14-8).
+/// source text because this crate never compiles `dispatch.rs`.
 ///
 /// **Canary.** Replace the arm's call with `return E_PERM;` (the pre-V1.8
 /// behaviour): the `E_PERM` assertion below goes red.

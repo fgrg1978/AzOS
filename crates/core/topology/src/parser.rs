@@ -793,7 +793,7 @@ fn cap_spec_from_inline<'a>(
     let mut kind: Option<CapKind> = None;
     let mut perms: Option<CapPerms> = None;
     let mut target: Option<MaybeStr<'a>> = None;
-    // O3.4: whether this grant carries `DELEGATE`
+    // whether this grant carries `DELEGATE`
     // (`DUP` and `TRANSFER`: transferable via `move_cap`). Defaults to `false` below — a row
     // transfers authority only when it says so, never by omission.
     let mut transfer: Option<bool> = None;
@@ -844,7 +844,7 @@ fn cap_spec_from_inline<'a>(
     let kind = kind.ok_or(ParseError::MissingField)?;
     let perms = perms.unwrap_or(CapPerms::READ);
     let target = target.unwrap_or(MaybeStr::from_bytes(&[]));
-    // U10-6 / M40: the drivetrain's endpoints (`motor.<wheel>`)
+    // the drivetrain's endpoints (`motor.<wheel>`)
     // exist only in a build with the actuation profile. The seeder refuses
     // them too, but a refusal at parse time tells the OPERATOR that this
     // topology asks for something this build cannot honour, instead of the
@@ -3978,7 +3978,7 @@ mod tests {
         assert_eq!(parse_caps(caps, &mut topo), Err(ParseError::UnknownEnumValue));
     }
 
-    // ── W2-B5 task 2 (U03-2): `Cap<Irq>` declaration is parser-ready ───
+    // ── W2-B5 task 2: `Cap<Irq>` declaration is parser-ready ───
     //
     // `crates/core/ipc/src/cap_seed.rs` has no minter arm for `ty::IRQ`
     // (A2's side of this gap — `seed_one_cap(.., ty::IRQ, .., "irq.3")`

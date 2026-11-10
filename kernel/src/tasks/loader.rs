@@ -147,7 +147,7 @@ fn served_endpoint(path: &[u8]) -> Option<&'static [u8]> {
 }
 
 pub(crate) fn load_and_exec_image(path_slice: &[u8]) {
-    // Q1.4: defense-in-depth beside gate_speed's
+    // defense-in-depth beside gate_speed's
     // own fail-closed default -- no ring-3 program starts until the actuation
     // gate is installed, so an ordering bug stops motors instead of moving them.
     if !azos_actuation::gate::gate_installed() {
@@ -318,7 +318,7 @@ pub(crate) fn load_and_exec_image(path_slice: &[u8]) {
                         use azos_ipc::cap_seed::SeedOutcome;
                         match azos_ipc::cap_seed::seed_one_cap_ops(
                             tid, cap.kind,
-    // O3.4: topology grants carry `transfer = true` to be giftable.
+    // topology grants carry `transfer = true` to be giftable.
     cap.grant_perms(),
     target,
     cap.ops,

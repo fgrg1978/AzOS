@@ -330,7 +330,7 @@ pub fn install() {
     azos_robot::motor::set_motor_halt(actuation_halt);
     kprintln!("[SAFETY] actuation gate armed (estop + envelope on every motor write)");
 
-    // Q1.3: every ADMITTED actuation command gets a bounded, rate-limited
+    // every ADMITTED actuation command gets a bounded, rate-limited
     // record. `crates/domains/robot/robot` already calls this only on a change of (id,
     // direction, effective speed); `admit_motor_record` above bounds the
     // rest (a ramping PID output can still change every tick).

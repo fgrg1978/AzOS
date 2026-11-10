@@ -81,7 +81,7 @@ save_old_task:
     # Ready after preemption) and try to dispatch it before this save
     # finished.
     #
-    # K-C23: this store is a RELEASE publish of "old's stack is up for
+    # this store is a RELEASE publish of "old's stack is up for
     # grabs", and it must be the LAST touch of anything old owns — the
     # moment it lands, another hart may dispatch old and start pushing
     # frames onto that stack. It used to be `call mark_context_saved`, a

@@ -46,7 +46,7 @@ check() {
     fi
 }
 
-# U12-7: `check` above only tests exit status, so the header's claim ("all 5
+# `check` above only tests exit status, so the header's claim ("all 5
 # feature combos build clean") was never checked for the warning half of
 # "clean" — the same gap `tools/gate/ci_check.sh`'s own `build()` was rewritten to
 # close (see its comment: an allowlist of five warning spellings let a real
@@ -107,7 +107,7 @@ elif [ "$BRAIN_STATE" = found ]; then
 
     # Pytest
     #
-    # U12-7: a summary line like "3 failed, 10 passed" contains "passed" and
+    # a summary line like "3 failed, 10 passed" contains "passed" and
     # used to print PASS. `sed -n '$p'` in place of `tail -1` (no `tail` in
     # this tree's tooling); the pass/fail decision now requires "passed" AND
     # the ABSENCE of an "N failed" clause, not just the substring.
@@ -139,7 +139,7 @@ elif [ -f "$RUST_PROTO" ] && [ -f "$PY_PROTO" ]; then
 
     # Check key packet types exist in both.
     #
-    # U12-7: `grep -c` into an integer test, not `grep -q` — the exact trap
+    # `grep -c` into an integer test, not `grep -q` — the exact trap
     # `tools/gate/ci_check.sh` documents (search that file for "grep -c" for the
     # write-up): `grep -c` prints `0` AND exits 1 when nothing matches, so
     # `"$(grep -c ... || echo 0)"` yields the two-line string "0\n0" and

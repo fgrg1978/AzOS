@@ -784,7 +784,7 @@ static EXIT_CODES: std::sync::Mutex<Vec<i32>> = std::sync::Mutex::new(Vec::new()
 /// worked too (it also diverges) but would not let a test tell "reached
 /// here with the right code" from "reached a `todo!()` somewhere else
 /// entirely" — see `st/src/unit6_contain.rs`'s `MMIO stand-in` tests
-/// (U14-11) for exactly that ambiguity, which this avoids with its own
+/// for exactly that ambiguity, which this avoids with its own
 /// distinct marker and a recorded code.
 pub fn task_exit_with_code(code: i32) -> ! {
     shim_assert_serial("exit");
@@ -970,7 +970,7 @@ pub fn update_user_brk(addr: u64) -> u64 {
 #[path = "../../../../../../crates/core/sched/src/filter.rs"]
 pub mod filter;
 
-/// The real pure-data futex table (N9); [`futex`] below is the edge's view of it.
+/// The real pure-data futex table; [`futex`] below is the edge's view of it.
 #[path = "../../../../../../crates/core/sched/src/futex_table.rs"]
 pub mod futex_table;
 

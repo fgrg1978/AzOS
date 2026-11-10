@@ -350,7 +350,7 @@ mod ed25519_tests {
         let pk = [0u8; ED25519_PUBLIC_KEY_SIZE];
         let sig = [0u8; ED25519_SIGNATURE_SIZE];
         // `sig_verify` now bounds a MESSAGE, not a whole firmware image
-        // (renamed `MAX_VERIFY_SIZE` -> `MAX_VERIFY_MESSAGE_SIZE`, U09-14):
+        // (renamed `MAX_VERIFY_SIZE` -> `MAX_VERIFY_MESSAGE_SIZE`):
         // the manifest scheme signs a fixed 54-byte `{alg, fw_version,
         // payload_size, sha256}` tuple, never the image itself. Still
         // exercises the same over-length rejection, at the new bound.

@@ -499,7 +499,7 @@ pub fn wdt_disable() {
 /// by the hardware bus, [`wdt_attach`]), or a [`Found`] watchdog (SBSA, AMD
 /// FCH). A machine without one is the software watchdog alone, not a fault.
 ///
-/// **K1 corrected (U05-3): always `false`.** Mainline `k1.dtsi`
+/// **K1 corrected: always `false`.** Mainline `k1.dtsi`
 /// has no watchdog node at all (`grep -i "watchdog\|wdt" k1.dtsi` → no
 /// match) — the address this file used to arm under `feature = "k1"`
 /// (`platform::hw::WDT_BASE`, `0xD401_5000`) is `syscon_apbc`, an unrelated

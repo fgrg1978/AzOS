@@ -386,7 +386,7 @@ pub mod ready_site {
 /// into one `AtomicU32`, so the two are read and written under the same
 /// exclusion — a CAS — instead of as two independently-ordered cells.
 ///
-/// # WHY one word (K-C19)
+/// # WHY one word
 ///
 /// With `state: TaskState` and `wake_pending: AtomicBool` as separate cells
 /// there were two windows, one per direction, and both were measured hangs:
@@ -589,9 +589,9 @@ pub mod sched_word {
     ///
     /// `reason_matches` is evaluated only under an observed-`Blocked`
     /// snapshot; the Acquire load guarantees the `wait_reason` it reads is
-    /// the one the blocker published before its Release commit (K-C17).
+    /// the one the blocker published before its Release commit.
     /// `stamp_if_unblocked` distinguishes the TID-directed wakes (which may
-    /// stamp, K-C9/K-C10) from the broadcast sweeps (which must not — a
+    /// stamp) from the broadcast sweeps (which must not — a
     /// sweep cannot tell its addressee from any other task about to sleep;
     /// see `wait.rs`).
     ///
@@ -611,7 +611,7 @@ pub mod sched_word {
     /// with the stamp set (the stamp landed after `do_schedule`'s
     /// switch-away sweep checked), the dispatch CAS below WOULD sweep stamp
     /// and state together on the next wake — but the one-shot wakes have no
-    /// next wake, which is why [`reap_orphaned_stamp`] (K-C25) exists: the
+    /// next wake, which is why [`reap_orphaned_stamp`] exists: the
     /// timer tick reaps `Blocked + stamp + saved` back to `Ready`. Callers
     /// derive `saved` from `!context_saving` (Acquire); the flag's store
     /// precedes the Release commit in program order, so a waker that READS
@@ -657,7 +657,7 @@ pub mod sched_word {
                     return WakeTransition::Mismatch;
                 }
                 if !saved() {
-                    // K-C24: committed but still running (unswitched block).
+                    // committed but still running (unswitched block).
                     // Stamp — even for broadcast sweeps: having matched the
                     // reason under Blocked, this IS the addressee. CAS, not
                     // fetch_or, so a concurrent commit-consume retries
@@ -737,7 +737,7 @@ pub mod sched_word {
         w.compare_exchange(cur, moved(cur, TaskState::Ready), Ordering::AcqRel, Ordering::Relaxed).is_ok()
     }
 
-    /// Reaper side (K-C25) — recover a *parked* task whose wake was delivered
+    /// Reaper side — recover a *parked* task whose wake was delivered
     /// as a K-C24 stamp and then orphaned.
     ///
     /// `wake_transition`'s `!saved` arm stamps a `Blocked` task that is still
@@ -915,7 +915,7 @@ pub struct Task {
     // == task metadata (offset 128 on riscv64; see the struct-level note
     // on `context` above for why this shifts on aarch64) ==
     pub tid:        u32,
-    /// K-C19: [`TaskState`] + wake stamp, packed — see [`sched_word`].
+    /// [`TaskState`] + wake stamp, packed — see [`sched_word`].
     /// Same size and alignment as the plain `TaskState` field it replaced
     /// (`repr(u32)` enum → `AtomicU32`), so the `repr(C)` layout is
     /// unchanged. Zero-initialized = `Ready` + no stamp, which is the same
@@ -1094,7 +1094,7 @@ pub struct Task {
     /// zero-padded `[u64; 32]` that silently dropped the FP file and
     /// `TPIDR_EL0` on every aarch64 fork).
     ///
-    /// **WHY the whole file and not just entry/sp (K-C11).** The child used to
+    /// **WHY the whole file and not just entry/sp.** The child used to
     /// enter user mode through `sret_to_user`, which writes `sepc`, `sstatus`,
     /// `sscratch`, `satp` and `sp`, and zeroes `a0..a7`. Nothing restored `ra`,
     /// `gp`, `tp`, `t0..t6` or `s0..s11`, so the child resumed *the parent's
@@ -1149,7 +1149,7 @@ pub struct Task {
     pub exec_user_sp:    u64,
     pub exec_sstatus:    u64,
     pub exec_satp:       u64,
-    /// K-C22: the address space this task is abandoning (its pre-exec
+    /// the address space this task is abandoning (its pre-exec
     /// `aspace`; `None` when a kernel task execs for the first time). Carried
     /// through the hand-off because only the CONSUMER may destroy it — after
     /// the hart's satp points at the new page table, never before. See
@@ -1506,7 +1506,7 @@ pub struct CpuLoad {
 /// sleeping — measured at
 /// ~215,000 scheduler entries per second per RT daemon, 32M entries each in
 /// one 150 s QEMU run. They now block on `WaitReason::Timer` at their
-/// design rates (`kernel/src/main.rs`, K-C27), which is what ci_check.sh's
+/// design rates (`kernel/src/main.rs`), which is what ci_check.sh's
 /// disabled `-smp 1` scenario had already concluded: "the scheduler does
 /// the right thing; the workload is wrong." Placement is deliberately
 /// untouched: residents still count whether blocked or not (see K-C12

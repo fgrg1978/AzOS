@@ -4,7 +4,7 @@
 ///
 /// QEMU: in-memory simulation with 2 devices (SPI flash + LIDAR placeholder).
 /// VF2:  Cadence SPI controller — MMIO skeleton (register model UNVERIFIED,
-/// see the `vf2` module doc below — U05-1).
+/// see the `vf2` module doc below).
 /// K1:   no controller driver: the K1's SPI (`spacemit,k1-spi`) is none of
 /// the above and no reference source for it is vendored, so the `k1_spi`
 /// module below answers "no controller" to every call — it neither drives
@@ -254,7 +254,7 @@ pub use k1_spi::*;
 
 #[cfg(feature = "vf2")]
 mod cdns_spi {
-    /// Corrected (U05-1): was a literal `0x1004_0000` (`i2c1`,
+    /// Corrected: was a literal `0x1004_0000` (`i2c1`,
     /// see the module doc above). Now the real `spi0` address — but this
     /// module's register layout below is still the wrong IP's.
     const SPI0_BASE: usize = azos_drv_base::platform::hw::SPI0_BASE;

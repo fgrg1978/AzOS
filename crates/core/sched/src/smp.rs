@@ -281,7 +281,7 @@ pub unsafe fn wake_harts(num_cpus: usize) -> usize {
 /// secondary (the `opaque` argument of its `hart_start`). Rust does not use
 /// `tp` in `no_std` bare-metal builds. Note `tp`
 /// is an ordinary GPR that EL0 (U-mode) can write, which is the whole reason
-/// `trap_entry.S` re-establishes it before any Rust runs (K-C16).
+/// `trap_entry.S` re-establishes it before any Rust runs.
 ///
 /// **aarch64:** `TPIDR_EL1`, which is only writable at EL1 — so the K-C16
 /// apparatus has no aarch64 counterpart, and the boot asm's `msr TPIDR_EL1` is

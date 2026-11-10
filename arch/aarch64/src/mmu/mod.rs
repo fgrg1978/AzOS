@@ -455,7 +455,7 @@ pub fn attr_bits_with(perms: PagePerms, write_dbm: u64) -> Result<u64, MmuError>
     // is EL0+EL1 R/O.
     if perms.user {
         attrs |= AP_EL0;
-        // M38/U10-3 (audit + coordinator): EL1 must never be able to
+        // EL1 must never be able to
         // EXECUTE a page EL0 can reach, independent of whether EL0 itself
         // may execute it. This used to be `if !perms.exec { attrs |= PXN
         // ... }` only — a user RX page (read+exec, no write: the common
@@ -540,7 +540,7 @@ fn perms_from_attr_bits(word: u64) -> PagePerms {
     // store: it decodes read-only, so a decode-and-rebuild (`make_leaf` of
     // `perms_of`) makes it a read-only page, never a writable one.
     let ro = word & AP_RO != 0 || pie::is_gcs_leaf(word);
-    // M38/U10-3: `attr_bits` now sets PXN unconditionally on every user
+    // `attr_bits` now sets PXN unconditionally on every user
     // page (EL1 must never execute a page EL0 can reach — the ret2usr
     // hardening), so PXN alone no longer tells us whether the ORIGINAL
     // `perms.exec` request was true or false for a user page. UXN still
@@ -767,7 +767,7 @@ pub const fn tcr_t1sz(tcr: u64) -> u64 {
 }
 
 /// Extract `TCR_EL1.IPS` (bits `[34:32]`) from a live register read. M41
-/// (coordinator / U10-7, audit): a boot marker reads this back to prove the
+/// a boot marker reads this back to prove the
 /// value programmed is what `ID_AA64MMFR0_EL1.PARange` actually reported
 /// (clamped — see `mmu::setup::ips_field`'s doc), not the `0` (32-bit PAs
 /// only) it used to be unconditionally.
@@ -777,7 +777,7 @@ pub const fn tcr_ips(tcr: u64) -> u64 {
 }
 
 /// Extract `TCR_EL1.AS` (bit `36`) from a live register read — 0 = 8-bit
-/// ASID, 1 = 16-bit. M41: this crate now always requests 1; the readback is
+/// ASID, 1 = 16-bit. this crate now always requests 1; the readback is
 /// what a boot marker proves actually landed (see `mmu::setup::TCR_AS`'s
 /// doc for why a hardware-RES0 implementation makes this a safe, if
 /// sometimes silently-ignored, request).
@@ -786,7 +786,7 @@ pub const fn tcr_as(tcr: u64) -> u64 {
     (tcr >> 36) & 0x1
 }
 
-// M38/U10-3: host-runnable regression tests for the ret2usr fix (PXN
+// host-runnable regression tests for the ret2usr fix (PXN
 // unconditional on every user page) and the decode fix it required
 // (UXN, not PXN, carries "software asked for exec" once `user` is true).
 // Nothing in this file is `cfg(target_arch = "aarch64")`-gated — pure bit

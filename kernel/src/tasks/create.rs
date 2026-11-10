@@ -174,7 +174,7 @@ pub(crate) fn create_service_tasks(hart_id: usize) {
     if azos_drv_sys::uart::LOG_LEVEL >= azos_drv_sys::uart::level::INFO {
         azos_sched::task_create("bench-boot", bench_boot_task, 0, azos_limits::BOOT_BENCH_PRIORITY as u32);
     }
-    // N4: the RCU callback task (Kconfig RCU_QSBR; nothing with it off).
+    // the RCU callback task (Kconfig RCU_QSBR; nothing with it off).
     create_rcu_callback_task();
     // The memory reclaim task (Kconfig MM_RECLAIM_COMPRESS; nothing with it off),
     // placed outside the real-time CPUs the topology has just published.

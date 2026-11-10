@@ -2210,7 +2210,7 @@ pub fn fat32_cache_invalidate_all() {
 
 /// Drop every cache line, regardless of which sector it holds.
 ///
-/// U09-6: the cache had no notion of the medium changing — `fat32_mount`
+/// the cache had no notion of the medium changing — `fat32_mount`
 /// and `fat32_unmount` never called `fat32_cache_invalidate` (which is
 /// per-sector anyway, and mount time does not know in advance which
 /// sectors are stale) at all, so a remount after a media swap read the
@@ -2439,7 +2439,7 @@ pub fn fat32_mount() -> Result<(), ()> {
 /// ([`fat32_mount_report`] says what was found), and the volume is marked
 /// dirty until [`fat32_unmount`] clears it.
 pub fn fat32_mount_on(v: &'static Vol) -> Result<(), ()> {
-    // U09-3: already mounted — nothing to do. `fat32_mount_volume_on()` is a
+    // already mounted — nothing to do. `fat32_mount_volume_on()` is a
     // thin wrapper over this function, and its callers — the logger's
     // `open()` on every log rotation, `secure_boot.rs`'s
     // `read_sig_file`/`read_image_file` — used to call through to a full
@@ -2465,7 +2465,7 @@ pub fn fat32_mount_on(v: &'static Vol) -> Result<(), ()> {
     }
     v.read_only.store(false, core::sync::atomic::Ordering::Relaxed);
 
-    // U09-6: this IS a real mount attempt past the early-out above — drop
+    // this IS a real mount attempt past the early-out above — drop
     // every cached sector before reading anything. Without this, a remount
     // after `fat32_unmount_on()` (media swap, or the crash-recovery path that
     // unmounts and remounts the same medium) would read the PREVIOUS
@@ -5783,7 +5783,7 @@ pub fn fat32_unmount_on(v: &'static Vol, _vol: Volume) -> Result<(), FsError> {
     // next mount: that one is read and checked afresh.
     v.fat32.lock().mounted = false;
     v.check_refused.store(false, core::sync::atomic::Ordering::Relaxed);
-    // U09-6: drop every cached sector on unmount too, not just on the next
+    // drop every cached sector on unmount too, not just on the next
     // mount. Between this unmount and a future mount, the medium may be
     // physically swapped (an SD card) with the cache never told;
     // invalidating here as well as in `fat32_mount` means neither the
@@ -6177,7 +6177,7 @@ fn chain_nth_or_extend(v: &'static Vol, first_cluster: u32, n: u32) -> Result<u3
             return Err(FsError::Io);
         }
         if next < FAT32_FIRST_DATA_CLUSTER || next >= FAT32_EOC {
-            // U09-2: once `fresh` reads end-of-chain no allocator can take
+            // once `fresh` reads end-of-chain no allocator can take
             // it, so allocation and the link below need no common hold —
             // each entry write claims its own FAT sector (F1: nothing is held
             // across the device I/O).
@@ -6400,7 +6400,7 @@ fn open_at(v: &'static Vol, parent_cluster: u32, name83: &[u8; 11], flags: u32, 
 
     // Handle TRUNCATE.
     //
-    // U09-13: this used to free the chain FIRST and update the dirent
+    // this used to free the chain FIRST and update the dirent
     // SECOND, with no journal covering the gap — the same "unlink old +
     // install new" shape `fat32_write_file`'s overwrite path already
     // journals as `OVERWRITE`, just with the new side empty (cluster=0,

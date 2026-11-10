@@ -83,7 +83,7 @@ azos_rings = { workspace = true }
 azos_arch = { workspace = true }
 azos_common = { workspace = true }
 azos_limits = { workspace = true }
-# U06-6: HMAC-SHA256 for the TCP ISN generator (`tcp.rs::generate_isn`),
+# HMAC-SHA256 for the TCP ISN generator (`tcp.rs::generate_isn`),
 # replacing an invertible FNV-1a hash. No new edge for the kernel binary --
 # `azos_crypto` is already linked in via `ota`/`behavior`.
 azos_crypto = { workspace = true }

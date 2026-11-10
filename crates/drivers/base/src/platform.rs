@@ -137,7 +137,7 @@ pub mod hw {
 // the device-tree node the hardware bus binds, `kernel/src/boot/hwbus.rs`).
 //
 // `pm.rs`'s `pm_clock_gate`/`dvfs_set_freq` syscrg write was already flagged
-// unverified before this pass (U05-10) and is unchanged here.
+// unverified before this pass and is unchanged here.
 #[cfg(feature = "vf2")]
 pub mod hw {
     pub const PLATFORM_NAME: &str = "StarFive VisionFive 2 (JH7110)";
@@ -386,7 +386,7 @@ pub mod hw {
     /// k1.dtsi` → none). Kept as a named constant only because
     /// `wdt.rs`'s `hw_wdt_init` used to write here under `feature = "k1"`;
     /// that call is now gated off by `wdt_has_hardware()` returning `false`
-    /// for `k1` (U05-3) — this address is unused, not a corrected target.
+    /// for `k1` — this address is unused, not a corrected target.
     pub const WDT_BASE:    usize = 0xD401_5000;
 
     // vDSO placement — K1 is the one board NO value of `VDSO_USER_BASE` can

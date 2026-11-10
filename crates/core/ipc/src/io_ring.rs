@@ -3023,7 +3023,7 @@ pub fn io_ring_create_cap_ref(
 ) -> Result<(crate::cap::Cap<crate::cap::targets::IoRing>, u32, u64), IoRingCapError> {
     let (r, phys_addr) = create_core(tid as usize).ok_or(IoRingCapError::NoMem)?;
     // The capability stores the packed `(index, generation)`. `RW_DELEGATE`
-    // (O3.4): the creator may copy and gift its own
+    // the creator may copy and gift its own
     // ring.
     match objref::grant_packed::<crate::cap::targets::IoRing>(tid, crate::cap::CapPerms::RW_DELEGATE, r) {
         Some(cap) => Ok((cap, r, phys_addr as u64)),

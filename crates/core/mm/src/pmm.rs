@@ -523,7 +523,7 @@ pub fn alloc_page() -> KResult<PhysAddr> {
 ///
 /// For a caller that is about to overwrite every byte anyway —
 /// `mm::cow::handle_cow_fault`'s break, which `copy_nonoverlapping`s the
-/// whole page immediately after allocating it (U09-11). `alloc_page`'s
+/// whole page immediately after allocating it. `alloc_page`'s
 /// zero is there for the callers that DON'T immediately overwrite the
 /// whole page (a demand-paged anonymous page, which must not hand a task
 /// a stale sibling's bytes); a COW break already has real data to put

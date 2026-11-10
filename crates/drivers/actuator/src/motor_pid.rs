@@ -81,7 +81,7 @@ pub const CH_RIGHT: usize = 1;
 
 // ── PID Controller ───────────────────────────────────────────────────────────
 
-/// Fixed-point scale factor (Q16.16): 1.0 = 65536.
+/// Fixed-point scale factor: 1.0 = 65536.
 const FIXED_SCALE: i64 = 65_536;
 
 /// PID controller for a single motor channel.
@@ -90,13 +90,13 @@ const FIXED_SCALE: i64 = 65_536;
 /// All gains are stored in Q16.16; inputs/outputs are integer ticks and PWM%.
 #[derive(Clone, Copy)]
 pub struct PidController {
-    /// Proportional gain (Q16.16).
+    /// Proportional gain.
     kp: i64,
-    /// Integral gain (Q16.16).
+    /// Integral gain.
     ki: i64,
-    /// Derivative gain (Q16.16).
+    /// Derivative gain.
     kd: i64,
-    /// Accumulated integral term (Q16.16).
+    /// Accumulated integral term.
     integral: i64,
     /// Previous error for derivative calculation.
     prev_error: i64,

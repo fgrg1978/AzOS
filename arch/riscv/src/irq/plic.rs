@@ -9,7 +9,7 @@
 
 // ---- PLIC register layout ----
 // Same base address on QEMU virt and VisionFive 2 / JH7110 (both at 0x0C00_0000).
-// The CONTEXT NUMBERING is NOT the same — see `s_context` (U05-1).
+// The CONTEXT NUMBERING is NOT the same — see `s_context`.
 
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 

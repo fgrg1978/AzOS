@@ -13,7 +13,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 /// Read `TPIDR_EL1` and return this PE's logical hart index.
 ///
-/// U10-4 (audit): this used to decode `MPIDR_EL1` directly
+/// this used to decode `MPIDR_EL1` directly
 /// (`Aff0 | Aff1 << 8 | Aff2 << 16`), a SECOND hart-identity source
 /// disagreeing with the one the scheduler actually indexes by —
 /// `crates/core/sched/src/smp.rs::current_cpu_id()` reads `TPIDR_EL1`, the

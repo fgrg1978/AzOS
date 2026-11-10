@@ -230,7 +230,7 @@ unsafe fn process_packet() {
 
     // Detect revolution wrap: end_angle < last_end_angle → new scan. The
     // accumulated revolution is published whole, in one store, so a
-    // concurrent `lidar_read_scan` can never observe half of it (U05-13).
+    // concurrent `lidar_read_scan` can never observe half of it.
     if end_angle < LAST_END_ANGLE && ACC_COUNT.load(Ordering::Relaxed) > 0 {
         let count = ACC_COUNT.load(Ordering::Relaxed) as usize;
         let acq = ACC_ACQ.load(Ordering::Relaxed);

@@ -2852,7 +2852,7 @@ mod image_profiles {
     ///  * it asks `current_syscall_verdict(num)`, on the full number, before the
     ///    fast path;
     ///  * `Deny` calls `seccomp_deny_kill(num)`, which never returns —
-    ///    V1.8: a denied call kills the task
+    ///    a denied call kills the task
     ///    instead of returning `-1`, because a `-1` a compromised or buggy
     ///    binary can silently ignore is not containment. The record →
     ///    console line → exit sequence itself lives in
@@ -2871,7 +2871,7 @@ mod image_profiles {
         assert!(gate_at < fast, "the filter must be checked before the fast path");
         let gate = &DISPATCH[gate_at..fast];
 
-        // V1.8: `Deny` no longer records-and-returns inline — it calls the
+        // `Deny` no longer records-and-returns inline — it calls the
         // kill path and diverges. Checking `return E_PERM;` here would
         // pass on a dispatcher that silently stopped killing at all (the
         // arm would just be empty), which is the one regression this test

@@ -131,7 +131,7 @@ pub fn gguf_mlp_infer_with(
     let hid_sz = w1i.dims[1] as usize;
     if hid_sz > MAX_WIDTH { return false; }
 
-    // U11-9: every dimension `linear_layer` is about to ASSUME must match
+    // every dimension `linear_layer` is about to ASSUME must match
     // what the file actually declares, checked before either call —
     // `w1.dims[0]` is the caller's `input.len()`, `w2.dims[0]` is the
     // hidden width `w1.dims[1]` just computed (the two layers must agree on

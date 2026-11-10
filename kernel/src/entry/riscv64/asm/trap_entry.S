@@ -14,7 +14,7 @@
 #   sscratch holds kernel SP when in U-mode (0 when in S-mode).
 #   On trap: swap SP <-> sscratch to get kernel stack.
 #
-# K-C16: the kernel `tp` (= logical CPU id) is re-established from the per-hart trap
+# the kernel `tp` (= logical CPU id) is re-established from the per-hart trap
 # vector on every trap taken from U-mode.  See the block comment above
 # `trap_hart_vectors` for the full rationale.
 
@@ -285,7 +285,7 @@ trap_save_context:
     sd t0, TF_SP(sp)            # regs[2] = user SP
     csrw sscratch, zero         # Mark: now in S-mode
 
-    # K-C16: re-establish the kernel tp (= hart id) for the hart we are
+    # re-establish the kernel tp (= hart id) for the hart we are
     # ACTUALLY on, instead of trusting the tp ring 3 handed us.  The user's
     # own tp is already safe in the frame at 32(sp) and is given back
     # untouched on the way out — user code may keep whatever tp it likes, it
@@ -404,7 +404,7 @@ trap_call_here:
 # first, or a trap taken in the gap sees a live SIE the frame never asked
 # for.
 #
-# THE BUG THIS CLOSES.  With IRQs enabled inside a syscall (O3.1) nothing
+# THE BUG THIS CLOSES.  With IRQs enabled inside a syscall nothing
 # clears the live SIE bit between the syscall body and here — the frame's
 # TF_SSTATUS has SIE=0 (hardware always clears it on entry), but that value
 # only reaches the CSR once `csrw sstatus` executes, and the old code ran

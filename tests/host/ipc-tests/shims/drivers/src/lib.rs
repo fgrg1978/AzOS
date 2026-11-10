@@ -3,7 +3,7 @@
 //! Host stand-in for `azos_drv_irqchip`.
 //!
 //! **WHY this exists.** `crates/core/ipc/src/irq_bind.rs`'s `irq_grant_cap`
-//! (U03-2/U03-8) range-checks a PLIC line number against
+//! range-checks a PLIC line number against
 //! `azos_drv_irqchip::plic::MAX_IRQS` before minting a `Cap<Irq>`. The real
 //! `azos_drv_irqchip` is RV64-only (MMIO, `#[cfg(target_arch)]` register
 //! layouts), so the `#[path]` host-test trick cannot pull it in. This crate

@@ -314,11 +314,11 @@ const TCP_TIMESTAMPS: bool = azos_limits::TCP_TIMESTAMPS;
 /// bytes from the kernel entropy pool when a seeded source is installed
 /// (`isn_secret_from_pool`); without one the mtime seed is what stays.
 ///
-/// U06-6: was a 32-bit `AtomicU32` fed into FNV-1a, a bijection mod 2^32 at
+/// was a 32-bit `AtomicU32` fed into FNV-1a, a bijection mod 2^32 at
 /// every step — one observed ISN minus the low-variance `mtime`-derived time
 /// term (`generate_isn`'s `ticks as u32`) recovers this secret exactly, after
 /// which every later ISN for any 4-tuple is computable, turning a blind
-/// injection (U06-1) from a ~2^16 guess into a certainty. 32 bytes (256-bit)
+/// injection from a ~2^16 guess into a certainty. 32 bytes (256-bit)
 /// is the full HMAC-SHA256 key size, well past RFC 6528's 128-bit floor.
 static ISN_SECRET: SpinLock<[u8; 32]> = SpinLock::new([
     // Same role the old `0xA5F0_3C7B` constant played: a fixed, non-zero
@@ -1175,7 +1175,7 @@ impl TcpConn {
         self.ack_due          = 0;
         self.rcv_unacked      = 0;
         self.rcv_adv          = 0;
-        // U06-2: was NOT cleared here. `accept()` (below) hands a slot to the
+        // was NOT cleared here. `accept()` (below) hands a slot to the
         // caller only `!was_accepted`, and this flag was cleared only on the
         // RST arm and the SynRcvd reaper — never on an orderly close
         // (`close()`/FIN teardown/`LastAck`→`Closed`). Both open paths call
@@ -1463,7 +1463,7 @@ struct TcpLayer {
     conns:        ConnTable,
     our_mac:      [u8; 6],
     our_ip:       [u8; 4],
-    /// M26: hint for `find_conn` — the slot it matched last time.
+    /// hint for `find_conn` — the slot it matched last time.
     ///
     /// `TcpConn` is 268 KB at the edge profile (38 KB at fleet), so a plain
     /// linear scan of `conns` touches one cache line per slot at a stride
@@ -1741,7 +1741,7 @@ static TCP: TcpCell = TcpCell(SpinLock::new(TcpLayer::new()));
 /// remoteport, secretkey)`. `M` is the 4 µs timer below; `F` is HMAC-SHA256
 /// keyed on `ISN_SECRET`, taking the 4-tuple as its message.
 ///
-/// U06-6: this replaced an invertible FNV-1a hash (each step a bijection
+/// this replaced an invertible FNV-1a hash (each step a bijection
 /// mod 2^32) over the same inputs. FNV is not the keyed cryptographic hash
 /// RFC 6528 §3 asks for — one observed ISN let an attacker subtract the
 /// (bounded, low-variance) time term and invert every FNV step in order to
@@ -2525,7 +2525,7 @@ fn resolve_peer_mac<F: FnMut()>(
     our_mac: &[u8; 6], our_ip: &[u8; 4], dst_ip: &[u8; 4],
     budget_us: u64, mut yield_fn: F,
 ) -> bool {
-    // M21 / U06-5: `lookup_solicited_verified`, not `lookup` — an
+    // `lookup_solicited_verified`, not `lookup` — an
     // unsolicited entry (planted by a request nobody asked,
     // `arp::learn_unsolicited`) must not short-circuit resolution for a
     // connection WE are opening. Before this, one crafted request claiming
@@ -2536,7 +2536,7 @@ fn resolve_peer_mac<F: FnMut()>(
     // NUD-style unicast re-check when the cached entry, though solicited, has
     // gone stale (`ARP_REACHABLE_TICKS`) — see its own doc.
     if crate::arp::lookup_solicited_verified(our_mac, our_ip, dst_ip).is_some() { return true; }
-    // N7: registered before the request leaves and before every look below,
+    // registered before the request leaves and before every look below,
     // so the reply's `arp::handle` wakes this task (see `crate::wait`).
     let armed = crate::wait::ARP_WAITERS.arm();
     crate::arp::send_request(our_mac, our_ip, dst_ip);
@@ -2718,7 +2718,7 @@ fn send_data_inner(r: Ref, data: &[u8]) -> i32 {
     if !t.live(r) { return -1; }
     let c = &mut t.conns[idx];
     // `advertise` above counted the ACK this segment carried as sent; it was
-    // not. Hold one again (N6), so the end of the pass or the timer sends it
+    // not. Hold one again, so the end of the pass or the timer sends it
     // rather than the peer's retransmission timer finding out. The same for
     // a CWR it carried: the next new segment carries it.
     c.hold_ack(now, false, true);
@@ -2843,7 +2843,7 @@ pub(crate) fn send_all_until<F: FnMut()>(
     let start = azos_drv_sys::timebase::now();
     let mut sent_total: usize = 0;
     let mut waits: u32 = 0;
-    // N7: an ACK that opens the window wakes this task (see `crate::wait`).
+    // an ACK that opens the window wakes this task (see `crate::wait`).
     let armed = crate::wait::TCP_WAITERS.arm();
     // TX batch as in `send_all_with_yield`: closed around every wait.
     let mut batch = crate::net_tx_batch_begin();
@@ -2898,7 +2898,7 @@ fn recv_inner(r: Ref, buf: &mut [u8]) -> i32 {
             buf[i] = c.rx_buf[c.rx_head & TCP_BUF_MASK];
             c.rx_head = (c.rx_head + 1) & TCP_BUF_MASK;
         }
-        // Window update (N6). It used to go out as a pure ACK on EVERY read
+        // Window update. It used to go out as a pure ACK on EVERY read
         // that returned a byte. Now, with RFC 1122 §4.2.3.3's receiver SWS
         // floor (the edge must move by min(ring/2, SMSS)):
         // - at once when the peer is close to stalling on it: the window we
@@ -3127,7 +3127,7 @@ fn handle_checked_inner(src_ip: &IpAddr, dst_ip: &IpAddr, data: &[u8], ce: bool)
     if tcp_checksum(pseudo, data) != 0 { return; }
 
     handle(src_ip, dst_ip, data, ce);
-    // N7: whatever this segment changed — a handshake completed, a
+    // whatever this segment changed — a handshake completed, a
     // connection reset, a window opened — the tasks waiting on TCP look
     // again now, not at their next 1 ms poll. No lock is held here.
     crate::wait::TCP_WAITERS.notify();
@@ -3200,7 +3200,7 @@ fn process_inbound_payload(
         let had_ooo = c.ooo_buf.iter().any(|s| s.valid);
         flush_ooo_segments(c);
 
-        // N6: hold the ACK (RFC 1122 §4.2.3.2) unless one of these says the
+        // hold the ACK (RFC 1122 §4.2.3.2) unless one of these says the
         // peer needs it now:
         // - delayed ACK configured off (`TCP_DELACK_MS = 0`);
         // - `TCP_DELACK_SEGS` full-sized segments unacknowledged (RFC 5681
@@ -3931,7 +3931,7 @@ fn handle(src_ip: &IpAddr, dst_ip: &IpAddr, data: &[u8], ce: bool) {
             // (SynRcvd) per listener at half the connection table. With
             // TCP_MAX_CONNS=8 we allow at most 4 half-open SYNs at any
             // time; a further SYN reaps the oldest half-open slot for this
-            // listener (U06-7) rather than being dropped outright. Without
+            // listener rather than being dropped outright. Without
             // this cap an attacker could fill the table with SYN_RECV slots
             // in a few packets and starve legitimate clients.
             const MAX_HALF_OPEN_PER_LISTENER: usize = TCP_MAX_CONNS / 2;
@@ -3955,7 +3955,7 @@ fn handle(src_ip: &IpAddr, dst_ip: &IpAddr, data: &[u8], ce: bool) {
                 return;
             }
             if half_open >= MAX_HALF_OPEN_PER_LISTENER {
-                // U06-7: a SYN trickle at or below the reaper's own cadence
+                // a SYN trickle at or below the reaper's own cadence
                 // (one every `SYN_MAX_RETRIES` x `SYN_RETRY_INTERVAL_MS` =
                 // ~5 s) keeps this cap saturated forever — the comment this
                 // replaced claimed the cap "can only ever delay a connection,
@@ -4344,7 +4344,7 @@ fn process_ack(
 /// Counting per ACK instead (at most one SMSS each, the RFC 5681 §3.1
 /// minimum) halves both rates against a receiver that delays its ACKs to
 /// every second segment, as RFC 1122 asks and this stack's own receiver does
-/// (N6). Never past the send ring, which is all that can ever be in flight.
+///. Never past the send ring, which is all that can ever be in flight.
 fn grow_cwnd(c: &mut TcpConn, acked: u32, smss: u32) {
     let inc = if c.cwnd < c.ssthresh {
         // Never past ssthresh in one step: the rest of this ACK belongs to
@@ -5216,12 +5216,12 @@ fn note_all() {
 }
 
 pub fn tcp_tick() {
-    // Delayed ACKs whose `TCP_DELACK_TICKS` ran out (N6). Before the timers
+    // Delayed ACKs whose `TCP_DELACK_TICKS` ran out. Before the timers
     // below, so a retransmission decided this tick is not preceded by an ACK
     // the peer has been waiting on longer.
     flush_held_acks(true);
     tcp_timers();
-    // N7: a handshake given up, a connection timed out: its waiter learns
+    // a handshake given up, a connection timed out: its waiter learns
     // now rather than at its own deadline.
     crate::wait::TCP_WAITERS.notify();
 }

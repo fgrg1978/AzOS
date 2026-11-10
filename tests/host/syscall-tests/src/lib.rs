@@ -122,7 +122,7 @@ pub mod ioring_ops;
 #[path = "../../../../crates/core/syscall/src/motor_commander.rs"]
 pub mod motor_commander;
 
-// The `LinkKey` server (U06-9). At the crate root, same reason as
+// The `LinkKey` server. At the crate root, same reason as
 // the motor server: it names `crate::handlers::{E_CONTAINED, note_typed_denial}`
 // too. `#[path]`, not `include!`, for the same reason as `file_ops`.
 #[path = "../../../../crates/core/syscall/src/link_key.rs"]
@@ -946,7 +946,7 @@ mod handlers {
 }
 
 // The table `dispatch.rs` builds from its arms. `dispatch.rs` itself
-// is never compiled here (U14-8), so the macro is pulled alone and driven on
+// is never compiled here, so the macro is pulled alone and driven on
 // arms of every shape the dispatch uses.
 #[cfg(test)]
 #[path = "../../../../crates/core/syscall/src/syscall_table.rs"]

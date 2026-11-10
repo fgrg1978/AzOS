@@ -83,7 +83,7 @@ const _: () = assert!(azos_mm::kstack::WINDOW_TAG < 2048);
 global_asm!(
     include_str!("asm/context_switch.S"),
     task_satp_off = const core::mem::offset_of!(azos_sched::task::Task, task_satp),
-    // K-C23: context_saving is cleared straight from the asm (fence + sb) —
+    // context_saving is cleared straight from the asm (fence + sb) —
     // a Rust helper's Release store publishes the old task's stack as
     // reusable while still running ON that stack, so the helper must not
     // have a frame; injecting the offset keeps the asm store correct even

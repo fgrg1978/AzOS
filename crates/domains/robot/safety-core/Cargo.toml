@@ -14,7 +14,7 @@ publish = false
 [features]
 # Both forwarded from kernel/Cargo.toml.
 # `actuation-smoke`: the `[ACTSMOKE] kernel motor` marker in `rt_motor`, and
-# (Q1.3) the `[ACTREC]` record-admitted marker in `actuation.rs`.
+# the `[ACTREC]` record-admitted marker in `actuation.rs`.
 actuation-smoke = []
 # `gate-skip-smoke`: `install()` does NOT install the motor gate — canary for
 # Q1.4's fail-closed default. Never on in a normal build; no

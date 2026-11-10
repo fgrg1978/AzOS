@@ -111,7 +111,7 @@ pub fn current_task_tid() -> u32 {
 
 /// The pool slot and TID of the task running on this CPU, or `None` when
 /// none is current: [`current_task_tid`] plus the slot it read, so a caller
-/// keyed by slot (the capability tables, N4) need not find it again with
+/// keyed by slot (the capability tables) need not find it again with
 /// [`idx_for_tid`].
 #[inline]
 pub fn current_task_slot() -> Option<(usize, u32)> {
@@ -687,7 +687,7 @@ pub fn note_mm_quota_refusal() {
 // copies of its budget (plus one COW copy each when its image may fork). This
 // count keeps the running system inside what was counted: at most N live
 // spawned (or exec'd) instances of a row. Fork children are NOT instances
-//: they are bounded by the memory budget, and the
+// they are bounded by the memory budget, and the
 // COW copy admission charges a forking row is what pays for them. A task
 // holds at most one count (`TaskMem::row`) and gives it back at exit. Rows
 // are identified by index + 1, as `TaskMem::row` stores them.
@@ -1280,7 +1280,7 @@ pub fn ready_unqueued_ids(out: &mut [(u32, u32, u32, [u8; 8], u8)]) -> usize {
             };
             let mut name = [0u8; 8];
             for (d, s) in name.iter_mut().zip(t.name.iter()) { *d = *s; }
-            // K-C26: who published this task `Ready`, and on which hart.
+            // who published this task `Ready`, and on which hart.
             // With several simultaneous victims of different priority and home,
             // a shared site is the whole answer.
             out[n] = (t.tid, t.priority.load(Ordering::Relaxed), home, name,

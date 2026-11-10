@@ -206,7 +206,7 @@ config QOS_SLACK_BACKGROUND_US
       Surfaces as `azos_limits::QOS_SLACK_BACKGROUND_US`.
 
 # ---------------------------------------------------------------------------
-# Scheduler placement and sleeper options (U02-3). Each is a kernel
+# Scheduler placement and sleeper options. Each is a kernel
 # cargo feature that forwards to azos_sched; all three are on in every
 # configuration, the way the kernel's old `default` list had them.
 # ---------------------------------------------------------------------------

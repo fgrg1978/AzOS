@@ -15,7 +15,7 @@ use azos_drv_sys::timebase::{now as get_time, TIMER_FREQ};
 /// Block until the counter reaches `deadline`. A wake before it, stamped for
 /// another reason, blocks again.
 ///
-/// A block refused because preemption is off on this hart (K-C29) would be
+/// A block refused because preemption is off on this hart would be
 /// refused again on every turn, so that caller waits on the counter instead of
 /// re-entering the scheduler in a loop.
 fn block_until(deadline: u64) {

@@ -198,7 +198,7 @@ pub fn pledge(mask: u32) -> isize {
 }
 
 // ---------------------------------------------------------------------------
-// M01: vDSO — zero-ecall kernel time queries
+// vDSO — zero-ecall kernel time queries
 // ---------------------------------------------------------------------------
 
 /// User-space virtual address of the vDSO page.
@@ -2589,7 +2589,7 @@ pub use azos_abi::syscall_nr::{
 pub const PORT_BIND_F_REMOVE: u64 = azos_abi::syscall_nr::PORT_BIND_F_REMOVE;
 
 // ===========================================================================
-//  Fast-path IPC (M02) — seL4-style register-passing, ≤32 bytes
+//  Fast-path IPC — seL4-style register-passing, ≤32 bytes
 // ===========================================================================
 
 /// Maximum number of 64-bit words in a fast IPC message.
@@ -3588,7 +3588,7 @@ pub use azos_abi::power;
 /// The kernel tracer's operations, classes and event ids.
 pub use azos_abi::trace as trace_abi;
 
-/// Set task `tid`'s dispatch class (`SYS_SCHEDCTL`, N6b; `tid` 0 = the
+/// Set task `tid`'s dispatch class (`SYS_SCHEDCTL`; `tid` 0 = the
 /// caller): `class` is `SCHEDCTL_CLASS_{FAIR,RT,DL}`, `prio` the base
 /// priority, `runtime_us`/`period_us` the DL reservation (0 otherwise),
 /// `warrant` a `time` endpoint capability (needed for RT and DL). Returns 0

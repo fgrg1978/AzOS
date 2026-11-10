@@ -433,7 +433,7 @@ pub fn lookup_on(ifindex: IfIndex, ip: &[u8; 4]) -> Option<[u8; 6]> {
 /// Like [`lookup`], but a binding [`learn_unsolicited`] planted from an
 /// inbound request nobody asked about does not count.
 ///
-/// M21 / U06-5: a dial's first packet used to trust whatever [`lookup`]
+/// a dial's first packet used to trust whatever [`lookup`]
 /// returned, including an unsolicited entry — so one crafted request,
 /// claiming to be the peer we are about to dial, sent before that dial,
 /// steered the SYN to the attacker with no race to win at all (the real
@@ -654,7 +654,7 @@ pub fn handle(payload: &[u8], our_mac: &[u8; 6], our_ip: &[u8; 4]) {
     // would keep a packet queued behind an ARP round trip we no longer need.
     if let Some((ip, mac)) = learned {
         ip::arp_resolved(ifindex, &ip, &mac);
-        // N7: a task resolving this address (`tcp::resolve_peer_mac`) looks
+        // a task resolving this address (`tcp::resolve_peer_mac`) looks
         // again now. No lock is held here.
         crate::wait::ARP_WAITERS.notify();
     }

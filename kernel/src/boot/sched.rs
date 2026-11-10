@@ -284,7 +284,7 @@ pub(crate) fn install_sched_hooks() {
     if canary!("ipc-v1-takes-v2") {
         azos_ipc::ep_queue::canary_v1_takes_v2();
     }
-    // N7: the wait graph's scheduler side, before the first task can block
+    // the wait graph's scheduler side, before the first task can block
     // on a graph object.
     azos_sync::waitgraph::register_sched(&azos_sched::classes::PI);
     // N7 runtime canary: every wait-graph walk stops after one owner, so a
@@ -420,7 +420,7 @@ pub(crate) fn install_sched_hooks() {
         azos_sched::futex::register_shm_word_of(robust_shm_word_of);
     }
     // N10, Kconfig FUTEX_PI: the PI futex operations and the slot ->
-    // TID map their words need, and the futex table's PiTable (N9) that runs
+    // TID map their words need, and the futex table's PiTable that runs
     // them under the key's lock for the Linux personality and the robust exit.
     // Runtime canary: a PI waiter never boosts the word's owner.
     if azos_sync::pi_futex::ENABLED {
@@ -430,7 +430,7 @@ pub(crate) fn install_sched_hooks() {
         if canary!("futex-pi-no-edge") {
             azos_sync::pi_futex::canary_no_edge();
         }
-        // N10b: an owner that exits holding a PI word with waiters hands it
+        // an owner that exits holding a PI word with waiters hands it
         // to the top waiter (Linux exit_pi_state_list; the graph calls the
         // hook after the robust walk). Runtime canary: the hook does nothing.
         azos_sync::waitgraph::register_owner_died(
@@ -470,7 +470,7 @@ pub(crate) fn install_sched_hooks() {
     azos_sync::waitqueue::wq_set_timed_callbacks(wq_block_for, wq_wake_timed);
     // The kernel mutex's adaptive-spin probe and wait-graph ids.
     azos_sync::kmutex::set_probes(&KMUTEX_PROBES);
-    // N7c: a Mutex owner that exits holding it hands
+    // a Mutex owner that exits holding it hands
     // it to its top waiter (EOWNERDEAD).
     azos_sync::kmutex::register_owner_died();
     // Owner rule: an RT task never does block I/O. Dev builds
@@ -1959,7 +1959,7 @@ mod pi_boost_ktests {
 // and not a fair candidate, wakes it with interrupts masked and steps through
 // one interleaving.
 //
-// `fair_unlink_keeps_the_claim`: a delayed duplicate waker (K-C12) on another CPU
+// `fair_unlink_keeps_the_claim`: a delayed duplicate waker on another CPU
 // meets the claim, not the node. Canary `eevdf-late-unlink-canary`, the claim
 // goes first: the waker reaches a linked node, with
 // `zz_no_tree_refusal_since_boot` red too.
@@ -2263,7 +2263,7 @@ mod user_state_ktests {
     }
 }
 
-// N6: the dispatch-class model. Early: the precedence walk takes stop > DL >
+// the dispatch-class model. Early: the precedence walk takes stop > DL >
 // RT > fair > idle, a compiled-out class is skipped, preemption across
 // classes follows precedence. Late: the running task's SC holds the class its
 // priority puts it in (the hooks fired) and this CPU's live walk finds a
@@ -2316,7 +2316,7 @@ mod sched_class_ktests {
         }
     }
 
-    // N6b: a reservation at the band's least urgent level ranks before an
+    // a reservation at the band's least urgent level ranks before an
     // RT task at level 0, in the pick, the tick and the exempt-loop test,
     // through the same switch (`dl_above_band`) and rank functions
     // `rt::pick` / `rt::tick` read. The exempt band loops are the stop
@@ -2350,7 +2350,7 @@ mod sched_class_ktests {
         }
     }
 
-    // N6b: `SYS_SCHEDCTL` refuses a self-promotion to RT or DL without a
+    // `SYS_SCHEDCTL` refuses a self-promotion to RT or DL without a
     // time warrant: the late runner is a kernel task whose table holds no
     // a `time` endpoint capability, so both calls fail and its class and base
     // priority are unchanged. Canary `canary=schedctl-no-warrant`: the RT
@@ -2550,7 +2550,7 @@ mod sched_class_ktests {
     }
 }
 
-// N7: the wait graph, stage 1. Early, on a private graph driven by a
+// the wait graph, stage 1. Early, on a private graph driven by a
 // recording scheduler (the kernel's graph moves real tasks): the transitive chain A <- B <- C boosts A to
 // C and each release gives back what it no longer earns; a cycle is EDEADLK
 // with both tasks unchanged; a DL donor's absolute deadline is inherited;
@@ -2824,7 +2824,7 @@ mod waitgraph_ktests {
     }
 }
 
-// N8: the kernel mutex in a task (late: `lock` names its caller by TID).
+// the kernel mutex in a task (late: `lock` names its caller by TID).
 // Rule F1: `unlocked_for_io` frees the mutex for the device wait, so another
 // task could take it there; lockdep notes a Mutex held across
 // `might_wait_device`. Canary `canary=kmutex-io-held` (the mutex stays held
@@ -3100,7 +3100,7 @@ mod kmutex_ktests {
         }
     }
 
-    // N7b: a task that waited behind a Mutex owner leaves the wait graph on
+    // a task that waited behind a Mutex owner leaves the wait graph on
     // its exit path, not at its slot's reuse. The owner, contended by an RT
     // waiter (so the graph computed its effective attribute), releases and
     // exits; the runner waits for its graph state to go while the slot is
@@ -3160,18 +3160,18 @@ mod kmutex_ktests {
         }
     }
 
-    // N7c: a Mutex owner that exits still holding it,
+    // a Mutex owner that exits still holding it,
     // with an RT waiter queued in the wait graph, does not strand the
     // waiter: the graph's OwnerDiedHook frees the word and wakes the bucket,
     // and the waiter takes the Mutex within the bound; its guard reports
-    // `owner_died()`, and the lock after its unlock does not (N7d). Canary
+    // `owner_died()`, and the lock after its unlock does not. Canary
     // `canary=owner-died-silent`: not ok (the waiter sleeps on; the bound is
     // wall clock, so the run is not held up).
     static OD_M: Mutex<u32> = Mutex::new(0);
     static OD_QUEUED: AtomicBool = AtomicBool::new(false);
     static OD_GOT: AtomicBool = AtomicBool::new(false);
     static OD_RUNNER: AtomicU32 = AtomicU32::new(0);
-    // N7d: the waiter's guard reported owner-died; the next lock did not.
+    // the waiter's guard reported owner-died; the next lock did not.
     static OD_FLAG: AtomicBool = AtomicBool::new(false);
     static OD_CLEARED: AtomicBool = AtomicBool::new(false);
 
@@ -3224,7 +3224,7 @@ mod kmutex_ktests {
         }
     }
 
-    // N7d: a task that exits holding a Mutex is no longer counted in
+    // a task that exits holding a Mutex is no longer counted in
     // `held`'s table once its exit ran, so
     // the panic policy's `mutex-held` check never sees a dead holder.
     // Canary `canary=held-keeps-dead`: not ok.
@@ -3485,7 +3485,7 @@ mod kmutex_ktests {
         }
     }
 
-    // N7b: a newcomer the steal rule holds back joins
+    // a newcomer the steal rule holds back joins
     // the wait graph before it sleeps, so the task that takes the Mutex next
     // inherits from it. The owner and its queued waiter share one priority:
     // the woken waiter does not preempt the releasing owner, which then

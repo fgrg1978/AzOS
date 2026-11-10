@@ -536,7 +536,7 @@ pub(crate) fn early_main(boot_hw_id: usize, fw_table: usize) -> EarlyBoot {
     // single-frame allocations and frees go through the per-hart caches.
     azos_mm::pmm::enable_cpu_caches();
 
-    // M01: the vDSO timing page user space reads directly, at the timebase
+    // the vDSO timing page user space reads directly, at the timebase
     // the ISA reports. Before any task can exec.
     crate::install_vdso(a.timebase_hz(), a.vdso_counter_scale());
 

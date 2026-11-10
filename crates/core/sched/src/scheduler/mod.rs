@@ -112,7 +112,7 @@ pub mod ipc_direct;
 #[path = "../rt.rs"]
 pub mod rt;
 
-/// N6: the five dispatch classes (stop > DL > RT > fair > idle) and the
+/// the five dispatch classes (stop > DL > RT > fair > idle) and the
 /// per-task scheduling context, over the queues above (`sc.rs` is the model).
 #[path = "../classes.rs"]
 pub mod classes;
@@ -680,7 +680,7 @@ pub(crate) type PrioQueue = crate::ready_list::ReadyList;
 /// The ready-queue links: `RQ_LINKS[i]` is slot `i`'s place in whichever ready
 /// queue holds it (a list ends at its count, not at a link). One table for every queue of
 /// every CPU, because a slot is in at most one queue at a time (the `queued`
-/// claim, K-C12). Written under the owning CPU's lock. `MAX_TASKS` x 16 B,
+/// claim). Written under the owning CPU's lock. `MAX_TASKS` x 16 B,
 /// static: it is sized by the task table, not by the CPUs.
 pub(crate) static RQ_LINKS: [crate::ready_list::Link; MAX_TASKS] = [const { crate::ready_list::Link::new() }; MAX_TASKS];
 
@@ -1034,7 +1034,7 @@ unsafe extern "C" {
     fn context_switch(old: *mut Task, new: *mut Task);
 }
 
-// K-C23: `context_saving` used to be cleared by a `mark_context_saved`
+// `context_saving` used to be cleared by a `mark_context_saved`
 // helper here, `call`ed from `context_switch.S` between saving `old`'s
 // registers and restoring `new`'s. That call ran ON THE OLD TASK'S STACK,
 // and the Release store inside it is precisely what publishes that stack as
@@ -1180,7 +1180,7 @@ fn prio_bucket(priority: u32) -> usize {
 /// **this call** added nothing — see [`EnqueueOutcome`] for the two reasons
 /// and why only one of them can lose work.
 ///
-/// K-C12: the ring overflow used to be guarded by `debug_assert!`, which is
+/// the ring overflow used to be guarded by `debug_assert!`, which is
 /// compiled out of the release profile this kernel ships. A full queue then
 /// overwrote `q.buf[q.tail]` — silently discarding a *different* ready task —
 /// and drove `q.count` past the ring so it no longer described the buffer.
@@ -1359,7 +1359,7 @@ unsafe fn cpu_dequeue_as<const WITH_RUNNING: bool>(cpu: usize) -> Option<usize> 
         // that case, and the fix is to lock those two, not to reload here.
         bm.store(bitmap & !(1 << prio), Ordering::Relaxed);
     }
-    // K-C12: this is the only pop, so it is the only place the `queued`
+    // this is the only pop, so it is the only place the `queued`
     // invariant is released. Leaving it set here would make the task
     // permanently un-enqueueable — silent starvation, the exact failure the
     // flag exists to prevent.
@@ -1581,7 +1581,7 @@ fn nohz_tick_hook() -> bool {
 unsafe fn ring_doorbell(cpu: usize, idx: usize, appended: bool) {
     let _ = idx;
 
-    // K-C15: tell the target hart it has work.
+    // tell the target hart it has work.
     //
     // **WHY the enqueue alone was not enough.** A hart with nothing ready runs
     // `idle_task`, which is `loop { wfi() }`, and the only thing that ever
@@ -2374,7 +2374,7 @@ unsafe fn find_best_cpu(prio: u32, exclude: usize) -> usize {
 
 /// Pick target CPU respecting affinity.
 /// If affinity >= 0, returns that hart directly; otherwise the hart where a
-/// task of priority `prio` will actually get dispatched (K-C12).
+/// task of priority `prio` will actually get dispatched.
 unsafe fn pick_target_cpu(affinity: i8, prio: u32, exclude: usize) -> usize {
     if affinity >= 0 {
         // K-A13: clamp — an out-of-range affinity (a bad literal at a call
@@ -2527,7 +2527,7 @@ unsafe fn do_schedule(why: SwitchReason) {
 
     // Don't switch if we'd switch to ourselves.
     if next_idx == old_idx {
-        // K-C26: put it back. The pick above **consumed** a queue entry
+        // put it back. The pick above **consumed** a queue entry
         // (`cpu_dequeue_locked` pops and clears `queued`), so returning here
         // without re-enqueueing leaks the task out of every run queue while
         // leaving it `Ready`.
@@ -2681,7 +2681,7 @@ unsafe fn do_schedule(why: SwitchReason) {
     // **This used to be compiled out under `--features rvv`**, because
     // context_switch_rvv.S never cleared `context_saving` and the gate would
     // have spun forever. That file now clears it with the same fence+sb tail
-    // (K-C23), so the exemption is gone and both builds take this path — the
+    //, so the exemption is gone and both builds take this path — the
     // twelve divergent `cfg` sites this comment was the largest of are all
     // deleted. An rvv build is a scheduler-identical build again.
     {
@@ -2894,7 +2894,7 @@ unsafe fn do_schedule(why: SwitchReason) {
     #[cfg(feature = "ipc-census")]
     unswitched::bump(&unswitched::SWITCHED);
 
-    // K-C29: the last gate before the switch actually happens. Every path into
+    // the last gate before the switch actually happens. Every path into
     // *this* `context_switch` is supposed to have been admitted by
     // `tick_admit`, `voluntary_admission`, or the exit override — this proves
     // it rather than assuming it. (The other `context_switch` call site,
@@ -2996,17 +2996,17 @@ unsafe fn do_schedule(why: SwitchReason) {
         let (prev, prev_state) = if old_ptr.is_null() { (0, 0) } else { ((*old_ptr).tid, (*old_ptr).state() as u32) };
         azos_trace::raw::sched_switch(prev, next.tid, prev_state, why as u32);
     }
-    // Lockdep (Kconfig LOCKDEP, N1): this CPU's held locks go with `old`
+    // Lockdep (Kconfig LOCKDEP): this CPU's held locks go with `old`
     // and `next`'s come back. An exiting task (no saved context, or a
     // zombie) must hold none. No instruction with lockdep off.
     if azos_sync::lockdep::ON {
         let keep = !old_ptr.is_null() && (*old_ptr).state() != TaskState::Zombie;
         azos_sync::lockdep::switch(if keep { Some(old_idx) } else { None }, next_idx);
     }
-    // QSBR (Kconfig RCU_QSBR, N4): a context switch is a quiescent state.
+    // QSBR (Kconfig RCU_QSBR): a context switch is a quiescent state.
     // One store; nothing with the option off.
     azos_sync::qsbr::switch();
-    // N12: re-tag `next`'s ASID if a rollover took it; set the flush word.
+    // re-tag `next`'s ASID if a rollover took it; set the flush word.
     crate::asid::prepare_switch(next as *mut Task);
     context_switch(old_ptr, next as *mut Task);
     // Returns here when the old task is rescheduled: `old_t` is this task.
@@ -3101,7 +3101,7 @@ pub fn set_current_sched_params(priority: u32, class_raw: u8) -> u32 {
         }
     }
     azos_arch::ARCH.restore(sstatus);
-    // N7: re-apply a wait-graph boost over the new base, and re-sort.
+    // re-apply a wait-graph boost over the new base, and re-sort.
     classes::pi_attr_changed(changed);
     before
 }
@@ -3244,7 +3244,7 @@ pub fn set_task_fork_ctx(
         task.fork_entry   = entry;
         task.fork_user_sp = user_sp;
         task.fork_satp    = satp;
-        // K-C11: the parent's full user register file. Written before the
+        // the parent's full user register file. Written before the
         // publish flag below, like the other three payload fields — the child
         // reads all of it under the same Acquire/Release pairing.
         task.fork_regs    = *regs;
@@ -3306,7 +3306,7 @@ pub fn take_current_task_fork_ctx() -> Option<(u64, u64, u64, crate::task::UserR
     }
 }
 
-/// K-C21: publish the exec hand-off on the CURRENT task's own slot. Called
+/// publish the exec hand-off on the CURRENT task's own slot. Called
 /// by `exec_user()` as its last step. Payload fields first, `Release`-ordered
 /// ready flag last — same publish protocol as [`set_task_fork_ctx`].
 ///
@@ -3369,14 +3369,14 @@ pub(crate) fn current_task_exec_ctx_pending() -> bool {
     }
 }
 
-/// K-C21: consume (read-and-clear) the exec hand-off of the task currently
+/// consume (read-and-clear) the exec hand-off of the task currently
 /// running on this CPU. Returns `(entry, user_sp, sstatus, satp, old space)`.
 /// The `Acquire` swap pairs with the `Release` in
 /// [`set_current_task_exec_slots`] — on this design it is belt-and-braces
 /// (same task, same hart), but it keeps the protocol identical to fork's and
 /// costs nothing. Callers must go through
 /// `process::take_current_task_exec_ctx`, which owns the satp-switch /
-/// destroy-old ordering (K-C22).
+/// destroy-old ordering.
 pub(crate) fn take_current_task_exec_slots() -> Option<(u64, u64, u64, u64, Option<azos_mm::aspace::SpaceRef>)> {
     let idx = my_idx();
     unsafe {
@@ -3431,7 +3431,7 @@ unsafe fn cpu_remove_at(cpu: usize, idx: usize, prio: usize) -> bool {
         if !cfg!(feature = "eevdf-late-unlink-canary") {
             ktest_late_waker_window(cpu, idx);
         }
-        // K-C12: the task no longer occupies a queue slot, so release the
+        // the task no longer occupies a queue slot, so release the
         // invariant — otherwise the re-enqueue at its new priority (the whole
         // point of this call) is refused as a duplicate and the task is lost.
         // Last, because the store hands the node to whichever hart claims the
@@ -3906,7 +3906,7 @@ pub(crate) fn chaos_spurious_ipi() {
 }
 
 
-/// U02-3: timer sleepers in an indexed min-heap (`crate::timer_heap`) instead
+/// timer sleepers in an indexed min-heap (`crate::timer_heap`) instead
 /// of being found by sweeping every slot on every tick.
 ///
 /// * **Arm**: `block_current`, after its commit CAS leaves the task `Blocked`
@@ -3955,7 +3955,7 @@ unsafe fn task_ref(idx: usize) -> &'static Task {
     &TASKS[idx]
 }
 
-// ── Preemption control (K-C29) ───────────────────────────────────────────────
+// ── Preemption control ───────────────────────────────────────────────
 //
 // The mechanism lives in `azos_sync::preempt` — per-hart depth, per-hart
 // need-resched, RAII guard, `sstatus.SIE`-gated deferred fire. This module

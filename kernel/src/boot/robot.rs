@@ -59,7 +59,7 @@ pub(crate) fn install_robot_payload_and_sensors() {
     azos_drv_actuator::motor_pid::motor_pid_init();
 
     // Phase H: additional drivers
-    // U05-1/U05-2: `spi_init`/`usb_init` deleted here — no board
+    // `spi_init`/`usb_init` deleted here — no board
     // maps `SPI0_BASE`/`USB0_BASE` in its MMIO list and both register models
     // are unverified (see `platform.rs`'s VF2 checklist); re-add the day a
     // board's `boot_hooks.rs` maps them.

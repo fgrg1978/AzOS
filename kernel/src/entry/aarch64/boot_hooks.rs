@@ -571,7 +571,7 @@ pub fn firmware_done(_dtb_ptr: usize, _num_cpus: usize) {}
 pub fn mmu_enabled() {
     kprintln!("[MM] Kernel page tables active (TTBR1_EL1 switched)");
 
-    // U01-1: publish the REAL kernel table's PA for every secondary's
+    // publish the REAL kernel table's PA for every secondary's
     // TTBR1_EL1 attach (`crate::entry::aarch64::aarch64_secondary_ttbr1_attach`)
     // — safe to read `vmm::kernel_pagetable()` (it takes a `Mutex`) HERE
     // because this PE's own MMU has been on since `aarch64_early_mmu_init`
@@ -582,7 +582,7 @@ pub fn mmu_enabled() {
     crate::entry::aarch64::SECONDARY_TTBR1_PA.store(
         azos_mm::vmm::kernel_pagetable(), Ordering::Release);
 
-    // U01-2: `SECONDARY_TTBR0_PA`/`AARCH64_KERNEL_TTBR0` are deliberately
+    // `SECONDARY_TTBR0_PA`/`AARCH64_KERNEL_TTBR0` are deliberately
     // NOT published here. At this point `TTBR0_EL1` on THIS hart is still
     // `azos_mm::vmm::kernel_pagetable()` — the SAME table just installed
     // above into `TTBR1_EL1` — because `install_device_only_ttbr0()` (a few
@@ -608,7 +608,7 @@ pub fn restrict_low_half() {
         Ok(pages) => {
             kprintln!(
                 "[MM] Low half is device-only: {} MMIO pages in TTBR0, RAM unreachable by PA", pages);
-            // U01-1/U01-2: publish the device-only root NOW, not the full
+            // publish the device-only root NOW, not the full
             // kernel table published-then-abandoned above — this is the
             // value every secondary's own TTBR0_EL1 attaches
             // (`aarch64_secondary_mmu_init`) and the value context_switch.S

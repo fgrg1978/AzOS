@@ -211,7 +211,7 @@ fn translation_readbacks() {
             tables, tables * g.page_size() / 1024);
     }
 
-    // ── M41 (coordinator / U10-7, audit): TCR_EL1.IPS/AS readback ────
+    // ── M41: TCR_EL1.IPS/AS readback ────
     //
     // MARKER, per-boot proof that `tcr_value_for_this_cpu` actually
     // landed what it computed, not just that the constant looks right

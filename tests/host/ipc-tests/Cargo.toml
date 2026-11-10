@@ -33,7 +33,7 @@ wcet-macro = { path = "../../../crates/core/wcet-macro" }
 azos_sync = { path = "shims/sync", package = "ipc_test_sync" }
 azos_sched = { path = "shims/sched", package = "ipc_test_sched" }
 azos_mm = { path = "shims/mm", package = "ipc_test_mm" }
-# `irq_bind.rs`'s `irq_grant_cap` (U03-2) needs `plic::MAX_IRQS`.
+# `irq_bind.rs`'s `irq_grant_cap` needs `plic::MAX_IRQS`.
 ipc_test_drivers = { path = "shims/drivers" }
 # `memobj.rs` zeroes its pages
 # with `azos_arch::mmu::PAGE_SIZE`.

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-/// vDSO — Virtual Dynamic Shared Object (M01).
+/// vDSO — Virtual Dynamic Shared Object.
 ///
 /// A single read-only physical page is shared into every user process at a
 /// fixed virtual address (VDSO_USER_BASE).  The kernel writes monotonic timing
@@ -715,7 +715,7 @@ pub struct TaskPageClaim {
 /// found running. `None` if `idx` is out of range or no frame is free.
 ///
 /// Called only by the owner's own syscall. The publisher on the same hart may
-/// interrupt it (O3.1); it then sees either the old owner (skips) or `tid`
+/// interrupt it; it then sees either the old owner (skips) or `tid`
 /// with the page already initialised.
 pub fn task_page_claim(idx: usize, tid: u32) -> Option<TaskPageClaim> {
     let slot = TASK_PAGES.get(idx)?;

@@ -192,7 +192,7 @@ fn image_params() -> elf_bounds::ImageParams {
 
 /// Loader output: everything `exec_user` needs to install the new address
 /// space on the current task. Internal to the loader — the hand-off to the
-/// consumption sites travels on the task's own `exec_*` fields (K-C21) and
+/// consumption sites travels on the task's own `exec_*` fields and
 /// comes back out as an [`ExecHandoff`].
 pub struct ExecContext {
     pub satp:    u64, // new user SATP
@@ -263,7 +263,7 @@ pub struct ExecHandoff {
 // see their doc in `crates/core/sched/src/task.rs`) instead of a single shared
 // slot, via `scheduler::set_task_fork_ctx`/`take_current_task_fork_ctx`.
 //
-// K-C21: the exec hand-off (`PENDING_EXEC`, a global
+// the exec hand-off (`PENDING_EXEC`, a global
 // `SpinLock<Option<ExecContext>>` drained at the end of every U-mode ecall
 // on every hart) was the last survivor of that same class, and it raced the
 // same way: another hart finishing any syscall in the window SRET'd into
@@ -558,7 +558,7 @@ pub fn exec_commit(p: PreparedExec) -> i64 {
     0
 }
 
-/// K-C21/K-C22: consume the exec hand-off published by [`exec_user`] on the
+/// consume the exec hand-off published by [`exec_user`] on the
 /// CURRENT task, install the new address space, and destroy the old one.
 ///
 /// Every consumption site (the tail of the U-mode ecall arm in the kernel's
@@ -627,7 +627,7 @@ fn take_current_task_exec_ctx_slow() -> Option<ExecHandoff> {
     Some(ExecHandoff { entry, user_sp, sstatus, satp })
 }
 
-/// K-C22: tear down an address space that no hart can still be running on.
+/// tear down an address space that no hart can still be running on.
 ///
 /// This is the teardown for the *post-construction* lifetime (exec replaced
 /// it, or its task exited and the pool slot is being reused) — as opposed to
@@ -1257,7 +1257,7 @@ pub unsafe fn sret_to_user(entry: usize, user_sp: usize, satp: usize) -> ! {
         "csrw  satp, {satp}",       // switch page table
         "sfence.vma zero, zero",
         "mv    sp, {user_sp}",      // switch to user stack
-        // K-C18: zero EVERY general-purpose register, not just a0-a7.
+        // zero EVERY general-purpose register, not just a0-a7.
         //
         // **WHY the old version was a live kernel-pointer leak.** Only the
         // argument registers were cleared, so a fresh process entered its ELF
@@ -1347,7 +1347,7 @@ pub unsafe fn sret_to_user(_entry: usize, _user_sp: usize, _satp: usize) -> ! {
 }
 
 /// SRET into user mode restoring a forked child's **complete** register file
-/// (K-C11). Fork-only; a fresh `exec` still uses [`sret_to_user`].
+///. Fork-only; a fresh `exec` still uses [`sret_to_user`].
 ///
 /// `regs` is the parent's trap frame in `x0..x31` order. It must point at
 /// memory reachable *after* `satp` is switched — in practice the caller's
@@ -2657,7 +2657,7 @@ pub(crate) fn fork_child_entry(_arg: usize) {
             // here, before its first user instruction, by the normal exit.
             crate::scheduler::exit_if_forced();
             crate::prof::add(16, t_entry);
-            // K-C11: SRET into user mode restoring the parent's *whole*
+            // SRET into user mode restoring the parent's *whole*
             // register file, not just pc/sp. `regs` is a by-value copy living
             // on this function's kernel stack — see
             // `take_current_task_fork_ctx` for why it must not be a pointer

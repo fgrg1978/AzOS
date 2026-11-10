@@ -232,7 +232,7 @@ $(OUT_BUILD)/disk-envelope.img $(OUT_BUILD)/disk-brainlies.img \
 	@printf "$(CFG_EXTRA)" >> $@.tmp_config.ini
 	@printf "active_slot=a\nboot_count=0\nlast_good=a\nfw_version_a=0\nfw_version_b=0\n" \
 		> $@.tmp_bootmeta
-	# W2-B5 (U10-2): every image from this recipe ships CONFIG.SIG, signed with
+	# W2-B5: every image from this recipe ships CONFIG.SIG, signed with
 	# the same dev/test key `crates/core/topology::TRUSTED_PUBKEY` embeds; without it
 	# the kernel takes cfg_load_verified's fail-closed branch (autorun refused).
 	# CONFIG.SIG v2 is bound to the device id in the image's reserved
@@ -760,7 +760,7 @@ $(OUT_BUILD)/disk-linkkey.img: $(OUT_BUILD)/disk.img $(LINK_KEY_TOOL)
 	cp $(OUT_BUILD)/disk.img $@
 	@dd if=/dev/urandom of=$@.tmp_linkkey bs=32 count=1 2>/dev/null
 	mcopy -i $@ $@.tmp_linkkey ::LINK.KEY
-	# U06-9: the KERNEL no longer reads /fat/LINK.KEY — it reads
+	# the KERNEL no longer reads /fat/LINK.KEY — it reads
 	# reserved tail sector 0 (`reserved_tail::LINK_KEY`, LBA =
 	# image sectors - TAIL_SECTORS), as a link-key record, which the USB MSC export
 	# cannot address. The FAT copy above stays for the PEER tools
@@ -784,11 +784,11 @@ $(OUT_BUILD)/disk-configtamper.img: $(OUT_BUILD)/disk.img
 	@rm -f $@.tmp_tamper.sig
 	@echo "[DISK] FAT32 image: $@ (CONFIG.SIG tampered — boots into fail-closed state)"
 
-# W2-A4 (V1.9): BRAINCLI autorun + the brain-link key. brain_client refuses
+# W2-A4: BRAINCLI autorun + the brain-link key. brain_client refuses
 # to start without one, and the peer (`fake_brain.py --link-key`) needs the same
 # bytes, so the key is also left at build/braincli_linkkey.bin.
 #
-# U06-9: the KERNEL no longer reads /fat/LINK.KEY, and neither
+# the KERNEL no longer reads /fat/LINK.KEY, and neither
 # does brain_client (`link_key_init` now goes through the kernel-hosted `linkkey` endpoint)
 # — see `build/disk-linkkey.img`'s own comment above for the mechanism this
 # mirrors (reserved tail sector 0, `reserved_tail::LINK_KEY`,

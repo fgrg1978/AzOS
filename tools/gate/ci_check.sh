@@ -91,7 +91,7 @@ fi
 export TOPOLOGY_PUBKEY_PATH="$REPO_ROOT/tools/keys/test_pub.bin"
 
 # The key every RELEASE image of this gate (vf2, fleet, embedded) embeds
-#: a BUILD_TYPE_RELEASE build refuses the TEST key,
+# a BUILD_TYPE_RELEASE build refuses the TEST key,
 # also when its path is given (crates/core/topology/build.rs compares the
 # bytes). A throwaway, non-test Ed25519 pair, kept under build/ (gitignored)
 # so the release kernels stay cached between runs and made once per worktree;
@@ -7700,7 +7700,7 @@ par "aarch64 exit notice order" exit_storm_row "aarch64 exit notice order"  arm
 #
 # Read back: refused, reaped = spawned > 0, drops (`EXIT_STAT_NOTICE_DROPS`) 0,
 # refusals (`EXIT_STAT_NOTICE_REFUSALS`) >= 1. Canary, by hand on both ISAs
-#: `exit_note::admits` answering true -> refused=no, spawned=512,
+# `exit_note::admits` answering true -> refused=no, spawned=512,
 # reaped < 512, drops > 0.
 zombie_row() { # <label> <isa: rv|arm>
     local label="$1" isa="$2"
@@ -17314,7 +17314,7 @@ PY
     # F6: the boot-time ones are runtime canaries, armed in the same boot.
     KTEST_BOOT_CANARIES="canary=wx-skip,nx-skip,ro-seal-skip"
     KTEST_CANARIED="mm_wx_image mm_nx_outside_image mm_ro_after_init_sealed percpu_areas_and_oor_refusal motor_commander_exit_stops_its_wheels a_dead_engines_drivetrain_command_is_stopped_and_the_loop_runs ram_fs_bound_refuses"
-    # Both ISAs (N2b): `wx-skip` leaves the kernel text writable, so
+    # Both ISAs: `wx-skip` leaves the kernel text writable, so
     # the one text-write path (`text_poke`, W^X kept) refuses NotRx and the
     # SpinWait probe sites stay linked to their fallback
     # (`spin_sites_patched`; rv64 Zawrs/Zihintpause, `-cpu max` LSE).
@@ -18125,7 +18125,7 @@ CPU 5 lacks hwcap bits"
     # rcu_idle_cpu_is_quiescent), `lockdep-rcu-sleep` (a wait's entry inside
     # a read section: lockdep_no_sleep_in_rcu_read).
     KTEST_RCU_CANARIES="canary=rcu-free-no-grace,rcu-idle-qs-skip,lockdep-rcu-sleep"
-    # N5: the same rcu-free-no-grace hands a destroyed endpoint's slot back
+    # the same rcu-free-no-grace hands a destroyed endpoint's slot back
     # at once (ipc_endpoint_slot_reused_after_grace).
     KTEST_RCU_CANARIED="rcu_free_waits_for_the_reader rcu_idle_cpu_is_quiescent lockdep_no_sleep_in_rcu_read ipc_endpoint_slot_reused_after_grace"
     par "ktest rcu canaries (rv)" ktest_row "ktest rcu canaries (rv)" rv "" "$KTEST_RCU_CANARIED" "$KTEST_RCU_CANARIES"
@@ -19946,7 +19946,7 @@ CPU 5 lacks hwcap bits"
     # reads the irq-budget record).
     par "ktest exit status canary (x86)" ktest_status_canary_row x86_ktest_row "ktest exit status canary (x86)" "" \
         "$KTEST_STATUS_CANARIED" "$KTEST_STATUS_CANARIES"
-    # N4: see `ktest rcu canaries (rv)`.
+    # see `ktest rcu canaries (rv)`.
     par "ktest rcu canaries (x86)" x86_ktest_row "ktest rcu canaries (x86)" "" \
         "$KTEST_RCU_CANARIED" "$KTEST_RCU_CANARIES"
     # C2-13: see `ktest rcu callbacks off the RT cpus (rv)`.
@@ -19966,13 +19966,13 @@ CPU 5 lacks hwcap bits"
     # Kconfig HUNG_DETECT: see `ktest hung canary (rv)`.
     par "ktest hung canary (x86)" x86_ktest_row "ktest hung canary (x86)" "" \
         "$KTEST_HUNG_CANARIED" "$KTEST_HUNG_CANARIES"
-    # N5: see `ktest ipc canary (rv)`.
+    # see `ktest ipc canary (rv)`.
     par "ktest ipc canary (x86)" x86_ktest_row "ktest ipc canary (x86)" "" \
         "$KTEST_IPC_CANARIED" "$KTEST_IPC_CANARIES"
-    # N9: see `ktest futex canary (rv)`.
+    # see `ktest futex canary (rv)`.
     par "ktest futex canary (x86)" x86_ktest_row "ktest futex canary (x86)" "" \
         "$KTEST_FUTEX_CANARIED" "$KTEST_FUTEX_CANARIES"
-    # N8: see `ktest kmutex canary (rv)`.
+    # see `ktest kmutex canary (rv)`.
     par "ktest kmutex canary (x86)" x86_ktest_row "ktest kmutex canary (x86)" "" \
         "$KTEST_KMUTEX_CANARIED" "$KTEST_KMUTEX_CANARIES"
     par "ktest wait-graph canary (x86)" x86_ktest_row "ktest wait-graph canary (x86)" "" \
@@ -24353,7 +24353,7 @@ PYEOF
     # and a live GDB-stub attach (`-s`, never `-S`: the CPU is not halted, the
     # read is a snapshot of a running system). Wall-clock, so NOT `-icount`.
     # The 9.3-9.6/s floor measured on 9dc76dd9 was hart 0's
-    # fixed 100 ms idle keepalive. Round 50 (owner) ties it to an armed
+    # fixed 100 ms idle keepalive. Round 50 ties it to an armed
     # watchdog; the verdict and the measured bands are `idle_wakes_verdict`'s.
     tickless_idle_wakeups_row() { # [wdt]: the simulated-watchdog build
         local mode="${1:-}" feats="qemu,bench-minimal"
