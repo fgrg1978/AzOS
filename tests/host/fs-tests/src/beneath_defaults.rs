@@ -111,3 +111,29 @@ fn a_backend_without_the_floor_serves_only_a_caller_rooted_at_or_above_the_mount
     assert!(open_beneath(b"/lnk", b"d/f"));
     assert!(open_beneath(b"/", b"lnk/d/f"));
 }
+
+/// **An op that changes the tree carries the caller's floor to a backend
+/// that follows links.** Beneath `/lnk/d`, the ops that reach the backend by
+/// name (mkdir, rmdir, rename) are `Denied` before it is asked, since a name
+/// carries no floor; the ops that reach it by key (unlink, truncate) ask for
+/// the key beneath the floor, which the defaults do not give. Rooted at the
+/// mount, each reaches the backend (its own answer: `Unsupported` from the
+/// defaults it keeps, `Io` from its `unlink`).
+///
+/// **Canary.** `mutate-floor-canary`: every op is rooted at the mount, and
+/// the refusals beneath `/lnk/d` become the backend's answers.
+#[test]
+fn a_change_by_name_through_a_backend_that_follows_links_is_refused_beneath_a_floor() {
+    let _g = serial();
+    mounted();
+    assert_eq!(vfs::vfs_mkdir_beneath(b"/lnk/d", b"/lnk/d/g"), Err(FsErr::Denied));
+    assert_eq!(vfs::vfs_rmdir_beneath(b"/lnk/d", b"/lnk/d/g"), Err(FsErr::Denied));
+    assert_eq!(vfs::vfs_rename_beneath(b"/lnk/d", b"/lnk/d/f", b"/lnk/d/g"), Err(FsErr::Denied));
+    assert_eq!(vfs::vfs_unlink_beneath(b"/lnk/d", b"/lnk/d/f"), Err(FsErr::Invalid));
+    assert_eq!(vfs::vfs_truncate_beneath(b"/lnk/d", b"/lnk/d/f", 0), Err(FsErr::Invalid));
+    assert_eq!(vfs::vfs_mkdir_beneath(b"/lnk", b"/lnk/d/g"), Err(FsErr::Unsupported));
+    assert_eq!(vfs::vfs_rmdir_beneath(b"/lnk", b"/lnk/d/g"), Err(FsErr::Unsupported));
+    assert_eq!(vfs::vfs_rename_beneath(b"/lnk", b"/lnk/d/f", b"/lnk/d/g"), Err(FsErr::Unsupported));
+    assert_eq!(vfs::vfs_unlink_beneath(b"/lnk", b"/lnk/d/f"), Err(FsErr::Io));
+    assert_eq!(vfs::vfs_truncate_beneath(b"/lnk", b"/lnk/d/f", 0), Err(FsErr::Unsupported));
+}

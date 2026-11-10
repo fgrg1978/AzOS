@@ -471,3 +471,29 @@ fn stat_listing_and_statfs_refuse_a_link_out_of_the_callers_directory() {
     assert_eq!(vfs::vfs_statfs_beneath(b"/ep/dir", b"/ep/dir/link").err(), Some(vfs::FsErr::Denied));
     assert!(vfs::vfs_statfs_beneath(b"/ep", b"/ep/dir/link").is_ok());
 }
+
+/// **An op that changes the tree beneath a directory is refused by the
+/// read-only mount before the server is asked anything**: an unlink, a
+/// truncate, a rename, a mkdir and an rmdir of the link that leaves the
+/// caller's directory answer `ReadOnly`, and no stat reaches the server
+/// (nothing is learnt about what the link names). Rooted at the mount the
+/// answer is the same: the floor is not what refuses, the volume is.
+///
+/// **Canary.** `mutate-floor-canary`: the stat before the refusal reaches the
+/// server through a key rooted at the mount, and the unlink answers for what
+/// the link names (`Io`, the server's own refusal, not `ReadOnly`).
+#[test]
+fn a_change_beneath_a_directory_is_refused_before_the_server_is_asked() {
+    let _g = serial();
+    mounted();
+    FLOORS.lock().unwrap().clear();
+    let before = link().0.lock().unwrap().calls;
+    assert_eq!(vfs::vfs_unlink_beneath(b"/ep/dir", b"/ep/dir/link"), Err(vfs::FsErr::ReadOnly));
+    assert_eq!(vfs::vfs_truncate_beneath(b"/ep/dir", b"/ep/dir/link", 0), Err(vfs::FsErr::ReadOnly));
+    assert_eq!(vfs::vfs_rename_beneath(b"/ep/dir", b"/ep/dir/link", b"/ep/dir/moved"), Err(vfs::FsErr::ReadOnly));
+    assert_eq!(vfs::vfs_mkdir_beneath(b"/ep/dir", b"/ep/dir/new"), Err(vfs::FsErr::ReadOnly));
+    assert_eq!(vfs::vfs_rmdir_beneath(b"/ep/dir", b"/ep/dir/link"), Err(vfs::FsErr::ReadOnly));
+    assert_eq!(vfs::vfs_unlink_beneath(b"/ep", b"/ep/dir/link"), Err(vfs::FsErr::ReadOnly));
+    assert_eq!(link().0.lock().unwrap().calls, before, "the server was asked about a change the volume refuses");
+    assert!(FLOORS.lock().unwrap().is_empty(), "a stat reached the server: {:?}", FLOORS.lock().unwrap());
+}

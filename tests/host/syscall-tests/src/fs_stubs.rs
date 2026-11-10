@@ -59,8 +59,8 @@ impl crate::file_ops::FileOps for Statter {
     fn write(&self, _: i32, _: &[u8]) -> i64 { unreachable!() }
     fn lseek(&self, _: i32, _: i64, _: i32) -> i64 { unreachable!() }
     fn dup(&self, _: i32) -> i64 { unreachable!() }
-    fn mkdir(&self, _: &[u8]) -> i64 { unreachable!() }
-    fn unlink(&self, _: &[u8]) -> i64 { unreachable!() }
+    fn mkdir(&self, _: &[u8], _: &[u8]) -> i64 { unreachable!() }
+    fn unlink(&self, _: &[u8], _: &[u8]) -> i64 { unreachable!() }
     fn readdir(&self, _: &[u8], _: u32) -> Option<([u8; azos_abi::syscall_nr::READDIR_NAME_BYTES], u32, bool)> { unreachable!() }
     fn release_all(&self, _: u32) -> usize { unreachable!() }
     fn read_whole(&self, _: &[u8], _: &mut [u8]) -> usize { unreachable!() }
@@ -127,20 +127,20 @@ impl crate::file_ops::FileOps for Round23 {
     fn write(&self, _: i32, _: &[u8]) -> i64 { unreachable!() }
     fn lseek(&self, _: i32, _: i64, _: i32) -> i64 { unreachable!() }
     fn dup(&self, _: i32) -> i64 { unreachable!() }
-    fn mkdir(&self, _: &[u8]) -> i64 { unreachable!() }
-    fn unlink(&self, _: &[u8]) -> i64 { unreachable!() }
+    fn mkdir(&self, _: &[u8], _: &[u8]) -> i64 { unreachable!() }
+    fn unlink(&self, _: &[u8], _: &[u8]) -> i64 { unreachable!() }
     fn readdir(&self, _: &[u8], _: u32) -> Option<([u8; azos_abi::syscall_nr::READDIR_NAME_BYTES], u32, bool)> { unreachable!() }
     fn release_all(&self, _: u32) -> usize { unreachable!() }
     fn read_whole(&self, _: &[u8], _: &mut [u8]) -> usize { unreachable!() }
-    fn rmdir(&self, path: &[u8]) -> i64 {
+    fn rmdir(&self, _: &[u8], path: &[u8]) -> i64 {
         note(format!("rmdir {}", String::from_utf8_lossy(path)));
         -39
     }
-    fn rename(&self, from: &[u8], to: &[u8]) -> i64 {
+    fn rename(&self, _: &[u8], from: &[u8], to: &[u8]) -> i64 {
         note(format!("rename {} -> {}", String::from_utf8_lossy(from), String::from_utf8_lossy(to)));
         -22
     }
-    fn truncate(&self, path: &[u8], len: u64) -> i64 {
+    fn truncate(&self, _: &[u8], path: &[u8], len: u64) -> i64 {
         note(format!("truncate {} {:#x}", String::from_utf8_lossy(path), len));
         -38
     }

@@ -48,14 +48,14 @@ impl crate::file_ops::FileOps for Tree {
     fn write(&self, _: i32, _: &[u8]) -> i64 { unreachable!() }
     fn lseek(&self, _: i32, _: i64, _: i32) -> i64 { unreachable!() }
     fn dup(&self, _: i32) -> i64 { unreachable!() }
-    fn mkdir(&self, p: &[u8]) -> i64 { note(format!("mkdir {}", s(p))); FS_ANSWER }
-    fn unlink(&self, p: &[u8]) -> i64 { note(format!("unlink {}", s(p))); FS_ANSWER }
+    fn mkdir(&self, r: &[u8], p: &[u8]) -> i64 { note(format!("mkdir {} {}", s(r), s(p))); FS_ANSWER }
+    fn unlink(&self, r: &[u8], p: &[u8]) -> i64 { note(format!("unlink {} {}", s(r), s(p))); FS_ANSWER }
     fn readdir(&self, _: &[u8], _: u32) -> Option<([u8; azos_abi::syscall_nr::READDIR_NAME_BYTES], u32, bool)> { unreachable!() }
     fn release_all(&self, _: u32) -> usize { unreachable!() }
     fn read_whole(&self, _: &[u8], _: &mut [u8]) -> usize { unreachable!() }
-    fn rmdir(&self, p: &[u8]) -> i64 { note(format!("rmdir {}", s(p))); FS_ANSWER }
-    fn rename(&self, a: &[u8], b: &[u8]) -> i64 { note(format!("rename {} {}", s(a), s(b))); FS_ANSWER }
-    fn truncate(&self, p: &[u8], _: u64) -> i64 { note(format!("truncate {}", s(p))); FS_ANSWER }
+    fn rmdir(&self, r: &[u8], p: &[u8]) -> i64 { note(format!("rmdir {} {}", s(r), s(p))); FS_ANSWER }
+    fn rename(&self, r: &[u8], a: &[u8], b: &[u8]) -> i64 { note(format!("rename {} {} {}", s(r), s(a), s(b))); FS_ANSWER }
+    fn truncate(&self, r: &[u8], p: &[u8], _: u64) -> i64 { note(format!("truncate {} {}", s(r), s(p))); FS_ANSWER }
     fn stat_beneath(&self, r: &[u8], p: &[u8]) -> Result<crate::file_ops::StatOut, i64> { note(format!("stat {} {}", s(r), s(p))); Err(FS_ANSWER) }
     fn readdir_beneath(&self, r: &[u8], p: &[u8], i: u32) -> Result<Option<([u8; azos_abi::syscall_nr::READDIR_NAME_BYTES], u32, bool)>, i64> {
         note(format!("readdir {} {} {i}", s(r), s(p)));
@@ -165,8 +165,8 @@ fn a_write_tree_admits_its_entries_and_nothing_outside() {
     assert_eq!(renameat(root, a, b), FS_ANSWER);
     assert_eq!(truncateat(root, b), FS_ANSWER);
     assert_eq!(calls(), vec![
-        "mkdir /fat/A.TXT", "unlink /fat/A.TXT", "rmdir /fat/A.TXT",
-        "rename /fat/A.TXT /fat/sub/B.TXT", "truncate /fat/sub/B.TXT",
+        "mkdir / /fat/A.TXT", "unlink / /fat/A.TXT", "rmdir / /fat/A.TXT",
+        "rename / /fat/A.TXT /fat/sub/B.TXT", "truncate / /fat/sub/B.TXT",
     ]);
     assert_eq!(seen(), vec![], "an admitted call was recorded");
 
@@ -181,7 +181,7 @@ fn a_write_tree_admits_its_entries_and_nothing_outside() {
     assert_eq!(renameat(root, x, y), eacces(), "one uncovered end refuses the rename");
     let (x, y) = paths(page, b"nomount/X", b"fat/A.TXT");
     assert_eq!(renameat(root, x, y), eacces());
-    assert_eq!(calls(), vec!["truncate /fat"]);
+    assert_eq!(calls(), vec!["truncate / /fat"]);
 }
 
 /// **The tree check and the filesystem see one spelling**: the name joined
@@ -207,7 +207,7 @@ fn a_tree_holder_reaches_the_filesystem_by_the_spelling_the_check_judged() {
     assert_eq!(renameat(root, a, b), FS_ANSWER);
     let (x, _) = paths(page, b"fat/../tmp/a", b"");
     assert_eq!(mkdirat(root, x), FS_ANSWER);
-    assert_eq!(calls(), vec!["mkdir /tmp/a", "unlink /tmp/a", "rename /tmp/a /tmp/b", "mkdir /tmp/a"]);
+    assert_eq!(calls(), vec!["mkdir / /tmp/a", "unlink / /tmp/a", "rename / /tmp/a /tmp/b", "mkdir / /tmp/a"]);
 
     let (x, _) = paths(page, b"tmp/../fat/a", b"");
     assert_eq!(mkdirat(root, x), eacces(), "a `..` does not carry the /tmp tree along");
@@ -245,7 +245,7 @@ fn a_name_cannot_climb_above_its_directory() {
 
     let (n, _) = paths(page, b"x/../y", b"");
     assert_eq!(mkdirat(d, n), FS_ANSWER);
-    assert_eq!(calls(), vec!["mkdir /tmp/a/y"]);
+    assert_eq!(calls(), vec!["mkdir /tmp/a /tmp/a/y"]);
 
     let r = dir(tid, "/fat", CapPerms::READ);
     let (n, _) = paths(page, b"A.TXT", b"");
@@ -286,7 +286,7 @@ fn a_write_trees_op_mask_holds_against_the_tree_ops() {
 
     dir(tid, "/tmp", CapPerms::RW);
     assert_eq!(unlinkat(root, a), FS_ANSWER, "an unmasked tree beside the masked one");
-    assert_eq!(calls(), vec!["unlink /tmp/A"]);
+    assert_eq!(calls(), vec!["unlink / /tmp/A"]);
 }
 
 /// **An entry to change is never `.` or `..`.** `unlinkat(d, ".")` would
@@ -319,7 +319,7 @@ fn a_dot_or_dot_dot_entry_is_refused_for_the_tree_ops() {
     assert_eq!(calls(), Vec::<String>::new(), "a dot entry reached the filesystem");
     let (n, _) = paths(page, b"x/../y", b"");
     assert_eq!(unlinkat(d, n), FS_ANSWER);
-    assert_eq!(calls(), vec!["unlink /tmp/a/y"]);
+    assert_eq!(calls(), vec!["unlink /tmp/a /tmp/a/y"]);
 }
 
 /// **A name longer than the copy is `-ENAMETOOLONG`, not a fault**: a page of
@@ -379,7 +379,7 @@ fn kernel_tasks_need_no_tree_capability() {
     let p = b"anywhere/X\0".as_ptr() as u64;
     assert_eq!(mkdirat(root, p), FS_ANSWER);
     assert_eq!(sys_truncateat(root, p, 1), FS_ANSWER);
-    assert_eq!(calls(), vec!["mkdir /anywhere/X", "truncate /anywhere/X"]);
+    assert_eq!(calls(), vec!["mkdir / /anywhere/X", "truncate / /anywhere/X"]);
     assert_eq!(seen(), vec![]);
 }
 
@@ -657,6 +657,32 @@ fn stat_listing_and_statfs_name_the_directory_they_are_rooted_at() {
     );
 }
 
+/// **The ops that change the tree tell the filesystem the directory they
+/// are rooted at**, as a stat does: through a directory on `/fat/x`, each
+/// of the five reaches the filesystem with `/fat/x` and the joined path, so
+/// a backend that follows links keeps the change (and the stat before it)
+/// beneath it.
+///
+/// **Canary.** `beneath-root-canary`: every op says `/`.
+#[test]
+fn the_ops_that_change_the_tree_name_the_directory_they_are_rooted_at() {
+    let _g = serial();
+    let _u = Uninstall;
+    let tid = 0x7A00_0109;
+    let page = ring3(tid);
+    let d = dir(tid, "/fat/x", CapPerms::RW);
+    let (a, b) = paths(page, b"f\0", b"g\0");
+    assert_eq!(mkdirat(d, a), FS_ANSWER);
+    assert_eq!(unlinkat(d, a), FS_ANSWER);
+    assert_eq!(rmdirat(d, a), FS_ANSWER);
+    assert_eq!(renameat(d, a, b), FS_ANSWER);
+    assert_eq!(truncateat(d, b), FS_ANSWER);
+    assert_eq!(calls(), vec![
+        "mkdir /fat/x /fat/x/f", "unlink /fat/x /fat/x/f", "rmdir /fat/x /fat/x/f",
+        "rename /fat/x /fat/x/f /fat/x/g", "truncate /fat/x /fat/x/g",
+    ]);
+}
+
 /// A filesystem that implements only the rootless `stat`, `readdir` and
 /// `statfs`: every `*_beneath` of it is the seam's default.
 struct Plain;
@@ -668,8 +694,8 @@ impl crate::file_ops::FileOps for Plain {
     fn write(&self, _: i32, _: &[u8]) -> i64 { unreachable!() }
     fn lseek(&self, _: i32, _: i64, _: i32) -> i64 { unreachable!() }
     fn dup(&self, _: i32) -> i64 { unreachable!() }
-    fn mkdir(&self, _: &[u8]) -> i64 { unreachable!() }
-    fn unlink(&self, _: &[u8]) -> i64 { unreachable!() }
+    fn mkdir(&self, _: &[u8], _: &[u8]) -> i64 { unreachable!() }
+    fn unlink(&self, _: &[u8], _: &[u8]) -> i64 { unreachable!() }
     fn readdir(&self, p: &[u8], i: u32) -> Option<([u8; azos_abi::syscall_nr::READDIR_NAME_BYTES], u32, bool)> {
         note(format!("readdir {} {i}", s(p)));
         None

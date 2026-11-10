@@ -146,8 +146,8 @@ impl crate::file_ops::FileOps for StampedDisk {
     fn write(&self, _: i32, _: &[u8]) -> i64 { -1 }
     fn lseek(&self, _: i32, _: i64, _: i32) -> i64 { -1 }
     fn dup(&self, _: i32) -> i64 { -1 }
-    fn mkdir(&self, _: &[u8]) -> i64 { -1 }
-    fn unlink(&self, _: &[u8]) -> i64 { -1 }
+    fn mkdir(&self, _: &[u8], _: &[u8]) -> i64 { -1 }
+    fn unlink(&self, _: &[u8], _: &[u8]) -> i64 { -1 }
     fn readdir(&self, _: &[u8], _: u32) -> Option<([u8; azos_abi::syscall_nr::READDIR_NAME_BYTES], u32, bool)> { None }
     fn release_all(&self, _: u32) -> usize { 0 }
     fn read_whole(&self, _: &[u8], dst: &mut [u8]) -> usize {

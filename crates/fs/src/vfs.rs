@@ -2511,11 +2511,40 @@ fn backend_or_not_found(path: &[u8]) -> Result<(&'static dyn FileSystem, &[u8]),
     }
 }
 
-/// Create a directory: the backend's `mkdir`.
+/// The checks every op that changes the tree makes before it stats or
+/// changes anything, for a caller rooted `floor` components below the
+/// mount: a volume that refuses every write is `ReadOnly` (before any stat,
+/// so a refused caller learns nothing about what is there); a backend that
+/// follows links (`FileSystem::follows_links`) is `Denied` beneath a floor
+/// when the op reaches it by name, which carries no floor. Gate canary
+/// `mutate-floor-canary` (never in a real build): neither check, and the
+/// keys below are rooted at the mount.
+fn mutate_checks(b: &'static dyn FileSystem, floor: usize, by_name: bool) -> Result<(), FsErr> {
+    if cfg!(feature = "mutate-floor-canary") { return Ok(()); }
+    if b.read_only() { return Err(FsErr::ReadOnly); }
+    if by_name && floor > 0 && b.follows_links() { return Err(FsErr::Denied); }
+    Ok(())
+}
+
+/// The key of `sub` for a caller rooted `floor` components below the
+/// mount, for the ops that change the tree; `Invalid` for a name the backend
+/// cannot give.
+fn mutate_key(b: &'static dyn FileSystem, sub: &[u8], floor: usize) -> Result<InodeKey, FsErr> {
+    let floor = if cfg!(feature = "mutate-floor-canary") { 0 } else { floor };
+    b.key_for_beneath(sub, floor).ok_or(FsErr::Invalid)
+}
+
+/// Create a directory: the backend's `mkdir`, for the kernel's own root.
 pub fn vfs_mkdir(path: &[u8]) -> Result<(), FsErr> {
+    vfs_mkdir_beneath(ROOT_DIR, path)
+}
+
+/// [`vfs_mkdir`] for a caller whose authority is the directory `root`.
+pub fn vfs_mkdir_beneath(root: &[u8], path: &[u8]) -> Result<(), FsErr> {
     let (b, sub) = backend_for_path(path).ok_or(FsErr::NotFound)?;
     // The mount point itself already exists.
     if sub.is_empty() { return Err(FsErr::Exists); }
+    mutate_checks(b, floor_in(root, path, sub), true)?;
     b.mkdir(sub)
 }
 
@@ -2525,44 +2554,63 @@ pub fn vfs_mkdir(path: &[u8]) -> Result<(), FsErr> {
 /// with its contents still listed). `Invalid` for a path no backend can name,
 /// a failed removal `Io`.
 pub fn vfs_unlink(path: &[u8]) -> Result<(), FsErr> {
-    let (b, sub) = backend_or_not_found(path)?;
-    let key = b.key_for(sub).ok_or(FsErr::Invalid)?;
-    swapfile_guard(b, &key)?;
-    match b.stat(&key) {
-        None => Err(FsErr::NotFound),
-        Some(st) if st.is_dir => Err(FsErr::IsDir),
-        Some(_) => {
-            delete_ok(b, DeleteOp::Unlink)?;
-            // Before and after: a write that raced the first drop would leave
-            // dirty pages whose write-back creates the file again.
-            forget_name(b, &key);
-            let r = b.unlink(&key).map_err(|()| FsErr::Io);
-            forget_name(b, &key);
-            r
-        }
-    }
+    vfs_unlink_beneath(ROOT_DIR, path)
 }
 
-/// Remove an empty directory.
-pub fn vfs_rmdir(path: &[u8]) -> Result<(), FsErr> {
+/// [`vfs_unlink`] for a caller whose authority is the directory `root`:
+/// the stat and the removal carry its floor, so a backend that follows
+/// links refuses (`Denied`) a link that leaves it before saying whether it
+/// is there.
+pub fn vfs_unlink_beneath(root: &[u8], path: &[u8]) -> Result<(), FsErr> {
     let (b, sub) = backend_or_not_found(path)?;
+    mutate_checks(b, floor_in(root, path, sub), false)?;
+    let key = mutate_key(b, sub, floor_in(root, path, sub))?;
+    swapfile_guard(b, &key)?;
+    let st = b.stat_checked(&key)?;
+    if st.is_dir { return Err(FsErr::IsDir); }
+    delete_ok(b, DeleteOp::Unlink)?;
+    // Before and after: a write that raced the first drop would leave
+    // dirty pages whose write-back creates the file again.
+    forget_name(b, &key);
+    let r = b.unlink(&key).map_err(|()| FsErr::Io);
+    forget_name(b, &key);
+    r
+}
+
+/// Remove an empty directory, for the kernel's own root.
+pub fn vfs_rmdir(path: &[u8]) -> Result<(), FsErr> {
+    vfs_rmdir_beneath(ROOT_DIR, path)
+}
+
+/// [`vfs_rmdir`] for a caller whose authority is the directory `root`.
+pub fn vfs_rmdir_beneath(root: &[u8], path: &[u8]) -> Result<(), FsErr> {
+    let (b, sub) = backend_or_not_found(path)?;
+    mutate_checks(b, floor_in(root, path, sub), true)?;
     swapfile_guard_path(b, sub, true)?;
     b.rmdir(sub)
 }
 
-/// Rename within one mounted filesystem. Across mounts: `Invalid` (no
-/// cross-device rename, as POSIX's `EXDEV`).
+/// Rename within one mounted filesystem, for the kernel's own root. Across
+/// mounts: `Invalid` (no cross-device rename, as POSIX's `EXDEV`).
 pub fn vfs_rename(from: &[u8], to: &[u8]) -> Result<(), FsErr> {
+    vfs_rename_beneath(ROOT_DIR, from, to)
+}
+
+/// [`vfs_rename`] for a caller whose authority is the directory `root`
+/// (both names beneath it).
+pub fn vfs_rename_beneath(root: &[u8], from: &[u8], to: &[u8]) -> Result<(), FsErr> {
     let (bf, sf) = backend_or_not_found(from)?;
     let (bt, st) = backend_or_not_found(to)?;
     if !core::ptr::addr_eq(bf as *const dyn FileSystem, bt as *const dyn FileSystem) {
         return Err(FsErr::Invalid);
     }
+    let (floor_f, floor_t) = (floor_in(root, from, sf), floor_in(root, to, st));
+    mutate_checks(bf, floor_f.max(floor_t), true)?;
     // The source's bytes reach the file before it moves; the pages cached
     // under either name are not the file's any more once it has.
     swapfile_guard_path(bf, sf, true)?;
     swapfile_guard_path(bf, st, false)?;
-    let keys = (bf.key_for(sf), bf.key_for(st));
+    let keys = (mutate_key(bf, sf, floor_f).ok(), mutate_key(bf, st, floor_t).ok());
     // A rename onto a name that already holds a file deletes that file.
     if let Some(kt) = &keys.1 {
         if DELETE_GATE.is_set() && keys.0.as_ref() != Some(kt) && bf.stat(kt).is_some() {
@@ -2615,6 +2663,8 @@ static REPLACE_LOCK: azos_sync::claim::Claim<()> = azos_sync::claim::Claim::new(
 /// On failure the old file is untouched and the temp is removed best effort.
 pub fn vfs_replace_file(path: &[u8], data: &[u8]) -> Result<(), FsErr> {
     let (b, sub) = backend_or_not_found(path)?;
+    // The kernel's own root: floor 0 is its authority.
+    mutate_checks(b, 0, false)?;
     let key = b.key_for(sub).ok_or(FsErr::Invalid)?;
     if let Some(st) = b.stat(&key) {
         if st.is_dir { return Err(FsErr::IsDir); }
@@ -2789,10 +2839,17 @@ pub fn vfs_swapfile_runs(len: u64, out: &mut [SectorRun]) -> Result<usize, FsErr
     b.swap_runs(&key, len, out)
 }
 
-/// Set the size of the file at `path` under a mount.
+/// Set the size of the file at `path` under a mount, for the kernel's own
+/// root.
 pub fn vfs_truncate(path: &[u8], len: u64) -> Result<(), FsErr> {
+    vfs_truncate_beneath(ROOT_DIR, path, len)
+}
+
+/// [`vfs_truncate`] for a caller whose authority is the directory `root`.
+pub fn vfs_truncate_beneath(root: &[u8], path: &[u8], len: u64) -> Result<(), FsErr> {
     let (b, sub) = backend_or_not_found(path)?;
-    let key = b.key_for(sub).ok_or(FsErr::Invalid)?;
+    mutate_checks(b, floor_in(root, path, sub), false)?;
+    let key = mutate_key(b, sub, floor_in(root, path, sub))?;
     swapfile_guard(b, &key)?;
     // Only a cut below the file's size takes data away.
     if DELETE_GATE.is_set() && b.stat(&key).is_some_and(|st| len < st.size) {

@@ -106,11 +106,14 @@ pub trait FileOps: Sync {
     /// Duplicate `fd` onto the lowest free descriptor.
     fn dup(&self, fd: i32) -> i64;
 
-    /// Create a directory at `path`.
-    fn mkdir(&self, path: &[u8]) -> i64;
+    /// Create a directory at `path`, for a caller whose authority is the
+    /// directory `root` (its `Cap<Dir>`; `/` for the kernel's own): every op
+    /// that changes the tree carries it, so a backend that follows links
+    /// keeps the change beneath it.
+    fn mkdir(&self, root: &[u8], path: &[u8]) -> i64;
 
-    /// Remove the entry at `path`.
-    fn unlink(&self, path: &[u8]) -> i64;
+    /// Remove the entry at `path`, as [`FileOps::mkdir`].
+    fn unlink(&self, root: &[u8], path: &[u8]) -> i64;
 
     /// Entry `index` of the directory at `path`, as
     /// `(name, size, is_dir)`. The name is NUL-padded to 64 bytes because
@@ -198,14 +201,16 @@ pub trait FileOps: Sync {
     // Each answers `0` or a negative errno; the default, `-1`, is what an
     // implementation that has no such operation answers, as above.
 
-    /// `NODE_UNLINKAT` with `UNLINK_DIR`: remove the empty directory at `path`.
-    fn rmdir(&self, _path: &[u8]) -> i64 { -1 }
+    /// `NODE_UNLINKAT` with `UNLINK_DIR`: remove the empty directory at `path`,
+    /// as [`FileOps::mkdir`].
+    fn rmdir(&self, _root: &[u8], _path: &[u8]) -> i64 { -1 }
 
-    /// `NODE_RENAMEAT`: rename `from` to `to`.
-    fn rename(&self, _from: &[u8], _to: &[u8]) -> i64 { -1 }
+    /// `NODE_RENAMEAT`: rename `from` to `to`, both beneath `root`.
+    fn rename(&self, _root: &[u8], _from: &[u8], _to: &[u8]) -> i64 { -1 }
 
-    /// `NODE_TRUNCATEAT`: set the size of the file at `path` to `len`.
-    fn truncate(&self, _path: &[u8], _len: u64) -> i64 { -1 }
+    /// `NODE_TRUNCATEAT`: set the size of the file at `path` to `len`, as
+    /// [`FileOps::mkdir`].
+    fn truncate(&self, _root: &[u8], _path: &[u8], _len: u64) -> i64 { -1 }
 
     /// `NODE_FSYNC`: make the writes through descriptor `fd` durable.
     /// The descriptor comes from the caller's own `Cap<File>`; the

@@ -2110,9 +2110,10 @@ fn name_beneath(
     name_in_root(dir_raw, op, name_ptr, entry, out, &mut root).map(|(n, _)| n)
 }
 
-/// The root a stat, listing or statfs tells the filesystem. Gate canary
-/// `beneath-root-canary` (never in a real build): the mount's own, so the
-/// filesystem is never told where the caller is rooted.
+/// The root a stat, listing, statfs or op that changes the tree tells the
+/// filesystem. Gate canary `beneath-root-canary` (never in a real build):
+/// the mount's own, so the filesystem is never told where the caller is
+/// rooted.
 fn caller_root(root: &[u8]) -> &[u8] {
     if cfg!(feature = "beneath-root-canary") { azos_common::path::ROOT_DIR } else { root }
 }
@@ -2152,17 +2153,19 @@ fn fs_or_nosys() -> Result<&'static dyn crate::file_ops::FileOps, i64> {
 
 /// A `*at` op that changes the tree: the name beneath the directory, the
 /// write authority over the result ([`fs_tree_gate`]: `strict` for an entry
-/// of a tree, as an open that changes the tree), then `f` on the joined path.
-fn mutate_at(dir_raw: u64, op: u16, name_ptr: u64, strict: bool, f: impl FnOnce(&dyn crate::file_ops::FileOps, &[u8]) -> i64) -> i64 {
+/// of a tree, as an open that changes the tree), then `f` on the directory's
+/// root ([`caller_root`]) and the joined path.
+fn mutate_at(dir_raw: u64, op: u16, name_ptr: u64, strict: bool, f: impl FnOnce(&dyn crate::file_ops::FileOps, &[u8], &[u8]) -> i64) -> i64 {
     let mut path = [0u8; azos_common::path::MAX_PATH];
-    let n = match name_beneath(dir_raw, op, name_ptr, true, &mut path) { Ok(n) => n, Err(e) => return e };
+    let mut root = [0u8; azos_ipc::file_cap::TREE_PATH_MAX];
+    let (n, root_len) = match name_in_root(dir_raw, op, name_ptr, true, &mut path, &mut root) { Ok(r) => r, Err(e) => return e };
     if let Err(e) = fs_tree_gate(&path[..n], strict, op) { return e; }
-    match fs_or_nosys() { Ok(o) => f(o, &path[..n]), Err(e) => e }
+    match fs_or_nosys() { Ok(o) => f(o, caller_root(&root[..root_len]), &path[..n]), Err(e) => e }
 }
 
 /// `NODE_MKDIRAT`: make the directory `name` beneath `dir`.
 pub fn sys_mkdirat(dir_raw: u64, name_ptr: u64) -> i64 {
-    mutate_at(dir_raw, azos_abi::invoke::NODE_MKDIRAT, name_ptr, true, |o, p| o.mkdir(p))
+    mutate_at(dir_raw, azos_abi::invoke::NODE_MKDIRAT, name_ptr, true, |o, r, p| o.mkdir(r, p))
 }
 
 /// `NODE_UNLINKAT`: remove the entry `name` beneath `dir`; with
@@ -2172,7 +2175,7 @@ pub fn sys_unlinkat(dir_raw: u64, name_ptr: u64, flags: u64) -> i64 {
     if flags & !UNLINK_DIR != 0 {
         return azos_abi::error::Errno::EINVAL.to_syscall_ret();
     }
-    mutate_at(dir_raw, NODE_UNLINKAT, name_ptr, true, |o, p| if flags & UNLINK_DIR != 0 { o.rmdir(p) } else { o.unlink(p) })
+    mutate_at(dir_raw, NODE_UNLINKAT, name_ptr, true, |o, r, p| if flags & UNLINK_DIR != 0 { o.rmdir(r, p) } else { o.unlink(r, p) })
 }
 
 /// `NODE_RENAMEAT`: rename `from` to `to`, both beneath `dir`, within one
@@ -2181,17 +2184,18 @@ pub fn sys_renameat(dir_raw: u64, from_ptr: u64, to_ptr: u64) -> i64 {
     use azos_abi::invoke::NODE_RENAMEAT;
     let mut from = [0u8; azos_common::path::MAX_PATH];
     let mut to = [0u8; azos_common::path::MAX_PATH];
-    let nf = match name_beneath(dir_raw, NODE_RENAMEAT, from_ptr, true, &mut from) { Ok(n) => n, Err(e) => return e };
+    let mut root = [0u8; azos_ipc::file_cap::TREE_PATH_MAX];
+    let (nf, root_len) = match name_in_root(dir_raw, NODE_RENAMEAT, from_ptr, true, &mut from, &mut root) { Ok(r) => r, Err(e) => return e };
     let nt = match name_beneath(dir_raw, NODE_RENAMEAT, to_ptr, true, &mut to) { Ok(n) => n, Err(e) => return e };
     if let Err(e) = fs_tree_gate(&from[..nf], true, NODE_RENAMEAT) { return e; }
     if let Err(e) = fs_tree_gate(&to[..nt], true, NODE_RENAMEAT) { return e; }
-    match fs_or_nosys() { Ok(o) => o.rename(&from[..nf], &to[..nt]), Err(e) => e }
+    match fs_or_nosys() { Ok(o) => o.rename(caller_root(&root[..root_len]), &from[..nf], &to[..nt]), Err(e) => e }
 }
 
 /// `NODE_TRUNCATEAT`: set the size of the file `name` beneath `dir` to
 /// `len`. The write authority covers the file itself (a tree's root counts).
 pub fn sys_truncateat(dir_raw: u64, name_ptr: u64, len: u64) -> i64 {
-    mutate_at(dir_raw, azos_abi::invoke::NODE_TRUNCATEAT, name_ptr, false, |o, p| o.truncate(p, len))
+    mutate_at(dir_raw, azos_abi::invoke::NODE_TRUNCATEAT, name_ptr, false, |o, r, p| o.truncate(r, p, len))
 }
 
 /// `NODE_READDIR`: entry `index` of the directory `name` beneath `dir`. The

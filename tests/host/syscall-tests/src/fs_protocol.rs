@@ -93,8 +93,8 @@ impl crate::file_ops::FileOps for Listing {
     fn write(&self, _: i32, _: &[u8]) -> i64 { unreachable!() }
     fn lseek(&self, _: i32, _: i64, _: i32) -> i64 { unreachable!() }
     fn dup(&self, _: i32) -> i64 { unreachable!() }
-    fn mkdir(&self, _: &[u8]) -> i64 { unreachable!() }
-    fn unlink(&self, _: &[u8]) -> i64 { unreachable!() }
+    fn mkdir(&self, _: &[u8], _: &[u8]) -> i64 { unreachable!() }
+    fn unlink(&self, _: &[u8], _: &[u8]) -> i64 { unreachable!() }
     // Lexical names: the root is nothing to this listing.
     fn readdir_beneath(&self, _: &[u8], path: &[u8], index: u32) -> Result<Option<([u8; azos_abi::syscall_nr::READDIR_NAME_BYTES], u32, bool)>, i64> {
         Ok(self.readdir(path, index))

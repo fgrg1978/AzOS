@@ -12410,6 +12410,9 @@ host_job host_canary_row "ext4: a link in the granted directory's path canary" e
 host_job host_canary_row "ext4: the handlers do not tell the root canary (syscall)" syscall-tests beneath-root-canary stat_listing_and_statfs_name_the_directory_they_are_rooted_at
 host_job host_canary_row "fs: a backend without the floor serves beneath it canary" fs-tests beneath-default-open-canary a_backend_without_the_floor_serves_only_a_caller_rooted_at_or_above_the_mount
 host_job host_canary_row "fs: a seam without the root serves beneath it canary (syscall)" syscall-tests beneath-default-open-canary a_seam_without_the_root_serves_only_a_caller_rooted_at_slash
+host_job host_canary_row "fs: a change beneath a directory asks the server first canary" fs-tests mutate-floor-canary a_change_beneath_a_directory_is_refused_before_the_server_is_asked
+host_job host_canary_row "fs: a change by name drops the floor canary" fs-tests mutate-floor-canary a_change_by_name_through_a_backend_that_follows_links_is_refused_beneath_a_floor
+host_job host_canary_row "fs: the tree ops do not tell the root canary (syscall)" syscall-tests beneath-root-canary the_ops_that_change_the_tree_name_the_directory_they_are_rooted_at
 host_job host_canary_row "ext4: an open's badge is its slot canary" ext4-tests badge-slot-canary a_badge_from_an_earlier_server_reaches_nothing
 host_job host_canary_row "ext4: a late block completion taken canary" ext4-tests stale-completion-canary a_late_completion_is_dropped
 host_job host_canary_row "ext4: the server's row holds one more partition canary" topology-tests ext4d-grant-canary ext4d_holds_its_partition_endpoint_and_region_and_nothing_else

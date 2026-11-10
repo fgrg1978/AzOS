@@ -68,11 +68,11 @@ impl crate::file_ops::FileOps for Recorder {
         LOG.lock().unwrap().push(Call::Dup { fd });
         11
     }
-    fn mkdir(&self, path: &[u8]) -> i64 {
+    fn mkdir(&self, _: &[u8], path: &[u8]) -> i64 {
         LOG.lock().unwrap().push(Call::Mkdir { path: path.to_vec() });
         0
     }
-    fn unlink(&self, path: &[u8]) -> i64 {
+    fn unlink(&self, _: &[u8], path: &[u8]) -> i64 {
         LOG.lock().unwrap().push(Call::Unlink { path: path.to_vec() });
         0
     }

@@ -752,11 +752,11 @@ pub(crate) fn install_ring3_seams() {
                 }
                 new_fd as i64
             }
-            fn mkdir(&self, path: &[u8]) -> i64 {
-                match azos_fs::vfs_mkdir(path) { Ok(()) => 0, Err(e) => fs_errno(e) }
+            fn mkdir(&self, root: &[u8], path: &[u8]) -> i64 {
+                match azos_fs::vfs::vfs_mkdir_beneath(root, path) { Ok(()) => 0, Err(e) => fs_errno(e) }
             }
-            fn unlink(&self, path: &[u8]) -> i64 {
-                match azos_fs::vfs_unlink(path) { Ok(()) => 0, Err(e) => fs_errno(e) }
+            fn unlink(&self, root: &[u8], path: &[u8]) -> i64 {
+                match azos_fs::vfs::vfs_unlink_beneath(root, path) { Ok(()) => 0, Err(e) => fs_errno(e) }
             }
             fn readdir(&self, path: &[u8], index: u32) -> Option<([u8; azos_abi::syscall_nr::READDIR_NAME_BYTES], u32, bool)> {
                 self.readdir_beneath(azos_fs::vfs::ROOT_DIR, path, index).ok()?
@@ -876,14 +876,14 @@ pub(crate) fn install_ring3_seams() {
             // Straight onto the VFS's P2 entry points; `fs_errno` is the one
             // `FsErr` -> errno table.
 
-            fn rmdir(&self, path: &[u8]) -> i64 {
-                match azos_fs::vfs_rmdir(path) { Ok(()) => 0, Err(e) => fs_errno(e) }
+            fn rmdir(&self, root: &[u8], path: &[u8]) -> i64 {
+                match azos_fs::vfs::vfs_rmdir_beneath(root, path) { Ok(()) => 0, Err(e) => fs_errno(e) }
             }
-            fn rename(&self, from: &[u8], to: &[u8]) -> i64 {
-                match azos_fs::vfs_rename(from, to) { Ok(()) => 0, Err(e) => fs_errno(e) }
+            fn rename(&self, root: &[u8], from: &[u8], to: &[u8]) -> i64 {
+                match azos_fs::vfs::vfs_rename_beneath(root, from, to) { Ok(()) => 0, Err(e) => fs_errno(e) }
             }
-            fn truncate(&self, path: &[u8], len: u64) -> i64 {
-                match azos_fs::vfs_truncate(path, len) { Ok(()) => 0, Err(e) => fs_errno(e) }
+            fn truncate(&self, root: &[u8], path: &[u8], len: u64) -> i64 {
+                match azos_fs::vfs::vfs_truncate_beneath(root, path, len) { Ok(()) => 0, Err(e) => fs_errno(e) }
             }
             fn fsync(&self, fd: i32) -> i64 {
                 let t = KERNEL_FD_TABLE.lock();

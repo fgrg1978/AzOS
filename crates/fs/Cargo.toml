@@ -30,6 +30,10 @@ endpoint-floor-canary = []
 # Host canary (fs-tests `beneath_defaults`): the `*_beneath` defaults of
 # `FileSystem` drop the floor for a backend that follows links.
 beneath-default-open-canary = []
+# Host canary (fs-tests `endpoint_fs`, `beneath_defaults`): the ops that change
+# the tree stat through a key rooted at the mount, before the read-only refusal,
+# and reach a backend that follows links by name from beneath a floor.
+mutate-floor-canary = []
 # Gate canary: a retired mount's inodes stay on its backend (`vfs_unmount`):
 # a descriptor opened on one USB stick reads the next stick's file of the
 # same name. The fs-tests `usb_volume` row must turn red. Never in a real build.
