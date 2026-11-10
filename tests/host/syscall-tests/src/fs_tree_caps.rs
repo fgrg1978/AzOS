@@ -736,3 +736,33 @@ fn a_seam_without_the_root_serves_only_a_caller_rooted_at_slash() {
     assert_eq!(sys_readdirat(root, b, 0, out, azos_abi::syscall_nr::READDIR_NAME_BYTES as u64), Ok(None));
     assert_eq!(calls(), vec!["stat /fat/x/f".to_string(), "statfs /fat/x/f".to_string(), "readdir /fat/x/f 0".to_string()]);
 }
+
+/// **The Linux personality stats and lists beneath the held tree that covers
+/// the path**, as it opens: a tree on `/fat` serves `/fat/F.TXT` and `/fat`
+/// itself (the root of a tree is stat'ed and listed, where an open of it is
+/// not) with `/fat` as the root the filesystem is told; a path no held tree
+/// covers is refused (`-EACCES`, recorded as a `File` denial) before the
+/// filesystem sees it, and a path with a `..` is malformed.
+///
+/// **Canary.** `linux-path-unfloored-canary`: no tree is asked, every path
+/// is rooted at `/`, and `/etc/passwd` reaches the filesystem.
+#[test]
+fn the_personality_stats_and_lists_beneath_the_covering_tree() {
+    use azos_abi::invoke::{NODE_READDIR, NODE_STATAT};
+    let _g = serial();
+    let _u = Uninstall;
+    let tid = 0x7A00_010A;
+    let _ = ring3(tid);
+    dir(tid, "/fat", CapPerms::READ);
+    let root = super::KpathRoot::covering(b"/fat/F.TXT", NODE_STATAT).expect("the tree covers its entry");
+    assert_eq!(root.stat(b"/fat/F.TXT"), Err(FS_ANSWER));
+    let root = super::KpathRoot::covering(b"/fat", NODE_READDIR).expect("the tree covers its own root");
+    assert_eq!(root.readdir(b"/fat", 3), Err(FS_ANSWER));
+    assert_eq!(calls(), vec!["stat /fat /fat/F.TXT".to_string(), "readdir /fat /fat 3".to_string()]);
+    assert_eq!(seen(), vec![]);
+    assert_eq!(super::KpathRoot::covering(b"/etc/passwd", NODE_STATAT).err(), Some(eacces()));
+    assert_eq!(super::KpathRoot::covering(b"/fatx/F.TXT", NODE_READDIR).err(), Some(eacces()), "/fatx is not under /fat");
+    assert_eq!(seen(), vec![(FILE_CODE, 0, true); 2], "each refusal is recorded");
+    assert_eq!(super::KpathRoot::covering(b"/fat/../etc", NODE_STATAT).err(), Some(Errno::EINVAL.to_syscall_ret()));
+    assert_eq!(calls(), Vec::<String>::new(), "a refused path reached the filesystem");
+}

@@ -12413,6 +12413,7 @@ host_job host_canary_row "fs: a seam without the root serves beneath it canary (
 host_job host_canary_row "fs: a change beneath a directory asks the server first canary" fs-tests mutate-floor-canary a_change_beneath_a_directory_is_refused_before_the_server_is_asked
 host_job host_canary_row "fs: a change by name drops the floor canary" fs-tests mutate-floor-canary a_change_by_name_through_a_backend_that_follows_links_is_refused_beneath_a_floor
 host_job host_canary_row "fs: the tree ops do not tell the root canary (syscall)" syscall-tests beneath-root-canary the_ops_that_change_the_tree_name_the_directory_they_are_rooted_at
+host_job host_canary_row "linux: the personality's stat and listing ask no tree canary (syscall)" syscall-tests linux-path-unfloored-canary the_personality_stats_and_lists_beneath_the_covering_tree
 host_job host_canary_row "ext4: an open's badge is its slot canary" ext4-tests badge-slot-canary a_badge_from_an_earlier_server_reaches_nothing
 host_job host_canary_row "ext4: a late block completion taken canary" ext4-tests stale-completion-canary a_late_completion_is_dropped
 host_job host_canary_row "ext4: the server's row holds one more partition canary" topology-tests ext4d-grant-canary ext4d_holds_its_partition_endpoint_and_region_and_nothing_else

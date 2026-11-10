@@ -1630,6 +1630,72 @@ pub(crate) fn file_open_typed_kpath(path: &[u8], flags: u64) -> i64 {
     open_beneath(&root[..root_len], rel_below(path, skip), flags, perms)
 }
 
+/// The directory a path the Linux personality holds is stat'ed or listed
+/// beneath: the held tree `Cap<File>` with `READ` that covers the path (the
+/// tree's root itself counts, so a task holding `/fat` lists it), resolved
+/// for `op` as the open's is ([`file_open_typed_kpath`]). A path no held
+/// tree covers is refused (recorded) as the open is, so the personality's
+/// stat, opendir and getdents reach no path the task could not open, and
+/// the filesystem is told where the caller is rooted ([`caller_root`]).
+/// Ring 3 only.
+///
+/// Gate canary `linux-path-unfloored-canary` (never in a real build): no
+/// tree is asked and every path is rooted at `/`.
+#[cfg(feature = "linux-abi")]
+pub(crate) struct KpathRoot {
+    buf: [u8; azos_ipc::file_cap::TREE_PATH_MAX],
+    len: usize,
+}
+
+#[cfg(feature = "linux-abi")]
+impl KpathRoot {
+    pub(crate) fn covering(path: &[u8], op: u16) -> Result<Self, i64> {
+        use azos_abi::error::Errno;
+        let mut root = Self { buf: [0u8; azos_ipc::file_cap::TREE_PATH_MAX], len: 0 };
+        if cfg!(feature = "linux-path-unfloored-canary") {
+            root.buf[..1].copy_from_slice(azos_common::path::ROOT_DIR);
+            root.len = 1;
+            return Ok(root);
+        }
+        if azos_sched::current_user_pt() == 0 {
+            return Err(-1);
+        }
+        if !azos_ipc::file_cap::path_is_plain(path) {
+            return Err(Errno::EINVAL.to_syscall_ret());
+        }
+        let len = match held_tree_for(path, false, azos_abi::cap::CapPerms::READ, op) {
+            Some(Ok(res)) => azos_ipc::file_cap::tree_path(res, &mut root.buf),
+            Some(Err(e)) => return Err(errno_for_file_err(e)),
+            None => None,
+        };
+        match len {
+            Some(len) => {
+                root.len = len;
+                Ok(root)
+            }
+            None => {
+                record_cap_denial(ty::FILE, 0, true);
+                Err(Errno::EACCES.to_syscall_ret())
+            }
+        }
+    }
+
+    fn root(&self) -> &[u8] {
+        caller_root(&self.buf[..self.len])
+    }
+
+    /// The record of `path` beneath the root (`NODE_STATAT`'s seam).
+    pub(crate) fn stat(&self, path: &[u8]) -> Result<crate::file_ops::StatOut, i64> {
+        fs_or_nosys()?.stat_beneath(self.root(), path)
+    }
+
+    /// Entry `index` of the directory `path` beneath the root
+    /// (`NODE_READDIR`'s seam).
+    pub(crate) fn readdir(&self, path: &[u8], index: u32) -> Result<Option<([u8; azos_abi::syscall_nr::READDIR_NAME_BYTES], u32, bool)>, i64> {
+        fs_or_nosys()?.readdir_beneath(self.root(), path, index)
+    }
+}
+
 /// `path` without its first `skip` components (and the slashes before the
 /// rest): the part of an absolute path that lies below a directory `skip`
 /// components deep.

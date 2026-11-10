@@ -387,16 +387,29 @@ fn resolve(dirfd: u64, path: &[u8], out: &mut [u8; PATH_MAX]) -> Result<usize, i
     lx::join_path(&base[..base_len], path, out).ok_or(neg(le::ENAMETOOLONG))
 }
 
+/// The record of `path` beneath the held tree that covers it
+/// (`KpathRoot`): what every stat of a path the personality holds is.
+fn stat_beneath_held(path: &[u8]) -> Result<crate::file_ops::StatOut, i64> {
+    crate::handlers::KpathRoot::covering(path, azos_abi::invoke::NODE_STATAT)?.stat(path)
+}
+
+/// Does `path` list beneath the held tree that covers it? A mount point the
+/// VFS cannot stat is a directory when it does.
+fn lists_beneath_held(path: &[u8]) -> bool {
+    crate::handlers::KpathRoot::covering(path, azos_abi::invoke::NODE_READDIR)
+        .and_then(|root| root.readdir(path, 0))
+        .is_ok_and(|entry| entry.is_some())
+}
+
 /// Is `path` a directory? `stat` first; a mount point the VFS cannot stat
 /// counts as one when it lists.
 fn is_dir(path: &[u8]) -> Result<bool, i64> {
-    let ops = file_ops().ok_or(neg(le::EIO))?;
     reach(k::SYS_INVOKE);
-    match ops.stat(path) {
+    match stat_beneath_held(path) {
         Ok(st) => Ok(st.mode & lx::mode::S_IFMT == lx::mode::S_IFDIR),
         Err(e) => {
             reach(k::SYS_INVOKE);
-            if ops.readdir(path, 0).is_some() {
+            if lists_beneath_held(path) {
                 Ok(true)
             } else {
                 Err(lx::errno_from_native(e, le::ENOENT))
@@ -1151,14 +1164,13 @@ fn stat_fd(e: FdEnt) -> Result<lx::Stat, i64> {
 }
 
 fn stat_path(path: &[u8]) -> Result<lx::Stat, i64> {
-    let ops = file_ops().ok_or(neg(le::EIO))?;
     reach(k::SYS_INVOKE);
-    let s = match ops.stat(path) {
+    let s = match stat_beneath_held(path) {
         Ok(s) => s,
         // A mount point the VFS cannot stat but can list is a directory.
         Err(e) => {
             reach(k::SYS_INVOKE);
-            if ops.readdir(path, 0).is_some() {
+            if lists_beneath_held(path) {
                 crate::file_ops::StatOut { mode: lx::mode::S_IFDIR | 0o755, nlink: 1, ..Default::default() }
             } else {
                 return Err(lx::errno_from_native(e, le::ENOENT));
@@ -1259,14 +1271,26 @@ fn sys_getdents64(fd: u64, buf: u64, count: u64) -> i64 {
         return neg(le::ENOTDIR);
     }
     let Some(d) = with_me(|p| p.dirs[e.dir as usize]) else { return neg(le::EBADF) };
-    let Some(ops) = file_ops() else { return neg(le::EIO) };
     reach(k::SYS_INVOKE);
+    let path = &d.path[..d.len as usize];
+    // The covering tree is asked on every call, as a native listing's
+    // directory is: one revoked since the opendir ends the listing.
+    let root = match crate::handlers::KpathRoot::covering(path, azos_abi::invoke::NODE_READDIR) {
+        Ok(r) => r,
+        Err(r) => return lx::errno_from_native(r, le::EIO),
+    };
     let mut out = [0u8; 2048];
     let cap = (count as usize).min(out.len());
     let mut used = 0usize;
     let mut idx = d.next;
-    let path = &d.path[..d.len as usize];
-    while let Some((name, _size, is_dir)) = ops.readdir(path, idx) {
+    loop {
+        let (name, _size, is_dir) = match root.readdir(path, idx) {
+            Ok(Some(entry)) => entry,
+            Ok(None) => break,
+            // What was encoded is answered; the refusal is the next call's.
+            Err(_) if used > 0 => break,
+            Err(r) => return lx::errno_from_native(r, le::EIO),
+        };
         let nlen = name.iter().position(|&b| b == 0).unwrap_or(name.len());
         let ino = (idx as u64) + 2;
         let dt = if is_dir { lx::DT_DIR } else { lx::DT_REG };
@@ -1276,7 +1300,7 @@ fn sys_getdents64(fd: u64, buf: u64, count: u64) -> i64 {
         }
         idx += 1;
     }
-    if used == 0 && ops.readdir(path, idx).is_some() {
+    if used == 0 && matches!(root.readdir(path, idx), Ok(Some(_))) {
         // The next entry does not fit the caller's buffer at all.
         return neg(le::EINVAL);
     }

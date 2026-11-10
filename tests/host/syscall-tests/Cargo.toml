@@ -15,6 +15,9 @@ beneath-root-canary = []
 # Mirrors azos_syscall's: the `*_beneath` defaults of the pulled-in file_ops.rs
 # drop the root (`a_seam_without_the_root_serves_only_a_caller_rooted_at_slash` goes red).
 beneath-default-open-canary = []
+# Mirrors azos_syscall's: the personality's stat and listing in the pulled-in
+# handlers.rs ask no held tree (`the_personality_stats_and_lists_beneath_the_covering_tree` goes red).
+linux-path-unfloored-canary = []
 # The kernel's ring-3 IOMMU reuse rule broken to empty-only
 # (`behind_an_iommu_a_binding_ends_freed_and_the_device_binds_again` goes red).
 ring3-reuse-canary = ["azos_dma/ring3-reuse-canary"]

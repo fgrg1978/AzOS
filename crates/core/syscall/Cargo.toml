@@ -58,6 +58,9 @@ beneath-root-canary = []
 # Host canary (syscall-tests `fs_tree_caps`): the `*_beneath` defaults of `FileOps`
 # drop the root and serve a confined caller from `/`.
 beneath-default-open-canary = []
+# Host canary (syscall-tests `fs_tree_caps`): the Linux personality's stat and listing
+# ask no held tree and root every path at `/`.
+linux-path-unfloored-canary = []
 # Canaries of `devices.rs` (built by tests/host/syscall-tests): a controller
 # that is not registered is answered by the board's; the safety core's lines
 # are not kept from an acting Gpio op.
