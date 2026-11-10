@@ -437,6 +437,9 @@ def load_device_id(image: str = None) -> bytes:
     robot a release warrant names; 16 zero bytes for no image or no record,
     which only a development kernel without a record accepts."""
     if image:
+        sign = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../sign")
+        if sign not in sys.path:
+            sys.path.insert(0, sign)
         import device_provision
         rec = device_provision.read_record(image)
         if rec is not None:
