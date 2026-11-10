@@ -859,11 +859,12 @@ fn companion_peer() -> Option<V4Peer> {
 /// `WRITE`, which only the behaviour engine's row is seeded with? Asked
 /// without the containment step, as the endpoint's own server does.
 fn holds_companion_link_grant() -> bool {
-    azos_ipc::cap_store::with_table(azos_sched::current_task_tid(), |t| {
-        azos_ipc::endpoint::table_holds_host_badge_right_uncontained(
-            t, azos_devif::key::AUTHORITY, 0, azos_abi::cap::CapPerms::WRITE)
-    })
-    .unwrap_or(false)
+    azos_ipc::cap_store::with_table(azos_sched::current_task_tid(), |t| link_grant_in(t)).unwrap_or(false)
+}
+
+fn link_grant_in(t: &azos_ipc::cap::CapTable) -> bool {
+    azos_ipc::endpoint::table_holds_host_badge_right_uncontained(
+        t, azos_devif::key::AUTHORITY, 0, azos_abi::cap::CapPerms::WRITE)
 }
 
 /// The one write containment lets through the untyped socket calls: the
@@ -3154,11 +3155,13 @@ fn socket_fd_for(cap_raw: u64, need: azos_abi::cap::CapPerms, op: u16) -> Result
 
     let cap: Cap<Socket> = Cap::from_raw(CapHandle::from_raw(cap_raw as u32));
     let tid = azos_sched::current_task_tid();
-    // The three calls the companion-link exemption reaches resolve without
-    // the containment step: the untyped handler they end in decides it.
+    // The three calls the companion-link exemption reaches: for the holder of
+    // the link grant a containment refusal is retried without that step, and the
+    // untyped handler they end in decides it. Every other caller is refused here.
     let link_op = matches!(op, azos_abi::invoke::NODE_CONNECT | azos_abi::invoke::NODE_SEND | azos_abi::invoke::NODE_SENDTO);
-    let resolved = azos_ipc::cap_store::with_table(tid, |t| {
-        if link_op { t.get_op_uncontained(cap, need, op) } else { t.get_op(cap, need, op) }
+    let resolved = azos_ipc::cap_store::with_table(tid, |t| match t.get_op(cap, need, op) {
+        Err(azos_ipc::cap::CapError::Contained) if link_op && link_grant_in(t) => t.get_op_uncontained(cap, need, op),
+        r => r,
     });
     match resolved {
         Some(Ok(fd)) => Ok(fd as u64),
