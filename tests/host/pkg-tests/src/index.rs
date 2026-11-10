@@ -571,8 +571,8 @@ mod banks {
     /// **A sector that does not read is not damage.** Sectors 0 and 2 (one of each
     /// bank) do not read: no bank reads whole and the boot judges by nothing, but it
     /// writes nothing either, so the next boot that reads them has every mark. One
-    /// unreadable sector of the newest bank leaves the older copy to judge by, and
-    /// nothing is written over the newest one.
+    /// unreadable sector of the newest bank leaves the older copy in the table, which the
+    /// condition says is not to be trusted, and nothing is written over the newest one.
     ///
     /// Canary (by hand): `accept` writing past an unreadable sector turns this red (the
     /// rebuilt bank 0 replaces the newer marks).
@@ -585,7 +585,7 @@ mod banks {
             *t.unreadable.borrow_mut() = unread.clone();
             let s = load(&t);
             let c = s.condition();
-            assert!(c.unreadable, "{unread:?}");
+            assert!(c.unreadable && c.untrusted, "{unread:?}: a bank that may be newer did not read");
             assert_eq!(c.lost, unread.len() == 2, "{unread:?}: lost only when no bank reads");
             assert_eq!(s.accept(&A, Mark { serial: 7, digest: 7 }, &floors(&A, &[("p", "1.0")])), Err(MarkErr::Unreadable));
             assert_eq!(s.accept(&B, Mark { serial: 4, digest: 4 }, &[]), Err(MarkErr::Unreadable));

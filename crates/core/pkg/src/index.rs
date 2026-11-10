@@ -1021,9 +1021,12 @@ impl MarkTable {
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Condition {
     /// A sector could not be read (not the same as one that reads and is
-    /// invalid): the boot judges by what did read, and nothing is written
-    /// to the memory until a boot reads it all.
+    /// invalid): nothing is written to the memory until a boot reads it all.
     pub unreadable: bool,
+    /// A bank that did not read in full may hold newer marks than the table
+    /// the boot holds (it is not shown to be older, or no bank reads): the
+    /// table judges nothing, and no package passes its floor.
+    pub untrusted: bool,
     /// The bank that was written before and does not read whole, ignored
     /// while the other one stands.
     pub ignored: Option<usize>,
@@ -1095,11 +1098,13 @@ impl<T: Tail> MarkStore<T> {
             // `st`: this runs on the kernel's boot stack. Per bank: all zero,
             // how many sectors verify on their own, and whether it is whole.
             let (mut blank, mut valid, mut whole, mut newest) = ([true; 2], [0usize; 2], [false; 2], 0);
+            let (mut unread, mut seen_gen) = ([false; 2], [None::<u32>; 2]);
             let mut raw = [[0u8; SECTOR]; BANK_SECTORS_MAX];
             for b in 0..2 {
                 for (i, sec) in raw.iter_mut().enumerate().take(n) {
                     if !tail.read(b * n + i, sec) {
                         st.cond.unreadable = true;
+                        unread[b] = true;
                         *sec = [0xFF; SECTOR];
                     }
                 }
@@ -1107,6 +1112,7 @@ impl<T: Tail> MarkStore<T> {
                 for g in raw[..n].iter().filter_map(sector_gen) {
                     valid[b] += 1;
                     st.gen = st.gen.max(g);
+                    seen_gen[b] = seen_gen[b].max(Some(g));
                 }
                 if let Some((table, gen)) = MarkTable::decode_bank(&raw, n, quota) {
                     whole[b] = true;
@@ -1116,6 +1122,10 @@ impl<T: Tail> MarkStore<T> {
                     }
                 }
             }
+            // A bank with a sector that did not read is shown older than the
+            // table only by a sector of it that reads, with a lower generation.
+            st.cond.untrusted = !cfg!(feature = "pkg-unreadable-canary")
+                && (0..2).any(|b| unread[b] && !(st.bank.is_some() && seen_gen[b].is_some_and(|g| g < newest)));
             match st.bank {
                 Some(b) => {
                     st.gen = st.gen.max(newest);

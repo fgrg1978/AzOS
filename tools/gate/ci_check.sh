@@ -12818,6 +12818,8 @@ host_job host_canary_row "pkg: security floor canary" pkg-tests pkg-floor-canary
     apply::a_package_below_its_floor_is_marked_when_the_policy_enforces_floors
 host_job host_canary_row "pkg: index memory canary" pkg-tests pkg-mark-canary \
     apply::a_replayed_or_deleted_index_cannot_lift_a_floor
+host_job host_canary_row "pkg: unreadable marks canary" pkg-tests pkg-unreadable-canary \
+    apply::an_unreadable_newest_bank_holds_the_packages_instead_of_the_older_table_judging
 host_job host_canary_row "pkg: index marks bank canary" pkg-tests pkg-bank-canary \
     index::banks::no_cut_or_torn_sector_of_a_write_loses_a_mark_or_a_floor
 host_job host_canary_row "pkg: remembered floor canary" pkg-tests pkg-floor-forget-canary \

@@ -254,7 +254,9 @@ fn below_floor<D: BlockDev>(
         };
         cx.cache.push((signer, state));
     }
-    match cx.cache.iter().find(|(s, _)| *s == signer).map(|(_, f)| f) {
+    // A table that may be older than the memory's newest copy judges nothing:
+    // the package is held below its floor, whatever the floors it names.
+    let judged = match cx.cache.iter().find(|(s, _)| *s == signer).map(|(_, f)| f) {
         Some(SignerFloors::Known(b)) => index::verify(b, topo).ok().is_some_and(|ix| {
             assess(&Installed { name: v.meta.name, version: v.meta.version, signer_index: signer, id: v.id }, &ix).below_floor()
         }),
@@ -262,7 +264,8 @@ fn below_floor<D: BlockDev>(
             boot.marks.floor(&key, v.meta.name).is_some_and(|f| index::below_remembered(v.meta.version, f))
         }
         _ => false,
-    }
+    };
+    judged || boot.marks.condition().untrusted
 }
 
 /// A staged package as the supersede logic sees it: read from its head only.
@@ -920,7 +923,8 @@ pub fn apply<D: BlockDev>(
         let cond = boot.marks.condition();
         if cond.unreadable {
             sink.note(format_args!(
-                "[PKG] index marks: a sector of the device's memory of the repository indexes cannot be read; this boot judges by what reads and writes none"
+                "[PKG] index marks: a sector of the device's memory of the repository indexes cannot be read; this boot writes none{}",
+                if cond.untrusted { " and holds every package below its floor: the unread bank may be newer than the one that reads" } else { "" }
             ));
             sink.record(&receipt::index_event(0, 0, 0, index::MarkEvent::Unreadable, boot.now_ns));
         }

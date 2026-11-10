@@ -46,6 +46,9 @@ pkg-floor-forget-canary = []
 # A write of the marks goes over the bank that holds the newest copy instead of the
 # other one: a cut or a torn sector in it loses other signers' marks.
 pkg-bank-canary = []
+# A bank with a sector that did not read, possibly the newest, leaves the older
+# bank's table to judge the boot.
+pkg-unreadable-canary = []
 # The trial rule never rolls back: a package whose boots all failed stays applied.
 pkg-trial-canary = []
 

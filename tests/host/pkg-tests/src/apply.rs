@@ -1302,8 +1302,8 @@ fn a_failed_write_of_the_marks_is_on_record_and_no_store_is_not() {
 }
 
 /// A boot that cannot read a sector of the memory says so (event 4, and event 5 for
-/// the bank it ignores), judges by what reads and by the volume's index, and writes
-/// nothing: the newer index is remembered by the next boot that reads it all.
+/// the bank it ignores), judges by the volume's index with the package held below its
+/// floor, and writes nothing: the newer index is remembered by the next boot that reads it all.
 #[test]
 fn a_boot_that_cannot_read_the_marks_says_so_and_writes_none() {
     use azos_pkg::index::{mark_key, MarkEvent, Marks};
@@ -1342,6 +1342,46 @@ fn a_boot_that_cannot_read_the_marks_says_so_and_writes_none() {
     let marks = mem_marks_on(tail, 5);
     assert_eq!(boot_with(&mut v, marks).1, [(1, Verdict::Admit as u8, [1, 7, 0])]);
     assert_eq!(marks.mark(&key).map(|m| m.serial), Some(7));
+}
+
+/// **An unreadable newest bank does not let the older table judge the boot.**
+/// The volume holds an older signed index with a weaker floor than the one the
+/// newest bank remembers; with a sector of that bank unreadable, the older
+/// bank's mark would take it, and the package would pass. The boot holds the
+/// package below its floor instead (the exec check refuses it) and writes
+/// nothing; the next boot that reads the memory judges as before. A bank that
+/// is shown older (a sector of it reads, with a lower generation) does not
+/// hold anything.
+///
+/// **Canary** `pkg-unreadable-canary`: the older bank's table judges.
+#[test]
+fn an_unreadable_newest_bank_holds_the_packages_instead_of_the_older_table_judging() {
+    let d = signed_device();
+    let tail: &'static RamTail = Box::leak(Box::new(RamTail::new(4)));
+    let mut v = volume();
+    stage(&mut v, &acme());
+    for serial in [5, 6, 7] {
+        put_index(&mut v, &floor_index_at(serial, Some("1.3.0"), &author()));
+        apply(&mut v, &mut topo(d), &enforcing_with(mem_marks_on(tail, 5)), &mut Log::default());
+    }
+    // Bank generations: bank 0 holds serial 7, bank 1 serial 6.
+    let before = tail.sectors.borrow().clone();
+    // A replayed signed index, newer than the older bank's mark and with a floor the package meets.
+    put_index(&mut v, &floor_index_at(6, Some("1.1.0"), &author()));
+    let judged = |v: &mut Volume<MemDev>, marks: &'static MemMarks| {
+        let mut log = Log::default();
+        let a = apply(v, &mut topo(d), &enforcing_with(marks), &mut log);
+        (floors_of(&a), log.notes.iter().any(|n| n.contains("holds every package below its floor")))
+    };
+    tail.unreadable.borrow_mut().push(0);
+    assert_eq!(judged(&mut v, mem_marks_on(tail, 5)), (vec![("ACME.ELF".to_string(), true)], true), "the newest bank does not read");
+    assert_eq!(*tail.sectors.borrow(), before, "nothing written");
+    // The older bank's sector does not read: the newest bank is whole and judges.
+    tail.unreadable.borrow_mut().clear();
+    tail.unreadable.borrow_mut().push(2);
+    assert_eq!(judged(&mut v, mem_marks_on(tail, 5)), (vec![("ACME.ELF".to_string(), true)], false), "the newest reads: its mark refuses the replay");
+    tail.unreadable.borrow_mut().clear();
+    assert_eq!(judged(&mut v, mem_marks_on(tail, 5)).1, false);
 }
 
 /// The boot says the memory is lost, and how (event 2: 0 damaged, 1 erased on a
