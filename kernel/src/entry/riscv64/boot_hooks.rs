@@ -165,7 +165,7 @@ pub fn timer_probe(fw: &Firmware) {
 /// claims it, then verify on the real hart" shape as Sstc). Before
 /// `pmm::init`: `alloc_page`'s zero-fill consults it on its first call.
 /// Runtime gate canary `canary=zicboz-skip`: the DTB's Zicboz is ignored. Then the
-/// vDSO `hwcap` inputs (wave 13, published by `install_vdso`).
+/// vDSO `hwcap` inputs (published by `install_vdso`).
 #[inline(always)]
 pub fn cpu_features(fw: &Firmware) {
     let Some(info) = &fw.info else { return };
@@ -213,7 +213,7 @@ pub fn cpu_features(fw: &Firmware) {
     spin_select(info.isa_zacas, info.isa_zawrs, info.isa_zihintpause);
 }
 
-/// `SpinWait`'s extensions (wave 15, N2): cpu@0's claim, masked by Kconfig
+/// `SpinWait`'s extensions: cpu@0's claim, masked by Kconfig
 /// RV_ZACAS / RV_ZAWRS / RV_ZIHINTPAUSE, then Zacas and Zawrs executed once
 /// under a private trap vector (`azos_arch::spin::select`). The `probe`
 /// sites take the verdict at `boot_patch` (`boot/spin_patch.rs`). Canary
@@ -257,7 +257,7 @@ pub fn irq_trigger_controller() -> Option<azos_dtb::IrqController> {
     azos_drv_irqchip::irqchip::is_aia().then_some(azos_dtb::IrqController::AplicS)
 }
 
-/// The APLIC's trigger types, noted for `user_irq` (wave 9 IRQ4).
+/// The APLIC's trigger types, noted for `user_irq`.
 #[inline(always)]
 pub fn irq_triggers(found: Option<azos_dtb::IrqTriggers>) {
     match found {

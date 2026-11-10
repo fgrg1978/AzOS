@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The SCHED-RT rows (`sched-rt-smoke`, wave 11): the RT band budget and
+//! The SCHED-RT rows (`sched-rt-smoke`): the RT band budget and
 //! EDF + CBS on the Legacy scheduler, measured on hart 0 under `-smp 1
 //! -icount shift=0,sleep=off` (one nanosecond of virtual time per guest
 //! instruction, so every number here is an instruction count).
@@ -25,7 +25,7 @@
 //! * **cbs** — X (hard CBS, 1 ms per 10 ms) never stops running once it
 //!   starts; A2 (1.5/10 ms, deadline 3 ms) and C (2/20 ms, deadline 10 ms),
 //!   all three at level [`EDF_PRIO`], must keep their deadlines. (C sat two
-//!   levels lower until wave 15, when the dispatch still ran a level above
+//!   levels lower in the earlier dispatch, which still ran a level above
 //!   first and the cross-level admission check refused it there: X and A2
 //!   may carry 2.5 ms of budget into C's 10 ms.)
 //!   PASS: no miss, and X was throttled (its overrun counter grew). Canary
@@ -46,7 +46,7 @@
 //!   `rt-admit-canary` (no admission): the over-subscriptions are accepted.
 //! * **exempt** — during the `band` check the best-effort task also watches
 //!   rt-motor's heartbeat while the band is throttled. The safety loops are
-//!   exempt from the cap (owner decision), so rt-motor (1 ms period) must keep
+//!   exempt from the cap, so rt-motor (1 ms period) must keep
 //!   running: PASS when the heartbeat never stood still for more than
 //!   [`HB_STILL_MAX_US`] of the observer's own run time. Canary
 //!   `rt-exempt-canary` (no exemption): rt-motor is throttled with the band and
@@ -430,8 +430,8 @@ fn ctl_task(_: usize) {
         azos_sched::RT_TICK_PREEMPTS.load(Ordering::Relaxed));
 }
 
-/// A ring-3 row enters the band only with a reservation (owner decision,
-/// wave 11): `topo_sched::resolve` — what `SYS_SPAWN_EX` and the autorun loader
+/// A ring-3 row enters the band only with a reservation:
+/// `topo_sched::resolve` — what `SYS_SPAWN_EX` and the autorun loader
 /// apply — keeps `rt-edf-a`'s class priority 4 with its reservation, and
 /// raises `rt-r3-noprof` (same class and priority, no profile) to the floor.
 fn ring3_check() {

@@ -58,7 +58,7 @@ pub mod pmu;
 pub mod tlb;
 /// The GDT/TSS and the IDT: pure encoders and tables.
 pub mod trap;
-// SpinWait: PAUSE, LOCK CMPXCHG, WAITPKG UMONITOR/UMWAIT (wave 15, N2).
+// SpinWait: PAUSE, LOCK CMPXCHG, WAITPKG UMONITOR/UMWAIT.
 pub mod spin;
 // RDSEED / RDRAND: the entropy pool's CPU seed source.
 pub mod seed;
@@ -66,7 +66,7 @@ pub mod seed;
 #[cfg(all(feature = "lat-trace", target_arch = "x86_64"))]
 pub mod lat_hook;
 
-// The platform (front X4): boot information, ACPI, LAPIC/IOAPIC, the clock
+// The platform: boot information, ACPI, LAPIC/IOAPIC, the clock
 // and timer, AP start. x86_64 only, so the host stub still exports just the
 // contract; `firmware` and `irq::encode` are pure and host-tested through
 // `#[path]` (tests/host/x86-platform-tests).
@@ -100,7 +100,7 @@ pub use azos_arch_api::{
     ArchEntry, ArchPlatform, FirmwareMemory, Boot, Cpu, HartStartError, InterruptState, Interrupts, Mmu,
     MmuError, PagePerms, Vector, PAGE_SHIFT, PAGE_SIZE,
 };
-// Spin-wait and CAS (wave 15, N2): the trait and its ordering type.
+// Spin-wait and CAS: the trait and its ordering type.
 pub use azos_arch_api::{CasOrder, SpinWait};
 // The performance counters (`ARCH.cycles()`, `.instructions()`, `.event(sel)`).
 pub use azos_arch_api::Pmu;

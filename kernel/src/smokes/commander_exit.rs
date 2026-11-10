@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Wave 15 ktest (owner decision): a task that dies commanding a wheel leaves
+//! Ktest: a task that dies commanding a wheel leaves
 //! it at a SAFE STOP. A probe task drives wheel 0 at 30 % through the `Motor`
 //! interface's `speed` path (`motor_host::wheel_speed`: the effect gate, the
 //! motor layer, the commander note; the call and an io_ring `OP_CALL` both

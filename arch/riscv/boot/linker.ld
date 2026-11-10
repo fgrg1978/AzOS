@@ -69,7 +69,7 @@ SECTIONS
     .rodata : ALIGN(4K)
     {
         *(.rodata .rodata.*)
-        /* Wave 15 (TRACE): the static-key site table, {site, target, key,
+        /* The static-key site table, {site, target, key,
          * kind} per tracepoint (crates/core/trace/src/jump.rs). In .rodata:
          * read-only, never executable; KEEP, since nothing references an entry. */
         . = ALIGN(8);
@@ -108,8 +108,7 @@ SECTIONS
 
     /* Initialized data */
     _data_start = .;
-    /* Set-once function-pointer hooks and the x86 IDT (azos_common::hook,
-     * security audit 2026-10-17 finding D). First in the data range so the
+    /* Set-once function-pointer hooks and the x86 IDT (azos_common::hook). First in the data range so the
      * W^X pass maps it RW while the boot installs the hooks, and listed
      * BEFORE `.data` because that glob would otherwise take the input
      * section. Page-aligned at both ends: the boot seals it read-only

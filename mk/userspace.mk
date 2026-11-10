@@ -46,7 +46,7 @@ $(LXTEST_KO_X86_64): $(LXMOD_SRC)
 		-fno-asynchronous-unwind-tables $(LXMOD_CFLAGS) -c $< -o $@
 
 # The Linux modules, built by Linux's own Kbuild against the
-# pinned tree inside a pinned container (owner decision, round 49: podman on
+# pinned tree inside a pinned container (round 49: podman on
 # this Mac). `make lx-kbuild-image` builds the image (the one step that uses
 # the network: the base pull and apt) and records it in
 # tools/build/lx_kbuild/IMAGE; `make lx-kbuild` runs Kbuild for both ISAs with no
@@ -116,7 +116,7 @@ $(GPIO_DRV_ELF): $(GPIO_DRV_DIR)/src/main.rs $(GPIO_DRV_DIR)/Cargo.toml \
 # no default any more: it embeds the file TOPOLOGY_PUBKEY_PATH names, or, built
 # `--features dev-key`, the TEST key (tools/keys/test_pub.bin).
 #
-# TWO ML services, never one (wave 11 BOARDIMG): QEMU disks and the board
+# TWO ML services, never one: QEMU disks and the board
 # volume used to share `build/mlsrv.elf` and one image-hash table, so
 # `DEV_KEYS=1` shipped a test-key service to a board and a named key left the
 # QEMU disks' test-signed BEHAVIOR.MBL unverifiable.
@@ -222,7 +222,7 @@ $(MLSRV_ELF_BOARD): $(MLSRV_DEPS) $(BOARD_KEY_STAMP)
 # logic is a crate (crates/drivers/buzzer, crates/drivers/ina219) the
 # in-kernel placement compiles too, so its files are prerequisites of the
 # image, and the built ELF must carry that source's marker
-# (tools/lint/chip_source_check.py, wave 12): a host that stopped linking the
+# (tools/lint/chip_source_check.py): a host that stopped linking the
 # crate does not build.
 CHIP_SRC_COMMON := crates/drivers/chip_source.rs tools/lint/chip_source_check.py
 INA219_CHIP_SRC := $(wildcard crates/drivers/ina219/src/*.rs) crates/drivers/ina219/Cargo.toml \
@@ -441,7 +441,7 @@ $(LXRT_ELF): $(LXRT_SRC) $(LIBSYS_SRC) $(LXRT_FORCE)
 	cp $(LXRT_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-# Wave 12: one binary of the family-tools crate per image.
+# One binary of the family-tools crate per image.
 $(FLIGHT_ELF): $(FAMTOOLS_SRC) $(LIBSYS_SRC)
 	@mkdir -p $(OUT_BUILD)
 	cd $(FAMTOOLS_DIR) && export CARGO_TARGET_DIR="$(UTGT_RV64)" && $(USPACE_BUILD) $(RV_UFLAGS) --bin flight
@@ -536,13 +536,13 @@ $(CAPTEST_ELF): $(CAPTEST_DIR)/src/main.rs $(CAPTEST_DIR)/Cargo.toml \
 	cp $(CAPTEST_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-# Extra vsbench cargo features (wave 15: its canaries, e.g.
+# Extra vsbench cargo features (its canaries, e.g.
 # `VSBENCH_FEATURES=switch-peer-canary`; tools/bench/vsbench_compare.sh passes its
 # VSBENCH_BENCH_FEATURES here). The stamp holds the set the ELFs were built
 # with and changes only when the set does, so a canary ELF can never be
 # reused by a later default build.
 VSBENCH_FEATURES ?=
-# The disk copies of VSBENCH.ELF are STRIPPED (N0, wave 15): about 60 KiB
+# The disk copies of VSBENCH.ELF are STRIPPED: about 60 KiB
 # of the unstripped file was `.symtab`/`.strtab`, which no loader reads, and
 # the autorun loader stages every byte of the file. The loaded segments are
 # byte-identical; the symbols stay in the cargo target.
@@ -739,7 +739,7 @@ thirdparty-hashes:
 		BUSYBOX.ELF=$(BUSYBOX_ELF_AARCH64) LXTHR.ELF=$(LXTHR_ELF_AARCH64)
 	python3 userspace/image_hashes.py --const THIRDPARTY_SHA256 --skip-missing $(THIRDPARTY_HASHES_X86_64) BUSYBOX.ELF=$(BUSYBOX_ELF_X86_64)
 
-# ── Wave 13 (THREADS): LXTHR.ELF, pthreads under the Linux personality ──────
+# ── THREADS: LXTHR.ELF, pthreads under the Linux personality ──────
 # Our own C (userspace/tests/lxthreads/lxthreads.c, Apache-2.0 OR
 # GPL-2.0-only) linked statically with musl (MIT) by `zig cc`, both ISAs.
 # Built only by `make lxthreads`, which needs zig and fetches nothing; like
@@ -1611,7 +1611,7 @@ $(OTA_ELF_X86_64): $(FAMTOOLS_SRC) $(LIBSYS_SRC) $(X86_64_KCONFIG)
 	cd $(FAMTOOLS_DIR) && export CARGO_TARGET_DIR="$(UTGT_X86_64)" && $(USPACE_BUILD) $(X86_64_UFLAGS) --bin ota
 	cp $(UTGT_X86_64)/$(X86_64_UBUILT)/ota $@
 
-# vsbench (wave 15): stripped, as on the other two ISAs (the autorun cap).
+# vsbench: stripped, as on the other two ISAs (the autorun cap).
 # vsbench's ipc-roundtrip peer (spawned as /fat/VSSRV.ELF, endpoint.bench).
 $(VSSRV_ELF_X86_64): $(VSSRV_DIR)/src/main.rs $(VSSRV_DIR)/Cargo.toml \
                userspace/bench/vsbench/src/serve.rs userspace/bench/vsbench/src/ipc_proto.rs $(LIBSYS_SRC) $(SRV_SRC) $(X86_64_KCONFIG)

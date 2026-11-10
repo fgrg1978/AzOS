@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Disk completion by interrupt (wave 15): virtio-blk on every ISA, and the
+//! Disk completion by interrupt: virtio-blk on every ISA, and the
 //! SD/eMMC host (`wire_mmc_irq`) where the board or the QEMU row has one.
 //!
 //! The block driver (`azos_drv_virtio::virtio::blk`) found its device in a
@@ -211,7 +211,7 @@ pub(crate) fn wire_mmc_irq() {
 
 /// The line of the device's virtio-mmio slot: the same per-ISA mapping the
 /// NIC uses (`boot_hooks::virtio_mmio_line`), including its `None` on a
-/// board without a virtio-mmio window (VF2, K1), where the device stays polled.
+/// board without a virtio-mmio window (K1), where the device stays polled.
 #[cfg(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "x86_64"))]
 fn line_of(slot: usize, base: usize) -> Option<u32> {
     crate::boot_hooks::virtio_mmio_line(slot, base)

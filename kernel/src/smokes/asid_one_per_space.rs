@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! ktest `asid_one_per_space_across_rollover` (N12c, owner decision 10-10:
-//! one ASID per address space).
+//! ktest `asid_one_per_space_across_rollover` (one ASID per address space).
 //!
 //! A fresh frame stands for the root of a space no hart has installed. It
 //! takes an ASID ([`azos_sched::asid::new_root_word`]); the next allocation

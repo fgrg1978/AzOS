@@ -370,7 +370,7 @@ const ATTRIDX_SHIFT: u32 = 2;
 /// `mmu/setup.rs`, which is what actually boots; `mmu/setup.rs` itself is
 /// intentionally left alone.
 ///
-/// **Single source since 2026-09-21.** The swap above was possible because
+/// **Single source.** The swap above was possible because
 /// three places each held their own view of which index meant what: this
 /// file's two constants, `mmu/setup.rs`'s `MAIR_VALUE` bytes, and the literal
 /// `attr_idx(1)` / `attr_idx(0)` `mmu/setup.rs` builds the boot identity map
@@ -485,7 +485,7 @@ pub fn attr_bits_with(perms: PagePerms, write_dbm: u64) -> Result<u64, MmuError>
         // AP = 00 with UXN = 0 is the architectural "EL0 execute-only"
         // encoding (Linux's PAGE_EXECONLY; FEAT_EPAN exists because of it).
         // Without this bit EL0 could branch into and run kernel text (found
-        // wave 4: an O3.1 race returned to EL0 at a kernel address and the
+        // An O3.1 race returned to EL0 at a kernel address and the
         // CPU executed `msr SPSR_EL1` there, EC=0, instead of taking an
         // instruction abort). Linux's PROT_NORMAL carries PTE_UXN for the
         // same reason. `perms_from_attr_bits` reads a kernel leaf's exec

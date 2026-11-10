@@ -13,7 +13,7 @@
 //! What is still open is the routing, not the ports. Much of the tree reaches
 //! the ISA modules this facade re-exports (`cpu::`, `mmu::`, ...) directly
 //! instead of going through the `arch-api` traits: 1,011 `azos_arch::`
-//! references in 128 files outside the arch crates, measured 2026-10-13. Each
+//! references in 128 files outside the arch crates, measured. Each
 //! of those is a place that has to be checked by hand on every ISA. The
 //! cleanup is planned; the count may only go down.
 //!

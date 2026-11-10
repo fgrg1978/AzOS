@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The PI futex through the futex table (wave 15 N10w, Kconfig
+//! The PI futex through the futex table (Kconfig
 //! FUTEX_PI), every ISA.
 //!
 //! * `futex_pi_boosts_the_owner`: a fair task owns a PI word (`LOCK_PI` on a
@@ -8,7 +8,7 @@
 //!   effective attribute in the wait graph becomes the waiter's; after the
 //!   owner's `UNLOCK_PI` the owner is back at its base, the waiter returns
 //!   owning the word as `TID | FUTEX_WAITERS` (a handover always sets the
-//!   bit, owner 10-10), and its own `UNLOCK_PI` frees the word and the
+//!   bit), and its own `UNLOCK_PI` frees the word and the
 //!   `pi_state`. With either symbol n the test returns Ok at once.
 //!   Canary `canary=futex-pi-no-edge` (`pi_futex::block_commit` drops the
 //!   walk): the owner is never boosted, `not ok`.
@@ -187,7 +187,7 @@ azos_ktest::ktest_late! {
 // LOCK_PI. The graph's owner-exit hook (Linux `exit_pi_state_list`, owner
 // decision 10-10) makes the waiter the owner: its LOCK_PI returns 0 with
 // the word `TID | FUTEX_WAITERS` (no `FUTEX_OWNER_DIED`: the owner had no
-// robust entry for the word, owner decision 10-10 as Linux), and its
+// robust entry for the word, as on Linux), and its
 // UNLOCK_PI frees it. Ok at once with FUTEX_PI n. Canary
 // `canary=futex-pi-exit-silent`: the hook does nothing, the waiter's
 // LOCK_PI times out, `not ok`.
@@ -291,10 +291,10 @@ azos_ktest::ktest_late! {
 // while two RT tasks wait on a condition word as requeue-PI waiters bound
 // for it (Linux semantics, the condition variable of a PI mutex). A plain
 // FUTEX_WAKE or FUTEX_REQUEUE that would reach them answers EINVAL taking
-// neither (owner decision 10-10, as Linux), and a CMP_REQUEUE_PI with the
+// neither (as Linux), and a CMP_REQUEUE_PI with the
 // wrong cmpval answers EAGAIN. Then CMP_REQUEUE_PI (nr_requeue INT_MAX)
 // takes both (returns 2) and enqueues them on the PI word's graph object
-// by proxy (owner decision 10-10, Linux rt_mutex_start_proxy_lock): both
+// by proxy (Linux rt_mutex_start_proxy_lock): both
 // stay asleep, unwoken, and the fair owner runs boosted to their priority
 // at once. Its UNLOCK_PI hands the word to the top one, whose UNLOCK_PI
 // hands it to the other: each returns 0 seeing its own TID in the word,

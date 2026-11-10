@@ -223,8 +223,8 @@ fn percpu_self_check() {
         if n < azos_percpu::NR_CPUS {
             // Page-aligned: `attach_area` asserts `AREA_ALIGN`, and a bare
             // `[u8; _]` static is byte-aligned, so the canary panicked in that
-            // assert instead of reaching the self-check (gate, wave 15
-            // integration: the rv canary row timed out, the boot silent after
+            // assert instead of reaching the self-check (the rv canary row
+            // timed out, the boot silent after
             // the `[PERCPU] ... area(s)` line).
             #[repr(C, align(4096))]
             struct CanaryArea([u8; 4096 * 64]);

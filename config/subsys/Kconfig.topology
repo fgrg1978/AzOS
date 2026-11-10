@@ -3,7 +3,7 @@
 # config/subsys/Kconfig.topology — The signed topology: source, binding, sizing
 
 # ---------------------------------------------------------------------------
-# Signed capability topology (wave 15 TOPOSIGN)
+# Signed capability topology
 # ---------------------------------------------------------------------------
 
 choice
@@ -29,7 +29,7 @@ choice
       the real CPU count, the RT_BAND_CAP_PCT band, memory) BEFORE it is
       published, so a refused file never becomes the topology.
 
-      Defaults (owner decision, 2026-10-05): "signed required" on every
+      Defaults: "signed required" on every
       product board (BOARD_VF2, BOARD_K1, BOARD_GENERIC: the vf2, k1,
       embedded and fleet profiles), because under signed-or-built-in
       deleting the files from the (USB-exposed) volume boots the built-in
@@ -43,7 +43,7 @@ choice
       topologies.
 
       Cost, instructions at the topology install (QEMU virt, -icount
-      shift=0, -smp 1, the gate's 19-row topology, 2026-10-05),
+      shift=0, -smp 1, the gate's 19-row topology),
       riscv64 / aarch64:
         built-in only (BUILTIN)                        17,800 / 16,376
         no files on the volume (fallback + record)    126,400 / 116,141
@@ -59,7 +59,7 @@ choice
     config TOPOLOGY_SOURCE_BUILTIN
         bool "Built-in only (never read the volume)"
         help
-          The topology compiled into the image, as before wave 15. The
+          The topology compiled into the image. The
           files are not opened: no boot cost, no RAM for the buffers
           (they are still reserved), and no record.
 

@@ -79,7 +79,7 @@ pub(crate) fn ipc_census_task(_arg: usize) {
             }
             // Who is each hart actually running? Separates "ready tasks
             // starve behind a current that never yields" from "ready tasks
-            // lost by the queues" — the run-6 (2026-08-24) wedge shape.
+            // lost by the queues" — the run-6 wedge shape.
             let mut cur = [(0u32, 0u32, [0u8; 8]); azos_sched::MAX_CPUS];
             azos_sched::current_snapshot(&mut cur);
             for (cpu, e) in cur.iter().enumerate() {

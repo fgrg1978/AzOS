@@ -4,7 +4,7 @@
 
 use crate::*;
 
-/// Wave 7 (STOR): the FAT32 journal barriers under a power cut. Runs right
+/// The FAT32 journal barriers under a power cut. Runs right
 /// after mount — journal recovery has already run — and before anything
 /// else writes the disk:
 ///   1. check `BARRIER.DAT`: absent, or exactly the old or the new contents,
@@ -80,7 +80,7 @@ pub(crate) fn blk_discard_smoke() {
     }
 }
 
-/// Wave 7 (STOR): `mmc::mmc_flush` against QEMU's `sdhci-pci` + `sd-card`,
+/// `mmc::mmc_flush` against QEMU's `sdhci-pci` + `sd-card`,
 /// the only SDHCI-v3 host this tree can run `mmc.rs` on. Binds the driver
 /// to the function's BAR 0 and its INTx source, runs the SD init flow, then,
 /// polled (the scheduler does not run yet; `mmc_irq_smoke_task` repeats it

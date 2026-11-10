@@ -96,7 +96,7 @@ pub static AZOS_HART_SATP: [AtomicUsize; TLB_MAX_HARTS] =
 /// executed a context switch, so its slot is still 0 and matches no root.
 ///
 /// Why not `TLB_MAX_HARTS`: at `-smp 1` every shootdown scanned 8 slots to
-/// find nothing (~65 instructions a call, wave 8). Why not the scheduler's
+/// find nothing (~65 instructions a call). Why not the scheduler's
 /// `NUM_ONLINE_CPUS`: that is a prefix COUNT, and the harts this kernel runs
 /// on need not be a prefix — the VF2 enumerates its U74s as harts 1..4 and the
 /// boot hart can sit outside the online prefix — so a count would leave the

@@ -293,7 +293,7 @@ pub(crate) fn install_flight_recorder() {
 
     // ── The e-stop latch survives a reset ────────────────────────
     //
-    // Owner decision, 2026-09-13: the last `SAFETY_ESTOP` in the
+    // The last `SAFETY_ESTOP` in the
     // durable record decides whether this boot starts latched. The
     // decision is `replay_boot_latch`, a pure function the host
     // suite drives; this block is only the FAT32 half of its

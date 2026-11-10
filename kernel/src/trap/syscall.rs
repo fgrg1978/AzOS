@@ -6,7 +6,7 @@
 //! (`entry/<isa>/trap.rs`) that instantiates [`enter`] for its frame type; the
 //! frame decode is the [`Frame`] impl next to it. In order:
 //!
-//! 1. interrupts on (owner decision O3.1: Linux model; the trap return masks
+//! 1. interrupts on (Linux model; the trap return masks
 //!    them again before it touches `sepc` / `ELR` / `RCX`);
 //! 2. the filter verdict: seccomp is the first thing every call meets, as it
 //!    always was;

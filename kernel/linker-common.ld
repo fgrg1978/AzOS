@@ -8,7 +8,7 @@
  * that drifts silently: change one to grow the boot stack and the other four
  * still ship the old value. INCLUDEd, not copied.
  *
- * kernel_main peaks at 85 KiB of boot stack (measured 2026-09-15, QEMU,
+ * kernel_main peaks at 85 KiB of boot stack (measured, QEMU,
  * `--features qemu`, report printed at the end of kernel_main); 256K leaves
  * room for other feature sets and growth. `boot_stack_report` (kernel/src/boot/stacks.rs)
  * fails the gate if a build ever writes into the red zone.

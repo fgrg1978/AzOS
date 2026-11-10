@@ -167,7 +167,7 @@ pub(crate) fn early_main(boot_hw_id: usize, fw_table: usize) -> EarlyBoot {
     } else {
         None
     };
-    // Trigger types (edge/level) for ring-3 lines (wave 9 IRQ4), read now for
+    // Trigger types (edge/level) for ring-3 lines, read now for
     // the same reason, on every ISA.
     if cfg!(feature = "fw-device-tree") && fw_table != 0 {
         if let Some(ctl) = a.irq_trigger_controller() {
@@ -397,7 +397,7 @@ pub(crate) fn early_main(boot_hw_id: usize, fw_table: usize) -> EarlyBoot {
             // The other half of W^X: everything that is NOT the image.
             // `vmm::init` maps all of RAM executable because the kernel runs
             // out of it before `enable_paging`; the X comes off here, with
-            // paging live (owner decision, 2026-09-08). The sweep walks the
+            // paging live. The sweep walks the
             // kernel's own table, so its range is in kernel VAs: on aarch64 a
             // low VA and its upper-half alias resolve to the SAME entries, and
             // a sweep started at a physical address would strip X from the
@@ -546,9 +546,8 @@ pub(crate) fn early_main(boot_hw_id: usize, fw_table: usize) -> EarlyBoot {
     a.irqchip_init(hart_id, fw_table);
     a.irq_enable_early();
     a.console_irq(hart_id, fw_table);
-    // A line whose binding goes at task exit is masked and handed back (wave 9
-    // IRQ4; `irq_bind::irq_unbind_all`); an overrun masks an idle line and the
-    // replenishment unmasks it (L5; `irq_bind::irq_sc_throttle`, which the
+    // A line whose binding goes at task exit is masked and handed back (`irq_bind::irq_unbind_all`); an overrun masks an idle line and the
+    // replenishment unmasks it (`irq_bind::irq_sc_throttle`, which the
     // scheduler calls through its hook).
     // The same hooks in every image, ktest included: the L5 ktest drives a
     // line no controller has through `irq_bind`'s own test line.

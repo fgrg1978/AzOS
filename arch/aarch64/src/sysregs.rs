@@ -23,7 +23,7 @@ pub const DAIF_MASK_ALL: u64 = DAIF_D | DAIF_A | DAIF_I | DAIF_F;
 #[inline]
 pub fn read_daif() -> u64 {
     let v: u64;
-    // Not `nomem` (wave 15): every DAIF access is a compiler barrier, so no
+    // Not `nomem`: every DAIF access is a compiler barrier, so no
     // memory access moves across a mask change. `irq-nomem-canary` puts
     // `nomem` back for the gate's `irq order` canary rows.
     #[cfg(not(feature = "irq-nomem-canary"))]
@@ -43,7 +43,7 @@ pub fn read_daif() -> u64 {
 pub fn write_daif(val: u64) {
     // A compiler barrier (no `nomem`): with `nomem`, LLVM could move plain
     // loads and stores across the mask change, out of the window the caller
-    // masked interrupts for (found by wave 15 SLAB; `kheap.rs` had to fence).
+    // masked interrupts for (`kheap.rs` had to fence).
     #[cfg(not(feature = "irq-nomem-canary"))]
     unsafe {
         core::arch::asm!("msr DAIF, {0}", in(reg) val, options(nostack, preserves_flags));
@@ -461,7 +461,7 @@ pub fn read_tcr_el1() -> u64 {
 /// to attach each secondary to whichever of the two tables the primary has
 /// most recently published — see `kernel::entry::aarch64::
 /// aarch64_secondary_ttbr1_attach` and `SECONDARY_TTBR1_PA`'s own doc
-/// (U01-1, audit) for why a secondary needed a THIRD publish point rather
+/// (audit) for why a secondary needed a THIRD publish point rather
 /// than reusing the boot-alias one. The kernel DOES execute through this
 /// mapping from `enable_paging` onward — every kernel-mode fetch/access at
 /// a high VA on every PE resolves through whatever this register (or its
@@ -630,7 +630,7 @@ pub const fn el1_alignment_fault(esr: u64) -> bool {
     (esr >> 26) & 0x3F == ESR_EC_DATA_ABORT_CUR && esr & 0x3F == ESR_DFSC_ALIGNMENT
 }
 
-/// O3.2 (owner decision, PAN): RAII guard that clears `PSTATE.PAN` for its
+/// O3.2 (PAN): RAII guard that clears `PSTATE.PAN` for its
 /// lifetime, restoring it on drop. Construct this immediately before the
 /// ONE instruction that dereferences a validated user-space physical-page
 /// alias or (if ever added) a direct EL0 VA; anything outside its lifetime

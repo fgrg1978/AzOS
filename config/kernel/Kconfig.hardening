@@ -113,7 +113,7 @@ config USER_ALLOC_GUARD_PAGES
       allocations are mapped back to back.
 
 # MITIGATION_SPECTRE_V1_INDEX, INFER_MODEL_SIG_REQUIRED and CONSOLE_LOCKDOWN moved
-# to the Mitigations menu (config/axes/Kconfig.security), wave 11.
+# to the Mitigations menu (config/axes/Kconfig.security).
 
 # ---------------------------------------------------------------------------
 # Hardware control-flow integrity (plan item I4)

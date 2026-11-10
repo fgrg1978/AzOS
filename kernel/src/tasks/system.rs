@@ -35,7 +35,7 @@ fn idle_wait() {
     azos_sched::energy::idle_wait(azos_sched::smp::current_cpu_id(), |depth| azos_arch::ARCH.cpu_idle(depth));
 }
 
-/// Refresh the vDSO timing page as an idle hart wakes (wave 13, owner
+/// Refresh the vDSO timing page as an idle hart wakes (owner
 /// decision round 50). Every timer interrupt refreshes it, as before; this
 /// covers a wake by IPI or device interrupt, which used to rely on hart 0's
 /// fixed idle keepalive having refreshed it within 100 ms. Hart 0 now has no

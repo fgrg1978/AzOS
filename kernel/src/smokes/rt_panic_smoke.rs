@@ -18,7 +18,7 @@
 //!   panic takes the reset path and every hart halts: the observer prints
 //!   nothing more. The rows read the panic handler's own verdict line.
 //!
-//! `rt-panic-canary-safety` (wave 13): no culprit task — rt-motor itself, a
+//! `rt-panic-canary-safety`: no culprit task — rt-motor itself, a
 //! registered safety task, panics on its next tick, holding no lock. The
 //! policy never contains it: the reset path runs and sets the global panic
 //! latch. The observer masks its own interrupts first (so its tick cannot
@@ -107,7 +107,7 @@ fn culprit_task(_: usize) {
 
 /// `(heartbeat, flight ticks, elapsed ms)` over one window of at least
 /// [`WINDOW_MS`] from `start`. The elapsed time is measured, not assumed:
-/// the observer's own wake can be late (a host-descheduled vCPU — wave 13
+/// the observer's own wake can be late (a host-descheduled vCPU — a run
 /// saw "+767" and "+953" against ~320 for a nominal 500 ms), and judging
 /// counts against the nominal window read a late observer as a control loop
 /// that ran 2-3 times too fast, then "lost its period" after the panic.
@@ -147,7 +147,7 @@ fn observer_task(_: usize) {
     // after its CRASH.LOG append, which shares the UART and the hart with
     // whatever else prints then (gate 203/204: behavior's one-shot
     // `[BENCH-RES]` sweep landed there), and a window counted from the spawn
-    // closed before a stall at the end of that path (2026-10-06: a 300 ms
+    // closed before a stall at the end of that path (a 300 ms
     // interrupts-off stall before the exit read "still max 0 us" on riscv64).
     // A culprit never released ends the watch at CONTAIN_WAIT_MS and fails.
     let t_spawn = now();
@@ -196,7 +196,7 @@ fn observer_task(_: usize) {
     let panicked = azos_common::is_panicked();
     kprintln!("[RT7-SMOKE] isolations={} culprit tid={} gone={} global_panic={} \
                heartbeat still max {} us", isolations, tid, culprit_gone, panicked, still_us);
-    // Print only (wave 15, VW): did a remote wake take the deferred path?
+    // Print only (VW): did a remote wake take the deferred path?
     let (deferred, drained, stale) = azos_sched::scheduler::remote_wake_counts();
     kprintln!("[RT7-SMOKE] remote wakes deferred={} drained={} stale={} (defer={})",
         deferred, drained, stale, azos_limits::SCHED_REMOTE_WAKE_DEFER);

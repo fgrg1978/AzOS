@@ -89,7 +89,7 @@ config RCU_QSBR
       writer frees what it replaced only after every CPU has passed a
       quiescent state (a context switch, a return to user mode, idle).
       The capability-table reads (`cap_store::get`, SYS_CAP_INFO) run
-      this way. Owner decision Q2: QSBR only (no sleepable readers), and
+      this way. Readers are QSBR only (no sleepable readers), and
       callbacks never run on the RT CPUs (RCU_NOCBS_FROM_CLUSTER).
       Costs: 64 bytes per CPU (NR_CPUS), one kernel task (the callback
       task) and, on a kernel entry from user mode or from idle, one atomic
@@ -239,7 +239,7 @@ config FUTEX_REQUEUE
       Cost: no RAM; ~300 B of kernel text.
 
 # ---------------------------------------------------------------------------
-# Wait graph and its clients (wave 15 IF: N7 PI core, N8 kernel mutex,
+# Wait graph and its clients (N7 PI core, N8 kernel mutex,
 # N10 PI futex). Interfaces in crates/core/sync.
 #
 # The wait graph (crates/core/sync/src/waitgraph.rs) is always built in:
@@ -300,7 +300,7 @@ config FUTEX_PI_EXIT_RETRY_US
     default 200 if HWCLASS_EMBEDDED
     default 100
     help
-      crates/core/sched/src/futex.rs (N10c, owner decision 10-10, Linux
+      crates/core/sched/src/futex.rs (Linux
       handle_exit_race): a FUTEX_LOCK_PI/TRYLOCK_PI that finds the word's
       owner mid-exit never makes it the owner; it drops the futex table
       lock, sleeps this long so the exit hands the word over, and tries

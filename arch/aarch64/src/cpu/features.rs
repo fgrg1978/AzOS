@@ -104,7 +104,7 @@ const fn field(reg: u64, shift: u32) -> u64 {
 }
 
 /// What the three ID register values say. Pure, so the host tests can feed
-/// it hand-built values (wave 13: the hwcap bits come from here).
+/// it hand-built values (the hwcap bits come from here).
 pub const fn decode(isar0: u64, isar1: u64, pfr1: u64) -> Features {
     // ID_AA64ISAR0_EL1.Atomic [23:20] >= 2 ⇒ FEAT_LSE.
     let lse = field(isar0, 20) >= 2;
@@ -471,7 +471,7 @@ mod tests {
         assert!(!Features::NONE.meets_armv8_5_baseline());
     }
 
-    /// Wave 13 (vDSO hwcap): CRC32, AES/PMULL and SHA2 come from their own
+    /// CRC32, AES/PMULL and SHA2 come from their own
     /// ID_AA64ISAR0_EL1 nibbles and nothing else. Each field is set alone
     /// here, so a shift that reads a neighbour reports the wrong feature.
     #[test]

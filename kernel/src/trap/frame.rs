@@ -183,7 +183,7 @@ pub trait SyscallServices<F: Frame> {
 
     /// The `irq-in-syscall-probe` build's reserved number: its result.
     fn probe(num: u64) -> Option<u64>;
-    /// Syscalls run with interrupts on once the frame is saved (owner decision O3.1).
+    /// Syscalls run with interrupts on once the frame is saved.
     fn interrupts_on();
     fn census_enter();
     fn census_exit();

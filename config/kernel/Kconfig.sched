@@ -29,7 +29,7 @@ config SCHED_HZ_FLOOR
     default 10
     help
       Minimum scheduler tick rate CONFIG.INI is allowed to request at boot
-      (Q4.2, owner decision 2026-09-25: CONFIG.INI on the removable FAT
+      (Q4.2: CONFIG.INI on the removable FAT
       volume may only LOWER `SCHED_HZ` below the compile-time default it
       was built with, never raise it, and never below this floor). Must be
       kept equal to SCHED_HZ's own `range 10 1000` lower bound — below it
@@ -206,7 +206,7 @@ config QOS_SLACK_BACKGROUND_US
       Surfaces as `azos_limits::QOS_SLACK_BACKGROUND_US`.
 
 # ---------------------------------------------------------------------------
-# Wave-4 scheduler placement and sleeper options (U02-3). Each is a kernel
+# Scheduler placement and sleeper options (U02-3). Each is a kernel
 # cargo feature that forwards to azos_sched; all three are on in every
 # configuration, the way the kernel's old `default` list had them.
 # ---------------------------------------------------------------------------
@@ -231,7 +231,7 @@ config SCHED_IPC_AFFINITY
       is enabled (`IPC_FAST`). Off: the plain wake target.
 
 # ---------------------------------------------------------------------------
-# Dispatch classes and the scheduling context (N6, owner answers Q6-Q8)
+# Dispatch classes and the scheduling context (owner answers Q6-Q8)
 # ---------------------------------------------------------------------------
 config SCHED_CLASS_STOP
     def_bool y
@@ -706,7 +706,7 @@ config CONTROL_TXN_TICKS
       is conservative (excludes page faults + ecall).
 
 # ---------------------------------------------------------------------------
-# Real-time band budget (wave 11 SCHED-RT)
+# Real-time band budget
 # ---------------------------------------------------------------------------
 config RT_BAND_WINDOW_MS
     int "RT band budget: window (ms)"
@@ -738,12 +738,12 @@ config RT_BAND_CAP_PCT
       hart while a non-band task is ready there. 95 (default) guarantees 5 %
       to the non-band tasks, the share Linux's RT throttle and its 6.12
       fair_server default to. 100 disables the budget: a band task that
-      never blocks owns its hart (the behaviour before wave 11).
+      never blocks owns its hart.
 
       Admission uses the same cap: the EDF+CBS reservations of band tasks
       admitted on one hart may sum to at most this share of it.
 
-      Cost, measured (wave 11 SCHED-RT rows, -smp 1 -icount, instructions):
+      Cost, measured (SCHED-RT rows, -smp 1 -icount, instructions):
       one comparator write through the arming path 39 (riscv64, Sstc) /
       30 (aarch64, CNTV_CVAL); a call that finds the comparator already
       earlier, 11 / 12. Over the rows' 12 s run (rt-motor at 1 kHz on the
@@ -756,7 +756,7 @@ config RT_BAND_CAP_PCT
       Surfaces as `azos_limits::RT_BAND_CAP_PCT`.
 
 # The safety comms timeouts (now in seconds) and PID_DT_MS are in the Robot
-# menu (config/subsys/Kconfig.robot, "Safety layer and motor control"), wave 11.
+# menu (config/subsys/Kconfig.robot, "Safety layer and motor control").
 config SCHED_SWITCH_COUNTERS
     bool "Count each task's context switches (voluntary / preempted)"
     default n if HWCLASS_EMBEDDED

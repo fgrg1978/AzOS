@@ -96,13 +96,13 @@ SYSTEST_ELF   := $(OUT_BUILD)/syscall_test.elf
 GPIO_DRV_DIR  := userspace/drivers/gpio_drv
 GPIO_DRV_BUILT:= $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release/gpio_drv
 GPIO_DRV_ELF  := $(OUT_BUILD)/gpio_drv.elf
-# Wave 9 — the ring-3 ML inference service the behavior task spawns
+# The ring-3 ML inference service the behavior task spawns
 # (`kernel/src/behavior_ml.rs`). Same standalone shape as gpio_drv.
 MLSRV_DIR     := userspace/services/infsrv
 MLSRV_BUILT   := $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release/infsrv
 MLSRV_ELF     := $(OUT_BUILD)/mlsrv.elf
 
-# Wave 9 (DRV1) — the ring-3 buzzer and INA219 drivers.
+# The ring-3 buzzer and INA219 drivers.
 # Started by the kernel from their `start = true` topology rows, not by
 # autorun. Shipped only on the drivers disks below (and the board volume).
 BUZZ_DRV_DIR  := userspace/drivers/buzz_drv
@@ -165,7 +165,7 @@ POWER_BUILT   := $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release/power
 POWER_ELF     := $(OUT_BUILD)/power.elf
 POWER_LIB_SRC := userspace/lib/power/src/lib.rs userspace/lib/power/Cargo.toml
 POWER_SRC     := $(POWER_DIR)/src/main.rs $(POWER_DIR)/src/policy.rs $(POWER_DIR)/Cargo.toml $(POWER_LIB_SRC)
-# Wave 15 (TRACE): the kernel tracer's reader (`Cap<Trace>`, the tracer's ops).
+# The kernel tracer's reader (`Cap<Trace>`, the tracer's ops).
 TRACECTL_DIR  := userspace/services/tracectl
 TRACECTL_BUILT:= $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release/tracectl
 TRACECTL_ELF  := $(OUT_BUILD)/tracectl.elf
@@ -296,7 +296,7 @@ LXRT_UFLAGS_X86_64 = --target $(LXRT_TARGET_X86_64) \
 LXRT_FEATURE_FLAGS = $(if $(LXRT_FEATURES),--features $(LXRT_FEATURES))
 LXRT_FORCE         = $(if $(or $(LXRT_FEATURES),$(LXRT_REBUILD)),FORCE)
 LXRT_NEED     = $(shell grep -qs '^CONFIG_LINUX_RUNTIME=y' $(or $(KCONFIG_CONFIG),.config) </dev/null && echo yes)
-# Wave 12: the other privileged families' tools, one crate with one binary
+# The other privileged families' tools, one crate with one binary
 # each (`FLIGHT.ELF`, `BEHAVIOR.ELF`, `CONFIG.ELF`, `OTA.ELF`).
 FAMTOOLS_DIR  := userspace/services/famtools
 FAMTOOLS_SRC  := $(wildcard $(FAMTOOLS_DIR)/src/*.rs $(FAMTOOLS_DIR)/src/bin/*.rs) $(FAMTOOLS_DIR)/Cargo.toml
@@ -507,7 +507,7 @@ VSBENCH_ELF_AARCH64   := $(AARCH64_DIR)/vsbench.elf
 # Every Rust ring-3 program links crates/core/libsys. Cargo tracks that path
 # dependency, but only if make invokes cargo at all: without libsys listed as a
 # prerequisite make declares the ELF up to date and the disk images ship a
-# binary built against an older libsys. Observed 2026-09-03 — build/reflex.elf
+# binary built against an older libsys. Seen once: build/reflex.elf
 # dated Aug 24 against a libsys dated Aug 31.
 # lib.rs is named explicitly as well as wildcarded: a wildcard that expands to
 # nothing (wrong path, moved crate) is silent, and would reopen this same hole
@@ -542,7 +542,7 @@ LIBSYS_SRC := $(LIBSYS_DIR)/Cargo.toml $(LIBSYS_DIR)/src/lib.rs \
 # into `-C metadata`, rustc turns that into the crate disambiguator, and items
 # are ordered by names that carry it. The same brain_client sources built in two
 # directories differed in `.strtab`, and with symbols stripped in 2975 bytes of
-# `.text` (measured 2026-09-14, after gate 40 refused a brain_client rebuilt in
+# `.text` (measured, after gate 40 refused a brain_client rebuilt in
 # its snapshot directory). The kernel binds each image profile to these bytes.
 # With the wrapper the two directories give identical ELFs, symbols included.
 # `tests/host/seccomp-tests` checks every recipe goes through here.
@@ -720,7 +720,7 @@ IMAGE_ELFS := HELLO.ELF=$(HELLO_ELF) SYSTEST.ELF=$(SYSTEST_ELF) \
 IMAGE_HASHES := $(OUT_BUILD)/image_hashes.rs
 
 # The BOARD volume's ML service, and the image-hash table its kernel binds
-# (wave 11 BOARDIMG; the key rules are with TOPOLOGY_KEY_STAMP below). Only the
+# (the key rules are with TOPOLOGY_KEY_STAMP below). Only the
 # MLSRV.ELF row differs from IMAGE_ELFS: the board table lists the digest of
 # the named-key service, never of the QEMU test-key one, so a board kernel
 # refuses to run a QEMU-built `mlsrv`. `build/disk-board.img`'s manifest
@@ -728,7 +728,7 @@ IMAGE_HASHES := $(OUT_BUILD)/image_hashes.rs
 # build their kernel with `--features board-image` (azos_sched), which
 # `include!`s IMAGE_HASHES_BOARD instead of IMAGE_HASHES.
 BOARD_DIR := $(OUT_BUILD)/board
-# What the signed-topology emitter reads (wave 15 TOPOSIGN; its targets are
+# What the signed-topology emitter reads (its targets are
 # near the end of this file, with the rest of the topology rules).
 TOPO_EMIT_DEPS := tests/host/topology-tests/src/bin/topo_emit.rs tests/host/topology-tests/Cargo.toml \
 	crates/core/topology/build.rs crates/core/topology/Cargo.toml kernel/Cargo.toml \
@@ -742,7 +742,7 @@ IMAGE_ELFS_BOARD := $(filter-out RNGDRV.ELF=%,$(patsubst PKGD.ELF=%,PKGD.ELF=$(P
 RV_USER_ELFS := $(foreach e,$(IMAGE_ELFS_BOARD) $(IMAGE_ELFS),$(word 2,$(subst =, ,$(e))))
 IMAGE_HASHES_BOARD := $(BOARD_DIR)/image_hashes.rs
 
-# The .config decides the kernel's features (wave 11, F5): Kconfig is the
+# The .config decides the kernel's features: Kconfig is the
 # only source. A kernel recipe builds `-p azos_kernel` with what
 # tools/build/kconfig_to_cargo.py prints for its configuration; what a target builds
 # beyond it (a smoke, a driver) is a selection, `--select` (`kernel_select`
@@ -898,7 +898,7 @@ AARCH64_USER_ELFS := $(foreach e,$(IMAGE_ELFS_AARCH64),$(word 2,$(subst =, ,$(e)
 #    receive a second script and stop linking.
 #  * The output is an arm64 `Image` (header in kernel/src/entry/aarch64/asm/
 #    boot.S), not the ELF: for an ELF, QEMU passes x0 = 0 and puts no DTB in
-#    RAM (measured 2026-09-21); for an Image it passes the DTB in x0, which is
+#    RAM (measured); for an Image it passes the DTB in x0, which is
 #    also the protocol U-Boot `booti` uses on real boards.
 #  * Soft-float target: the kernel names no FP/SIMD register outside the
 #    lazy user-FP save/restore (kernel/src/entry/aarch64/fp_lazy.rs,
@@ -957,7 +957,7 @@ X86_64_LINKER  := arch/x86_64/boot/linker-x86_64.ld
 # the ring-3 images (X86_64_UFLAGS), as on riscv64 and aarch64: the AVX2
 # double-base multiply of a signature check reserves 3,696 B realigned to 32
 # bytes, and put sshd's deepest chain at 17,000 B of its 16 KiB stack
-# (tools/lint/stack_frames.py reads realigned frames since 2026-10-24).
+# (tools/lint/stack_frames.py reads realigned frames).
 X86_64_DALEK   := --cfg curve25519_dalek_backend=\"serial\"
 # -cpu max: the default model (qemu64) is below the x86-64-v2 baseline, and the
 # kernel refuses it (the canary: `make qemu QEMU_X86_64_CPU=qemu64`, x86_64 configured).

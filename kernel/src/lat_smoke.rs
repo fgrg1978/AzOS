@@ -23,7 +23,7 @@
 //!     ipctest image, whose autorun shares the hart at `-smp 1`).
 //!
 //! Spam and disk are paced by `lat-rt` itself (it kicks them by TID after
-//! each sample), not by timers of their own (wave 13). A load task asleep on
+//! each sample), not by timers of their own. A load task asleep on
 //! a timer made the tick handler program the comparator for ITS deadline,
 //! and a tick taken while `lat-rt` was already blocked again then programmed
 //! `lat-rt`'s deadline too: the measured wake was on time whatever the
@@ -97,8 +97,8 @@ const DISK_SECTORS: u32 = 8;
 /// Upper bound on the worst wake-up latency, in nanoseconds of
 /// `-icount shift=0` virtual time (= guest instructions), both ISAs.
 ///
-/// Wave 13, load paced by `lat-rt` (20 runs per ISA): riscv64 max
-/// 4.4-15.8 us, aarch64 3.6-7.3 us. Measured (wave 11 ONESHOT, `-smp 1`,
+/// Load paced by `lat-rt` (20 runs per ISA): riscv64 max
+/// 4.4-15.8 us, aarch64 3.6-7.3 us. Measured (`-smp 1`,
 /// the timer-paced load, three runs per ISA):
 /// riscv64 max 17.9-18.4 us, p99 8.4-9.9 us (Sstc `stimecmp`); aarch64 max
 /// 11.5-12.8 us, p99 5.4-6.2 us. Before the one-shot change the worst case
@@ -155,8 +155,8 @@ fn isa() -> &'static str {
 /// against the boot's other 1 ms sleepers on this hart (rt-motor). With an
 /// exact 1 ms period the phase stayed put, and when rt-motor's wake fell
 /// between `lat-rt`'s block and its deadline, the tick it took programmed
-/// that deadline every period: wave 14's canary saw 0 late periods of 2000
-/// (gates 203, 204) where wave 13's saw 4 to 24. The measured row keeps 1 ms,
+/// that deadline every period: a later canary saw 0 late periods of 2000
+/// (gates 203, 204) where an earlier one saw 4 to 24. The measured row keeps 1 ms,
 /// the period its Linux counterpart uses.
 fn canary_phase_slip() -> u64 {
     if cfg!(feature = "oneshot-canary") { (TIMER_FREQ / 2_000_000).max(1) } else { 0 }
@@ -380,7 +380,7 @@ fn rt_task(num_cpus: usize) {
     {
         let (mine, all) = azos_fs::fat32::fat32_pi_io_counts();
         kprintln!("[LAT] fat pi_io={} pi_io_all={}", mine, all);
-        // Which Mutex each was under (owner rule F1), by name where the
+        // Which Mutex each was under, by name where the
         // lock is one F1 converted, else by address (`nm` on the kernel).
         let name = |a: usize| -> &'static str {
             if a == azos_syscall::handlers::exec_bounce_addr() { "EXEC_BOUNCE" }
@@ -396,7 +396,7 @@ fn rt_task(num_cpus: usize) {
         // need it non-zero, a count that does not follow host load.
         let (mine, all) = azos_fs::fat32::fat32_preempt_off_io_counts();
         kprintln!("[LAT] fat preempt_off_io={} preempt_off_io_all={}", mine, all);
-        // Wave 15 (RL): virtio-blk completion waits, and those made with a
+        // Virtio-blk completion waits, and those made with a
         // driver Mutex held (BLK_LOCK across the request; must be 0).
         let (waits, locked) = azos_drv_virtio::virtio::blk::wait_probe_counts();
         kprintln!("[LAT] blk waits={} waits_locked={}", waits, locked);

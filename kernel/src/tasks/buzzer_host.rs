@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Wave 12 (DRVPLACE): the buzzer's in-kernel host task, running while the
+//! The buzzer's in-kernel host task, running while the
 //! driver is placed in the kernel (its row's `place`, Kconfig
 //! `DRV_BUZZER_PLACEMENT` at boot, and a later move: `crate::buzzer`).
 //!
@@ -36,7 +36,7 @@ pub(crate) fn buzzer_host_task(_: usize) {
         if now() < until {
             azos_sched::task_block(azos_sched::WaitReason::Timer(until));
         }
-        // Wave 13 smoke: a panic in the host, holding no lock.
+        // Smoke: a panic in the host, holding no lock.
         #[cfg(feature = "drv-contain-smoke")]
         if crate::smokes::drv_contain_smoke::take_panic_request() {
             panic!("drv-contain-smoke: deliberate panic in the buzzer's kernel host");

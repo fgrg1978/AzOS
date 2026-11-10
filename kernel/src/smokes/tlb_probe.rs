@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Wave 8 — cross-hart TLB shootdown, observed (`tlb-smoke`, -smp >= 3).
+//! Cross-hart TLB shootdown, observed (`tlb-smoke`, -smp >= 3).
 //!
 //! A "toucher" task pinned to one hart is given a private page table P whose
 //! only non-kernel mapping is one page at `VA`, and is switched onto it by the
@@ -72,7 +72,7 @@ static MASK: AtomicUsize = AtomicUsize::new(usize::MAX);
 static HOLDERS: AtomicUsize = AtomicUsize::new(usize::MAX);
 static HOLDERS_AFTER: AtomicUsize = AtomicUsize::new(usize::MAX);
 static KERNEL_ROOT: AtomicU64 = AtomicU64::new(u64::MAX);
-/// Wave 9: the translation root `ktask` found itself on (`u64::MAX`: it
+/// The translation root `ktask` found itself on (`u64::MAX`: it
 /// never ran), and the one the toucher was on when it created it.
 static KTASK_ROOT: AtomicU64 = AtomicU64::new(u64::MAX);
 static KTASK_CREATOR_ROOT: AtomicU64 = AtomicU64::new(u64::MAX);
@@ -87,7 +87,7 @@ fn live_root() -> u64 {
     { azos_arch::mmu::cr3_root(azos_arch::mmu::cpu::read_cr3()) as u64 }
 }
 
-/// Wave 9: a kernel task created by a task that runs on a user root (the
+/// A kernel task created by a task that runs on a user root (the
 /// toucher, on P) must run on the KERNEL's root. It used to inherit the
 /// creator's live `satp` (riscv64), so it ran on a table its creator's
 /// exit frees. Pinned to the toucher's hart, so on a kernel with the bug

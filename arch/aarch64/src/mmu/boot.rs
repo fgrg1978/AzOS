@@ -119,8 +119,8 @@ _azos_drop_to_el1:
     mov     sp, x10
 .endif
 
-    // CPTR_EL2 — B2-07. This target is hard-float
-    // (aarch64-unknown-none, owner decision 97: NEON is mandatory
+    // CPTR_EL2. This target is hard-float
+    // (aarch64-unknown-none: NEON is mandatory
     // at the ARMv8.5 baseline), so the compiler emits FP/SIMD
     // instructions anywhere — memcpy included. CPTR_EL2 resets with
     // TFP=1 on some implementations; if it did, the very first FP
@@ -142,7 +142,7 @@ _azos_drop_to_el1:
     // traps to OUR EL1 vector, where it can be reported, not to an EL2
     // with no vector, where it would hang.
     //
-    // **This was 0x30FF for one revision (2026-09-21) and it was wrong
+    // **This was 0x30FF for one revision and it was wrong
     // twice:** bit 9 is RES1 and was written 0, and bit 12 is TSM, so
     // SME WAS trapped to EL2 — the opposite of what the comment then
     // claimed. The comment also misquoted the Linux line above (BIT(12)

@@ -88,7 +88,7 @@ impl Aplic {
     }
 
     /// [`Self::wire_source`] with source mode `sm` (`SOURCECFG_SM_*`): a
-    /// ring-3 line takes its trigger from the device tree (wave 9 IRQ4).
+    /// ring-3 line takes its trigger from the device tree.
     /// Returns the `sourcecfg` read-back: `sm` when it took.
     pub fn wire_source_sm(&self, source: u32, hart: u32, eiid: u32, sm: u32) -> u32 {
         if source == 0 {

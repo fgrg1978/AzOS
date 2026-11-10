@@ -13,7 +13,7 @@ mod early;
 pub(crate) mod caches;
 // The `[ISA]` boot line and the baseline/`require` refusals.
 pub(crate) mod isa;
-// SpinWait probe sites: the boot-once rewrite (wave 15, N2b).
+// SpinWait probe sites: the boot-once rewrite.
 pub(crate) mod spin_patch;
 // Signed kernel livepatch (Kconfig LIVEPATCH): the boot re-apply of the topology's rows.
 mod livepatch;

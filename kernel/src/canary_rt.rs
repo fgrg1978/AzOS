@@ -211,7 +211,7 @@ pub(crate) const NAMES: &[&str] = &[
     // (`uart::console_write_ring3`), after its kernel lines went out.
     "rt-console-own-user",
     // boot/net.rs: every `net_poll` drains the RX ring on its own again, no
-    // single owner of the pass (N8; the OTA stress counts resets and lost
+    // single owner of the pass (the OTA stress counts resets and lost
     // transfers, `[NET] rx passes: 0 contended`).
     "net-rx-two-consumers",
     // boot/net.rs: the receive pass copies each frame out under the driver
@@ -379,7 +379,7 @@ pub(crate) const NAMES: &[&str] = &[
     // `panic: other CPUs parked` rows must fail on the parked count.
     "panic-stop-skip",
     // The same, and the console is not claimed either: the panic report goes
-    // out while the other CPUs keep printing, as before wave 15 GR5 (row
+    // out while the other CPUs keep printing (row
     // `panic: report not spliced by a console flood` must splice).
     "panic-quiesce-skip",
     // Not a canary: a mode of the `panic-splice-smoke` kernel (the command
@@ -394,7 +394,7 @@ pub(crate) const NAMES: &[&str] = &[
     // panic inside the handler ...`).
     "panic-nested",
     // kernel/src/panic.rs `panic`: a panic inside the handler runs the whole
-    // report again, as before 2026-10-24, instead of `nested`'s one line
+    // report again, instead of `nested`'s one line
     // (rows `panic: ... second report canary` must see a second banner).
     "panic-nested-report",
     // crates/core/ipc/src/ep_queue.rs `drain`: a server's death leaves its

@@ -219,7 +219,7 @@ trap_entry_common:
 trap_save_rest:
 .else
     # SP != 0: we came from U-mode, SP = kernel stack, sscratch = user SP.
-    # (Wave 15: one taken branch instead of a not-taken `beqz` plus a `j` on
+    # (One taken branch instead of a not-taken `beqz` plus a `j` on
     # every trap from U-mode, every syscall included.)
     bnez sp, trap_save_context
 
@@ -273,7 +273,7 @@ trap_save_context:
     sd x31, 248(sp)   # t6
 
     # Save original SP: check SPP bit to determine origin
-    # sstatus read once (wave 15): t5 is already in the frame, so it holds
+    # sstatus read once: t5 is already in the frame, so it holds
     # the value `save_csrs` stores, and nothing on either path below writes
     # sstatus or t5.
     csrr t5, sstatus
@@ -326,7 +326,7 @@ save_csrs:
     #
     # WHY.  An interrupt is taken on whatever stack was running, so the cost
     # of the handler lands on top of the deepest syscall chain in the tree.
-    # On 2026-09-15 that is exactly how every brain-peer boot died: a timer
+    # That is exactly how every brain-peer boot died: a timer
     # taken during the receive path put its frame past the end of a 16 KiB
     # task stack.  Raising the task stack paid for that once; a dedicated
     # stack per hart stops the task stack having to budget for it at all.

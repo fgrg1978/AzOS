@@ -21,7 +21,7 @@
 //!
 //! **On a GPT medium the records live in the AzOS records partition**
 //! (`azos_drv_block::partition::GPT_RECORDS_GUID`), not in the tail: a GPT
-//! laid out to its end keeps its backup table there (audit K2-M1). Sector
+//! laid out to its end keeps its backup table there. Sector
 //! `offset` of the records is then sector `offset` of that partition, which
 //! must hold [`TAIL_SECTORS`]; the partition table hides it from every
 //! capability and filesystem scan. It is used only once
@@ -52,7 +52,7 @@ pub const TAIL_SECTORS: u32 = 8;
 /// record, written from the host by `tools/sign/link_key_provision.py`, never by
 /// the kernel.
 pub const LINK_KEY: u32 = 0;
-/// U09-8 — the persisted entropy seed (owner decision 2026-09-26, V1.2):
+/// U09-8 — the persisted entropy seed (V1.2):
 /// refuse to derive session keys on an unseeded pool, but persist a seed
 /// across boots so a board with no TRNG can be seeded from its second boot on.
 /// Format: `azos_crypto::entropy::{seed_file_encode, seed_file_decode}`, one
@@ -72,7 +72,7 @@ pub const LINK_KEY: u32 = 0;
 /// also just go away. A first seed for a board with no entropy device is
 /// written from the host with `tools/sign/seed_provision.py`.
 pub const ENTROPY_SEED: u32 = 1;
-/// Wave 11 — the device record: this device's id, which
+/// The device record: this device's id, which
 /// a `CONFIG.SIG` v2 must name, and the lowest `CONFIG.SIG` counter still
 /// accepted. Format: `azos_topology::device_record::DeviceRecord` (37
 /// bytes meaningful). Written from the host by `tools/sign/device_provision.py`

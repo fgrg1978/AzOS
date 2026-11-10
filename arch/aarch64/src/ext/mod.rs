@@ -7,7 +7,7 @@
 pub mod hv;
 /// Speculation mitigations (`A64_MIT_*`): the probe, the verdicts, `PSTATE.SSBS`.
 pub mod mitigations;
-/// SHA-256 on the ARMv8 Cryptographic Extension (wave 13).
+/// SHA-256 on the ARMv8 Cryptographic Extension.
 pub mod sha2_ce;
 /// FEAT_TLBIRANGE: the shootdown's range decomposition (pure) and its probe.
 pub mod tlbi_range;

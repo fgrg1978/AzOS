@@ -50,7 +50,7 @@ choice
           itself is one of those: the reset path stops feeding the watchdog
           and the external ESC/FC failsafe is the backstop.
 
-          Cost (QEMU defconfigs, release, measured 2026-10-03): kernel
+          Cost (QEMU defconfigs, release, measured): kernel
           .text +1742 B on riscv64 and +2128 B on aarch64 over Reset (the
           contain path and flight-ctrl's Land/Disarm sequence). Reset
           itself grew +1326 B / +2176 B over the tree before RT7 (the
@@ -107,7 +107,7 @@ config PANIC_STOP_WAIT_US
       longest interrupts-masked window on any CPU; on a board 10 ms is far
       above every measured one (microseconds) and invisible next to the
       report itself. Under QEMU each CPU is a host thread that a loaded host
-      can deschedule for tens of milliseconds (measured 2026-10-10: one boot
+      can deschedule for tens of milliseconds (measured: one boot
       in twenty of panic-splice-smoke on aarch64 missed 10 ms), so 100 ms in
       a development build (BUILD_TYPE_DEV: the QEMU defconfigs; the build
       type, not the board, keys it).
@@ -117,7 +117,7 @@ config PANIC_STOP_WAIT_US
       whose masked windows are long. Read only when PANIC_QUIESCE is set.
 
 # ---------------------------------------------------------------------------
-# Crash dump of a ring-3 task (owner decision 16-10: Log + file)
+# Crash dump of a ring-3 task (Log + file)
 # ---------------------------------------------------------------------------
 
 config CRASHDUMP

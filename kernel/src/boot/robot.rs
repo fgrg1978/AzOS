@@ -59,7 +59,7 @@ pub(crate) fn install_robot_payload_and_sensors() {
     azos_drv_actuator::motor_pid::motor_pid_init();
 
     // Phase H: additional drivers
-    // U05-1/U05-2 (2026-09-26): `spi_init`/`usb_init` deleted here — no board
+    // U05-1/U05-2: `spi_init`/`usb_init` deleted here — no board
     // maps `SPI0_BASE`/`USB0_BASE` in its MMIO list and both register models
     // are unverified (see `platform.rs`'s VF2 checklist); re-add the day a
     // board's `boot_hooks.rs` maps them.
@@ -156,7 +156,7 @@ pub(crate) fn install_robot_payload_and_sensors() {
     // (`rc_feed_byte`, called by the board's UART receive interrupt) decodes
     // a frame. Loud and useless beats quiet and fabricated.
     //
-    // Wave 15: compiled only with Kconfig `RC_INPUT` (feature `rc-input`); the
+    // Compiled only with Kconfig `RC_INPUT` (feature `rc-input`); the
     // receiver's say in the safety path is crates/domains/robot/safety-core/src/enforce.rs.
     #[cfg(all(feature = "rc-input", not(any(feature = "vf2", feature = "k1", feature = "rpi5"))))]
     azos_robot_drivers::rc::rc_init(azos_robot_drivers::rc::RcMode::Simulated);

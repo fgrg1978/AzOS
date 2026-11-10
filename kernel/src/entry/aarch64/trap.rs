@@ -12,9 +12,9 @@ use super::irq::irq_arm;
 use crate::trap::frame::{Disposition, KernelFault};
 use crate::trap::{ArchFrame, Frame, Kernel, TrapClass};
 
-// R (wave 4) — O3.1 nested-trap probe, aarch64 side. Mirrors riscv64's
-// `PROBE_IRQ_IN_SYSCALL_NR`/`probe_irq_in_syscall` (`kernel/src/entry/riscv64/trap.rs`,
-// F4/wave 3): a reserved syscall number the syscall arm intercepts BEFORE
+// R — O3.1 nested-trap probe, aarch64 side. Mirrors riscv64's
+// `PROBE_IRQ_IN_SYSCALL_NR`/`probe_irq_in_syscall` (`kernel/src/entry/riscv64/trap.rs`):
+// a reserved syscall number the syscall arm intercepts BEFORE
 // `ARCH.enable_all()` runs for real dispatch, so the probe's OWN inline
 // enable is what starts the clock, same as the riscv64 version. Spins
 // ~50 ms reading `now_ticks()` with IRQs enabled, across many timer ticks —
@@ -60,7 +60,7 @@ impl Drop for LatTrapExit {
 
 // I-13's restart point (`TrapFrame::arch_page_fault`): the trap returns here
 // with the control task's clean stack top in x0 and its entry in x1, at the
-// PSTATE of the fault (EL1h, its interrupt mask). `blr`, not `br`: the entry's
+// PSTATE of the fault (its interrupt mask). `blr`, not `br`: the entry's
 // BTI landing pad is a `bti c`. The entry never returns.
 #[cfg(feature = "use-robot")]
 core::arch::global_asm!(
@@ -587,7 +587,7 @@ fn print_trap(frame: &TrapFrame, what: &str) {
 }
 
 
-/// Wave 13: deliver signals (or apply a `rt_sigreturn`) to the current task
+/// Deliver signals (or apply a `rt_sigreturn`) to the current task
 /// at its return to EL0, from a syscall (`from_syscall`) or an interrupt.
 /// Out of line and not `#[cold]` (a cold callee reshapes the hot caller).
 ///

@@ -72,7 +72,7 @@ config ENERGY
         below the real-time deadline floor or the WCET reference OPP and
         records the refusal. Cost, measured
         under QEMU -icount by the gate's energy row (one run per ISA and
-        tracker, 2026-10-03): switch hook 73-76 instructions per call on
+        tracker): switch hook 73-76 instructions per call on
         riscv64 and 128-271 on aarch64; tick hook 61-71 and 187-382.
       n = none of the above is compiled. The default is y on the
       wearable, IoT/HMI, desktop and server presets (battery or power bill

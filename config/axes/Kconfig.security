@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 # config/axes/Kconfig.security — The SECURITY axis and the mitigation switches it sets
 #
-# Owner decision (wave 11): every mitigation is a switch in `make config`;
+# Every mitigation is a switch in `make config`;
 # none is forced on. The threat model is the SECURITY posture
 # (the choice below), which sets the DEFAULTS of the mitigation
 # switches with `imply`, never `select`: each switch can still be turned off
@@ -21,8 +21,8 @@ choice
     default SECURITY_GENERAL
     help
       How much the image trusts what runs on it, and so who it defends
-      against (the threat model, which was a separate THREAT choice until
-      2026-10-22). It sets the default of OTA_SIG_MANDATORY, of the
+      against (the threat model, which was a separate THREAT choice).
+      It sets the default of OTA_SIG_MANDATORY, of the
       mitigation switches it implies below ("Mitigations", "Security") and,
       for Hardened, of KASLR (require); it never forces one (`imply`, not
       `select`), and a switch set by hand wins. Each posture includes the
@@ -109,8 +109,7 @@ config MITIGATION_SPECTRE_V1_INDEX
       azos_limits::nospec).
 
       Cost, instructions per operation under -icount
-      (tools/bench/vsbench_aarch64.sh, this option y against n, same tree,
-      2026-10-02), aarch64/riscv64:
+      (tools/bench/vsbench_aarch64.sh, this option y against n, same tree), aarch64/riscv64:
         syscall-floor (getpid, answered before the table)    +0 / +0
         clock [call] (the syscall-table mask alone)          +5 / +4
         chan-call, notify, sensor-read-call (+ cap slot)  +9..10 / +7..8

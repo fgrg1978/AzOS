@@ -143,7 +143,7 @@ pub(crate) fn reflex_smoke_task(_arg: usize) {
 /// unknown-packet record carries the packet type there, so a match on the code
 /// alone would pass on a record about a different frame.
 ///
-/// **Extracted 2026-09-08.** This scan was written inline twice inside
+/// **Extracted.** This scan was written inline twice inside
 /// `envelope_smoke_task` (once for the envelope refusal, once for the e-stop)
 /// and a third smoke probe was about to copy it again. It is not incidental
 /// code: it decodes the on-disk format, so three copies are three places for
@@ -327,7 +327,7 @@ pub(crate) fn envelope_smoke_task(_arg: usize) {
 /// A GGA fix ~1 km north of the simulated one (Munich): 48°08.6460' N
 /// (48.1441°), 0.009° north at the same longitude, quality 1 with 4
 /// satellites (the weakest fix the fence trusts). `*59` is the XOR of every
-/// byte between `$` and `*`. Shared by `geofence-smoke` and wave 15's
+/// byte between `$` and `*`. Shared by `geofence-smoke` and
 /// `fence-refuse-smoke` (`smokes/rc_fence.rs`).
 #[cfg(any(feature = "geofence-smoke", feature = "fence-refuse-smoke",
           all(feature = "ktest", feature = "geofence")))]
@@ -444,7 +444,7 @@ pub(crate) fn geofence_smoke_task(_arg: usize) {
             // Re-read the latch HERE, instead of trusting the `loop_latched`
             // computed above.
             //
-            // Gate 77 (2026-09-19) failed on exactly that: the production
+            // Gate 77 failed on exactly that: the production
             // behaviour loop latched in the window between that computation and
             // this call, so `geofence_breach_latch` correctly returned `None`
             // (the latch is its own guard) while `loop_latched` was a stale
@@ -478,7 +478,7 @@ pub(crate) fn geofence_smoke_task(_arg: usize) {
                     GEOFENCE_FAILS.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
                     kprintln!("[GEOFENCE] FAILED: a held latch was recorded twice");
                 }
-                // Owner decision, 2026-09-25: this probe no longer releases the
+                // This probe no longer releases the
                 // latch it set, even though it is the one that set it. Only a
                 // verified operator authority may clear the latch now (see
                 // `safety::ReleaseAuthority`'s module note) — the old comment

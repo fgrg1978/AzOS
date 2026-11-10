@@ -126,8 +126,7 @@ SECTIONS
 
     . = ALIGN(4K);
     _data_start = .;
-    /* Set-once function-pointer hooks and the x86 IDT (azos_common::hook,
-     * security audit 2026-10-17 finding D). First in the data range so the
+    /* Set-once function-pointer hooks and the x86 IDT (azos_common::hook). First in the data range so the
      * W^X pass maps it RW while the boot installs the hooks, and listed
      * BEFORE `.data` because that glob would otherwise take the input
      * section. Page-aligned at both ends: the boot seals it read-only

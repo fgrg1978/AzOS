@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! ktest `kernel_half_shared_by_every_root` (N12f, Kconfig `RV_KERNEL_GLOBAL`).
+//! ktest `kernel_half_shared_by_every_root` (Kconfig `RV_KERNEL_GLOBAL`).
 //!
 //! On riscv64 the kernel half sits in every user root: each kernel-only
 //! VPN[2] slot (at and above the user ceiling, `vmm::kernel_only_from`) is
@@ -18,7 +18,7 @@
 //! kernel's own leaves (`vmm::kernel_leaves_mismatch`) are read once,
 //! outside it, so no hold walks every kernel level-0 table.
 //!
-//! N12g (owner decision 10-10): with the probe root built, it maps one low
+//! N12g: with the probe root built, it maps one low
 //! MMIO page in a free merge-slot block (`vmm::free_merge_block`) through
 //! `vmm::map_mmio_region`, then requires every roster root to translate it
 //! (`vmm::propagate_kernel_entries`). The page stays mapped: ktest image

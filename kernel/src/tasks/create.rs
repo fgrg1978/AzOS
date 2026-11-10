@@ -159,7 +159,7 @@ pub(crate) fn create_first_tasks(num_cpus: usize) {
 #[inline(always)]
 pub(crate) fn create_service_tasks(hart_id: usize) {
     // Create IPC/signal/service demo task (Phase 8).
-    // Wave 15 (WRITEBACK): FAT32's write-back task, on every ISA whose boot
+    // FAT32's write-back task, on every ISA whose boot
     // mounted the volume (Kconfig `FS_WRITEBACK`; a no-op with it off).
     if azos_fs::fat32_mounted() {
         create_fs_writeback_task();
@@ -187,7 +187,7 @@ pub(crate) fn create_service_tasks(hart_id: usize) {
     // move nor a zone).
     #[cfg(feature = "energy")]
     boot::thermal::create_task();
-    // Wave 15: disk completions by interrupt (every ISA), once the
+    // Disk completions by interrupt (every ISA), once the
     // scheduler exists to put waiters to sleep.
     wire_virtio_blk_irq();
     // The SD/eMMC host's sleepers too (the boards' boot card, the QEMU row's).
@@ -227,7 +227,7 @@ pub(crate) fn create_service_tasks(hart_id: usize) {
     // is the overrun this check replaces: rvv_ctx_save/restore used to
     // assume VLEN=128 unconditionally, and running that under QEMU's
     // `vlen=256` (the SpacemiT K1/X60's real width — `k1` composes `rvv`)
-    // took a `[FATAL] Kernel page fault`, verified by hand 2026-09-26. Must
+    // took a `[FATAL] Kernel page fault`, verified by hand. Must
     // run before any task can be dispatched: context_switch_rvv.S calls
     // rvv_ctx_save/rvv_ctx_restore on every switch unconditionally, and both
     // no-op safely on the uninitialized sentinel until this runs (see
@@ -280,7 +280,7 @@ pub(crate) fn create_service_tasks(hart_id: usize) {
         kprintln!("[SCHED] Created rvv-iso-0/rvv-iso-1 tasks (RVV isolation probe) [hart 0]");
     }
 
-    // Wave 15 (S1): the imu task only queues its reads; where a controller
+    // The imu task only queues its reads; where a controller
     // driver is compiled (DesignWare: VisionFive 2, Pi 5, Intel LPSS; the
     // K1's SpacemiT) this task runs the controller's steps (board validation
     // pending; the QEMU simulation completes at submit).
@@ -315,7 +315,7 @@ pub(crate) fn create_service_tasks(hart_id: usize) {
     // that serves requests forever) and yielding is not enough — see the
     // AUTORUN_PRIORITY block below for the starvation that caused and why the
     // loader is no longer created inside the real-time band. `net_poll_task`
-    // itself stopped being a yield-loop in `b912aa2` (2026-09-03): it blocks
+    // itself stopped being a yield-loop in `b912aa2`: it blocks
     // on a 1 kHz timer, so the argument above is history, not current
     // behaviour.
     // One placement on every ISA: Kconfig TASK_NET_POLL_PLACE (`last`, the
@@ -402,8 +402,8 @@ pub(crate) fn create_service_tasks(hart_id: usize) {
         // Optional load, so sized to what the pool can spare: the rest of
         // boot (kernel tasks, topology rows, the user shell) creates its
         // tasks with the infallible `task_create`, and a small profile
-        // (embedded: MAX_TASKS = 32) panicked "task pool full" once wave 11
-        // added the recovery console (gate 199).
+        // (embedded: MAX_TASKS = 32) panicked "task pool full" once the
+        // recovery console was added (gate 199).
         let spare = azos_sched::free_task_slots().saturating_sub(WORKER_POOL_RESERVE);
         let n = NUM_WORKERS.min(spare);
         for i in 0..n {
@@ -481,7 +481,7 @@ pub(crate) fn create_service_tasks(hart_id: usize) {
             // So the loader runs at a normal priority, which is what the old
             // comment claimed and what a ring-3 program must have: pinned to
             // hart 3 it competes only with `net-poll`, which now blocks on a
-            // timer every iteration (`b912aa2`, 2026-09-03) instead of
+            // timer every iteration (`b912aa2`) instead of
             // spinning, so the starvation the priority bump was reaching for
             // no longer exists. `userspace: the brain lies` is the scenario
             // that fails if this is put back.
@@ -533,7 +533,7 @@ pub(crate) fn create_service_tasks(hart_id: usize) {
     // of a kernel placement); the controller only routes calls.
     #[cfg(feature = "board-io")]
     if buzzer::init() == Some(azos_topology::placement::Host::Kernel) {
-        // Supervised (wave 13): a contained panic in the host is the
+        // Supervised: a contained panic in the host is the
         // controller's fault to decide on (demote), or a restart.
         let _ = drv_supervisor::start_kernel_host(buzzer::HOST_NAME, buzzer_host_task,
                                                   azos_sched::DEFAULT_PRIORITY);

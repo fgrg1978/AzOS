@@ -16,7 +16,7 @@
 //! leaves it held, and a canary turns only its own test red. It
 //! is not judged on the wheels themselves: in the ktest boot the control loop
 //! left no non-zero duty on a free wheel either with 40 % published for both
-//! (measured 2026-10-23), so the wheels cannot tell a held wheel from a free
+//! (measured), so the wheels cannot tell a held wheel from a free
 //! one there. Wheel 1 stays held for the rest of the boot: no
 //! ktest drives it.
 //!

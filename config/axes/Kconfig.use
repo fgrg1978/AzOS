@@ -14,7 +14,7 @@
 # `use-robot`, emitted by tools/build/kconfig_to_cargo.py), which menus `make
 # config` shows, and, through `imply` and conditional defaults, the starting
 # value of other options. It never forces one: every implied option can be
-# changed by hand (wave 11).
+# changed by hand.
 #
 # What each domain does:
 #   Only the robot extension (EXT_ROBOT, config/extensions/Kconfig) links the

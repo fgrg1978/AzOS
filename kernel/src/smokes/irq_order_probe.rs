@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! `irq-order-probe` (wave 15, DAIF): a function the gate disassembles to see
+//! `irq-order-probe` (DAIF): a function the gate disassembles to see
 //! that the interrupt-mask primitives are compiler barriers on this ISA.
 //!
 //! It stores 1, masks interrupts through `ARCH.disable_all()`, stores 2 and

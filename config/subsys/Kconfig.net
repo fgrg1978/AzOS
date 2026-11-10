@@ -93,7 +93,7 @@ config TCP_DELACK_MS
       40 ms is Linux's minimum delayed-ACK timeout (TCP_DELACK_MIN);
       RFC 1122 caps it at 500 ms and RFC 5681 at "less than 500 ms".
 
-      0 restores the pre-wave-15 behaviour, one pure ACK per in-order
+      0 restores the earlier behaviour, one pure ACK per in-order
       segment, and is the canary for the coalescing.
 
       Cost: 16 B per connection (deadline + counters, .bss); a pure ACK
@@ -398,7 +398,7 @@ config NET_NIC_QUEUES
       work.
 
 # ---------------------------------------------------------------------------
-# ARP, DNS and UDP tables (wave 11: were literals in crates/net/stack)
+# ARP, DNS and UDP tables (were literals in crates/net/stack)
 # ---------------------------------------------------------------------------
 
 config ARP_CACHE_SIZE
@@ -691,7 +691,7 @@ config NAT_ICMP_TIMEOUT_S
       Cost: none.
 
 # ---------------------------------------------------------------------------
-# NIC queues (wave 15 IO-QUEUES N1/N2/N3: were VIRTIO_QUEUE_SIZE = 16 and
+# NIC queues (were VIRTIO_QUEUE_SIZE = 16 and
 # literals in crates/drivers/virtio/src/virtio/net.rs, crates/net/stack/src/lib.rs
 # and kernel/src/tasks/net_poll.rs)
 # ---------------------------------------------------------------------------

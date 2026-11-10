@@ -146,8 +146,8 @@ pub(crate) fn start() {
 }
 
 /// Create the host task of a driver placed in the kernel (Kconfig
-/// `DRV_*_PLACEMENT = kernel`) and supervise it (`SupOrigin::KernelHost`,
-/// wave 13): when a panic in it is contained (the panic policy, exit status
+/// `DRV_*_PLACEMENT = kernel`) and supervise it (`SupOrigin::KernelHost`):
+/// when a panic in it is contained (the panic policy, exit status
 /// 134) the supervisor creates a new task on the same entry, under the same
 /// restart policy as a ring-3 driver. Starts the supervisor task if no other
 /// boot condition did. Returns the host's TID.
@@ -155,7 +155,7 @@ pub(crate) fn start() {
 /// A task cannot be created stopped, so the entry is made right after the
 /// creation: a death in the host's first instructions, before this returns,
 /// would go unsupervised. Without a table entry (table full) the host runs
-/// unsupervised, as every kernel host did before wave 13.
+/// unsupervised.
 #[cfg(feature = "board-io")]
 pub(crate) fn start_kernel_host(name: &'static str, entry: fn(usize), priority: u32) -> Option<u32> {
     start();
@@ -198,7 +198,7 @@ pub(crate) fn spawn_supervised(path: &[u8]) -> i64 {
     rc
 }
 
-/// Wave 11 (DRVPLACE): the `restart` key of the topology row named after
+/// The `restart` key of the topology row named after
 /// the image at `path` (`/fat/<NAME>` -> row `<NAME>`), `on-failure` when no
 /// row names it or no topology is installed. (The `restart` gate row's canary
 /// is the component manager's view, `boot::inspect_views::view_restart`.)
@@ -1236,7 +1236,7 @@ mod smoke {
     }
 }
 
-// ── supall-smoke: the wave 11 gate row ──────────────────────────────────────
+// ── supall-smoke: the gate row ──────────────────────────────────────
 
 #[cfg(feature = "supall-smoke")]
 pub(crate) fn start_supall_smoke() {
@@ -1464,7 +1464,7 @@ mod supall {
     }
 }
 
-/// Wave 11 (DRVPLACE): the `restart-smoke` task (see [`restart`]).
+/// The `restart-smoke` task (see [`restart`]).
 #[cfg(feature = "restart-smoke")]
 pub(crate) fn start_restart_smoke() {
     azos_sched::task_create_affinity("restart-smoke", restart::run, 0,

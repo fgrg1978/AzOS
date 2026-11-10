@@ -164,7 +164,7 @@ pub fn first_use() -> bool {
     true
 }
 
-/// Run `f` with the SIMD registers free for kernel use (wave 13: the SHA-256
+/// Run `f` with the SIMD registers free for kernel use (the SHA-256
 /// Cryptographic Extension path, `azos_arch::ext::sha2_ce`). IRQs are masked
 /// for the call. A user state live on this hart is saved into its area first
 /// and EL0 FP goes back to trapping, so that task's next FP instruction
@@ -203,7 +203,7 @@ pub fn snapshot_current() -> FpState {
     out
 }
 
-/// Wave 13 (signal frames): [`snapshot_current`], or `None` when the
+/// [`snapshot_current`], or `None` when the
 /// current task has no FP state at all (never used the file since its exec).
 #[cfg(feature = "linux-abi")]
 pub fn snapshot_current_if_used() -> Option<FpState> {

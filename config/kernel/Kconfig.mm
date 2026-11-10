@@ -186,7 +186,7 @@ config MM_DEMAND_PAGING
     default n if USE_INDUSTRIAL || USE_AUTOMOTIVE
     default y
     help
-      Wave 14 (DEMANDPAGE): an anonymous mmap (native SYS_MO_MAP and the
+      An anonymous mmap (native SYS_MO_MAP and the
       Linux personality's) reserves its range and commits each page on
       the first touch, from the region's pager (zero-filled anonymous
       memory; crates/core/mm/src/pager.rs).  The reservation is charged
@@ -200,7 +200,7 @@ config MM_DEMAND_PAGING
       of a real-time-class task.
 
       With this off every mmap commits every page at map time, the
-      pre-wave-14 behaviour; the industrial and automotive domains start
+      earlier behaviour; the industrial and automotive domains start
       with it off (static memory, a fault never lands in a control loop).  Cost: no static RAM; each
       address space holds MM_REGIONS_PER_SPACE records.
 
@@ -392,7 +392,7 @@ choice
     default MM_RECLAIM_COMPRESS if USE_WEARABLE || USE_IOT_HMI || USE_GATEWAY || USE_DESKTOP || USE_SERVER
     default MM_RECLAIM_OFF
     help
-      The macOS/XNU model (owner 11-10): compressor first. An explicit choice
+      The macOS/XNU model: compressor first. An explicit choice
       per profile, never an implicit default: robot, industrial, automotive, firmware and the generic image
       stay off (determinism, admission instead of overcommit, SD/eMMC wear);
       wearable, iot-hmi, gateway, desktop and server compress.
@@ -552,7 +552,7 @@ choice
     default MM_SWAP_BACKEND_FILE if USE_DESKTOP || USE_IOT_HMI
     default MM_SWAP_BACKEND_OFF
     help
-      The last stage of the reclaim order (owner 16-10): when the compressed
+      The last stage of the reclaim order: when the compressed
       pool is full, whole segments of it (never single pages) are written to
       the medium and their frames freed. A fault on a page of a swapped
       segment reads the segment back, verifies it and carries on as for any

@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! SHA-256 block function on the ARMv8 Cryptographic Extension (FEAT_SHA256:
 //! `SHA256H`, `SHA256H2`, `SHA256SU0`, `SHA256SU1`), for the kernel's module
-//! and image digests (wave 13). Four rounds per `SHA256H`/`SHA256H2` pair.
+//! and image digests. Four rounds per `SHA256H`/`SHA256H2` pair.
 //!
 //! It uses SIMD registers in a kernel built `aarch64-unknown-none-softfloat`,
 //! so it is plain assembly (no Rust code runs in it) and the caller must own
@@ -15,7 +15,7 @@
 //! the start of the block, v4-v7 = the message schedule, four words each,
 //! v16 = W+K, v17 = abcd before SHA256H (SHA256H2 needs it), v18-v31 =
 //! K[0..56], loaded once a call; K[56..64] is loaded per block (no register
-//! left for it). Wave 14: the per-block K loads were 14 of 117 instructions.
+//! left for it). The per-block K loads were 14 of 117 instructions.
 
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
 core::arch::global_asm!(

@@ -30,7 +30,7 @@
 /// free — see `write_crash_log()`.
 /// Then optionally reboots after a configurable delay.
 ///
-/// **A panic inside this handler** (owner decision 2026-10-24) prints one
+/// **A panic inside this handler** prints one
 /// line and reboots or halts as the policy says, without the report again
 /// ([`nested`]): the handler marks the hart first thing, before any call that
 /// could panic.
@@ -406,7 +406,7 @@ fn nested(info: &PanicInfo, hart: usize) -> ! {
 /// the stop IPI or its next tick (`watchdog::halt_if_panicked`); the
 /// actuators stopped; the other CPUs stopped and the console claimed
 /// ([`quiesce`], Kconfig `PANIC_QUIESCE`); kernel output bypassing a ring-3
-/// owner. Before wave 15 GR6 these paths only took the bypass, so another
+/// owner. Without this these paths only took the bypass, so another
 /// CPU's lines spliced their report. The caller prints its report, then
 /// [`halt_report`], then halts.
 ///

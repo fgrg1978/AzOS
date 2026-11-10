@@ -3,7 +3,7 @@
 //! `current_cpu_id()` cross-check at boot (cargo feature `cpuid-probe`, gate
 //! only; the counters live in `azos_sched::cpuid_probe`).
 //!
-//! The 2026-09-25 observation this answers: a `fork` the boot hart issued at
+//! The observation this answers: a `fork` the boot hart issued at
 //! the end of `kernel_main` printed `rc=0`. The probe checks the property that
 //! reading would need to have failed — `current_cpu_id()` on that hart, at
 //! that position, while the secondaries run tasks — and keeps checking every

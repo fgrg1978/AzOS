@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Wave 15 (TRACE): what one tracepoint costs, measured at boot (cargo
+//! What one tracepoint costs, measured at boot (cargo
 //! feature `trace-cost-probe`, never in a shipped build).
 //!
 //! Runs on the boot CPU right after the tracer is installed, before any

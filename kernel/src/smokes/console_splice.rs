@@ -129,7 +129,7 @@ pub(crate) fn console_splice_kprint_task(_arg: usize) {
         // is well under what the QEMU UART drains (≈ 265 B/ms, from
         // latbench's 241 µs / 64 B). While ring 3 owns the console a
         // `kprintln!` is a memcpy, so an unpaced loop floods the buffer and
-        // measures only the drop policy — which it passes too (2026-09-28,
+        // measures only the drop policy — which it passes too (
         // 200 µs pacing, ≈ 2x the wire for 60 s: 2000/2000 ring-3 lines,
         // every kernel line on the wire whole, every missing one covered by a
         // `[CONSOLE] dropped` report), but a gate row should see no drops.

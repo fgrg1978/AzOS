@@ -313,7 +313,7 @@ pub fn cpu_features(_fw: &()) {
     // The entropy pool's CPU seed source (Kconfig X86_RDSEED, X86_RDRAND):
     // RDSEED, else RDRAND; `install_entropy` draws from it.
     azos_arch::seed::select(p::RDSEED.gate(f.rdseed), p::RDRAND.gate(f.rdrand));
-    // `SpinWait`'s wait hint (wave 15, N2): UMONITOR/UMWAIT when
+    // `SpinWait`'s wait hint: UMONITOR/UMWAIT when
     // X86_WAITPKG allows and CPUID says so. Canary `spin-ext-claim`: claimed
     // whatever CPUID says, so without WAITPKG the first contended wait #UDs.
     let wp = azos_arch::spin::select(f.waitpkg || canary!("spin-ext-claim"));

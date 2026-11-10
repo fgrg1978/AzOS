@@ -112,7 +112,7 @@ pub(crate) fn install_entropy(dtb_ptr: usize) {
     }
     for b in seed.iter_mut() { *b = 0; }
     azos_net::set_random_source(crate::boot::entropy_pool::pool_fill);
-    // Wave 9 (P9): ring 3's door onto the same pool (the kernel-hosted `entropy` endpoint,
+    // Ring 3's door onto the same pool (the kernel-hosted `entropy` endpoint,
     // `crates/core/syscall/src/entropy.rs`). Installed here, after the seed read,
     // so the first ring-3 caller sees this boot's final seeded state.
     azos_syscall::entropy::set_entropy_hooks(
@@ -160,8 +160,7 @@ fn entropy_seed_store(rec: &[u8]) -> Result<bool, ()> {
     }
 }
 
-/// Persisted entropy seed (U09-8, owner decision 2026-09-26 V1.2; wired in
-/// wave 11): read the seed sector from the reserved tail
+/// Persisted entropy seed: read the seed sector from the reserved tail
 /// (`reserved_tail::ENTROPY_SEED`), mix it into the pool, and
 /// IMMEDIATELY overwrite it with a fresh record drawn from the pool, so a seed
 /// is never used twice even if this boot crashes a moment later.

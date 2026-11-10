@@ -203,7 +203,7 @@ config CONSOLE_DEFER_BYTES
       wait here (crates/drivers/sys/src/uart.rs, DEFER_BYTES). A full
       buffer drops lines and prints "[CONSOLE] dropped", which fails every
       gate row. 8192 is 1.9x the largest high-water mark measured
-      (4257 B, aarch64 -smp 2 splice stress, 2026-09-28).
+      (4257 B, aarch64 -smp 2 splice stress).
 
       Cost: 1 B of RAM per byte (DEFER, .bss), the same on riscv64 and aarch64:
       8,240 B at the default.

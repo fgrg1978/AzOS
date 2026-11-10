@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Spin-wait and compare-and-swap (wave 15, N2): the only way a kernel
+//! Spin-wait and compare-and-swap: the only way a kernel
 //! spinner (`SpinLock`, in its test-and-set and queued/MCS forms) touches the
 //! CPU's wait hints and its CAS instruction.
 //!

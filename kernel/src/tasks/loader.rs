@@ -147,7 +147,7 @@ fn served_endpoint(path: &[u8]) -> Option<&'static [u8]> {
 }
 
 pub(crate) fn load_and_exec_image(path_slice: &[u8]) {
-    // Q1.4 (owner decision, 2026-09-25): defense-in-depth beside gate_speed's
+    // Q1.4: defense-in-depth beside gate_speed's
     // own fail-closed default -- no ring-3 program starts until the actuation
     // gate is installed, so an ordering bug stops motors instead of moving them.
     if !azos_actuation::gate::gate_installed() {
@@ -157,7 +157,7 @@ pub(crate) fn load_and_exec_image(path_slice: &[u8]) {
             azos_actuation::logger::SAFETY_ACTUATION_GATE_ABSENT, 0, 0);
         return;
     }
-    // Safe mode (owner decision 2026-09-28): no ring-3 program runs.
+    // Safe mode: no ring-3 program runs.
     if azos_actuation::estop::safe_mode_active() {
         azos_drv_sys::kwarn!("[AUTORUN] REFUSED: safe mode -- {} not started",
             core::str::from_utf8(path_slice).unwrap_or("?"));
@@ -279,7 +279,7 @@ pub(crate) fn load_and_exec_image(path_slice: &[u8]) {
         let tid = azos_sched::current_task_tid();
         let mut minted = 0u32;
         let mut skipped = 0u32;
-        // Wave 13 (NATFORK): a fork child of this task is seeded from the same row.
+        // A fork child of this task is seeded from the same row.
         azos_syscall::natfork::record_row_named(tid, b"autorun");
         match azos_topology::get() {
             Some(topo) => match topo.find_task(&azos_topology::MaybeStr::from_bytes(b"autorun")) {
@@ -318,7 +318,7 @@ pub(crate) fn load_and_exec_image(path_slice: &[u8]) {
                         use azos_ipc::cap_seed::SeedOutcome;
                         match azos_ipc::cap_seed::seed_one_cap_ops(
                             tid, cap.kind,
-    // O3.4 (2026-09-26): topology grants carry `transfer = true` to be giftable.
+    // O3.4: topology grants carry `transfer = true` to be giftable.
     cap.grant_perms(),
     target,
     cap.ops,
@@ -432,7 +432,7 @@ pub(crate) fn load_and_exec_image(path_slice: &[u8]) {
     // of itself.
     drop(staging);
     azos_sched::process::exec_commit(prepared);
-    // Wave 13 (orphans): the autorun image is init, the reaper of last resort
+    // The autorun image is init, the reaper of last resort
     // for a user task's orphaned children. Both ISAs pass here (aarch64
     // consumes the exec hand-off in its trap path, not below). A supervised
     // successor runs this body too and takes the role over.
@@ -461,10 +461,10 @@ pub(crate) fn load_and_exec_image(path_slice: &[u8]) {
         other => azos_drv_sys::kwarn!("[AUTORUN] seccomp: a filter was already in force (rc={}); kept",
             other),
     }
-    // Wave 7 — the program's scheduling class and priority, from the signed
+    // The program's scheduling class and priority, from the signed
     // topology: the row named after its IMAGE (the key `SYS_SPAWN_EX` uses), else
-    // the generic `autorun` row. Until wave 7 nothing read either: every
-    // autorun program ran at `AUTORUN_PRIORITY` whatever its row declared.
+    // the generic `autorun` row. Without this, every
+    // autorun program would run at `AUTORUN_PRIORITY` whatever its row declared.
     // After `exec_user` like the filter, so a failed exec changes nothing; the
     // loader itself ran at `AUTORUN_PRIORITY` up to here.
     {
@@ -473,7 +473,7 @@ pub(crate) fn load_and_exec_image(path_slice: &[u8]) {
         match topo_sched::resolve_image(profile.image, Some("autorun")) {
             (TopoSched::Apply { priority, class, declared, floored, rt }, row) => {
                 // A band row with a reservation but demand-paged memory never
-                // enters the band (wave 11): `resolve` already floored it.
+                // enters the band: `resolve` already floored it.
                 if topo_sched::row_band_entry(row.as_bytes())
                     == Some(azos_topology::BandEntry::NotLocked)
                 {
@@ -483,7 +483,7 @@ pub(crate) fn load_and_exec_image(path_slice: &[u8]) {
                         azos_actuation::logger::SAFETY_TOPO_CLASS_REFUSED,
                         topo_sched::SITE_AUTORUN_RT, tid);
                 }
-                // Wave 11 SCHED-RT: a profiled row's reservation first, the
+                // A profiled row's reservation first, the
                 // band only with it; refused, the floor and a record.
                 let priority = match rt {
                     Some(r) => {
@@ -555,7 +555,7 @@ pub(crate) fn load_and_exec_image(path_slice: &[u8]) {
 /// never fire only while it is strictly larger than `MAX_VAL`.
 ///
 /// That margin is what the assert below holds. Raising `MAX_VAL` past 63
-/// would otherwise bring back the 2026-08-20 bug (`/fat/BRAINCLI.ELF` cut to
+/// would otherwise bring back an old bug (`/fat/BRAINCLI.ELF` cut to
 /// `/fat/BRAINCLI.EL`, surfacing as "[AUTORUN] File not found") at a cut
 /// point with no counter behind it. The build fails instead.
 // Shared by every ISA — `autorun_task` itself lost its riscv64-only gate for

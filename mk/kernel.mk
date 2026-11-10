@@ -178,7 +178,7 @@ vf2-console:
 # U12-2: same fix as $(VF2_KCONFIG) above, for K1's own profile.
 K1_KCONFIG := $(OUT_BUILD)/k1.config
 
-# The fleet profile expanded on its own (wave 15): `build-fleet` expands it
+# The fleet profile expanded on its own: `build-fleet` expands it
 # into the workspace .config (`defconfig-generic-server-riscv64+board-generic`); its volume's topology is
 # emitted from this copy, which the same defconfig yields.
 $(OUT_BUILD)/fleet.config: config/defconfigs/generic-server-riscv64+board-generic.config \
@@ -408,7 +408,7 @@ aarch64: $(AARCH64_KCONFIG) $(IMAGE_HASHES_AARCH64)
 	@echo "[AARCH64] Built $(AARCH64_IMG)"
 	@$(MAKE) --no-print-directory prune
 
-# ── Raspberry Pi 5 (BCM2712, aarch64) ───────────────────────────────────────
+# ── Raspberry Pi 5 (aarch64) ───────────────────────────────────────
 # `make defconfig-robot-sbc-aarch64+rpi5` selects the board in .config. `make rpi5` expands the
 # same profile into build/rpi5.config, builds the aarch64 kernel from it and
 # writes the flat Image the Pi firmware loads, build/rpi5/kernel8.img: copy it

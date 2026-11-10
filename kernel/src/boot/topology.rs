@@ -9,14 +9,13 @@ use crate::*;
 /// Install the static topology before any task that mints a capability
 /// from it can run.
 ///
-/// Shared between both `kernel_main`s (riscv64 called this in place until
-/// 2026-09-22; aarch64 never called it at all, which is why `captest` and
+/// Shared between both `kernel_main`s (riscv64 called this in place; aarch64 never called it at all, which is why `captest` and
 /// `abitest`'s topology-seeded checks — `cap_lookup(Endpoint, ...)` for
 /// `endpoint.demo` among them — failed there: `azos_topology::get()`
 /// returned `None`, and the autorun cap-seed bridge logs "topology not
 /// installed — nothing minted" instead of granting anything).
 ///
-/// Wave 15 (TOPOSIGN): the topology comes from the volume when Kconfig
+/// The topology comes from the volume when Kconfig
 /// `TOPOLOGY_SOURCE` says so — `/fat/CAPS.TOM` + `CAPS.SIG` and
 /// `/fat/SCHED.TOM`: one signature over CAPS.TOM, whose top-level binding
 /// names SCHED.TOM's SHA-256, this device's id and a counter no lower than
@@ -327,7 +326,7 @@ fn read_topo_floor() -> u64 {
 /// A failed write leaves the old floor: an older signed topology stays
 /// acceptable until a later boot raises it (CONFIG.SIG v2's rule). A write the
 /// device cannot confirm durable (no cache control) is not claimed raised
-/// either (owner decision 2026-10-23, Q2): the boot goes on and a
+/// either: the boot goes on and a
 /// `Rule::Durability` record says so.
 fn raise_topo_floor(old: u64, new: u64) {
     use azos_drv_api::block::Durability;
@@ -736,7 +735,7 @@ fn kernel_reserve_pages() -> u64 {
         + azos_topology::units_for(azos_limits::MAX_TASKS as u64, azos_arch_api::PAGE_SIZE as u64)
 }
 
-/// Wave 9: only a row whose image can fork pays for a COW copy. The image's
+/// Only a row whose image can fork pays for a COW copy. The image's
 /// seccomp profile decides (`seccomp::profile_can_fork`); the generic
 /// `autorun` row and a row naming no shipped image are assumed to fork, since
 /// any image may run under them.

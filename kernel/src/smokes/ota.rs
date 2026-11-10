@@ -30,8 +30,7 @@ pub(crate) fn orderly_reboot_smoke_task(_: usize) {
     azos_syscall::handlers::reboot_orderly();
 }
 
-/// Gate rows `power-off: the kernel's sync keeps a written file` (owner
-/// decision 2026-10-23, Q1). Waits past sys-wdt's boot-good mark (an
+/// Gate rows `power-off: the kernel's sync keeps a written file`. Waits past sys-wdt's boot-good mark (an
 /// unconfirmed boot's OTA void syncs the volume by itself and would hide a
 /// missing sync), writes `/fat/DURSMOKE.TXT` through the VFS (a close only
 /// queues it in the write-back cache), and calls `power_off_orderly` at once:

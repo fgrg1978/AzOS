@@ -119,7 +119,7 @@ pub trait Cpu: Send + Sync {
 
     /// Read the monotonic tick counter.
     ///
-    /// Owner decision 2026-09-20. Units are platform-defined and the kernel
+    /// Units are platform-defined and the kernel
     /// only needs monotonicity — the same contract
     /// [`Interrupts::set_timer_deadline`] states, and deliberately the same
     /// timebase, so a deadline can be computed from a reading without a
@@ -150,7 +150,7 @@ pub trait Cpu: Send + Sync {
         true
     }
 
-    // ── Per-CPU base register (wave 15, NRCPUS) ─────────────────────────
+    // ── Per-CPU base register (NRCPUS) ─────────────────────────
     //
     // The register the kernel keeps per CPU and never lets ring 3 change
     // under it: `tp` on riscv64 (rebuilt on every trap from U-mode),
@@ -214,7 +214,7 @@ pub trait Cpu: Send + Sync {
 /// method for why. This note used to say it was NOT in the trait surface at
 /// all, because reading the counter was "the timer-driver's job". That was
 /// wrong about this tree: the RISC-V read is a bare `rdtime` and the aarch64
-/// one an `mrs CNTVCT_EL0`, both ISA instructions. Corrected 2026-09-20.
+/// one an `mrs CNTVCT_EL0`, both ISA instructions. Corrected.
 /// Programming the next deadline stays here, because that genuinely does go
 /// through SBI / the generic timer / the APIC.
 pub trait Interrupts: Send + Sync {
@@ -232,7 +232,7 @@ pub trait Interrupts: Send + Sync {
     /// is not: `sstatus` also carries `SPIE`, `SPP`, `FS`, `SUM` and `MXR`,
     /// so a blanket write-back of the saved word reverts whatever else
     /// changed while interrupts were off. The RISC-V impl did exactly that
-    /// until 2026-09-21; it is a read-modify-write of `SIE` alone now, which
+    /// once; it is a read-modify-write of `SIE` alone now, which
     /// is what this sentence always promised and what the hand-written
     /// call sites in `sched`/`sync` were already doing.
     fn restore(&self, prev: InterruptState);
@@ -330,7 +330,7 @@ const _: () = assert!(core::mem::align_of::<PageAlign>() == PAGE_SIZE);
 /// Cross-ISA virtual-memory operations: page-table *entry encoding* for a
 /// level-aware, multi-level radix tree.
 ///
-/// # Design (owner decision, B2 — page-table abstraction)
+/// # Design (B2 — page-table abstraction)
 ///
 /// `crates/core/mm` owns the page-table WALK (allocating tables, deciding when
 /// to split a superpage, COW/demand-paging policy); `arch` owns only the

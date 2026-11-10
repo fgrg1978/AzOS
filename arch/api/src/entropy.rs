@@ -11,8 +11,8 @@
 //!
 //! Whether the bytes are credited is Kconfig `ENTROPY_CPU_SOURCE`
 //! ([`CpuCredit`]): `credit`, `mix-only`, or `off` (never read). Under
-//! `credit` each instruction is credited at its own rate ([`Source::credit`],
-//! owner decision 2026-10-23), not 1:1 across the board as Linux's
+//! `credit` each instruction is credited at its own rate ([`Source::credit`]),
+//! not 1:1 across the board as Linux's
 //! `RANDOM_TRUST_CPU` does:
 //!
 //! | Source   | Credit | Why |

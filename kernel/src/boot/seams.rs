@@ -22,8 +22,7 @@ compile_error!("Kconfig LINUX_RUNTIME hosts the Linux personality on riscv64, aa
 /// user process maps read-only at `VDSO_USER_BASE` so ring 3 can read
 /// kernel time data without an ecall/svc.
 ///
-/// Shared between both `kernel_main`s (riscv64 called this in place until
-/// 2026-09-22; aarch64 never called it at all — `azos_mm::vdso::
+/// Shared between both `kernel_main`s (riscv64 called this in place; aarch64 never called it at all — `azos_mm::vdso::
 /// vdso_phys()` stayed 0 there, so `crates/core/sched/src/process.rs`'s exec
 /// path found `vdso_phys != 0` false and silently skipped the map on every
 /// aarch64 process; `abitest` then took a page fault the moment it read
@@ -43,7 +42,7 @@ pub(crate) fn install_vdso(timebase_hz: u64, counter_scale: Option<(u64, u64, u6
         // which `spawn` maps into every Linux process.
         #[cfg(feature = "linux-runtime")]
         azos_sched::foreign::set_runtime_image(LINUX_RUNTIME_ELF);
-        // Wave 13: the riscv64 sigreturn trampoline Linux handlers return to
+        // The riscv64 sigreturn trampoline Linux handlers return to
         // (a no-op on aarch64 and without the personality).
         #[cfg(feature = "linux-abi")]
         azos_mm::vdso::sigtramp_init(&azos_linux_abi::signal::RV_SIGRETURN_CODE);
@@ -179,7 +178,7 @@ pub(crate) fn sha256_follows(bit: u64) -> bool {
     }
 }
 
-/// The vDSO `hwcap` word (wave 13; the AT_HWCAP analogue): what this CPU
+/// The vDSO `hwcap` word (the AT_HWCAP analogue): what this CPU
 /// implements, from the ID registers (aarch64), CPUID (x86_64) or the
 /// device tree (riscv64), never from build flags, under each extension's
 /// Kconfig policy. An extension the OS must switch on for ring 3 is
@@ -344,7 +343,7 @@ pub(crate) fn note_dtb_isa(zbb: bool, zbc: bool, zknh: bool, v: bool) {
 }
 
 /// The kernel's SHA-256 (module verify, image digests) on the CPU's SHA-2
-/// instructions when the hwcap word says it has them (wave 13): aarch64
+/// instructions when the hwcap word says it has them: aarch64
 /// FEAT_SHA256, riscv64 Zknh, else riscv64 Zbb rotates, else generic. Each
 /// path is kept only after its self-test (`azos_crypto::sha256`). Runs at
 /// boot, before anything else hashes, and again if a CPU narrows the word.
@@ -523,7 +522,7 @@ pub(crate) fn install_ring3_seams() {
         /// opened keeps `FD_NO_OWNER`, which no ring-3 tid can equal —
         /// `fd_set_owner` refuses to stamp that value.
         ///
-        /// Wave 13: the owner is the PROCESS (`current_proc_tid`), so every
+        /// The owner is the PROCESS (`current_proc_tid`), so every
         /// thread of a process uses its descriptors.
         #[inline]
         fn fd_caller_may_use(t: &azos_fs::FdTable, fd: i32) -> bool {
@@ -553,9 +552,9 @@ pub(crate) fn install_ring3_seams() {
             azos_fs::fd_count_owned(t, tid) < azos_fs::MAX_FDS_PER_TASK
         }
 
-        /// Gate canary `fd-table-pi-canary` (owner rule F1): the device part
+        /// Gate canary `fd-table-pi-canary`: the device part
         /// of a descriptor operation runs with `KERNEL_FD_TABLE` held again,
-        /// the shape before wave 15; the `lat-fat` smoke's `pi_io_site` must
+        /// the locked shape; the `lat-fat` smoke's `pi_io_site` must
         /// name the table.
         #[inline(always)]
         fn fd_canary_hold() -> Option<azos_sync::kmutex::MutexGuard<'static, azos_fs::FdTable>> {
@@ -563,8 +562,7 @@ pub(crate) fn install_ring3_seams() {
         }
 
         /// Close `fd` (already checked by the caller, under `t`): the slot
-        /// under the lock, the flush of a dirty proxy outside it (owner rule
-        /// F1: `KERNEL_FD_TABLE` is a `Mutex`, never held across a device
+        /// under the lock, the flush of a dirty proxy outside it (`KERNEL_FD_TABLE` is a `Mutex`, never held across a device
         /// wait). Takes the guard and releases it.
         fn fd_close_unlocked(
             mut t: azos_sync::kmutex::MutexGuard<'_, azos_fs::FdTable>, fd: i32,
@@ -661,7 +659,7 @@ pub(crate) fn install_ring3_seams() {
                 // descriptor still open (`args > f`) — freeing the slot raw
                 // lost the file. What `vfs_close` misses is still reclaimed.
                 // One descriptor at a time, each flushed with the table
-                // released (owner rule F1, `fd_close_unlocked`).
+                // released (`fd_close_unlocked`).
                 //
                 // Every task exit comes here and most exiting tasks own no
                 // descriptor: one acquisition says so, instead of MAX_FDS + 1
@@ -822,7 +820,7 @@ pub(crate) fn install_ring3_seams() {
                 total
             }
 
-            /// Wave 14 (SPAWNCACHE): `read_whole` in runs of at most
+            /// `read_whole` in runs of at most
             /// [`HASH_RUN`] bytes, each handed to `sink` as soon as it is in
             /// `dst`.
             fn read_whole_with(&self, path: &[u8], dst: &mut [u8], sink: &mut dyn FnMut(&[u8])) -> usize {
@@ -1029,7 +1027,7 @@ pub(crate) fn install_ring3_seams() {
             crate::boot::tpm::shutdown();
         }
         azos_syscall::handlers::set_orderly_devices_hook(orderly_devices_down);
-        // Owner decision 2026-09-28: an orderly reboot or power-off before the
+        // An orderly reboot or power-off before the
         // boot is confirmed voids this boot's mark instead of counting as a
         // crash (`ota_void_unconfirmed_boot`, with the A/B slots). The shell
         // calls it directly; `sys_reboot`/`sys_shutdown` reach it through this
@@ -1047,7 +1045,7 @@ pub(crate) fn install_ring3_seams() {
             core::sync::atomic::Ordering::Relaxed);
     }
 
-    // Wave 12: the flight/behavior/config/OTA typed calls run
+    // The flight/behavior/config/OTA typed calls run
     // the console's own command bodies (`azos_recovery::families`), which a
     // core crate cannot name. Installed with the other seams, before any
     // ring-3 task exists; without the Robot domain flight and behavior
@@ -1094,7 +1092,7 @@ pub(crate) fn install_ring3_seams() {
     if let Err(e) = azos_actuation::providers::install(&azos_kill_switch::KILL_SWITCH) {
         panic!("the kill switch was refused by the provider table: {:?}", e);
     }
-    // The part every domain shares (wave 11): recorders, ring-3 e-stop, and
+    // The part every domain shares: recorders, ring-3 e-stop, and
     // the `gate_installed` flag the loader checks. After the robot's install,
     // so a robot image prints the same lines in the same order as before.
     azos_actuation::gate::install();

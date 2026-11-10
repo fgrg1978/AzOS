@@ -14,8 +14,7 @@
 //! answer, a pure function the host suite covers:
 //!
 //! * nothing signed was ever accepted on this device (no record, or floor 0):
-//!   factory defaults, kill switch pin forced to the fail-closed value — the
-//!   behaviour before wave 11;
+//!   factory defaults, kill switch pin forced to the fail-closed value;
 //! * a signed CONFIG.INI WAS accepted here before (floor >= 1) and its
 //!   authority is gone now — the file or its sidecar deleted, tampered, an
 //!   older counter (replay), another device's sidecar, a v1 sidecar: factory
@@ -51,7 +50,7 @@ pub(crate) fn tail_writable() -> bool {
 pub(crate) fn read_device_record() -> Option<DeviceRecord> {
     // The id never changes within a boot; the floor in it only changes
     // through `write_floor`, which updates this copy too. Read once: the
-    // topology install (wave 15) binds to the same id CONFIG.SIG v2 does.
+    // topology install binds to the same id CONFIG.SIG v2 does.
     // SAFETY: boot hart only, before any other task exists.
     unsafe {
         if let Some(r) = DEVICE_RECORD {
@@ -82,7 +81,7 @@ const FLOOR_RECORD_CONFIG: u32 = 2;
 
 /// A floor written to the reserved tail whose flush the device answered
 /// `Unsupported` (no cache control): not claimed raised, the boot goes on,
-/// and a `Rule::Durability` refusal says so (owner decision 2026-10-23, Q2;
+/// and a `Rule::Durability` refusal says so (
 /// `azos_drv_api::block::Durability::Unconfirmed`). `what` names the floor in
 /// the console line.
 pub(crate) fn floor_unconfirmed(record: u32, what: &str, from: u64, to: u64) {

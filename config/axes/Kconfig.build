@@ -3,7 +3,7 @@
 # config/axes/Kconfig.build — The BUILD_TYPE axis and the test machinery (ktest, canaries, chaos, census, boot bench)
 
 # ---------------------------------------------------------------------------
-# Build type (owner decision, wave 15)
+# Build type
 # ---------------------------------------------------------------------------
 
 choice
@@ -172,7 +172,7 @@ config BOOT_SELFTESTS
       each ISA with it off. Development builds only (BUILD_TYPE).
 
 # ---------------------------------------------------------------------------
-# In-kernel test registry (wave 15)
+# In-kernel test registry
 # ---------------------------------------------------------------------------
 
 config KTEST
@@ -487,7 +487,7 @@ config SPAWN_LOG
     help
       Prints a successful spawn's `[SPAWN] tid=...` and `[SPAWN][PRIO]`
       lines and every exec's `[VDSO] mapped` line (console output only in
-      debug builds, the owner's rule). Refusals, floors, aborts and
+      debug builds). Refusals, floors, aborts and
       fallbacks print whatever this says.
 
 config FLIGHT_TOOL_DRIVETRAIN

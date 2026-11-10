@@ -918,7 +918,7 @@ pub fn system_reset() -> ! {
 /// is capped (`MAX_DEPTH`) so a blob with no matching `END_NODE` can't
 /// either.
 ///
-/// Audited 2026-09-23 against the DTB parser's own adversarial checklist
+/// Audited against the DTB parser's own adversarial checklist
 /// (header/bounds consistency, unterminated nodes, property lengths past
 /// the end, string-table offsets outside the strings block, depth,
 /// arithmetic): every arithmetic step already used `checked_add`/
@@ -1057,7 +1057,7 @@ pub unsafe fn select_conduit_from_fdt(fdt_ptr: u64) -> bool {
     };
     // `size_dt_strings`/`size_dt_struct` (header words 8/9, offsets 32/36 —
     // within the same 40-byte `head` already read above, so this costs no
-    // extra memory access). Audited 2026-09-23: the walk below already
+    // extra memory access). Audited: the walk below already
     // bounds-checks every read against `total_len`, so an over-long
     // struct/strings block could never cause an out-of-bounds read or a
     // panic — but without these two fields it also never enforced the

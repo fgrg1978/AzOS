@@ -75,7 +75,7 @@ fn boot_count_loaded(v: &azos_ota::BootValidation) {
     }
     let wrong_set = BOOT_SET_REFUSED.load(core::sync::atomic::Ordering::Acquire);
     if reason.should_enter() || exhausted || wrong_set {
-        // Owner decision 2026-09-28: SAFE MODE. Every actuator path is held
+        // SAFE MODE. Every actuator path is held
         // from here on (`estop_is_active()` answers true for the whole boot,
         // and nothing clears it); autorun, the topology's ring-3 drivers and
         // the ML service are not started; sys-wdt does not confirm the boot
@@ -143,7 +143,7 @@ fn boot_count_loaded(v: &azos_ota::BootValidation) {
 /// or the slot, they read the console (and, under `secure-boot-enforced`,
 /// a rejected slot never returns from here at all).
 pub(crate) fn boot_validate_and_verify_slots() {
-    // `Boot::reboot` — owner decision 99's reset below. In scope here
+    // `Boot::reboot` — the reset below. In scope here
     // rather than at the top of the file so the `#[cfg]`-gated body is
     // the only thing that needs it.
     #[cfg(feature = "secure-boot-enforced")]
@@ -329,7 +329,7 @@ pub(crate) fn boot_validate_and_verify_slots() {
             loop { azos_arch::Cpu::wait_for_interrupt(&azos_arch::ARCH); }
         }
 
-        // OWNER DECISION, 2026-09-19 — verify the slots we are NOT
+        // Verify the slots we are NOT
         // running, and record the ones that fail so nothing can select
         // them later.
         //

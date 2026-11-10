@@ -125,7 +125,7 @@ impl ArchEntry for Entry {
     /// `sie.SSIE` was clear, so the wake waited for the next tick (vsbench
     /// `ipc-rt`: 5-15 ms against Linux's 276-417 us, gone at `-smp 1`).
     ///
-    /// `SEIE` (wave 10 IRQ5): a ring-3 line is routed to the hart its binding
+    /// `SEIE`: a ring-3 line is routed to the hart its binding
     /// task is pinned to (`azos_drv_irqchip::user_irq`), so every hart claims
     /// external interrupts. PLIC: this hart's S-context threshold 0 (OpenSBI
     /// leaves 7, "mask all"; the global priorities, set once by the boot

@@ -128,7 +128,7 @@ fn dump_sched_counters() {
     // passes byte-identically whether the hint fires on every exchange or on
     // none of them. Without a count, a hand-off that silently stopped working
     // would leave the whole suite green.
-    // Owner decision 102. Printed beside the hand-off counters for the same
+    // Printed beside the hand-off counters for the same
     // reason: a budget that never refuses anything and a budget that is not
     // wired look identical from every functional test. `refused` must stay 0
     // on a healthy boot — a non-zero value means a legitimate program hit the
@@ -138,7 +138,7 @@ fn dump_sched_counters() {
     kprintln!("[SCHED-DBG]   mem quota refused={} grew={} peak_live={} (tid={}) peak_ever={}",
         azos_sched::mm_quota_refusals(), azos_sched::mm_budget_growths(), peak_pages, peak_tid,
         azos_sched::mm_peak_global());
-    // Wave 9: spawns and execs refused past their row's `instances`.
+    // Spawns and execs refused past their row's `instances`.
     kprintln!("[SCHED-DBG]   mem instances refused={}",
         azos_sched::scheduler::mm_instance_refusals());
     // Scan unit 3, the half that was left open: a COW break adds a frame to a
@@ -157,7 +157,7 @@ fn dump_sched_counters() {
     // task (`scheduler::ipc_wake_then_block`) instead of through the run
     // queue. Evidence the path fires on a census kernel; not asserted.
     kprintln!("[SCHED-DBG]   fast-ipc direct={}", azos_sched::scheduler::ipc_direct_switches());
-    // Kernel output deferred behind a ring-3 console owner (wave 9): the
+    // Kernel output deferred behind a ring-3 console owner: the
     // buffer's high-water mark against `uart::DEFER_BYTES`, and lines dropped
     // for want of room. Not asserted here; a drop prints its own
     // `[CONSOLE] dropped` line, which every gate row fails on.
@@ -227,7 +227,7 @@ fn kernel_line(irq: u32) -> bool {
         // would add a wake to the stop's latency.
         woke
     } else if let Some(woke) = azos_drv_virtio::virtio::blk::irq(irq) {
-        // Wave 15: a disk request completed; its waiter sleeps until this
+        // A disk request completed; its waiter sleeps until this
         // wake (`boot::blk_irq`).
         woke
     } else if let Some(woke) = {
@@ -319,7 +319,7 @@ pub(crate) fn kernel_line_bottom_half(irq: u32) {
 #[cfg(target_arch = "riscv64")]
 pub(crate) fn handle_interrupt(frame: &mut TrapFrame, cause: usize) {
     crate::trap::irq::arm::<Kernel, TrapFrame>(frame, |frame| {
-        // Wave 15 (TRACE): the irq class, around the whole dispatch; the id is
+        // The irq class, around the whole dispatch; the id is
         // the `scause` interrupt code (5 timer, 9 external, 1 software).
         azos_trace::irq_entry(cause as u32);
         handle_interrupt_inner(frame, cause);
@@ -401,7 +401,7 @@ fn handle_interrupt_inner(_frame: &mut TrapFrame, cause: usize) {
                 let irq = azos_drv_irqchip::irqchip::claim(hart as u32);
                 if irq != 0 {
                     // A line a ring-3 driver bound is delivered
-                    // mask-until-ACK (wave 9 IRQ4, `azos_drv_irqchip::
+                    // mask-until-ACK (`azos_drv_irqchip::
                     // user_irq`): masked BEFORE the completion below, so a
                     // level device the driver has not quietened yet is not
                     // taken again on this handler's return; its
@@ -414,10 +414,10 @@ fn handle_interrupt_inner(_frame: &mut TrapFrame, cause: usize) {
                     if user {
                         #[cfg(not(feature = "irq-mask-canary"))]
                         azos_drv_irqchip::user_irq::mask(irq);
-                        // Which hart took it (wave 10 IRQ5): the first ACK
+                        // Which hart took it: the first ACK
                         // after a bind reports it.
                         azos_drv_irqchip::user_irq::note_taken(irq, hart as u32);
-                        // Probe (wave 10 IRQ5 item 3): re-initialise this
+                        // Probe: re-initialise this
                         // hart's interrupt controller while the line is held
                         // masked. `plic::init` must not rewrite the global
                         // priorities again, or captest's "line held masked
@@ -465,7 +465,7 @@ fn handle_interrupt_inner(_frame: &mut TrapFrame, cause: usize) {
             // `cpu_enqueue_locked`, ringing a hart that has just been given a
             // ready task.
             //
-            // **The TLB shootdown does not arrive here.** It exists since wave 8
+            // **The TLB shootdown does not arrive here.** It exists
             // (`arch/riscv/src/tlb.rs`) and its remote half is SBI
             // `remote_sfence_vma`: OpenSBI runs the `sfence.vma` on the target
             // hart in M-mode and waits for it, so this S-mode arm never sees a

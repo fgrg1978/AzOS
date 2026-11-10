@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The futex table's requeue (wave 15 N9, Kconfig FUTEX_REQUEUE), every ISA.
+//! The futex table's requeue (Kconfig FUTEX_REQUEUE), every ISA.
 //!
 //! * `futex_requeue_wakes_one_not_the_herd`: kernel tasks wait on a
 //!   condition word (a shared key); a `CMP_REQUEUE` wakes one and moves the

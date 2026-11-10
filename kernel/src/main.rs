@@ -50,7 +50,7 @@ mod powermon;
 // Who has the console, the ring-3 user shell or the recovery console.
 mod console_mode;
 
-// The Robot application domain (wave 11, DOMAIN): a .config that selects
+// The Robot application domain (DOMAIN): a .config that selects
 // USE_ROBOT must be built with the `use-robot` feature, or the image
 // would silently lack the robot it was configured for. Build through
 // tools/build/kconfig_to_cargo.py, which emits the feature from the .config. The
@@ -60,7 +60,7 @@ const _: () = assert!(
     "the .config selects USE_ROBOT but the kernel was built without the \
      `use-robot` feature: build with $(python3 tools/build/kconfig_to_cargo.py <config>)",
 );
-// Wave 15: the same rule for the two robot subsystems the .config can turn
+// The same rule for the two robot subsystems the .config can turn
 // off (config/subsys/Kconfig.robot RC_INPUT, GEOFENCE). On means compiled in.
 const _: () = assert!(
     !azos_limits::RC_INPUT || cfg!(feature = "rc-input"),
@@ -202,7 +202,7 @@ const IRQ_STACK_SIZE: usize = azos_limits::INTERRUPT_STACK_SIZE_BYTES;
 /// its tick wait: cheap, and it turns a silent corruption into a message.
 const IRQ_STACK_MAGIC: u64 = 0x4952_5153_5441_5A57; // "IRQSTAZW"
 
-// ── Per-CPU stacks (wave 15, NRCPUS) ────────────────────────────────────
+// ── Per-CPU stacks (NRCPUS) ────────────────────────────────────
 //
 // These were `.bss` arrays of `MAX_HARTS` slots — secondary boot stacks and
 // interrupt stacks, 24 KiB a CPU, 1.5 MiB at a ceiling of 64 — indexed by the
@@ -288,7 +288,7 @@ const FALLBACK_MEM_SIZE: usize = 128 * 1024 * 1024;
 use azos_limits::KERNEL_HEAP_SIZE_BYTES as HEAP_SIZE;
 
 
-// ── Per-arch boot hooks (kernel-main-merge task, 2026-09-24) ───────────────
+// ── Per-arch boot hooks (kernel-main-merge task) ───────────────
 // Declared here, not from `entry/riscv64/mod.rs` / `entry/aarch64/mod.rs`: these are
 // new sibling modules of `entry`, not submodules of it (B2-04 owns
 // `entry/riscv64/mod.rs`'s own trap-context work; this keeps the two files
@@ -355,8 +355,7 @@ pub struct EarlyBoot {
 ///   4. Hand off to the scheduler — per-ISA, see
 ///      `boot_hooks::arch_enter_scheduler`.
 ///
-/// Unified from the former riscv64/aarch64 `kernel_main`s (kernel-main-merge
-/// task, 2026-09-24; owner decision: fuse everything as-is, one shot). See
+/// Unified from the former riscv64/aarch64 `kernel_main`s (fused as-is, in one step). See
 /// `ordering-decisions.md` for the per-block reasoning, and
 /// `entry::riscv64::boot_hooks` / `entry::aarch64::boot_hooks` for what each
 /// per-arch hook does.
@@ -444,7 +443,7 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
     // The ring-3 driver, safety and refusal smokes and the fork-refusal probe (feature-gated).
     smokes::spawn_system_smokes();
 
-    // Wave 15 (TRACE): the tracer's rings, one per CPU this boot brings up,
+    // The tracer's rings, one per CPU this boot brings up,
     // created before any secondary can record; the timestamps are the raw
     // counter, unscaled, at its rate. Nothing with KTRACE off.
     {
@@ -560,7 +559,7 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
     #[cfg(not(all(feature = "boot-selftests", feature = "net")))]
     let _ = nic_present;
 
-    // Wave 15 (SLAB): the heap's size-class cache, exercised in this
+    // The heap's size-class cache, exercised in this
     // kernel's own environment (crates/core/mm/src/kheap.rs). Development
     // configurations only (`KHEAP_SLAB_DEBUG`); the gate's `kheap slab` rows
     // read this line.
@@ -636,7 +635,7 @@ pub extern "C" fn kernel_main(boot_hw_id: usize, dtb_ptr: usize) -> ! {
     // entering the scheduler) — see each `arch_enter_scheduler`'s own doc
     // for why the feed-from-ISR precondition now holds on both.
     azos_actuation::watchdog::hw_init();
-    // Wave 13 (owner decision, round 50): hart 0's idle keepalive runs only
+    // Hart 0's idle keepalive runs only
     // while a watchdog is armed. What only a timer interrupt observes — the
     // K-C25 reaper — asks for a bounded idle sleep through the idle-poll hook
     // (installed before the seal above) instead (`timebase::IDLE_POLL_US`).

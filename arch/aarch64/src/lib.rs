@@ -55,7 +55,7 @@ pub use azos_arch_api::{
 // The rest of the arch contract (`ArchPlatform`, `ArchEntry`) and the page
 // geometry, under the same ISA-neutral names on every ISA.
 pub use azos_arch_api::{ArchEntry, ArchPlatform, FirmwareMemory, PAGE_SHIFT, PAGE_SIZE};
-// Spin-wait and CAS (wave 15, N2): the trait and its ordering type.
+// Spin-wait and CAS: the trait and its ordering type.
 pub use azos_arch_api::{CasOrder, SpinWait};
 // The performance counters (`ARCH.cycles()`, `.instructions()`, `.event(sel)`).
 pub use azos_arch_api::Pmu;
@@ -88,7 +88,7 @@ pub mod seed;
 /// SMP building blocks (redistributor-walk bring-up) tying `gic` +
 /// `firmware` + `cpu` + `timer` together — see the module doc for scope.
 pub mod smp;
-// SpinWait: LSE CAS, LDAXR+WFE, LL/SC fallback (wave 15, N2).
+// SpinWait: LSE CAS, LDAXR+WFE, LL/SC fallback.
 pub mod spin;
 pub mod sysregs;
 /// The root each PE translates through, for the page-table free check.

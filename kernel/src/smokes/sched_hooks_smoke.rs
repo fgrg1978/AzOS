@@ -62,7 +62,7 @@ fn wq_producer_task(_arg: usize) {
     // Wake REPEATEDLY until the waiter reports in, instead of once.
     //
     // One `wake_one()` is a lost wake-up waiting to happen, and this
-    // smoke lost it about two runs in three (measured 2026-09-24): the
+    // smoke lost it about two runs in three (measured): the
     // producer can finish counting and wake before the waiter has
     // reached `wait()` at all, and a wake aimed at a task that is not
     // yet blocked has nowhere to land — the kernel's wake-stamp recovery

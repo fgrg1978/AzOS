@@ -173,7 +173,7 @@ impl Interrupts for Riscv64 {
 
     /// Read-modify-write of `SIE` alone.
     ///
-    /// **This wrote the whole saved `sstatus` back until 2026-09-21.** On
+    /// **This used to write the whole saved `sstatus` back.** On
     /// aarch64 that shape is right — `DAIF` is a pure mask register. On
     /// RISC-V `sstatus` is shared: `SPIE`, `SPP`, `FS`, `SUM`, `MXR` and
     /// `SD` live in the same word, so a blanket write-back reverts anything

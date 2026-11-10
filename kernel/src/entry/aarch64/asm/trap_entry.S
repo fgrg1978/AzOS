@@ -385,7 +385,7 @@ _trap_common:
 // inside `aarch64_trap_entry` itself and never gets here.
 //
 trap_return:
-    // O3.1 (owner decision 2026-09-26): closes the aarch64 analogue of the
+    // O3.1: closes the aarch64 analogue of the
     // riscv64 O3.1-nest bug (see that file's trap_return comment) BEFORE
     // touching any of ELR_EL1/SPSR_EL1/SP_EL0/TTBR0_EL1 below. AArch64 has
     // no `sscratch`-style software SP tag — SP_EL0/SP_EL1 are banked in

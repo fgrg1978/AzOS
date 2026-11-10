@@ -106,7 +106,7 @@ mod safety;
           feature = "brain-lies-smoke", feature = "cap-deny-smoke", feature = "disk-part-row",
           feature = "rc-failsafe-smoke", feature = "fence-refuse-smoke"))]
 pub(crate) use safety::*;
-// Wave 15: RC receiver and geofence wiring, one property per boot.
+// RC receiver and geofence wiring, one property per boot.
 #[cfg(any(feature = "rc-failsafe-smoke", feature = "rc-stick-smoke", feature = "fence-refuse-smoke"))]
 mod rc_fence;
 #[cfg(any(feature = "rc-failsafe-smoke", feature = "rc-stick-smoke", feature = "fence-refuse-smoke"))]
@@ -193,10 +193,10 @@ pub(crate) mod ipc_handover;
 pub(crate) mod irqoff_bounds;
 #[cfg(feature = "ktest")]
 pub(crate) mod ipc_fastpath;
-// Wave 15 N9: the futex requeue wakes one waiter, not the herd.
+// The futex requeue wakes one waiter, not the herd.
 #[cfg(feature = "ktest")]
 pub(crate) mod futex_requeue;
-// Wave 15 N10w (Kconfig FUTEX_PI): an RT LOCK_PI waiter boosts
+// An RT LOCK_PI waiter boosts
 // the fair owner of the word through the futex table; UNLOCK_PI restores it.
 #[cfg(feature = "ktest")]
 pub(crate) mod futex_pi;
@@ -256,7 +256,7 @@ pub(crate) mod ioring_k1;
 #[cfg_attr(not(any(all(feature = "tlb-smoke", not(feature = "ktest")), feature = "lat-smoke")),
            allow(unused_variables))]
 pub(crate) fn spawn_sched_smokes(num_cpus: usize) {
-    // Wave 8: cross-hart TLB shootdown, observed (see `tlb_probe`). Runner on
+    // Cross-hart TLB shootdown, observed (see `tlb_probe`). Runner on
     // hart 1, toucher on hart 2 (hart 3 is net-poll's); needs >= 3 harts.
     #[cfg(all(feature = "tlb-smoke", not(feature = "ktest")))]
     {
@@ -269,38 +269,38 @@ pub(crate) fn spawn_sched_smokes(num_cpus: usize) {
         }
     }
 
-    // Wave 11 (LAT): worst-case wake-up latency under load, see `lat_smoke`.
+    // Worst-case wake-up latency under load, see `lat_smoke`.
     #[cfg(feature = "lat-smoke")]
     lat_smoke::spawn(num_cpus);
 
-    // Wave 11 (PIFAST): priority inversion through fast IPC, see the module.
+    // Priority inversion through fast IPC, see the module.
     #[cfg(feature = "pifast-smoke")]
     smokes::pifast_smoke::spawn();
-    // Wave 11 (SCHED-RT): band budget, EDF + CBS, admission, see `rt_smoke`.
+    // Band budget, EDF + CBS, admission, see `rt_smoke`.
     #[cfg(feature = "sched-rt-smoke")]
     rt_smoke::spawn();
-    // Wave 15: admitted deadlines near the admission bound, see `rt_util_smoke`.
+    // Admitted deadlines near the admission bound, see `rt_util_smoke`.
     #[cfg(feature = "sched-rt-util")]
     rt_util_smoke::spawn();
     // RT7: panic policy by profile, see `smokes::rt_panic_smoke`.
     #[cfg(feature = "rt-panic-canary")]
     smokes::rt_panic_smoke::spawn();
-    // Wave 15 GR5: a panic while another CPU floods the console, see
+    // A panic while another CPU floods the console, see
     // `smokes::panic_splice_smoke`.
     #[cfg(feature = "panic-splice-smoke")]
     smokes::panic_splice_smoke::spawn();
-    // RT7 (wave 13): a contained panic in a kernel-placed driver's host, and
+    // RT7: a contained panic in a kernel-placed driver's host, and
     // its restart, see `smokes::drv_contain_smoke`.
     #[cfg(feature = "drv-contain-smoke")]
     smokes::drv_contain_smoke::spawn();
-    // RT7 P2 (wave 13): timer sleepers racing early wakes on every hart, see
+    // RT7 P2: timer sleepers racing early wakes on every hart, see
     // `smokes::timer_heap_smoke`.
     #[cfg(feature = "timer-heap-smoke")]
     smokes::timer_heap_smoke::spawn();
-    // RT7 (wave 13): a tick deferred by a SpinLock counts as a preemption.
+    // RT7: a tick deferred by a SpinLock counts as a preemption.
     #[cfg(all(feature = "preempt-account-smoke", not(feature = "ktest")))]
     smokes::preempt_account_smoke::spawn();
-    // RT7 (wave 13): periodic-wake tail latency under ping-pong contention.
+    // RT7: periodic-wake tail latency under ping-pong contention.
     #[cfg(feature = "tail-smoke")]
     smokes::tail_smoke::spawn();
     // The energy model and the utilisation signals.
@@ -339,7 +339,7 @@ pub(crate) fn spawn_system_smokes() {
         "drv-smoke", ring3_drv_smoke::task, 0, azos_sched::DEFAULT_PRIORITY, 1,
     );
 
-    // Wave 11: the topology's `start = true` drivers killed under supervision
+    // The topology's `start = true` drivers killed under supervision
     // (`drv_supervisor::supall`).
     #[cfg(feature = "supall-smoke")]
     drv_supervisor::start_supall_smoke();
@@ -438,7 +438,7 @@ pub(crate) fn spawn_system_smokes() {
         );
     }
 
-    // Wave 15 (RC input and geofence): one property per boot, see
+    // One property per boot, see
     // `smokes::rc_fence`.
     #[cfg(feature = "rc-failsafe-smoke")]
     azos_sched::task_create("rc-failsafe-smoke", rc_failsafe_smoke_task, 0,
@@ -450,7 +450,7 @@ pub(crate) fn spawn_system_smokes() {
     azos_sched::task_create("fence-refuse-smoke", fence_refuse_smoke_task, 0,
                             azos_sched::DEFAULT_PRIORITY);
 
-    // sensor-ts-smoke (wave 11): the IMU's acquisition stamp, from the driver
+    // sensor-ts-smoke: the IMU's acquisition stamp, from the driver
     // to the bus staleness check L0 reads (see `smokes::sensor_ts`).
     #[cfg(all(feature = "sensor-ts-smoke", not(feature = "ktest")))]
     {
@@ -497,8 +497,8 @@ pub(crate) fn spawn_system_smokes() {
 
     // ── Fork-refusal probe (opt-in only; never in a normal or board build) ──
     //
-    // `sys_fork_impl` refuses from SIX distinct sites and, until 2026-09-25,
-    // every one returned a bare `-1`. That cost a week: an aarch64
+    // `sys_fork_impl` refuses from SIX distinct sites and
+    // every one used to return a bare `-1`. That cost a week: an aarch64
     // `fork+exit` `rc=-1` was mis-filed as a known gap because a `-1` in a log
     // cannot say WHICH site fired. Each site now bumps its own counter and
     // prints `[FORK] refusal site first hit: <name>` once, on the 0→1 edge.

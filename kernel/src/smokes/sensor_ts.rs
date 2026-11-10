@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! sensor-ts-smoke (wave 11, SENSORTS): the IMU's acquisition stamp, from the
+//! sensor-ts-smoke (SENSORTS): the IMU's acquisition stamp, from the
 //! driver to the staleness check the safety layer reads.
 //!
 //! Two facts, printed once on the console:

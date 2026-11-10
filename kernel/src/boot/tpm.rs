@@ -362,7 +362,7 @@ pub(crate) fn init(dtb_ptr: usize) -> bool {
 
 /// Orderly power-off or reboot, the TPM's last command
 /// (`azos_syscall::handlers::orderly_storage_down`, through the devices hook):
-/// `TPM2_Shutdown(STATE)` (owner decision 2026-10-23), so the next boot's
+/// `TPM2_Shutdown(STATE)`, so the next boot's
 /// `Startup(CLEAR)` does not count an unorderly shutdown toward the
 /// dictionary-attack lockout. The TPM leaves [`TPM`] first: nothing sends it a
 /// command after its Shutdown. Bounded by the driver's command timeouts; the
@@ -515,7 +515,7 @@ pub(crate) fn measure_topology(caps: Option<&[u8]>) {
 
 /// The NV password of the keystore secret's index: a function of the index, as
 /// the floor's is. It is built from public constants, so it is NOT a secret
-/// (audit K2-H1): what keeps the keystore root is the session lock
+///: what keeps the keystore root is the session lock
 /// [`install_keystore_root`] issues right after its read (`secret_lock`).
 fn keystore_auth() -> [u8; 32] {
     index_auth(b"azos/keystore-tpm-nv/v1.", azos_tpm::tpm::SECRET_INDEX)

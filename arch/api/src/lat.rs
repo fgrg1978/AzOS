@@ -110,7 +110,7 @@ impl Track {
 pub type NewMaxHook = fn(Kind, usize, u64, usize, usize);
 
 azos_common::ro_hook! {
-    /// Wave 15 (TRACE): called with `(kind, hart, length, open site, close
+    /// Called with `(kind, hart, length, open site, close
     /// site)` each time [`close`] measures a new longest window on a track. The
     /// kernel tracer installs it (Kconfig `KTRACE_CLASS_LAT`); unset means none.
     /// A function address rather than a dependency: this crate sits below the

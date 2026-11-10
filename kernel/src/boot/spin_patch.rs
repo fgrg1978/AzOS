@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The boot-once rewrite of the `SpinWait` probe sites (wave 15, N2b):
+//! The boot-once rewrite of the `SpinWait` probe sites:
 //! Linux's ALTERNATIVE for Kconfig RV_ZACAS / RV_ZAWRS / RV_ZIHINTPAUSE /
 //! A64_LSE at `probe` (`arch/api/src/spin.rs`,
 //! `azos_trace::jump::KIND_*_ALT`).

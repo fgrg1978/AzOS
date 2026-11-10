@@ -63,8 +63,7 @@ pub static X86_64_SMAP_ON: core::sync::atomic::AtomicU8 = core::sync::atomic::At
 ///
 /// Exactly one page, page-aligned, in `.data.ro_after_init`: the boot seals
 /// that section read-only (`azos_mm::vmm::seal_ro_after_init`) once the table
-/// is built, so no later write can redirect a vector (security audit
-/// 2026-10-17, finding D).
+/// is built, so no later write can redirect a vector.
 #[repr(C, align(4096))]
 struct Idt(UnsafeCell<[[u64; 2]; idt::VECTORS]>);
 const _: () = assert!(core::mem::size_of::<Idt>() == 4096, "the IDT is one page");

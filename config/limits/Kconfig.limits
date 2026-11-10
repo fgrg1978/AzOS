@@ -34,12 +34,12 @@ config MAX_TASKS
       the task control block (TASKS), 1,216 B riscv64 / 1,856 B aarch64.
       Static:
       2,048 B run queues (MAX_CPUS 8 x NUM_PRIORITIES 32 x one 8-byte slot;
-      wave 15: now a 4 B ready-queue link, RQ_NEXT, the queues being lists
+      Now a 4 B ready-queue link, RQ_NEXT, the queues being lists
       -- 2,044 B less per slot than the figures here, which predate it);
       on aarch64 544 B of lazy FP save area; 268 B signal state; 80 B topology
       slot; 24 B each of notify waiter and vDSO slot; 16 B each of port waiter
       and page-table tracker slot; 12 B of exit notice
-      (EXIT_NOTE: one per slot since wave 12, which retired the 32-entry
+      (EXIT_NOTE: one per slot, which retired the 32-entry
       SCHED_EXIT_NOTES); 8 B TID map, nine 4-byte
       side tables and five 1-byte flags.  All of it is .bss except the
       topology, port and TID tables, which are in .data.
@@ -197,9 +197,8 @@ config MAX_FDS_PER_PROC
       controlled a per-process anything.
 
       The real per-task ceiling is `MAX_FDS_PER_TASK` in that same file,
-      derived as half of this, mirroring `MAX_SOCKETS_PER_TASK`. Until
-      2026-09-06 there was no per-task ceiling at all and one ring-3
-      program could take every slot.
+      derived as half of this, mirroring `MAX_SOCKETS_PER_TASK`. There is a per-task ceiling so that one ring-3
+      program cannot take every slot.
 
       Not renamed here: the name reaches `.config` files and the generated
       constants, so changing it is a separate, mechanical change. The help
@@ -237,10 +236,8 @@ config MAX_FDS_TOTAL
         edge     (MAX_TASKS=64)   -> 2048   (32x the floor)
         desktop  (MAX_TASKS=1024) -> 8192   (2x  the floor)
         fleet    (MAX_TASKS=4096) -> 16384  (4x  the floor)
-      A higher value changes nothing but this check. (Fixed
-      2026-09-26, V2.6: this previously said "edge (512 tasks)" against
-      MAX_TASKS' own SBC/desktop (Edge) default of 64 — stale copy-paste, not a
-      real 512-task edge configuration that ever existed.)
+      A higher value changes nothing but this check. (There is no "edge (512 tasks)" configuration;
+      MAX_TASKS' own SBC/desktop (Edge) default is 64.)
 
       Cost: none.  No table is sized by this option: it is read only by the
       build.rs checks above (measured: +0 B of RAM for 2048 -> 2049 and
@@ -1115,8 +1112,7 @@ config USER_STACK_SIZE_KB
     help
       Stack of every user task whose image does not ask for another one,
       ending at USER_STACK_TOP.  16 KiB on both
-      ISAs (aarch64 was 32 with nothing in the code needing it; owner
-      decision 2026-09-28).  Populated
+      ISAs (aarch64 was 32 with nothing in the code needing it).  Populated
       eagerly at exec (crates/core/sched/src/process.rs): every page is
       allocated, zeroed and mapped read-write before the task runs, so
       each task costs USER_STACK_SIZE_KB / 4 physical frames whether it
@@ -1171,12 +1167,12 @@ config KERNEL_STACK_SIZE_KB
       The whole size is usable: each stack lives in the kernel stack window
       with an unmapped guard below it, outside this size. The size must be a
       whole number of pages, so the aarch64 16K and 64K granules need 48
-      and 128.  Since 2026-09-16 an interrupt HANDLER runs on the hart's
+      and 128.  An interrupt HANDLER runs on the hart's
       own INTERRUPT_STACK_SIZE_KB stack, so this size covers the deepest
       syscall chain and the 288-byte trap frame, and no longer has to leave
       room for a handler on top of it.  The frame itself still lands here.
 
-      MEASURED, not chosen (tools/lint/stack_chain.py, 2026-09-16).  The deepest
+      MEASURED, not chosen (tools/lint/stack_chain.py).  The deepest
       chain from trap_handler is 18.6 KiB on the qemu and embedded images and
       20.6 KiB on fleet, whose trap_handler frame alone is 2.2 KiB:
 
@@ -1216,14 +1212,14 @@ config INTERRUPT_STACK_SIZE_KB
     default 20 if ARCH_X86_64
     help
       A dedicated stack per hart for interrupt handlers, separate from the
-      task kernel stack.  On rv64 it is WIRED UP since 2026-09-16: the trap
+      task kernel stack.  On rv64 it is WIRED UP: the trap
       entry switches to it when scause says interrupt, and only when the
       stack in hand is not already this hart's -- a trap taken while on it
       keeps it, so a nested handler does not restart at the top and overwrite
       the outer one.  The 288-byte trap frame stays on the interrupted stack,
       because trap_return computes the next trap's sscratch from it.
 
-      MEASURED (tools/lint/stack_chain.py, 2026-09-16).  The whole interrupt half
+      MEASURED (tools/lint/stack_chain.py).  The whole interrupt half
       needs 2,400 bytes: 240 for trap_handler's own frame plus 2,160 for the
       deepest chain from the interrupt callees -- irq_dispatch through the
       port queue into wake_task_by_tid, including its panic tail.  Add a
@@ -1239,8 +1235,8 @@ config INTERRUPT_STACK_SIZE_KB
 
       Cost: 1 KiB of RAM per KiB of this option per possible CPU, the same
       on riscv64 and aarch64: 1 KiB of .bss (the boot CPU's stack,
-      `boot_irq_stack`), the rest from the frame allocator at boot (wave 15:
-      these were MAX_HARTS = 8 static slots, 64 KiB of .bss at the default
+      `boot_irq_stack`), the rest from the frame allocator at boot (they are not
+      MAX_HARTS = 8 static slots, 64 KiB of .bss at the default
       whatever the board had).
 
 # ---------------------------------------------------------------------------
@@ -1269,7 +1265,7 @@ config WCET_MAX_POINTS
       starts at 16.
 
 # ---------------------------------------------------------------------------
-# Process exit, io_ring, filesystems (wave 11: were literals in the crates)
+# Process exit, io_ring, filesystems (were literals in the crates)
 # ---------------------------------------------------------------------------
 
 config MAX_IO_RINGS
@@ -1594,7 +1590,7 @@ config LOG_QUEUE_SAFETY_RESERVE
 
       The record of a stop (an effect toward a device's safe state, never
       refused) is also admitted into the reserve, so a stop is recorded
-      even with the queue at its effect limit (owner decision 16-10); it
+      even with the queue at its effect limit; it
       leaves the last half of the reserve to the safety records proper, so
       a loop of stops cannot take the e-stop's slots. On the 64-entry
       embedded queue the ordinary limit is 48.
@@ -1642,7 +1638,7 @@ config VIRTIO_BLK_INFLIGHT
       a staging slot (request header, VIRTIO_BLK_SLOT_KB bounce buffer, status byte)
       and is a tag of the block request layer (azos_drv_block::queue, at
       most 8 commands in the device). A request is submitted under its
-      queue's lock and waited for without it (owner rule F1: no lock held
+      queue's lock and waited for without it (no lock is held
       across device I/O). A 16-entry virtqueue holds five requests (three
       descriptors each), so a device with one queue runs at most five of
       these; more need VIRTIO_BLK_QUEUES.
@@ -1689,7 +1685,7 @@ config DEVICE_TIMEOUT_RESETS
       net-timeout / usb-host-fault decision record (action 2 reset, 5 latched
       with its resets spent, 6 the reset did not bring it back).
 
-      1 = the owner's policy (2026-10-23): one reset, then dead. 0 = dead
+      1 = the owner's policy: one reset, then dead. 0 = dead
       at the first timeout, as every driver was before it.
 
       Cost: nothing in RAM or on the hot path; a reset blocks the task that

@@ -100,7 +100,7 @@ pub(crate) fn install_sched_hooks() {
     // priority to the claim's owner (fs-wb), so prio 13..19 load cannot
     // starve the owner while the waiter waits.
     azos_fs::fat32_claim_pi_hooks(&FAT_CLAIM_PI_HOOKS);
-    // Kconfig LOCKDEP (owner rule F7): which task is real-time, by its base
+    // Kconfig LOCKDEP: which task is real-time, by its base
     // priority (its class, not a donation). With LOCKDEP=y outside ktest
     // the `log-flush` task prints lockdep's reports (never a lock path).
     if azos_sync::lockdep::RT_CROSS_CPU {
@@ -121,10 +121,10 @@ pub(crate) fn install_sched_hooks() {
     azos_sched::set_task_exit_hook(task_release_all_resources);
     // An exec forgets the shared-memory mapping records of the image it leaves.
     azos_sched::set_task_exec_hook(azos_ipc::memobj::memobj_exec);
-    // Wave 12 (EXIT2): what must wait for the dying task's address space to
+    // What must wait for the dying task's address space to
     // go — the driver supervisor's wake.
     azos_sched::set_task_exit_late_hook(crate::drv_supervisor::exit_after_teardown);
-    // Wave 15 (plan 4a): an exec from a thread that is not its process's
+    // An exec from a thread that is not its process's
     // leader takes the leader's identity; what is kept per pool slot outside
     // `azos_sched` moves with it.
     azos_sched::set_task_identity_hook(task_identity_moved);
@@ -154,7 +154,7 @@ pub(crate) fn install_sched_hooks() {
     // holders on every hart and gives back their references. Before the first
     // user task.
     azos_ipc::cap_store::set_swept_hook(azos_ipc::memobj::memobj_warrant_swept);
-    // Wave 11: a channel/io_ring port binding dies with the
+    // A channel/io_ring port binding dies with the
     // capability it was made through and follows it when it moves
     // (`azos_ipc::port::port_cap_event`); the I/O ports a thread opened
     // close with theirs (`azos_syscall::ioport::ioport_cap_event`). Before
@@ -174,7 +174,7 @@ pub(crate) fn install_sched_hooks() {
     // value.
     const _: () = assert!(azos_actuation::logger::NO_RECEIPT_AGE == azos_ipc::cap::NO_RECEIPT);
     azos_ipc::cap::set_receipt_probe(azos_actuation::logger::receipt_ages);
-    // Wave 15 N5 runtime canary: a dead server's in-service calls are never
+    // Runtime canary: a dead server's in-service calls are never
     // completed with -EPEERDIED.
     if canary!("ipc-no-peer-died") {
         azos_ipc::ep_queue::canary_no_peer_died();
@@ -206,7 +206,7 @@ pub(crate) fn install_sched_hooks() {
     if canary!("ipc-handover-abort-no-wake") {
         azos_ipc::endpoint::canary_handover_abort_no_wake();
     }
-    // Wave 15 N9 runtime canary: a futex requeue wakes every waiter and
+    // Runtime canary: a futex requeue wakes every waiter and
     // moves none (ktest `futex_requeue_wakes_one_not_the_herd`).
     if canary!("futex-requeue-wake-all") {
         azos_sched::futex::canary_requeue_wake_all();
@@ -243,7 +243,7 @@ pub(crate) fn install_sched_hooks() {
     if canary!("arena-zero-early") {
         azos_sched::process::CANARY_ARENA_ZERO_EARLY.store(true, core::sync::atomic::Ordering::Relaxed);
     }
-    // Wave 15 N5b (Kconfig IPC_PORT_NOTICES): every send capability to an
+    // Every send capability to an
     // endpoint is counted where a table slot changes, and an endpoint left
     // with none tells the port its server bound it to. Before the first
     // user task (the topology seed grants the first ones).
@@ -267,12 +267,12 @@ pub(crate) fn install_sched_hooks() {
     if canary!("port-no-vanish") {
         azos_ipc::port::canary_no_vanish();
     }
-    // Wave 15 N11 runtime canary: a second reply on one reply warrant is
+    // Runtime canary: a second reply on one reply warrant is
     // delivered instead of refused.
     if canary!("ipc-reply-twice") {
         azos_ipc::ep_queue::canary_reply_twice();
     }
-    // Wave 15 N11b runtime canary: the v2 accept reads every call as v1.
+    // Runtime canary: the v2 accept reads every call as v1.
     if canary!("ipc-desc-as-regs") {
         azos_syscall::ipc_v2::canary_desc_as_regs();
     }
@@ -280,7 +280,7 @@ pub(crate) fn install_sched_hooks() {
     if canary!("kcall-contain-skip") {
         azos_syscall::ipc_v2::canary_contain_skip();
     }
-    // Wave 15 N11c runtime canary: the v1 accept takes a v2 call.
+    // Runtime canary: the v1 accept takes a v2 call.
     if canary!("ipc-v1-takes-v2") {
         azos_ipc::ep_queue::canary_v1_takes_v2();
     }
@@ -324,7 +324,7 @@ pub(crate) fn install_sched_hooks() {
     if canary!("held-keeps-dead") {
         azos_sync::held::canary_held_keeps_dead();
     }
-    // Owner decision 10-10: a dead claim owner stays in the F1 table (ktest
+    // A dead claim owner stays in the F1 table (ktest
     // `claim_dead_owner_leaves_the_held_table`).
     if canary!("claim-held-keeps-dead") {
         azos_sync::claim::canary_held_keeps_dead();
@@ -337,7 +337,7 @@ pub(crate) fn install_sched_hooks() {
     if cfg!(feature = "exec-bounce-pi-canary") {
         azos_sync::claim::canary_mutex_held(azos_syscall::handlers::exec_bounce_addr());
     }
-    // Owner decision 10-10: a wait-graph boost ignores the ring-3 floor
+    // A wait-graph boost ignores the ring-3 floor
     // (ktest `waitgraph_ring3_owner_floored`).
     if canary!("timer-record-16") {
         azos_drv_sys::timebase::canary_record_16();
@@ -397,7 +397,7 @@ pub(crate) fn install_sched_hooks() {
     if canary!("pi-dl-top-level") {
         azos_sched::classes::canary_pi_dl_top_level();
     }
-    // Wave 15 N7g: a fast call boosts its server through the wait graph
+    // A fast call boosts its server through the wait graph
     // (ktest `waitgraph_ipc_call_boosts_server`); the canary takes no edge.
     if canary!("ipc-call-no-edge") {
         azos_ipc::fastcall::canary_ipc_call_no_edge();
@@ -414,12 +414,12 @@ pub(crate) fn install_sched_hooks() {
     if canary!("sigsuspend-shared") {
         azos_sched::scheduler::signal::canary_suspend_shared();
     }
-    // Owner decision 10-10: the robust exit walk keys a word of a shm region
+    // The robust exit walk keys a word of a shm region
     // by (region, offset), as the Linux personality keys a shared futex.
     if azos_sched::futex_table::SHARED {
         azos_sched::futex::register_shm_word_of(robust_shm_word_of);
     }
-    // Wave 15 N10, Kconfig FUTEX_PI: the PI futex operations and the slot ->
+    // N10, Kconfig FUTEX_PI: the PI futex operations and the slot ->
     // TID map their words need, and the futex table's PiTable (N9) that runs
     // them under the key's lock for the Linux personality and the robust exit.
     // Runtime canary: a PI waiter never boosts the word's owner.
@@ -468,12 +468,12 @@ pub(crate) fn install_sched_hooks() {
     // The timed half: a sleep that waits for another task or a device blocks
     // on a timer for at most one slice (`WaitQueue::wait_if_for`).
     azos_sync::waitqueue::wq_set_timed_callbacks(wq_block_for, wq_wake_timed);
-    // Wave 15 N8: the kernel mutex's adaptive-spin probe and wait-graph ids.
+    // The kernel mutex's adaptive-spin probe and wait-graph ids.
     azos_sync::kmutex::set_probes(&KMUTEX_PROBES);
-    // N7c, owner decision 10-10: a Mutex owner that exits holding it hands
+    // N7c: a Mutex owner that exits holding it hands
     // it to its top waiter (EOWNERDEAD).
     azos_sync::kmutex::register_owner_died();
-    // Owner rule (wave 15): an RT task never does block I/O. Dev builds
+    // Owner rule: an RT task never does block I/O. Dev builds
     // (Kconfig RT_BLOCK_IO_CHECK) panic at the block layer's entry.
     azos_drv_block::blkdev::set_rt_io_check(rt_block_io_check);
     // The block request layer charges a request to the calling task's Domain.
@@ -484,7 +484,7 @@ pub(crate) fn install_sched_hooks() {
     azos_drv_block::queue::set_sleep_hooks(super::blk_block_until, super::blk_wake);
     // ... and the bytes of every write the device completes to its ledger.
     azos_drv_block::write_observer::set_account(azos_sched::domain::add_written);
-    // Owner rule (wave 15, C2): an RT caller of the kernel log only appends
+    // Owner rule: an RT caller of the kernel log only appends
     // to the console (Kconfig CONSOLE_RT_APPEND_ONLY); dev builds (Kconfig
     // RT_CONSOLE_WIRE_CHECK) panic if one waits for the wire.
     azos_drv_sys::uart::set_rt_console_hooks(rt_console_caller, rt_console_wire_check);
@@ -493,7 +493,7 @@ pub(crate) fn install_sched_hooks() {
     if canary!("console-drop") {
         azos_drv_sys::uart::set_console_wait_veto(console_drop_veto);
     }
-    // Wave 15 (S1): a synchronous I2C transfer sleeps between the
+    // A synchronous I2C transfer sleeps between the
     // controller steps of its own transaction (DesignWare, K1).
     #[cfg(any(feature = "i2c-dw", feature = "k1"))]
     azos_drv_bus::i2c::set_sleep_hook(i2c_sleep_us);
@@ -514,7 +514,7 @@ pub(crate) fn install_sched_hooks() {
         azos_decision::set_durable_sink(azos_actuation::logger::decision_refusal_sink);
     }
     if azos_decision::DURABLE || azos_decision::ON {
-        // Records are stamped on TAI (owner decision 16-10): the timebase plus
+        // Records are stamped on TAI: the timebase plus
         // the offset the vDSO publishes once PTP or NTP has set it.
         azos_decision::set_tai_offset(|| azos_mm::vdso::clock_offsets().tai);
     }
@@ -526,7 +526,7 @@ pub(crate) fn install_sched_hooks() {
 /// `azos_fs::ClaimPiHooks` (FX12): the graph id of a claim's owner and waiters.
 static FAT_CLAIM_PI_HOOKS: azos_fs::ClaimPiHooks = azos_fs::ClaimPiHooks { graph_id: kmutex_graph_id };
 
-/// `azos_sync::kmutex::Probes` (wave 15 N8). All lock-free: the TID's
+/// `azos_sync::kmutex::Probes`. All lock-free: the TID's
 /// published slot (`idx_for_tid`, O(1) on its hint) and the per-CPU current
 /// task (O(NR_CPUS)).
 static KMUTEX_PROBES: azos_sync::kmutex::Probes = azos_sync::kmutex::Probes {
@@ -598,7 +598,7 @@ fn take_shoot(root: usize, va: usize, pages: usize) {
     azos_mm::vmm::shootdown_user_range(root, va, pages.saturating_mul(azos_arch::PAGE_SIZE));
 }
 
-/// Wave 15 (plan 4a): the process's per-slot state outside `azos_sched`
+/// The process's per-slot state outside `azos_sched`
 /// moves from the leader's slot `from` to the exec'ing thread's `to`, now
 /// named `tid` (`scheduler::exec_take_over`): the seed row a fork reseeds
 /// from. The capability table and the frame budget stay where they are, in
@@ -655,7 +655,7 @@ fn commander_exit_stop(tid: u32) {
 /// caller, same as `install_board_hw`'s former gate.
 fn task_release_all_resources(tid: u32) {
     let t_ph = azos_sched::prof::t();
-    // Wave 15 (owner decision): a ring-3 task that dies commanding a wheel
+    // A ring-3 task that dies commanding a wheel
     // leaves it at a SAFE STOP (duty 0), first of all: before every release
     // below, the file writeback above all, which can wait on the disk while
     // the wheel would keep turning (`commander_exit_stop`). Runtime canary
@@ -713,7 +713,7 @@ fn task_release_all_resources(tid: u32) {
     if azos_drv_sys::uart::CONSOLE_RX.release(tid) {
         crate::console_mode::user_shell_exited(tid, held || crate::console_mode::restart_expected(tid, code));
     }
-    // Wave 13: a job the input was lent to gives it back, and its signal
+    // A job the input was lent to gives it back, and its signal
     // words go (nothing is delivered to a task that has exited).
     let _ = azos_drv_sys::uart::CONSOLE_RX.end_lend(tid);
     azos_sched::scheduler::signal::detach(tid);
@@ -824,7 +824,7 @@ pub(crate) fn create_sys_wdt_task(hart: i8) {
     let idx = azos_sched::task_create_affinity(
         "sys-wdt", system_wdt_task, 0, azos_sched::WATCHDOG_PRIORITY, hart);
     // It latches the actuators on a stack overflow: in the safety path, so
-    // exempt from the RT band budget like the control loops (wave 11).
+    // exempt from the RT band budget like the control loops.
     azos_sched::rt::exempt_from_band_cap(idx);
     kprintln!("[SCHED] Created sys-wdt task (Phase 16: canaries + timer liveness) \
                [hart {}]", hart);
@@ -845,7 +845,7 @@ pub(crate) fn create_sys_wdt_task(hart: i8) {
         kprintln!("[SCHED] Created enforce task ({} enforcer(s), prio {}) [hart {}]",
             enforcers, azos_actuation::enforce::ENFORCE_PRIORITY, hart);
     }
-    // Owner rule (wave 15): an RT task never does block I/O. The watchdog
+    // Owner rule: an RT task never does block I/O. The watchdog
     // above is RT (11): its periodic flush, its durable e-stop records and
     // the OTA boot-good mark go to this task, outside the RT band. Created
     // with it so every kernel that runs the watchdog runs the flusher.
@@ -929,7 +929,7 @@ pub(crate) fn fs_wb_wake() {
 fn fs_writeback_task(_: usize) {
     use core::sync::atomic::Ordering::SeqCst;
     FS_WB_TID.store(azos_sync::waitqueue::caller_tid(), SeqCst);
-    // Evidence for the interrupt-driven disk (wave 15, `boot::blk_irq`): one
+    // Evidence for the interrupt-driven disk (`boot::blk_irq`): one
     // read from task context, then the driver's counts. Taken > 0 and slept
     // > 0: a waiter slept and the line woke it.
     if azos_drv_virtio::virtio::blk::irq_mode() {
@@ -1047,7 +1047,7 @@ fn rcu_callback_task(_: usize) {
     azos_sync::qsbr::callback_task()
 }
 
-/// Kconfig RCU_QSBR (wave 15 N4): the clock and sleep of grace-period
+/// Kconfig RCU_QSBR: the clock and sleep of grace-period
 /// waiters, and the callback task, pinned to the lowest CPU outside
 /// RCU_NOCBS_CPUS (every ISA). Arms the `rcu-free-no-grace` runtime canary.
 pub(crate) fn create_rcu_callback_task() {
@@ -2081,7 +2081,7 @@ mod fair_tree_ktests {
 // `current_proc_tid`, `current_user_pt`, the syscall-filter verdicts, the
 // writer `set_current_task_satp`, ...) read the hart id and then a per-hart
 // table; a tick between the two moves the task and the second read returns
-// another hart's task (found 2026-10-20: a kernel page fault copying to a
+// another hart's task (found: a kernel page fault copying to a
 // user VA). Late: the runner calls each, every one opens the masked window
 // (`on_this_hart`) and returns what its own slot holds. Canary cargo feature
 // `percpu-accessor-race-canary` (no mask): `not ok`.
@@ -2332,7 +2332,7 @@ mod sched_class_ktests {
             if r > 0 {
                 return Err("a reservation at the band's last level does not rank above RT level 0");
             }
-            // Owner decision 10-10: the exempt band loops (e-stop, watchdog,
+            // The exempt band loops (e-stop, watchdog,
             // actuation) are the stop class, above DL, even at the band's
             // last level and while the band is skipped.
             if !exempt_first(on, worst_band, Some(r))
@@ -2908,7 +2908,7 @@ mod kmutex_ktests {
         }
     }
 
-    // Owner decision 10-10: the graph's boost keeps the ring-3 floor. A
+    // The graph's boost keeps the ring-3 floor. A
     // kernel RT waiter (4) on a Mutex held by a task flagged ring-3 lifts it
     // to RT_PRIORITY_THRESHOLD (12), not to 4. Canary
     // `canary=pi-ring3-unclamped`: not ok (the owner reaches 4).
@@ -3160,7 +3160,7 @@ mod kmutex_ktests {
         }
     }
 
-    // N7c, owner decision 10-10: a Mutex owner that exits still holding it,
+    // N7c: a Mutex owner that exits still holding it,
     // with an RT waiter queued in the wait graph, does not strand the
     // waiter: the graph's OwnerDiedHook frees the word and wakes the bucket,
     // and the waiter takes the Mutex within the bound; its guard reports
@@ -3267,7 +3267,7 @@ mod kmutex_ktests {
         }
     }
 
-    // Rule F1 (owner decision 10-10): a task that exits owning claims
+    // Rule F1: a task that exits owning claims
     // (`azos_sync::claim`, the table `claim::held_by` the panic path reads) is
     // no longer counted once its exit ran. Canary `canary=claim-held-keeps-dead`:
     // not ok.
@@ -3485,7 +3485,7 @@ mod kmutex_ktests {
         }
     }
 
-    // N7b, owner decision 10-10: a newcomer the steal rule holds back joins
+    // N7b: a newcomer the steal rule holds back joins
     // the wait graph before it sleeps, so the task that takes the Mutex next
     // inherits from it. The owner and its queued waiter share one priority:
     // the woken waiter does not preempt the releasing owner, which then

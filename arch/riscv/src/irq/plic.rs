@@ -201,7 +201,7 @@ pub fn set_priority(irq: u32, priority: u32) {
 }
 
 /// Serialises the read-modify-write of the enable words. Each context's
-/// enable bits share 32-bit words, and since wave 10 IRQ5 they change at run
+/// enable bits share 32-bit words, and they change at run
 /// time from any hart: a ring-3 bind routes its line to the binding task's
 /// hart (`user_irq::bind`), and [`complete`] toggles a bit a concurrent
 /// re-route cleared. Linux holds `plic_handler::enable_lock` for the same

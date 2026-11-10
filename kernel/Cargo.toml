@@ -18,7 +18,7 @@ publish = false
 # the scheduler options and the rest of the old default list are the `base`
 # tags there.
 default = []
-# The Robot application domain (wave 11, DOMAIN; config/axes/Kconfig.use
+# The Robot application domain (DOMAIN; config/axes/Kconfig.use
 # USE_ROBOT). Links the robot crates under crates/domains/robot/ — behavior and
 # the brain link, the motor/sensor/flight stack, the robot safety layer
 # (safety-core), the robot shell commands, the in-kernel benches — and the
@@ -45,7 +45,7 @@ use-robot = [
 # side that serves them (`azos_syscall/board-io`, `tasks/ina219_host.rs`,
 # `buzzer.rs`).
 board-io = ["dep:azos_drv_sensor", "dep:azos_drv_actuator", "dep:azos_kill_switch", "azos_syscall/board-io"]
-# Wave 15 (config/subsys/Kconfig.robot RC_INPUT, GEOFENCE; owner decision: robot
+# config/subsys/Kconfig.robot RC_INPUT, GEOFENCE (robot
 # domain default y, off = compiled out). `rc-input`: the RC receiver feeds the
 # safety path (link loss / kill switch latch the e-stop, the sticks drive
 # through L0 and the motor envelope) — kernel/src/tasks/rc_safety.rs and
@@ -80,11 +80,11 @@ virtio-input-canary = ["virtio-input", "azos_drv_virtio/input-rx-canary"]
 # tools/build/kconfig_to_cargo.py drops it when the symbol is n, and Kconfig keeps
 # the symbol n off x86_64.
 ps2 = []
-# Board builds REQUIRE the authenticated brain link (owner decision 2026-09-13).
+# Board builds REQUIRE the authenticated brain link.
 # Without `link-provisioning-enforced` a keyless boot goes on with the brain
 # link down. Enforced: no link key means no boot. Provision the key per robot. The board
 # features do not turn it on: Kconfig LINK_PROVISIONING_ENFORCED does, on every
-# build but BUILD_TYPE_DEV (owner decision 2026-10-23), through
+# build but BUILD_TYPE_DEV, through
 # tools/build/kconfig_to_cargo.py like any other symbol.
 # `azos_crypto/no-bitmanip`: the VF2 kernel carries no bit-manipulation
 # instruction, not even behind runtime detection (gate row `vf2: no B
@@ -178,7 +178,7 @@ neverallow-row-canary = ["azos_topology/neverallow-row-canary"]
 
 # `mem-quota-canary`: the autorun task's frame budget drops from 2048 pages to
 # 64 (image, stack and page tables included), so `abitest`'s
-# 256-page map probe reaches it instead of needing 8 MiB. The budget is owner decision 102; without a canary nothing in the gate
+# 256-page map probe reaches it instead of needing 8 MiB. Without a canary nothing in the gate
 # ever OBSERVES it refusing, and a quota that never refuses is indistinguishable
 # from one that is not wired.
 mem-quota-canary = ["azos_topology/mem-quota-canary"]
@@ -208,10 +208,10 @@ power-cap-canary = ["azos_topology/power-cap-canary"]
 # Canary: `COREUTIL.ELF` holds no write tree; `mkdir`, `cp` and `rm` must be
 # refused.
 coreutil-write-canary = ["azos_topology/coreutil-write-canary"]
-# Wave 12 canary: the four family tools hold no capability; their typed calls
+# Canary: the four family tools hold no capability; their typed calls
 # must refuse and record every operation.
 family-cap-canary = ["azos_topology/family-cap-canary"]
-# Wave 12 gate row: the drivetrain belongs to FLIGHT.ELF, not to the autorun
+# Gate row: the drivetrain belongs to FLIGHT.ELF, not to the autorun
 # row, so the user shell's `flight arm` runs (`sh: family tools` rows).
 flight-tool-drivetrain = ["azos_topology/flight-tool-drivetrain"]
 # The Linux personality's gate rows. `linux-abi-test` adds
@@ -280,10 +280,10 @@ kstack-reuse-no-shootdown-canary = ["azos_mm/kstack-reuse-no-shootdown-canary"]
 # happens, as before the list was written on change. The `inspect: views`
 # rows' task-list checks go red with it. Never in a real build.
 task-view-stale-canary = []
-# Wave 13 canary: orphans are not re-parented (the orphan rows go red).
+# Canary: orphans are not re-parented (the orphan rows go red).
 # Never in a real build.
 orphan-reparent-canary = ["azos_sched/orphan-reparent-canary"]
-# Wave 13 canary: the subreaper mark is never set (the shell's orphan rows go
+# Canary: the subreaper mark is never set (the shell's orphan rows go
 # red). Never in a real build.
 subreaper-mark-canary = ["azos_sched/subreaper-mark-canary"]
 linux-abi-fork-canary = ["azos_syscall/linux-abi-fork-canary", "azos_topology/linux-abi-test"]
@@ -302,7 +302,7 @@ linux-abi-fp-canary = ["azos_sched/linux-abi-fp-canary", "azos_topology/linux-ab
 tpidr-foreign-only-canary = ["azos_sched/tpidr-foreign-only-canary"]
 fs-base-cache-canary = ["azos_sched/fs-base-cache-canary"]
 linux-busybox-fork-canary = ["linux-busybox-test", "azos_syscall/linux-abi-fork-canary"]
-# Wave 13 (SIGNALS): signal delivery, console input and execve across rows.
+# Signal delivery, console input and execve across rows.
 # `linux-exec-row-test` gives BUSYBOX.ELF's row `/fat` and the grant to exec
 # LXHELLO.ELF. Canaries (never in a real build): no delivery, no SIGPIPE, no
 # SIGCHLD, console read EOF, `^C` not a signal, execve's launch check skipped.
@@ -312,11 +312,11 @@ linux-sigpipe-canary = ["azos_syscall/linux-sigpipe-canary", "azos_topology/linu
 linux-sigchld-canary = ["azos_sched/linux-sigchld-canary", "azos_topology/linux-abi-test"]
 linux-console-eof-canary = ["azos_syscall/linux-console-eof-canary", "linux-busybox-test"]
 console-isig-canary = ["azos_drv_sys/console-isig-canary", "linux-busybox-test"]
-# Signals and threads (wave 13): canaries over the LXTHR row and LXHELLO.
+# Signals and threads: canaries over the LXTHR row and LXHELLO.
 linux-sig-thread-canary = ["azos_sched/linux-sig-thread-canary", "linux-threads-test"]
 linux-tkill-process-canary = ["azos_syscall/linux-tkill-process-canary", "linux-threads-test"]
 linux-wait-exited-canary = ["azos_syscall/linux-wait-exited-canary", "linux-threads-test"]
-# Wave 13 (NATFORK) canaries, see `crates/core/syscall/Cargo.toml`.
+# Canaries, see `crates/core/syscall/Cargo.toml`.
 native-fork-no-inherit-canary = ["azos_syscall/native-fork-no-inherit-canary"]
 native-fork-copy-canary = ["azos_syscall/native-fork-copy-canary"]
 fork-profile = ["azos_sched/fork-profile"]
@@ -326,10 +326,10 @@ kheap-token-canary = ["azos_mm/kheap-token-canary"]
 # The heap guard's quarantine checks for room and pushes in two critical
 # sections again: ktest `kheap_guard_quarantine_never_holds_more_than_its_slots`.
 kheap-guard-hold-canary = ["azos_mm/kheap-guard-hold-canary"]
-# Gate canary only (wave 14, security): a fork child's mprotect(RW) of a page
+# Gate canary only (security): a fork child's mprotect(RW) of a page
 # its parent shares read-only writes the parent's frame again.
 mprotect-shared-canary = ["azos_mm/mprotect-shared-canary"]
-# Gate canary only (wave 15, security): mprotect(RW) on the vDSO page is
+# Gate canary only (security): mprotect(RW) on the vDSO page is
 # granted again (in place while the frame has no other counted holder).
 vdso-write-canary = ["azos_mm/vdso-write-canary"]
 cow-reuse-canary = ["azos_mm/cow-reuse-canary"]
@@ -364,7 +364,7 @@ timer-rank-canary = ["azos_sched/timer-rank-canary"]
 pi-heap-no-swap-canary = ["azos_sync/pi-heap-no-swap-canary"]
 owner-scan-one-hold-canary = ["azos_sync/owner-scan-one-hold-canary"]
 qos-armed-at-canary = ["azos_sched/qos-armed-at-canary"]
-# Wave 13 (THREADS) canaries, see `crates/core/sched/Cargo.toml`.
+# Canaries, see `crates/core/sched/Cargo.toml`.
 futex-wake-noop-canary = ["azos_sched/futex-wake-noop-canary"]
 threads-no-cleartid-canary = ["azos_sched/threads-no-cleartid-canary"]
 leader-cleartid-canary = ["azos_sched/leader-cleartid-canary"]
@@ -373,29 +373,29 @@ commander-exit-nostop-canary = ["azos_syscall/commander-exit-nostop-canary"]
 tmpfs-bound-canary = ["azos_fs/tmpfs-bound-canary"]
 threads-tls-canary = ["azos_sched/threads-tls-canary"]
 thread-tls-zero-canary = ["azos_syscall/thread-tls-zero-canary"]
-# Wave 15 canaries, see `crates/core/sched/Cargo.toml`.
+# Canaries, see `crates/core/sched/Cargo.toml`.
 robust-list-canary = ["azos_sched/robust-list-canary", "linux-abi-test"]
 elf-mixed-page-canary = ["azos_sched/elf-mixed-page-canary"]
 rodata-exec-canary = ["azos_sched/rodata-exec-canary"]
 exec-sig-handover-canary = ["azos_sched/exec-sig-handover-canary"]
 threads-late-start-canary = ["azos_sched/threads-late-start-canary"]
-# Wave 15 (plan 4a) canaries: an exec leaves the other threads running
+# Canaries: an exec leaves the other threads running
 # (`azos_sched`); an object a thread creates is booked to the thread, not to
 # its process, and dies with it (`azos_syscall`); a thread that is not the
 # leader is refused its exec (`azos_sched`); an exec ends the other threads
 # before it checks the image (`azos_syscall`).
 exec-no-dethread-canary = ["azos_sched/exec-no-dethread-canary"]
-# Wave 15 (K2) gate canary: a Linux writev makes one write per iovec again,
+# Gate canary: a Linux writev makes one write per iovec again,
 # so another writer lands between two segments (the LXTHR writev check FAILs).
 writev-per-segment-canary = ["linux-abi", "azos_linux_abi/writev-per-segment-canary"]
 thread-objects-canary = ["azos_syscall/thread-objects-canary"]
 exec-no-pid-swap-canary = ["azos_sched/exec-no-pid-swap-canary"]
 exec-bounce-pi-canary = []
-# Wave 15 (PI) gate canary, owner rule F1: the device part of a descriptor
+# Gate canary: the device part of a descriptor
 # operation (open, streaming read/write, close flush, fsync) runs with
 # `KERNEL_FD_TABLE` (a Mutex) held again; the `lat-fat` smoke must count it.
 fd-table-pi-canary = []
-# Wave 15 gate canary (aarch64): a native thread's argument is not written
+# Gate canary (aarch64): a native thread's argument is not written
 # into its third argument register, so it arrives as 0.
 thread-regs-canary = ["azos_sched/thread-regs-canary"]
 reap-window-canary = ["azos_sched/reap-window-canary"]
@@ -452,7 +452,7 @@ captest-row = ["use-robot", "azos_topology/captest-row"]
 # long enough); reserving the pool must refuse it. Gate rows "topology: DMA
 # pool needs a run".
 dma-contig-canary = []
-# Wave 15 TOPOSIGN canary: the signed-topology loader skips both signature
+# Canary: the signed-topology loader skips both signature
 # checks (`azos_topology::signed::fill_signed`), so a tampered CAPS.TOM that
 # still parses is installed. The gate's tampered-topology rows must turn red.
 topo-verify-skip-canary = ["azos_topology/topo-verify-skip-canary"]
@@ -462,7 +462,7 @@ topo-replay-canary = ["azos_topology/topo-replay-canary"]
 # Per-function `#[wcet(...)]` runtime telemetry. Default OFF (CI gate
 # rejected, KILL2). Opt-in on real hardware (VF2/K1) where rdcycle is reliable.
 wcet = ["azos_drv_sys/wcet"]
-# F4 (wave 3): irq-in-syscall-probe -- a syscall the ecall arm intercepts
+# F4: irq-in-syscall-probe -- a syscall the ecall arm intercepts
 # before normal dispatch, which spins ~50 ms reading `time` while the timer
 # fires (-smp 1), to prove the O3.1 nested-trap fix in
 # kernel/src/entry/riscv64/asm/trap_entry.S (trap_return's sstatus-before-
@@ -593,7 +593,7 @@ rvv-isolation-probe = []
 guard-fault-probe-stack = []
 kstack-overflow-probe = []
 guard-fault-probe-null  = []
-# O3.2 (owner decision, PAN/SUM): touches a USER-tagged page from EL1/S-mode
+# O3.2 (PAN/SUM): touches a USER-tagged page from EL1/S-mode
 # OUTSIDE any UserAccess guard — must fault now that SPAN=0/SUM starts clear.
 pan-probe = []
 # The Armv8.0 boot's canary: boot.S sets PSTATE.PAN with no
@@ -620,12 +620,11 @@ cpuid-probe-canary = ["cpuid-probe", "azos_sched/cpuid-probe-canary"]
 vdso-force-syscall = []
 # Program the timer with SBI `set_timer` even on a hart with Sstc.
 timer-sbi-only = []
-# B2-02/B2-03: `no-opensbi` and `uefi` were deleted 2026-09-21 (owner
-# decision: delete now, redo when needed). Neither was wired to a real boot
+# `no-opensbi` and `uefi` were deleted (redo when needed). Neither was wired to a real boot
 # path — no-opensbi's ELF entry was never `_start_mmode`, all harts would
 # have shared one stack, and nothing set `mtvec`; uefi had no `global_asm!`
 # including boot_efi.S, so `efi_main` was dead-stripped. `crates/core/efi` and
-# `tests/host/efi-tests` followed on 2026-10-23 (owner: no user; the UEFI
+# `tests/host/efi-tests` followed (no user; the UEFI
 # boot front re-creates what it needs).
 # config/subsys/Kconfig.secure-boot SECURE_BOOT_ENFORCED. Forces the boot sequence
 # (kernel/src/boot/ota.rs, right after the active-slot CRC check) to verify
@@ -663,12 +662,12 @@ sched-hooks-smoke = ["qemu"]
 # replay) can prove the e-stop latch survives a reset on this ISA. See
 # `install_flight_recorder`'s own doc in kernel/src/boot/robot.rs.
 estop-latch-smoke = ["qemu"]
-# Wave 7 (STOR): drive `mmc::mmc_flush` against QEMU's `sdhci-pci` +
+# Drive `mmc::mmc_flush` against QEMU's `sdhci-pci` +
 # `sd-card` (riscv64 `virt`): ADMA2 transfers, first polled, then, once the
 # scheduler runs, completed by the function's INTx interrupt. See
 # `mmc_flush_smoke` and `mmc_irq_smoke_task` in kernel/src/smokes/storage.rs.
 mmc-flush-smoke = ["qemu", "pci", "azos_drv_block/mmc-pci"]
-# Wave 7 (STOR): check BARRIER.DAT after mount, create + overwrite it, park.
+# Check BARRIER.DAT after mount, create + overwrite it, park.
 # The gate's power-cut row boots every cut of that write log. See
 # `fat_barrier_smoke` in kernel/src/smokes/storage.rs.
 fat-barrier-smoke = ["qemu"]
@@ -687,7 +686,7 @@ mmc-poll-canary = ["mmc-flush-smoke", "azos_drv_block/mmc-poll-canary"]
 # kernel/src/boot/ota.rs); the next boot of the same volume must read the count back. Never
 # in a board build.
 boot-count-smoke = ["qemu", "boot-slots"]
-# Wave 8 TLB shootdown probe (riscv64, -smp >= 3): a stale access after a
+# Shootdown probe (riscv64, -smp >= 3): a stale access after a
 # cross-hart unmap must fault. `tlb-local-only` is its canary: the remote half
 # of the shootdown is compiled out, and the probe must print STALE READ.
 tlb-smoke = ["qemu"]
@@ -698,7 +697,7 @@ tlb-local-only = ["azos_arch/tlb-local-only"]
 spin-service-canary = ["azos_arch_api/spin-service-canary"]
 # Canary for the riscv64 shootdown scan bound: no hart is noted online.
 tlb-bound-canary = ["azos_arch/tlb-bound-canary"]
-# NRCPUS canaries (wave 15). `percpu-oor-canary`: the boot attaches a per-CPU
+# NRCPUS canaries. `percpu-oor-canary`: the boot attaches a per-CPU
 # area past nr_cpu_ids, and the `[PERCPU] self-check` line turns red.
 percpu-oor-canary = ["qemu"]
 # `nr-cpus-clamp-canary`: the DTB's CPU count is used past the Kconfig ceiling
@@ -722,7 +721,7 @@ sup-canary = []
 # window` row with a short `SUP_RESTART_INTERVAL_S`, kernel and COMPMGR.ELF;
 # see `drv_supervisor::smoke::window`.
 sup-window-smoke = ["sup-smoke"]
-# Wave 11: the ring-3 host of the buzzer, a `start = true` row of the component
+# The ring-3 host of the buzzer, a `start = true` row of the component
 # manager like any other (`drv_supervisor::supall`): killed and restarted by
 # the manager. Boots `$AZOS_OUT/build/disk-drv.img` /
 # `$AZOS_OUT/build/disk-aarch64-drv.img`, the images carrying the drivers.
@@ -731,7 +730,7 @@ supall-smoke = ["qemu", "board-io"]
 # the `hung: ...` rows with HUNG_ACTION as the row sets it. Boots the drv disk.
 hung-smoke = ["qemu", "board-io"]
 
-# Wave 11 (DRVPLACE): the topology row key `restart` honoured by the
+# The topology row key `restart` honoured by the
 # component manager (`drv_supervisor::restart`). The drv disk's BUZZDRV.ELF row
 # says `restart = no`: the buzzer killed must stay down.
 restart-smoke = ["qemu", "board-io", "azos_topology/restart-smoke"]
@@ -751,20 +750,19 @@ console-spawn-canary = []
 # no` (`boot::inspect_views::view_restart`), so it restarts nothing. The supall row
 # must fail on `[SUPALL] FAIL buzzer not restarted` with it.
 supall-canary = []
-# Wave 10 (owner decisions 2026-09-28), gate rows `safe mode: attempts
+# Gate rows `safe mode: attempts
 # exhausted` and `boot count: orderly reboot`
 # (`kernel/src/boot/ota.rs`, `boot_count_loaded`). `safe-mode-smoke` crashes every
 # boot that is not safe mode, so one volume walks the sequence to safe mode,
 # then probes the actuators; `orderly-reboot-smoke` calls `sys_reboot` a few
 # seconds into a boot on a fresh volume.
 safe-mode-smoke = ["qemu", "use-robot", "boot-slots"]
-# Gate canary only (wave 14): the boot launcher ignores safe mode, so safe mode
+# Gate canary only: the boot launcher ignores safe mode, so safe mode
 # starts the component manager, which starts SH.ELF, and `sh: safe mode
 # canary` must see it.
 safe-mode-launch-canary = []
 orderly-reboot-smoke = ["qemu", "boot-slots"]
-# Gate rows `power-off: the kernel's sync keeps a written file` (owner decision
-# 2026-10-23, Q1): once the boot is confirmed, write a file through the VFS and
+# Gate rows `power-off: the kernel's sync keeps a written file`: once the boot is confirmed, write a file through the VFS and
 # call the orderly power-off at once, so only the kernel's own sync can make it
 # durable (no power service in front). The host reads the volume back; the
 # runtime canary `power-off-sync-skip` must lose the file.
@@ -792,7 +790,7 @@ ina219-kernel = ["board-io", "azos_topology/ina219-kernel"]
 # Kconfig DRV_VIRTIO_RNG_PLACEMENT = ring3: the kernel leaves the virtio-rng
 # device to the ring-3 driver RNGDRV.ELF, whose topology row it adds.
 virtio-rng-ring3 = ["azos_topology/virtio-rng-ring3"]
-# Wave 12 (DRVPLACE): Kconfig DRV_BUZZER_PLACEMENT = kernel: the buzzer starts
+# Kconfig DRV_BUZZER_PLACEMENT = kernel: the buzzer starts
 # in the kernel (the built-in topology's BUZZDRV.ELF row says `place =
 # "kernel"`): a call plays through the kernel's PWM driver directly and a
 # kernel task (`buzzer_host_task`) advances the timed steps. Without it (the
@@ -806,7 +804,7 @@ buzzer-kernel = ["board-io", "azos_topology/buzzer-kernel"]
 # on its missing record.
 placement-norecord-canary = ["azos_topology/placement-norecord-canary"]
 
-# Wave 9 (DRV1): the functional test of the drivers placed in user
+# The functional test of the drivers placed in user
 # space (buzzer, INA219), run from a kernel task through the same kernel API
 # the syscall handlers call (`ring3_drv_smoke` in kernel/src/smokes/ring3_drv_smoke.rs). Booted
 # by the `drivers: buzzer` and `drivers: INA219 power monitor` rows.
@@ -822,7 +820,7 @@ envelope-smoke = ["qemu", "use-robot"]
 # E03 — arm a geofence around the simulated GPS fix, feed the GPS driver a fix
 # outside it and print both verdicts. Opt-in; a normal build pays nothing.
 geofence-smoke = ["qemu", "use-robot", "geofence"]
-# Wave 15 (RC/geofence wiring), one property per boot, each read back off the
+# RC/geofence wiring, one property per boot, each read back off the
 # console AND the flight recorder (kernel/src/smokes/rc_fence.rs):
 #   rc-failsafe-smoke — SBUS frames through `rc_feed_byte`, then one with the
 #     receiver's failsafe bit: the e-stop latches and SAFETY_ESTOP/12 is on disk.
@@ -839,7 +837,7 @@ rc-stick-smoke = ["qemu", "rc-input"]
 rc-stick-canary = ["rc-stick-smoke", "azos_safety_core?/rc-stick-canary"]
 fence-refuse-smoke = ["qemu", "geofence"]
 fence-arm-canary = ["fence-refuse-smoke", "azos_safety_core?/fence-arm-canary"]
-# Wave 11 (SENSORTS) — the IMU's acquisition stamp, from the driver to the
+# The IMU's acquisition stamp, from the driver to the
 # sensor bus staleness check L0 reads: prints `[SENSORTS] PASS`. Opt-in.
 sensor-ts-smoke = ["qemu", "use-robot"]
 # Its canary: the IMU driver reports its FIRST reading's stamp forever, so
@@ -870,7 +868,7 @@ disk-part-row = ["qemu", "use-robot", "azos_topology/disk-part-row"]
 estop-gpio-smoke = ["qemu", "actuation-smoke"]
 # Fast-IPC path trace (diagnostic; see crates/core/syscall/Cargo.toml).
 actuation-smoke = ["qemu", "use-robot", "azos_syscall/actuation-smoke", "azos_safety_core?/actuation-smoke"]
-# gate-skip-smoke: canary for Q1.4's fail-closed default (2026-09-25) —
+# gate-skip-smoke: canary for Q1.4's fail-closed default —
 # `azos_safety_core::actuation::install()` does not install the motor
 # gate, so `motor_set_reporting` must clamp every duty to 0. Never in the
 # default feature set; see `crates/domains/robot/safety-core/src/actuation.rs`.
@@ -878,7 +876,7 @@ gate-skip-smoke = ["qemu", "use-robot", "azos_safety_core?/gate-skip-smoke"]
 # Gate-only console-routing canary — see crates/drivers/sys/Cargo.toml for what it
 # proves and why the property is untestable without it.
 console-route-canary = ["qemu", "azos_drv_sys/console-route-canary"]
-# Gate canary only: kernel lines formatted inside the console lock (wave 13).
+# Gate canary only: kernel lines formatted inside the console lock.
 console-format-in-lock = ["qemu", "azos_drv_sys/console-format-in-lock"]
 # Gate-only reproducer for the ring-3 / kernel console splice: one kernel task
 # pushes known lines through `uart::console_write_ring3` (the `sys_write` fd 1/2
@@ -886,24 +884,24 @@ console-format-in-lock = ["qemu", "azos_drv_sys/console-format-in-lock"]
 # while it runs. The host counts the ring-3 lines that came out intact. See
 # `console_splice_writer_task` in kernel/src/smokes/console_splice.rs.
 console-splice-smoke = ["qemu", "azos_drv_sys/console-splice-smoke"]
-# Gate canary for the console TX ring (wave 11): the console stays on the
+# Gate canary for the console TX ring: the console stays on the
 # synchronous FIFO-polling path. With `console-splice-smoke`, the
 # `[SPLICE] DONE` line's `max_masked_wire_bytes` goes back above a FIFO load.
 console-tx-sync = ["azos_drv_sys/console-tx-sync"]
-# Gate-only canary for the aarch64 PL011 RX interrupt (wave 7): the SPI is
+# Gate-only canary for the aarch64 PL011 RX interrupt: the SPI is
 # routed and enabled at the GIC, but the PL011's own RX/RX-timeout interrupt
 # stays masked, so the console falls back to polling and the boot line's
 # delivered count must read 0. See kernel/src/entry/aarch64/boot_hooks.rs.
 pl011-rx-irq-canary = ["qemu"]
-# Hand-run canary for the aarch64 ring-3 IRQ row (wave 8): `DEVICE_IRQ_ACK`
+# Hand-run canary for the aarch64 ring-3 IRQ row: `DEVICE_IRQ_ACK`
 # does not unmask the line `handle_irq` masked on delivery, so captest's
 # second interrupt never arrives and it prints its `second IRQ` FAIL line.
 irq-ack-canary = ["qemu", "azos_syscall/irq-ack-canary"]
-# Wave 9 IRQ4 canary, both ISAs: the external-interrupt handler does not mask
+# Canary, both ISAs: the external-interrupt handler does not mask
 # a ring-3 line on delivery, so a level device that still asserts is taken
 # again at once and captest's "line held masked until ACK" check fails.
 irq-mask-canary = ["qemu"]
-# Wave 10 IRQ5 canaries, riscv64. `irq-secondary-seie-canary`: secondaries
+# Canaries, riscv64. `irq-secondary-seie-canary`: secondaries
 # leave `sie.SEIE` clear (the old entry), so a ring-3 line routed to the pinned
 # hart is never taken and captest's first delivery times out.
 # `irq-route-canary`: every ring-3 line is routed to the boot hart (the old
@@ -911,7 +909,7 @@ irq-mask-canary = ["qemu"]
 # its owner is pinned to hart 3.
 irq-secondary-seie-canary = ["qemu"]
 irq-route-canary = ["qemu", "azos_syscall/irq-route-canary"]
-# Wave 10 IRQ5 probe, riscv64: the external-interrupt handler re-runs
+# Probe, riscv64: the external-interrupt handler re-runs
 # `irqchip::init` on this hart right after it masks a ring-3 line. Passes
 # while `plic::init` rewrites the global priorities only once; a re-init that
 # rewrote them would unmask the line and fail captest's mask check.
@@ -919,7 +917,7 @@ irq-reinit-probe = ["qemu"]
 # Temporary: prints how long an ARP resolution actually took, to set the
 # budget from data instead of by argument.
 arp-timing = ["qemu", "azos_net/arp-timing"]
-# Gate row and canary (wave 15): see crates/net/stack/Cargo.toml.
+# Gate row and canary: see crates/net/stack/Cargo.toml.
 loopback-preempt-probe = ["qemu", "azos_net/loopback-preempt-probe"]
 loopback-guard-canary = ["qemu", "azos_net/loopback-guard-canary"]
 # Gate canary (`riscv64: net-poll idle canary`): the net-poll task keeps the
@@ -934,7 +932,7 @@ ipc-census = ["azos_syscall/ipc-census", "azos_sched/ipc-census"]
 exit-satp-canary = ["azos_sched/exit-satp-canary"]
 # Minimal boot for the comparative benchmark (vsbench). Never in production.
 bench-minimal = ["azos_sched/bench-minimal"]
-# Gate canary (wave 13): the vDSO hwcap word loses the bit lxbase.ko picks
+# Gate canary: the vDSO hwcap word loses the bit lxbase.ko picks
 # its CRC path by (aarch64 CRC32, riscv64 Zbc: each ISA numbers its bits from
 # 0, so the canary clears one per ISA), so the module must report its table
 # fallback.
@@ -993,7 +991,7 @@ energy-switchout-canary = ["energy-smoke", "azos_sched/energy-switchout-canary"]
 # Boot ignores the topology's model (resolves from DTB/none only): `model` FAIL.
 energy-model-canary = ["energy-smoke"]
 # Gate row: the smoke on the `balanced` fake model, adding the
-# `gov` (I1, I6, schedutil) and `idle` (TEO choice, I3) checks.
+# `gov` (schedutil) and `idle` (TEO choice, I3) checks.
 energy-gov-smoke = ["energy-smoke", "azos_topology/energy-fake-balanced"]
 # Its canaries: the deadline floor ignores reservations (`gov` must FAIL); the
 # idle choice ignores the RT slack (`idle` must FAIL); the kernel's RT-slack
@@ -1048,31 +1046,31 @@ fb-generic = ["azos_fb"]
 # screen (FB_PANIC_SCREEN).
 fb-console = ["fb-generic", "azos_fb/console", "azos_drv_sys/console-mirror"]
 fb-panic-screen = ["fb-generic", "azos_fb/panic-screen"]
-# Wave 11 (LAT): masked-window tracer, Kconfig `LAT_TRACE` (config/kernel/Kconfig.trace,
+# Masked-window tracer, Kconfig `LAT_TRACE` (config/kernel/Kconfig.trace,
 # mapped by tools/build/kconfig_to_cargo.py). Records per hart the longest
 # interrupts-masked and preemption-disabled windows and their call sites,
 # read out in the introspection tree's `latency/`. Off: no hook, no table, no node.
 lat-trace = ["azos_arch/lat-trace", "azos_sync/lat-trace", "azos_mm/lat-trace"]
-# Wave 15 (TRACE) gate canaries. `trace-producer-canary`: the tracer's
+# Gate canaries. `trace-producer-canary`: the tracer's
 # producer never advances its index, so a reader sees one record per ring
 # (`trace: tracectl reads live` must fail). `trace-cap-canary`: TRACECTL.ELF's
 # row holds no `Cap<Trace>`, so every control call is refused and recorded.
 trace-producer-canary = ["azos_trace/producer-canary"]
 trace-cap-canary = ["azos_topology/trace-cap-canary"]
-# Wave 15 diagnostic: `[TRACE-COST]`, the tracepoint's masked, recording and
+# Diagnostic: `[TRACE-COST]`, the tracepoint's masked, recording and
 # full-ring cost measured at boot (kernel/src/smokes/trace_cost.rs). Never shipped.
 trace-cost-probe = []
 # What one frame costs on a NIC queue's rings against the socket path, both
 # directions, measured at boot in the net-poll task (kernel/src/smokes/nicq_cost.rs).
 # Never shipped.
 nicq-cost-probe = []
-# Wave 15 gate canary: the static-key patcher writes through the executable
+# Gate canary: the static-key patcher writes through the executable
 # text mapping; the boot must die on a store fault at that address
 # (`trace: static-key W^X canary`).
 trace-wx-canary = ["azos_ipc/text-poke-wx-canary"]
 # vsbench diagnostic: `[SPAWN-CENSUS]` per-phase spawn cost (crates/core/syscall/src/spawn.rs).
 spawn-census = ["azos_syscall/spawn-census"]
-# Wave 15: `azos_sched::swcensus`, the switch path phase by phase.
+# `azos_sched::swcensus`, the switch path phase by phase.
 switch-census = ["azos_sched/switch-census"]
 # x86_64 boot through the Limine protocol instead of PVH (Kconfig
 # X86_BOOT_LIMINE): the 64-bit entry, the request structs in
@@ -1080,10 +1078,10 @@ switch-census = ["azos_sched/switch-census"]
 # (kernel/src/entry/x86_64/limine.rs). Needs arch/x86_64/boot/linker-x86_64-limine.ld
 # (`make x86_64-limine`); with the PVH linker script it has no entry.
 x86-limine = []
-# Kconfig KTEST (wave 15): the in-kernel test registry's runner
+# Kconfig KTEST: the in-kernel test registry's runner
 # (kernel/src/ktest.rs) and every `ktest!` test. Off: none of it is compiled.
 ktest = ["dep:azos_ktest", "azos_sync/ktest", "azos_sched/ktest", "azos_ipc/ktest", "azos_fs/ktest", "azos_syscall/ktest", "azos_mm/ktest", "azos_safety_core?/ktest"]
-# Kconfig LOCKDEP_Y (wave 15, N1): lockdep-lite in every kernel of the
+# Kconfig LOCKDEP_Y: lockdep-lite in every kernel of the
 # configuration (crates/core/sync/src/lockdep.rs). `ktest` pulls it in too,
 # and Kconfig LOCKDEP_N / LOCKDEP_KTEST then decide whether it checks.
 lockdep = ["azos_sync/lockdep"]
@@ -1184,18 +1182,18 @@ soc-k1 = ["soc"]
 # (`stack-guard-skip`, `wx-skip`, `nx-skip`, `ro-seal-skip` and `zicboz-skip`
 # are runtime canaries: `canary=<name>` on the command line, Kconfig
 # CANARY_RUNTIME, kernel/src/canary_rt.rs.)
-# vsbench diagnostic (wave 15, SLAB): `[KHEAP-*]` kernel heap census
+# vsbench diagnostic (SLAB): `[KHEAP-*]` kernel heap census
 # (crates/core/mm/src/kheap_census.rs, crates/core/syscall/src/kheap_census.rs).
 kheap-census = ["azos_syscall/kheap-census"]
 kasan = ["azos_mm/kasan"]
-# Gate canary only (wave 15, SLAB): a slab hands out a freed object without
+# Gate canary only (SLAB): a slab hands out a freed object without
 # unlinking it. The `kheap slab` self-test rows must go red.
 slab-freelist-canary = ["azos_mm/slab-freelist-canary"]
 # Gate canary only (Kconfig PMM_TYPE_ZONES): a freed page-table frame loses its
 # zone and goes to the cache and the buddy lists. The `mm_zone_no_cross_type_reuse`
 # ktest must go red.
 zone-share-canary = ["azos_mm/zone-share-canary"]
-# Wave 15 (DAIF): `irq_order_probe` (kernel/src/smokes/irq_order_probe.rs), a
+# `irq_order_probe` (kernel/src/smokes/irq_order_probe.rs), a
 # function the gate's `irq order` rows disassemble; and its canary, which
 # gives the interrupt-mask asm `nomem` back.
 irq-order-probe = []
@@ -1204,10 +1202,10 @@ irq-nomem-canary = ["irq-order-probe", "azos_arch/irq-nomem-canary"]
 # spawn's `[SPAWN] tid=...` and `[SPAWN][PRIO]` lines and every exec's
 # `[VDSO] mapped` line. Refusals, floors, aborts and fallbacks print anyway.
 spawn-log = ["azos_syscall/spawn-log", "azos_sched/spawn-log"]
-# Wave 14 vsbench diagnostic: per-phase cost of a backend file open/read/close
+# Vsbench diagnostic: per-phase cost of a backend file open/read/close
 # (crates/fs/src/census.rs). Never in a shipped build.
 file-census = ["azos_fs/file-census"]
-# Wave 15 (FW) canaries, for a before/after vsbench `disk` run: an in-place
+# Canaries, for a before/after vsbench `disk` run: an in-place
 # write closes an epoch for its own entry again; a full hold table frees one
 # chain per barrier again.
 fw-entry-per-write-canary = ["azos_fs/fw-entry-per-write-canary"]
@@ -1226,20 +1224,20 @@ lat-canary = ["lat-smoke", "lat-trace"]
 # step held twice Kconfig LOCK_MAX_HOLD_US; the smoke's irqsoff verdict must
 # FAIL at that site (kernel/src/lat_smoke.rs).
 lat-irqsoff-canary = ["lat-smoke", "lat-trace", "azos_sched/pool-lock-spin-canary"]
-# Wave 15 (VF): the lat smoke's disk load writes through FAT32 (a whole-file
+# The lat smoke's disk load writes through FAT32 (a whole-file
 # rewrite per kick: chain allocation, free, journal barriers) instead of
 # reading raw sectors. The `lat: ... FAT writes` rows.
-# Wave 15 (FM): it also counts FAT device I/O issued under a held Mutex
-# (`pi_io=` in `[LAT] load`; owner rule F1 wants 0).
+# It also counts FAT device I/O issued under a held Mutex
+# (`pi_io=` in `[LAT] load`; it must be 0).
 lat-fat = ["lat-smoke", "azos_fs/fat-pi-io-probe", "azos_drv_virtio/blk-wait-probe"]
 # Its canary: a `SpinLock` held across each FAT update (crates/fs/src/fat32.rs).
 fat-mutate-spin-canary = ["lat-fat", "lat-trace", "azos_fs/fat-mutate-spin-canary"]
 # F1 canary: a `Mutex` held across each FAT update; `pi_io=` goes non-zero.
 fat-mutate-pi-canary = ["lat-fat", "azos_fs/fat-mutate-pi-canary"]
-# Wave 15 (RL), owner rule F1: virtio-blk holds `BLK_LOCK` across each
+# virtio-blk holds `BLK_LOCK` across each
 # completion wait again; `[LAT] blk waits_locked=` goes non-zero.
 blk-lock-wait-canary = ["lat-fat", "azos_drv_virtio/blk-lock-wait-canary"]
-# Wave 15 canary: virtio-blk stays polled (its waiters spin) although its
+# Canary: virtio-blk stays polled (its waiters spin) although its
 # interrupt line is wired: the `[VIRTIO-BLK] completions by interrupt` line
 # says NOT taken, and blk_irq_counts stays (0, 0).
 blk-poll-canary = ["azos_drv_virtio/blk-poll-canary"]
@@ -1247,11 +1245,11 @@ blk-poll-canary = ["azos_drv_virtio/blk-poll-canary"]
 blk-stall-canary = ["azos_drv_virtio/blk-stall-canary"]
 # Gate canary: a virtio-blk discard sets `unmap`, which the device refuses.
 blk-discard-unmap-canary = ["azos_drv_virtio/blk-discard-unmap-canary"]
-# Wave 15 (RL), owner rule "an RT task never does block I/O": the flight
+# The rule "an RT task never does block I/O": the flight
 # recorder treats every caller as non-RT, so rt-motor's durable SAFE STOP
 # record flushes in rt-motor and RT_BLOCK_IO_CHECK must panic naming it.
 rt-io-canary = ["azos_actuation/rt-flush-canary"]
-# Wave 11 (PSTORE): gate rows `pstore: ...`. After /fat mounts, a boot that
+# Gate rows `pstore: ...`. After /fat mounts, a boot that
 # found no RAM panic record panics with the VFS lock held and reboots warm;
 # the next boot must recover the record into /fat/CRASH.LOG. See
 # kernel/src/pstore.rs. The gate builds it with `qemu`; the farm builds it
@@ -1260,11 +1258,11 @@ pstore-smoke = ["azos_fs/pstore-smoke"]
 # Its canary: the panic path flips one payload byte after the checksum, so the
 # next boot must reject the record and say so.
 pstore-corrupt-smoke = ["pstore-smoke"]
-# Wave 11 ONESHOT canary: the timer arming before the one-shot change (no
+# Canary: the timer arming before the one-shot change (no
 # reprogram when a task blocks on a timer deadline; aarch64's tick handler
 # programs `now + period` only). The `lat:` row must print `[LAT] FAIL`.
 oneshot-canary = ["lat-smoke", "azos_sched/oneshot-canary"]
-# Wave 11 (A64CLK): the aarch64 kernel runs on the VIRTUAL counter/timer
+# The aarch64 kernel runs on the VIRTUAL counter/timer
 # (CNTVCT_EL0, CNTV_*, PPI 27), the clock ring 3's vDSO reads. Two canaries:
 # `a64clk-ppi-canary` programs CNTV but enables PPI 30 (the physical timer's
 # line), so no tick arrives; `a64clk-cntvoff-canary` leaves CNTVOFF_EL2 nonzero
@@ -1289,11 +1287,11 @@ mce-smoke = []
 mce-cr4-canary = []
 mce-record-canary = []
 mce-stop-canary = []
-# Wave 11 (PORTWAIT) canary: a port's timer source is accepted and never
+# Canary: a port's timer source is accepted and never
 # armed; ipctest's phase P must then fail its timer check (gate rows
 # `portwait: ring-3 multi-source wait`, riscv64 and aarch64).
 portwait-timer-canary = ["qemu", "azos_syscall/portwait-timer-canary"]
-# Wave 11 PIFAST: a priority-13 kernel client calls a
+# A priority-13 kernel client calls a
 # priority-24 kernel server through fast IPC (582) while a priority-18 hog
 # computes in 2 ms bursts on the same hart, and reports the call latency
 # against a 100 us bound. See kernel/src/smokes/pifast_smoke.rs.
@@ -1301,7 +1299,7 @@ pifast-smoke = ["qemu"]
 # Its canary: the call never donates (`azos_syscall/pifast-donation-canary`),
 # so the row must print `[PIFAST] FAIL`.
 pifast-donation-canary = ["pifast-smoke", "azos_syscall/pifast-donation-canary"]
-# Wave 11 SCHED-RT rows (`sched-rt:` in tools/gate/ci_check.sh): the RT band budget,
+# Rows (`sched-rt:` in tools/gate/ci_check.sh): the RT band budget,
 # EDF + CBS and run-time admission measured on hart 0 under `-icount`, see
 # kernel/src/rt_smoke.rs. The topology gains the two profiled rows the EDF
 # check attaches to.
@@ -1313,7 +1311,7 @@ dispatch-skip-class-canary = ["sched-rt-smoke", "azos_sched/dispatch-skip-class-
 rt-cbs-canary = ["sched-rt-smoke", "azos_sched/rt-cbs-canary"]
 rt-admit-canary = ["sched-rt-smoke", "azos_sched/rt-admit-canary"]
 rt-exempt-canary = ["sched-rt-smoke", "azos_sched/rt-exempt-canary"]
-# Wave 15 (`sched-rt-util:` rows): admitted reservations near the admission
+# Admitted reservations near the admission
 # bound (70 % and 93 % per hart, one and two harts), an overrunner, and two
 # reservations at different levels; see kernel/src/rt_util_smoke.rs.
 sched-rt-util = ["qemu"]
@@ -1339,9 +1337,9 @@ rt-panic-canary-spin = ["rt-panic-canary"]
 # The panic in rt-motor itself, a registered safety task, holding no lock: the
 # reset path under either policy (`reason=safety-task` under Contain), with the
 # global panic latch set — the observer checks that a motor command and the
-# ESC are refused after it (wave 13).
+# ESC are refused after it.
 rt-panic-canary-safety = ["rt-panic-canary", "azos_safety_core?/rt-panic-canary-safety"]
-# Wave 15 GR5: a kernel task on CPU 1 floods the console (kernel and ring-3
+# A kernel task on CPU 1 floods the console (kernel and ring-3
 # paths) while one on CPU 0 panics; the report must come out whole (Kconfig
 # PANIC_QUIESCE). Rows `panic: report not spliced by a console flood`; see
 # kernel/src/smokes/panic_splice_smoke.rs. No `qemu`: x86_64 builds it too.
@@ -1354,7 +1352,7 @@ rtwd-window-smoke = ["qemu", "use-robot", "azos_safety_core?/rtwd-window-smoke"]
 # must go red on it.
 rtwd-record-canary = ["use-robot", "azos_safety_core?/rtwd-record-canary"]
 # The buzzer's placement through a fault and a deadline
-# (kernel/src/smokes/drv_contain_smoke.rs, wave 13 and Phase 4): a panic in
+# (kernel/src/smokes/drv_contain_smoke.rs): a panic in
 # the kernel host is contained under Kconfig PANIC_POLICY_CONTAIN, and the
 # driver restarts in ring 3 behind the same endpoint; with
 # DRV_BUZZER_CALL_BUDGET_US set, ring-3 calls that break it move the driver
@@ -1365,7 +1363,7 @@ rtwd-record-canary = ["use-robot", "azos_safety_core?/rtwd-record-canary"]
 drv-contain-smoke = ["qemu", "board-io"]
 # Timer sleepers on every hart raced by early TID wakes (the interleavings
 # that lost rt-motor's wake with the heap, gate 185); a stuck sleeper or a
-# census `lost` count fails it: kernel/src/smokes/timer_heap_smoke.rs (wave 13).
+# census `lost` count fails it: kernel/src/smokes/timer_heap_smoke.rs.
 timer-heap-smoke = ["qemu"]
 # A tick deferred by a SpinLock is paid at the guard drop and counted as a
 # preemption, not a voluntary switch: kernel/src/smokes/preempt_account_smoke.rs.
@@ -1461,7 +1459,7 @@ azos_rtc       = { workspace = true, optional = true }
 azos_drvkit    = { workspace = true, optional = true, features = ["window"] }
 azos_hv        = { workspace = true, optional = true }
 azos_devif     = { workspace = true }
-# Wave 15: the trace ring layout (the cost probe reads its own ring).
+# The trace ring layout (the cost probe reads its own ring).
 azos_rings      = { workspace = true }
 azos_records    = { workspace = true }
 azos_seclog     = { workspace = true, features = ["chain"] }
@@ -1475,7 +1473,7 @@ azos_linux_abi = { workspace = true, optional = true }
 # The safety path (crates/domains/robot/safety-core). The kernel creates its
 # tasks, calls its ISR-side functions and installs its OTA boot-good hook.
 azos_safety_core = { path = "../crates/domains/robot/safety-core", optional = true }
-# Wave 11 (DOMAIN): the actuation authority every domain shares — e-stop latch,
+# The actuation authority every domain shares — e-stop latch,
 # release authority, safe mode, flight recorder, sys-wdt, the timer-ISR feed.
 azos_actuation = { workspace = true }
 azos_ext_api = { workspace = true }

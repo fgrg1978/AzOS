@@ -419,7 +419,7 @@ impl ItsDriver {
         }
         debug_assert!(slot < self.n_devices);
         debug_assert!(lpi_intid >= gic::LPI_INTID_BASE);
-        // Wave-4 canary hook (the ITS acceptance test) — see this
+        // Canary hook (the ITS acceptance test) — see this
         // crate's Cargo.toml `its-skip-mapti` feature doc. Skipping the
         // MAPTI submission below must be the ONLY thing this feature
         // changes: the device is still registered (`map_device` above

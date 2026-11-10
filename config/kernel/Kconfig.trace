@@ -88,7 +88,7 @@ config LAT_TRACE
       transition and every trap entry/exit reads the counter once.
 
 # ---------------------------------------------------------------------------
-# Real-time tasks never do block I/O (wave 15, owner rule)
+# Real-time tasks never do block I/O
 # ---------------------------------------------------------------------------
 
 config RT_BLOCK_IO_CHECK
@@ -130,7 +130,7 @@ config CONSOLE_RT_APPEND_ONLY
 
       On (default, every profile and ISA): one indirect call and a priority
       load per kernel line. Off: an RT caller that finds deferred output
-      drains it in its own time, as before wave 15 (up to DRAIN_BUDGET bytes
+      drains it in its own time (up to DRAIN_BUDGET bytes
       of wire time, ~0.7 s at 115200 baud). Only for measuring that cost.
 
 config RT_CONSOLE_WIRE_CHECK
@@ -150,7 +150,7 @@ config RT_CONSOLE_WIRE_CHECK
       Off (every deployment profile): not compiled.
 
 # ---------------------------------------------------------------------------
-# Kernel event tracer (wave 15)
+# Kernel event tracer
 # ---------------------------------------------------------------------------
 
 config KTRACE
@@ -940,6 +940,6 @@ config WCET
     help
       Times every `#[wcet(...)]` function with the cycle counter and
       reports its worst case (crates/drivers/sys/src/wcet.rs). Meant for
-      real hardware, where the cycle counter is reliable (VF2, K1); on
+      real hardware, where the cycle counter is reliable (K1); on
       QEMU the numbers are the emulator's. Off: a `#[wcet]` site is the
       bare function.

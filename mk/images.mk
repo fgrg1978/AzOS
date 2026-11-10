@@ -122,7 +122,7 @@ $(OUT_BUILD)/disk-sdktestbase.img: AUTORUN_ELF := /fat/SDKTEST.ELF
 $(OUT_BUILD)/disk-envelope.img: AUTORUN_ELF :=
 $(OUT_BUILD)/disk-ipctest.img: AUTORUN_ELF := /fat/IPCTEST.ELF
 $(OUT_BUILD)/disk-vsbench.img: AUTORUN_ELF := /fat/VSBENCH.ELF
-# Wave 12: vsbench's `spawn+wait` lane starts TOOLBOX.ELF (as `true`), so the
+# Vsbench's `spawn+wait` lane starts TOOLBOX.ELF (as `true`), so the
 # bench volume carries it; no other image of this recipe does.
 $(OUT_BUILD)/disk-vsbench.img: DISK_EXTRA := $(TOOLBOX_ELF)=TOOLBOX.ELF
 $(OUT_BUILD)/disk-vsbench.img: $(TOOLBOX_ELF)
@@ -155,7 +155,7 @@ $(OUT_BUILD)/disk-brainestop.img: AUTORUN_ELF := /fat/BRAINCLI.ELF
 # `estop_gpio_smoke_task`.
 $(OUT_BUILD)/disk-estopgpio.img: AUTORUN_ELF := /fat/BRAINCLI.ELF
 
-# Wave 9 (DRV1): the base of the ring-3 drivers disk (`build/disk-drv.img`,
+# The base of the ring-3 drivers disk (`build/disk-drv.img`,
 # after this recipe). No autorun: the drivers are the only ring-3 tasks.
 $(OUT_BUILD)/disk-drvbase.img: AUTORUN_ELF :=
 # L1, the Linux comparison (`make lx-compare`): LXSRV.ELF as the
@@ -165,7 +165,7 @@ $(OUT_BUILD)/disk-lxbench-base.img: AUTORUN_ELF := /fat/LXSRV.ELF
 
 # The optional third argument is the signing key (default: the TEST key; the
 # board volume passes BOARD_SIGN_PRIV).
-# CONFIG.SIG v2 (wave 11): a signed CONFIG.INI names ONE
+# CONFIG.SIG v2: a signed CONFIG.INI names ONE
 # device and a counter. Each image gets a fresh random device id in its
 # reserved tail (`tools/sign/device_provision.py`, sector 2, floor 0) and its
 # CONFIG.INI is signed for that id at counter 1. Usage, in a recipe whose image
@@ -215,7 +215,7 @@ $(OUT_BUILD)/disk-envelope.img $(OUT_BUILD)/disk-brainlies.img \
 		$(TEST_PRIV_KEY) $(CONFIG_SIG_TOOLS) $(LINK_KEY_TOOL)
 	@mkdir -p $(OUT_BUILD)
 	dd if=/dev/zero of=$@ bs=1M count=32
-	# U06-9/#30 (2026-09-26): extend the raw image by
+	# U06-9/#30: extend the raw image by
 	# TAIL_SECTORS (8 sectors = 4 KiB) and format ONLY the
 	# first 32768 1-KiB blocks (32 MiB) as FAT32, leaving the tail
 	# reserved -- see `kernel/src/reserved_tail.rs::TAIL_SECTORS`.
@@ -235,7 +235,7 @@ $(OUT_BUILD)/disk-envelope.img $(OUT_BUILD)/disk-brainlies.img \
 	# W2-B5 (U10-2): every image from this recipe ships CONFIG.SIG, signed with
 	# the same dev/test key `crates/core/topology::TRUSTED_PUBKEY` embeds; without it
 	# the kernel takes cfg_load_verified's fail-closed branch (autorun refused).
-	# Wave 11: CONFIG.SIG v2 is bound to the device id in the image's reserved
+	# CONFIG.SIG v2 is bound to the device id in the image's reserved
 	# tail (a fresh random one per image) and to counter 1.
 	$(call provision_and_sign_config,$@.tmp_config.ini,$@.tmp_config.sig)
 	mcopy -i $@ $@.tmp_hello.txt ::HELLO.TXT
@@ -268,7 +268,7 @@ $(OUT_BUILD)/disk-envelope.img $(OUT_BUILD)/disk-brainlies.img \
 	@rm -f $@.tmp_hello.txt $@.tmp_readme.txt $@.tmp_config.ini $@.tmp_config.sig $@.tmp_bootmeta
 	@echo "[DISK] FAT32 image: $@ (autorun=$(AUTORUN_ELF))"
 
-# Wave 9 (DRV1): the ring-3 drivers disk — the base above plus the two driver
+# The ring-3 drivers disk — the base above plus the two driver
 # images, the only riscv64 gate image that carries them. A `qemu` kernel
 # starts every topology row with `start = true` whose image is on the volume
 # (through COMPMGR.ELF, the component manager, which carries the rows since
@@ -353,7 +353,7 @@ $(OUT_BUILD)/disk-lxabi.img: $(OUT_BUILD)/disk-sh.img $(LXHELLO_ELF)
 	@echo "[DISK] FAT32 image: $@ (user shell + static Linux LXHELLO.ELF)"
 
 # ── Board volume: ELFs the TOPOLOGY declares ─────────────────────
-# Owner decision 2026-09-24: the set of ELFs above (IMAGE_ELFS) predates the
+# The set of ELFs above (IMAGE_ELFS) predates the
 # generic-hybrid pivot and is a hand-maintained, robot-shaped list — every
 # disk-*.img target above ships all thirteen regardless of what it tests.
 # The rule now: an ELF ships on a BOARD's FAT32 volume iff the topology
@@ -406,7 +406,7 @@ $(BOARD_DIR)/policy.sig: $(OUT_BUILD)/policy.gguf tools/sign/gen_config_sig.py $
 	@mkdir -p $(BOARD_DIR)
 	python3 tools/sign/gen_config_sig.py $(OUT_BUILD)/policy.gguf --priv "$(BOARD_SIGN_PRIV)" --out $@
 
-# Wave 15 (TOPOSIGN follow-up, owner round 73): every product image path ships
+# Every product image path ships
 # its FAT volume, because a product kernel defaults to
 # TOPOLOGY_SOURCE_SIGNED_REQUIRED and halts without the signed topology. One
 # volume per product profile, same recipe; only the topology differs (emitted
@@ -435,7 +435,7 @@ $(VF2_DISK) $(OUT_BUILD)/disk-board-k1.img $(OUT_BUILD)/disk-board-fleet.img: \
 	$(call require_board_priv,BOARD)
 	@mkdir -p $(OUT_BUILD)
 	dd if=/dev/zero of=$@ bs=1M count=32
-	# U06-9/#30 (2026-09-26): extend the raw image by
+	# U06-9/#30: extend the raw image by
 	# TAIL_SECTORS (8 sectors = 4 KiB) and format ONLY the
 	# first 32768 1-KiB blocks (32 MiB) as FAT32, leaving the tail
 	# reserved -- see `kernel/src/reserved_tail.rs::TAIL_SECTORS`.
@@ -456,7 +456,7 @@ $(VF2_DISK) $(OUT_BUILD)/disk-board-k1.img $(OUT_BUILD)/disk-board-fleet.img: \
 	mcopy -i $@ $@.tmp_board_config.ini ::CONFIG.INI
 	mcopy -i $@ $@.tmp_board_config.sig ::CONFIG.SIG
 	mcopy -i $@ $@.tmp_board_bootmeta ::BOOTMETA
-	# Wave 15: the board kernel's topology as signed files (TOPOLOGY_SOURCE),
+	# The board kernel's topology as signed files (TOPOLOGY_SOURCE),
 	# bound to this volume's device id, signed with the board key.
 	$(call topo_bind,riscv64,$(BOARD_VOL_KCONFIG),board-image,$(BOARD_DIR)/topo-$(basename $(notdir $@)),$@,$(BOARD_SIGN_PRIV))
 	# The topology's images plus the ones this volume's .config selects
@@ -503,7 +503,7 @@ $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-sdktestbase.img: AUTORUN_ELF_AARCH
 $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-ipctest.img: AUTORUN_ELF_AARCH64 := /fat/IPCTEST.ELF
 $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-captest.img: AUTORUN_ELF_AARCH64 := /fat/CAPTEST.ELF
 $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-vsbench.img: AUTORUN_ELF_AARCH64 := /fat/VSBENCH.ELF
-# Wave 12: see `build/disk-vsbench.img`'s DISK_EXTRA.
+# See `build/disk-vsbench.img`'s DISK_EXTRA.
 $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-vsbench.img: DISK_EXTRA := $(TOOLBOX_ELF_AARCH64)=TOOLBOX.ELF
 $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-vsbench.img: $(TOOLBOX_ELF_AARCH64)
 $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-reflex.img:  AUTORUN_ELF_AARCH64 := /fat/REFLEX.ELF
@@ -517,7 +517,7 @@ $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-reflex.img:  AUTORUN_ELF_AARCH64 :
 # `disk-braincli.img`: `tools/gate/fake_brain.py` on 10.0.2.2:9000 (QEMU SLIRP's
 # gateway address maps to the host).
 $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-braincli.img: AUTORUN_ELF_AARCH64 := /fat/BRAINCLI.ELF
-# Wave 9 (DRV1): the base of `build/disk-aarch64$(AARCH64_PG_SUFFIX)-drv.img`; see `build/disk-drv.img`.
+# The base of `build/disk-aarch64$(AARCH64_PG_SUFFIX)-drv.img`; see `build/disk-drv.img`.
 $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-drvbase.img: AUTORUN_ELF_AARCH64 :=
 $(OUT_BUILD)/disk-aarch64-lxbench-base.img: AUTORUN_ELF_AARCH64 := /fat/LXSRV.ELF
 $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX).img $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-systest.img $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-abitest.img \
@@ -532,7 +532,7 @@ $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-drvbase.img $(OUT_BUILD)/disk-aarc
 		tools/keys/test_priv.bin $(CONFIG_SIG_TOOLS)
 	@mkdir -p $(OUT_BUILD)
 	dd if=/dev/zero of=$@ bs=1M count=32
-	# U06-9/#30 (2026-09-26): extend the raw image by
+	# U06-9/#30: extend the raw image by
 	# TAIL_SECTORS (8 sectors = 4 KiB) and format ONLY the
 	# first 32768 1-KiB blocks (32 MiB) as FAT32, leaving the tail
 	# reserved -- see `kernel/src/reserved_tail.rs::TAIL_SECTORS`.
@@ -575,7 +575,7 @@ $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-drvbase.img $(OUT_BUILD)/disk-aarc
 	@rm -f $@.tmp_config_aarch64.ini $@.tmp_config_aarch64.sig $@.tmp_hello_aarch64.txt $@.tmp_bootmeta_aarch64
 	@echo "[DISK] aarch64 FAT32 image: $@ (autorun=$(AUTORUN_ELF_AARCH64))"
 
-# Wave 9 (DRV1): see `build/disk-drv.img`.
+# See `build/disk-drv.img`.
 $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-drv.img: $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-drvbase.img $(BUZZ_DRV_ELF_AARCH64) $(INA_DRV_ELF_AARCH64) $(RNG_DRV_ELF_AARCH64) $(COMPMGR_ELF_AARCH64)
 	cp $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-drvbase.img $@
 	mcopy -i $@ $(BUZZ_DRV_ELF_AARCH64) ::BUZZDRV.ELF
@@ -709,7 +709,7 @@ $(OUT_BUILD)/disk-aarch64-badsig.img: $(OUT_BUILD)/disk-aarch64-signed.img $(OUT
 	@echo "[DISK] aarch64 FAT32 image with CORRUPTED slot A signature: $@"
 
 # Slot A unsigned (inherited from the base image), slot R signed — the
-# one-file delta that turns the control's refusal into owner decision 99's
+# one-file delta that turns the control's refusal into the
 # fall to recovery. On aarch64 the reset at the end of that fall is PSCI
 # `SYSTEM_RESET` (`arch-api`'s `Boot::reboot`), not SBI.
 $(OUT_BUILD)/disk-aarch64-recovery.img: $(OUT_BUILD)/disk-aarch64.img $(OUT_BUILD)/KERN_R.BIN $(OUT_BUILD)/KERN_R.SIG
@@ -725,7 +725,7 @@ $(OUT_BUILD)/disk-aarch64-recovery.img: $(OUT_BUILD)/disk-aarch64.img $(OUT_BUIL
 # Autorun opens /fat/ABITEST.ELF, the digest is uhello's, so uhello runs under
 # UHELLO.ELF's profile and its getpid is refused. Bound by name, it would run
 # under ABITEST.ELF's wider row, which allows getpid.
-# Gate row (wave 9): the captest volume inside partition 0 of an
+# Gate row: the captest volume inside partition 0 of an
 # MBR medium, with a 64-sector raw partition 1 after it for `block.part.1`.
 # See tools/image/make_parted_disk.py for the layout.
 $(OUT_BUILD)/disk-parted.img: $(OUT_BUILD)/disk-captest.img tools/image/make_parted_disk.py tools/image/azos_records.py
@@ -760,7 +760,7 @@ $(OUT_BUILD)/disk-linkkey.img: $(OUT_BUILD)/disk.img $(LINK_KEY_TOOL)
 	cp $(OUT_BUILD)/disk.img $@
 	@dd if=/dev/urandom of=$@.tmp_linkkey bs=32 count=1 2>/dev/null
 	mcopy -i $@ $@.tmp_linkkey ::LINK.KEY
-	# U06-9 (2026-09-26): the KERNEL no longer reads /fat/LINK.KEY — it reads
+	# U06-9: the KERNEL no longer reads /fat/LINK.KEY — it reads
 	# reserved tail sector 0 (`reserved_tail::LINK_KEY`, LBA =
 	# image sectors - TAIL_SECTORS), as a link-key record, which the USB MSC export
 	# cannot address. The FAT copy above stays for the PEER tools
@@ -788,7 +788,7 @@ $(OUT_BUILD)/disk-configtamper.img: $(OUT_BUILD)/disk.img
 # to start without one, and the peer (`fake_brain.py --link-key`) needs the same
 # bytes, so the key is also left at build/braincli_linkkey.bin.
 #
-# U06-9 (2026-09-26): the KERNEL no longer reads /fat/LINK.KEY, and neither
+# U06-9: the KERNEL no longer reads /fat/LINK.KEY, and neither
 # does brain_client (`link_key_init` now goes through the kernel-hosted `linkkey` endpoint)
 # — see `build/disk-linkkey.img`'s own comment above for the mechanism this
 # mirrors (reserved tail sector 0, `reserved_tail::LINK_KEY`,
@@ -904,7 +904,7 @@ $(OUT_BUILD)/disk-badsig.img: $(OUT_BUILD)/disk-signed.img $(OUT_BUILD)/KERN_BAD
 	mcopy -o -i $@ $(OUT_BUILD)/KERN_BAD.SIG ::KERN_A.SIG
 	@echo "[DISK] FAT32 image with CORRUPTED slot A signature: $@"
 
-# RECOVERY fixture (owner decision 99): slot A unsigned, slot R signed.
+# RECOVERY fixture: slot A unsigned, slot R signed.
 #
 # `build/disk.img` already lacks KERN_A.SIG, so slot A answers
 # SignatureAbsent — the same refusal the "rejects unsigned" control asserts.
@@ -924,7 +924,7 @@ $(OUT_BUILD)/KERN_R.BIN:
 $(OUT_BUILD)/KERN_R.SIG: $(OUT_BUILD)/KERN_R.BIN $(TEST_PRIV_KEY)
 	python3 tools/sign/sign_ota.py $(OUT_BUILD)/KERN_R.BIN --fw-version 1 --priv $(TEST_PRIV_KEY) --out $@
 
-# UNFIT-SLOT fixture (owner decision 2026-09-19): slot A signed and bootable,
+# UNFIT-SLOT fixture: slot A signed and bootable,
 # slot B present with a mathematically wrong signature.
 #
 # This is the shape of the attack the `bad_slots` record exists for: the board
@@ -1066,7 +1066,7 @@ $(OUT_BUILD)/disk-x86_64-systest.img $(OUT_BUILD)/disk-x86_64-captest.img $(OUT_
 	@rm -f $@.tmp_hello.txt $@.tmp_config.ini $@.tmp_config.sig $@.tmp_bootmeta
 	@echo "[DISK] x86_64 FAT32 image: $@ (autorun=$(AUTORUN_ELF_X86_64))"
 
-# ── Signed capability topology files (wave 15 TOPOSIGN) ─────────────────────
+# ── Signed capability topology files ─────────────────────
 #
 # Kconfig TOPOLOGY_SOURCE: a kernel installs /fat/CAPS.TOM + CAPS.SIG and
 # /fat/SCHED.TOM when they verify, are bound to this device and counter, parse

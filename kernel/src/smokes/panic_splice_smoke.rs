@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! `panic-splice-smoke` (wave 15, GR5): the panic report reaches the wire
+//! `panic-splice-smoke`: the panic report reaches the wire
 //! whole while another CPU floods the console.
 //!
 //! Three CPUs (`-smp 3`):
@@ -25,7 +25,7 @@
 //! banner. Runtime canaries `panic-stop-skip` and `panic-quiesce-skip`
 //! (kernel/src/panic.rs `quiesce`).
 //!
-//! `canary=panic-splice-fatal` (wave 15, GR6) is a mode, not a canary: the
+//! `canary=panic-splice-fatal` is a mode, not a canary: the
 //! culprit reads its own slot's unmapped stack guard page instead, so the
 //! kernel page fault's `[FATAL]` halt is judged (rows `fatal: report not
 //! spliced by a console flood`). That path takes the same quiesce

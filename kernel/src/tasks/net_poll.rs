@@ -40,7 +40,7 @@ use crate::*;
 ///   `NET_RX_IRQ`, or the Intel e1000e with MSI): an RX interrupt wakes this task through [`net_msi_wake`];
 ///   with no TCP deadline it sleeps up to the self-heal ceiling.
 /// - No NIC: as IRQ mode (a loopback connection to our own address still
-///   has TCP deadlines). Measured 2026-09-28, riscv64 `--features qemu`, -smp 1, no NIC,
+///   has TCP deadlines). Measured, riscv64 `--features qemu`, -smp 1, no NIC,
 ///   30 s idle: 17 900 iterations (596/s) with the 1 ms timer, 0 without.
 ///   Timer interrupts did not move measurably (603/s -> 616/s): `rt-motor`
 ///   and `flight-ctrl` also sleep 1 ms, and the tick coalesces the three.
@@ -60,7 +60,7 @@ pub(crate) fn net_poll_task(_: usize) {
     // (default 100, i.e. every 10 ms). A 1 ms deadline can therefore never be
     // honoured as such — it means "wake me at the first tick after 1 ms".
     //
-    // **Measured 2026-09-10**, `-smp 4` with a NIC, 12 000 iterations:
+    // **Measured**, `-smp 4` with a NIC, 12 000 iterations:
     // the work (`net_poll` + `tcp_tick`) costs **8 µs on average, 526 µs
     // worst, never above 5 ms**; the wait averages **3.2 ms** (~310 Hz — better
     // than the tick alone, because IRQ-driven wakes also fire) with a worst
@@ -68,7 +68,7 @@ pub(crate) fn net_poll_task(_: usize) {
     //
     // Poll mode only (see above). The tickless timer now arms the nearest
     // sleep deadline, so the 1 ms floor is honoured more closely than the
-    // paragraph above says: measured 2026-09-28, riscv64 default features,
+    // paragraph above says: measured, riscv64 default features,
     // -smp 1, no NIC, 30 s: 20 040 iterations (~670/s). That boot had no
     // NIC, which no longer runs this timer at all (see the modes above).
     //

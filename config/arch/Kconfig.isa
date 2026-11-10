@@ -131,8 +131,8 @@ choice
           Standard Aarch64 FP/SIMD save area.  Required for any user-mode
           code using NEON intrinsics or Rust's SIMD types.
 
-    # FP_SVE's "&& HAS_SVE" dependency dropped 2026-09-25 along with HAS_SVE
-    # itself (Q4.1). FP_SVE has zero Rust consumers of its own (grepped
+    # FP_SVE's "&& HAS_SVE" dependency was dropped along with HAS_SVE
+    # itself. FP_SVE has zero Rust consumers of its own (grepped
     # alongside HAS_SVE) so this is an adjacent, not-yet-audited dead
     # option in its own right — left selectable on ARCH_AARCH64 alone
     # rather than deleted outright, since deleting it was not part of this
@@ -233,7 +233,7 @@ config X86_IOPORT_BITMAP_PORTS
       speaker, COM2-4);
       65536 (8 KiB per CPU, Linux's IO_BITMAP_BITS) reaches the I/O BARs
       PCI firmware assigns above 0x1000.  The ports the kernel's own
-      drivers bind (COM1, the CMOS clock, 0xCF8-0xCFF, the 8042, the PIT's
+      drivers bind (the CMOS clock, 0xCF8-0xCFF, the 8042, the PIT's
       channel 0, the 8259s, the ACPI PM timer) are never granted, whatever
       the topology asks: one more bit per port of .bss records them.  Only x86_64 has a port space: on
       riscv64 and aarch64 this must stay 0, and the op answers -ENODEV

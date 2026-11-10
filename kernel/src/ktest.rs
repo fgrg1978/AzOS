@@ -1822,7 +1822,7 @@ azos_ktest::ktest_late! {
                 "the contender never reached the Mutex: rule F7 was not exercised"
             });
         }
-        // F7 is report-only (owner decision 10-10): lockdep notes it and the
+        // F7 is report-only: lockdep notes it and the
         // runner fails nothing, so the test reads the rule's own counter.
         // Its pass side has a fair contender (no hit); `lockdep-rt-pi` makes
         // it RT, and a lockdep that misses the hit leaves this `ok`. Only a
@@ -1837,7 +1837,7 @@ azos_ktest::ktest_late! {
 }
 
 
-// ── Spin-wait and CAS (wave 15, N2) ─────────────────────────────────────────
+// ── Spin-wait and CAS ─────────────────────────────────────────
 //
 // `SpinWait` (arch/api spin.rs) on the path this boot selected:
 // the extension (Zacas/Zawrs, LSE, WAITPKG) or the fallback, whichever the
@@ -2176,7 +2176,7 @@ azos_ktest::ktest_late! {
     }
 }
 
-// ── SpinLock fairness: FIFO and a bounded wait (wave 15, N3) ────────────────
+// ── SpinLock fairness: FIFO and a bounded wait ────────────────
 //
 // Four contenders, one per CPU, take one SpinLock back to back with
 // interrupts off. Each counts, per acquisition, the acquisitions by others

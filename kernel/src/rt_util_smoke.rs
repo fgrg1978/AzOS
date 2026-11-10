@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Are admitted deadlines met near the admission bound? (`sched-rt-util`,
-//! wave 15). The `sched-rt-smoke` checks prove EDF + CBS at a light load
+//! Are admitted deadlines met near the admission bound? (`sched-rt-util`). The `sched-rt-smoke` checks prove EDF + CBS at a light load
 //! (two or three reservations); this one loads each hart up to what
 //! run-time admission accepts and counts every job that finishes late.
 //! Booted under `-icount shift=0,sleep=off`, so every time here is an
@@ -52,11 +51,11 @@
 //!   (`rt_core::levels_check`) binds only under fixed priority between
 //!   levels. PASS: L is admitted and neither misses a deadline. Canary
 //!   `canary=sched-dl-in-level` on the command line (fixed priority between
-//!   levels, the order before wave 15's classes): H's 5 ms would run first,
+//!   levels, the order without classes): H's 5 ms would run first,
 //!   so admission, reading the same switch, refuses L with `levels` (and H
 //!   too while a reservation with a shorter deadline sits at a level below
 //!   it: the IRQ thread's, `IRQ_THREADED`). When
-//!   that rule did not bind there (wave 15, the density sum alone), L missed
+//!   that rule did not bind there (the density sum alone), L missed
 //!   every job.
 //!
 //! On a boot with a second hart, instead:

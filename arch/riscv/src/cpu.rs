@@ -226,7 +226,7 @@ pub const SSTATUS_SPP: usize = 1 << 8;
 /// (aarch64's `PAN=1` "protected", riscv64's `SUM=0` "protected").
 pub const SSTATUS_SUM: usize = 1 << 18;
 
-/// O3.2 (owner decision, PAN/SUM discipline): RAII guard setting `sstatus.
+/// O3.2 (PAN/SUM discipline): RAII guard setting `sstatus.
 /// SUM` for its lifetime, clearing it on drop — the riscv64 twin of
 /// `arch-aarch64::sysregs::UserAccess`. `csrs`/`csrc` are single
 /// instructions (no read-modify-write round trip needed, unlike a plain

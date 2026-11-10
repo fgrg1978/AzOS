@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Wave 13 (RT7): a tick that lands while a task holds a `SpinLock` is a
+//! A tick that lands while a task holds a `SpinLock` is a
 //! preemption, deferred to the guard's drop — and is counted as one
 //! (`preempt-account-smoke`).
 //!
@@ -13,7 +13,7 @@
 //! the holder, which a holder woken with lag credit (up to two lag limits,
 //! 20 ms at 100 Hz) plus a slice does not do inside a short fixed hold. The measured task's own counts across the hold must read
 //! `preempted +N (N >= 1)` and `voluntary +0`: it never yielded or blocked.
-//! Before wave 13 the debt was paid through `task_yield` and counted as
+//! The debt used to be paid through `task_yield` and counted as
 //! voluntary, so `DOMAIN_TASKINFO`'s preempted count (vsbench's batch8 bound)
 //! missed every tick that landed in a lock. One line:
 //! `[PACCT] PASS voluntary +0 preempted +N` or `[PACCT] FAIL ...`.
@@ -88,7 +88,7 @@ fn holder(_: usize) {
 // count as `preempted +N (N >= 1)`, `voluntary +0` (the rows `sched:
 // deferred tick counted (rv|arm)`, `[PACCT] PASS voluntary +0 preempted
 // +N`). Both tasks are pinned to CPU 1, so `-smp 4` runs the scenario the
-// rows ran at `-smp 2`. Canary (2026-10-04, by hand, reverted): the
+// rows ran at `-smp 2`. Canary (by hand, reverted): the
 // deferred-resched callback back to `task_yield` gave 3 of 3 boots
 // "voluntary +1 preempted +0".
 #[cfg(feature = "ktest")]

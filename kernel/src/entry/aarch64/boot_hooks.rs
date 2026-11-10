@@ -201,7 +201,7 @@ pub fn boot_banner(hart_id: usize, dtb_ptr: usize) {
     // FP/SIMD self-check. **Deliberately executes FP instructions**, so a
     // boot that lost EL1's FP/SIMD permission traps here (EC=0x07) instead
     // of passing. That permission — CPACR_EL1.FPEN, set in boot.S — was
-    // missing on the EL1 crate::entry path until 2026-09-21, and this minimal
+    // missing on the EL1 crate::entry path, and this minimal
     // kernel_main emitted no FP of its own, so nothing noticed. The operands
     // go through `black_box` so the compiler cannot fold the result into a
     // constant and skip the instructions; the printed value pins that they
@@ -435,7 +435,7 @@ pub fn cpu_features(_fw: &Firmware) {
     azos_arch::ext::tlbi_range::select(regs.tlbirange());
     azos_arch::pmu::start_this_cpu();
     crate::boot::pmu_report("aarch64", azos_arch::pmu::verify());
-    // `SpinWait`'s CAS (wave 15, N2): CASA/CASAL when A64_LSE allows and
+    // `SpinWait`'s CAS: CASA/CASAL when A64_LSE allows and
     // the ID register says so. Canary `spin-ext-claim`: claimed whatever
     // the CPU says, so on a core without LSE the first lock traps.
     let lse = azos_arch::spin::select(f.lse || canary!("spin-ext-claim"));
@@ -700,7 +700,7 @@ pub fn verify_guards() {
         }
     }
 
-    // O3.2 (owner decision, PAN): a fresh USER-tagged page, read from EL1
+    // O3.2 (PAN): a fresh USER-tagged page, read from EL1
     // OUTSIDE any UserAccess window — must fault now that SCTLR_EL1.SPAN=0
     // (mmu/boot.rs) sets PSTATE.PAN on every EL0->EL1 exception. A scratch VA
     // well clear of the kernel image/heap so this cannot collide with a
@@ -885,7 +885,7 @@ fn pmu_irq(dtb_ptr: usize) {
 /// The PL011's receive/transmit interrupt.
 #[inline(always)]
 pub fn console_irq(_hart_id: usize, dtb_ptr: usize) {
-    // PL011 console RX on interrupts (wave 7), the riscv64 PLIC/APLIC
+    // PL011 console RX on interrupts, the riscv64 PLIC/APLIC
     // UART path's twin. The INTID comes from the DTB's PL011 node (QEMU
     // `virt`: `interrupts = <0 1 4>`, SPI 1 level -> INTID 33), never
     // from `uart::UART_IRQ`, which is only printed next to it so a
@@ -960,7 +960,7 @@ fn gic_name() -> &'static str {
     if bcm2836::active() { "BCM2836" } else if gicv2::active() { "GICv2" } else { "GICv3" }
 }
 
-/// Trigger types for ring-3 SPIs (wave 9 IRQ4): `gic::user_spi_bind`
+/// Trigger types for ring-3 SPIs: `gic::user_spi_bind`
 /// programs ICFGR from these instead of always level. The boot line names
 /// two lines QEMU `virt` describes with opposite triggers (the PL031's SPI 2
 /// level, the first virtio-mmio slot's SPI 16 edge). Noting them only fills

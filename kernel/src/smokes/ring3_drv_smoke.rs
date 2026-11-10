@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! DRV1 (wave 9): the functional test of the buzzer and the INA219.
+//! DRV1: the functional test of the buzzer and the INA219.
 //!
-//! Wave 9: both drivers run in ring 3 (`userspace/drivers/buzz_drv`,
+//! Both drivers run in ring 3 (`userspace/drivers/buzz_drv`,
 //! `userspace/drivers/ina_drv`), started from their `start = true` rows; the
 //! kernel API of each is its interface on an endpoint (`crate::buzzer`,
 //! `azos_drv_sensor::ina219`), which calls whichever host the driver is in.
@@ -174,7 +174,7 @@ fn ina219() -> Result<(u16, u16, u8, u64, u32, u64, u64, u32), &'static str> {
         kprintln!("[DRV1] ina219 sample acquired {} us before the read (driver's vDSO clock)",
                   (after - acq) / 1000);
     }
-    // Wave 10 (DRV2): the charge is integrated over the time the driver
+    // The charge is integrated over the time the driver
     // measured, so over a window it is the current times the window, give
     // or take one sample period at each end (the driver samples at
     // 10 Hz; a late sample moves charge between windows, never loses it).
@@ -419,7 +419,7 @@ pub fn task(_: usize) {
             Err(e) => kprintln!("[DRV1] buzzer FAIL: {}", e),
         },
     } }
-    // Wave 11 (DRVPLACE): the same verdict in either placement, plus the
+    // The same verdict in either placement, plus the
     // placement's own conditions and the read path's cost.
     let placement = placement_str();
     if let Err(e) = placement_check() {

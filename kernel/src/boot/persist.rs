@@ -47,7 +47,7 @@ pub(crate) fn recover_persistent_state() {
         // control and camera dials close at once, `brain_dial`), it is never
         // downgraded to anything weaker.
         //
-        // U06-9/#30 (2026-09-26): this used to be an ordinary FAT32 file,
+        // U06-9/#30: this used to be an ordinary FAT32 file,
         // `/fat/LINK.KEY`, and a USB mass-storage export of the volume reaches
         // every file on it block for block. The key now lives in the reserved
         // tail (`reserved_tail::LINK_KEY`), past the filesystem, at LBAs such an
@@ -68,7 +68,7 @@ pub(crate) fn recover_persistent_state() {
         // requirement. The load below always runs so the trust state is
         // visible on the console; only the "refuse to boot" half is gated.
         //
-        // The brain link is the Robot domain's (wave 11): without it there is
+        // The brain link is the Robot domain's: without it there is
         // no link to key and nothing below runs.
         //
         // The one reader of the key, for this boot's load and for the ring-3
@@ -127,7 +127,7 @@ pub(crate) fn recover_persistent_state() {
             azos_crypto::ct::secure_zero(&mut key_buf);
         }
 
-        // U06-9 (2026-09-26): the ring-3 door onto this same reserved
+        // U06-9: the ring-3 door onto this same reserved
         // sector (the `linkkey` endpoint, `crates/core/syscall/src/link_key.rs`).
         // Registered right after the load above so the hook re-reads the
         // exact same sector this boot just logged the state of, through the
@@ -144,7 +144,7 @@ pub(crate) fn recover_persistent_state() {
         azos_syscall::link_key::set_link_key_read_hook(read_link_key_for_ring3);
 
         // ── Operator e-stop release authority (`/fat/OPERATOR.PUB`) ──────
-        // Owner decision, 2026-09-25 — see `safety::ReleaseAuthority`'s
+        // See `safety::ReleaseAuthority`'s
         // module note for the finding and the three acceptable authorities.
         // This is the ONE hook registration this change adds to `main.rs`:
         // the Ed25519 PUBLIC key of the operator who may release an armed
@@ -159,8 +159,8 @@ pub(crate) fn recover_persistent_state() {
         // cannot have its e-stop released by anything this module checks.
         {
             const OPERATOR_KEY_BYTES: usize = 32;
-            // W2-B5 (2026-09-26): the signed topology (`[operator]` in
-            // CAPS.TOML) carries the key. G1 (2026-10-11): the loose
+            // W2-B5: the signed topology (`[operator]` in
+            // CAPS.TOML) carries the key. G1: the loose
             // `/fat/OPERATOR.PUB` has no signature, so anyone who can write
             // the FAT could install a key and release a latched e-stop. It is
             // read only by a development build whose signed topology declares
@@ -278,7 +278,7 @@ pub(crate) fn recover_persistent_state() {
         #[cfg(feature = "net")]
         install_net_config();
 
-        // Scheduler Hz -- Q4.2 (owner decision, 2026-09-25): CONFIG.INI on
+        // Scheduler Hz -- Q4.2: CONFIG.INI on
         // the removable FAT volume may only LOWER sched_hz below the
         // Kconfig compile-time default for this board/profile, never raise
         // it, and never below SCHED_HZ_FLOOR. The old check here

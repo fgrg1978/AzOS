@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! QSBR (Kconfig RCU_QSBR, wave 15 N4) in the running kernel, every ISA.
+//! QSBR (Kconfig RCU_QSBR) in the running kernel, every ISA.
 //!
 //! * `rcu_free_waits_for_the_reader`: an object retired with `call_rcu`
 //!   while a read section holds it stays whole (its free poisons it) until

@@ -20,7 +20,7 @@
 //               for a recognised Image load, never for a bare ELF
 //               `-kernel` (x0 == 0 there; verified empirically, not
 //               assumed — see this task's report for the QEMU behavior
-//               this depended on). Measured again 2026-10-09 on QEMU
+//               this depended on). Measured again on QEMU
 //               11.0.0 (`-S`, monitor `xp`, `-append` given): for the ELF,
 //               x0 = 0 at `_start` and RAM base 0x4000_0000 reads zeros.
 //               For a non-Linux image QEMU places the DTB only in the RAM
@@ -193,7 +193,7 @@ _entry_after_header:
     // [25:24] stay 0b00, so an SVE or SME instruction traps to OUR EL1
     // vector, where it is reported.
     //
-    // **This was missing on the EL1 path (found 2026-09-21).** The only
+    // **This was missing on the EL1 path (found).** The only
     // writers of CPACR_EL1 were `_azos_drop_to_el1` — which runs only
     // when we enter at EL2 — and `mmu::setup::enable_identity_map`, which
     // this kernel does not call yet. So entered at EL1 (how QEMU `virt`
@@ -210,7 +210,7 @@ _entry_after_header:
     msr     CPACR_EL1, x9
     isb
 
-    // ── PSTATE.PAN = 1, on BOTH entry paths (O3.2, owner decision) ───────
+    // ── PSTATE.PAN = 1, on BOTH entry paths (O3.2) ───────
     //
     // Same bug class as CPACR_EL1 above, found the same way (this task's
     // own pan-probe feature, run against a scratch USER-tagged page):

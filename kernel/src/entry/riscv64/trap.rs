@@ -12,7 +12,7 @@ use crate::*;
 // The ISA crate's trap-frame definitions, not this module.
 use azos_arch::trap;
 
-// F4 (wave 3) — O3.1 nested-trap probe. Reserved syscall number the ecall
+// F4 — O3.1 nested-trap probe. Reserved syscall number the ecall
 // arm intercepts BEFORE normal dispatch (`ArchFrame::probe`, below): well
 // past the real syscall table (`crates/core/abi/src/syscall_nr.rs`), so it can
 // never collide with a real syscall a build ships.
@@ -307,7 +307,7 @@ impl ArchFrame for TrapFrame {
 
     /// An illegal instruction is the first use of the F/D file by a Linux task
     /// (FS is Off in its frame): give it the file and retry. A recoverable fault inside an armed control tick restarts
-    /// the control task at a safe stop instead of the generic policy (I-13;
+    /// the control task at a safe stop instead of the generic policy (
     /// its whitelist excludes ecall and page faults).
     fn arch_exception(&mut self) -> Disposition {
         let cause = self.scause as usize;
@@ -352,7 +352,7 @@ pub(crate) fn handle_ecall_as<const FAST: bool>(frame: &mut TrapFrame) -> usize 
 /// `ecall` path. Inlined, this body's register pressure moved into that frame
 /// and cost every syscall 22 instructions (vsbench `syscall-floor` 195 -> 217
 /// ns/op under -icount), and whether LLVM inlined it flipped on an unrelated
-/// edit elsewhere in the kernel crate (wave 14, LOGLEVEL).
+/// edit elsewhere in the kernel crate (LOGLEVEL).
 #[inline(never)]
 pub(crate) fn handle_exception(frame: &mut TrapFrame) -> usize {
     match frame.class() {
@@ -364,7 +364,7 @@ pub(crate) fn handle_exception(frame: &mut TrapFrame) -> usize {
     0
 }
 
-/// Wave 13: deliver signals (or apply a `rt_sigreturn`) to the current task
+/// Deliver signals (or apply a `rt_sigreturn`) to the current task
 /// at its return to user mode, from a syscall (`from_syscall`) or an
 /// interrupt taken from U-mode. Out of line and not `#[cold]`: a cold callee
 /// reshapes the hot caller (`seccomp_deny_kill`'s note in `dispatch.rs`).

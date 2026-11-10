@@ -23,7 +23,7 @@ config FS_WRITEBACK
       Cost: one kernel task (KERNEL_STACK_SIZE_KB) and the run buffer
       (FS_WRITEBACK_RUN_KB) of RAM; per write, a cache copy instead of a
       device request. n: write-through, every write waits on the device
-      (the pre-wave-15 behaviour) and the task and buffer are not built.
+      (the earlier behaviour) and the task and buffer are not built.
 
 config FS_WRITEBACK_MAX_AGE_MS
     int "FAT32 write-back: oldest unsynced write before the fs-wb task writes it (ms)"

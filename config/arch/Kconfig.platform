@@ -69,7 +69,7 @@ choice
         bool "Generic / custom (manually specify all addresses)"
         help
           For board bring-up or platforms not yet in this list.
-          Fill in TIMER_FREQ and RAM_SIZE (UART_BASE/PLIC_BASE/RAM_BASE removed 2026-09-26, V2.6 -- crates/drivers/base/src/platform.rs is the source of truth for those)
+          Fill in TIMER_FREQ and RAM_SIZE (UART_BASE/PLIC_BASE/RAM_BASE are removed; crates/drivers/base/src/platform.rs is the source of truth for those)
           manually in the options below.
 
 endchoice

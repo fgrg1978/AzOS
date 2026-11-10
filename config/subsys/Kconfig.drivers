@@ -402,7 +402,7 @@ config DRV_VIRTIO_INPUT
       mouse selects, pastes and scrolls the framebuffer console as gpm
       does). With no such device on
       the machine nothing prints and nothing changes; a board with no
-      virtio-mmio window (VF2, K1) compiles the driver as a stub that
+      virtio-mmio window (K1) compiles the driver as a stub that
       touches no address. n: the boot wiring and the interrupt arms are not
       compiled. Off by default on a small board (HWCLASS_EMBEDDED), which
       starts only the drivers its topology names; its defconfig sets it
@@ -572,14 +572,14 @@ config RTC_PCF8563_I2C_BUS
       numbering (crates/drivers/bus/src/i2c.rs).
 
 # ---------------------------------------------------------------------------
-# Driver placement (wave 11 DRVPLACE)
+# Driver placement
 # ---------------------------------------------------------------------------
 #
 # One chip-logic source per driver, two hosts: in the kernel (a direct call
 # in the caller's context) or in ring 3 (a driver process behind the
 # kernel's proxy). Chosen per driver here, for the board this .config is
 # for; later also by the signed topology. Only drivers whose chip logic has
-# been separated from its host have a choice (INA219, buzzer).
+# been separated from its host have a choice (buzzer).
 #
 # Closed rule: a driver a safety decision reads never
 # goes to ring 3, so it has no choice here and always runs in the kernel:

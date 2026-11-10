@@ -9,8 +9,7 @@
 //! seals the hooks (a later `Hook::set` panics with the hook's name) and
 //! remaps the section read-only in the kernel's table, and in the direct-map
 //! alias of the image where there is one (x86_64). A kernel write that used
-//! to turn a hook into an arbitrary call now faults (security audit
-//! 2026-10-17, finding D).
+//! to turn a hook into an arbitrary call now faults.
 
 use azos_drv_sys::kprintln;
 

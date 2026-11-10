@@ -114,7 +114,7 @@ pub fn enter(h: usize, gen: u32) -> u32 {
 }
 
 /// Exec's local install of a user root of generation `gen` on hart `h`
-/// (owner decision 10-10: exec goes through the generation scheme on every
+/// (exec goes through the generation scheme on every
 /// ISA). The caller re-tagged the word into `gen`, installed it (which marks
 /// the hart [`STALE`] or [`UNTRACKED`] and flushes its current context),
 /// then published it and fenced, as a switch does. Records `gen` ([`enter`])
@@ -144,7 +144,7 @@ pub fn set_switch_flush_word(h: usize, w: u64) {
 pub const SPACE_MASK: bool = azos_limits::TLB_RETAIN && azos_limits::TLB_SPACE_MASK;
 
 /// [`SPACES`] also holds each address space's ASID for the current
-/// generation (owner decision 10-10: one ASID per address space), whenever
+/// generation (one ASID per address space), whenever
 /// `TLB_RETAIN` is on, mask or not.
 pub const SPACE_RECORD: bool = azos_limits::TLB_RETAIN;
 

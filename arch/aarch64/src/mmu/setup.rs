@@ -95,7 +95,7 @@ const _: () = assert!(WINDOW_BLOCKS >= 1 && WINDOW % L2_BLOCK_SIZE == 0);
 
 /// `MAIR_EL1` and the indices into it come from `crate::mmu`, the single
 /// source — see `mmu::MAIR_VALUE`. They used to be written out here as well,
-/// and `mmu/mod.rs` held its own opposite view of the indices until 2026-09-21.
+/// and `mmu/mod.rs` held its own opposite view of the indices.
 // Gated like `sysregs` above: this crate is also compiled inside the riscv64
 // workspace, where the identity-map code below is cfg'd out and an ungated
 // import is an unused-import warning — which the gate counts as a failure.
@@ -479,7 +479,7 @@ pub unsafe fn enable_kernel_map(ttbr0_pa: usize) {
         // Writing it verbatim on a PE whose PC is already a high VA pulls the
         // ground out from under the next instruction, and the fault cannot be
         // reported either — the vector base is high too. That is exactly how
-        // a secondary died here (2026-09-23): it printed its way to this call
+        // a secondary died here: it printed its way to this call
         // and never returned.
         // M41: this PE's own IPS (`tcr_value_for_this_cpu`, not the bare
         // `TCR_VALUE` constant) — PARange can in principle differ per PE

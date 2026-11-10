@@ -220,7 +220,7 @@ fn device(gsi: u32) -> bool {
         apic::eoi();
         return resched;
     }
-    // Wave 15: the virtio-blk line (`boot::blk_irq`): acknowledged at the
+    // The virtio-blk line (`boot::blk_irq`): acknowledged at the
     // device, its sleeping waiter woken by TID.
     if let Some(woke) = azos_drv_virtio::virtio::blk::irq(gsi) {
         apic::eoi();

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! `signal_retarget_on_thread_detach` (wave 15, FX5): a process-directed
+//! `signal_retarget_on_thread_detach`: a process-directed
 //! signal pending on a thread that is not its process's leader goes back to
 //! the process when the thread's signal state is detached (its exit; Linux
 //! keeps it in the shared pending set), and a thread-directed one ends with

@@ -167,7 +167,7 @@ pub(crate) fn install_net() -> bool {
     // Remembered, not just printed: the conformance probe further down the
     // boot log has three checks that put bytes on the wire (limited
     // broadcast, subnet broadcast, multicast). With no NIC those cannot
-    // pass, and until 2026-09-06 the probe counted them as FAILURES — so
+    // pass, and a probe that counted them as FAILURES would make
     // every diskless/NIC-less boot printed `RFC 791 FAIL mask=0x40600000`
     // and nothing in the gate read the line, in either direction. A check
     // that cannot run is not a check that failed.

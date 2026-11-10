@@ -161,7 +161,7 @@ pub fn matmul_f32_rvv(
 // instruction, so a 512-byte buffer sized for `vlenb=16` (VLEN=128) silently
 // takes a `[FATAL] Kernel page fault` under `vlenb=32` (VLEN=256, the
 // SpacemiT K1/X60 — and `k1` composes `rvv`, so that board hits this in
-// hardware, not just in a mismatched QEMU flag). Verified by hand 2026-09-26.
+// hardware, not just in a mismatched QEMU flag). Verified by hand.
 //
 //   offset 0                     : v0-v7   (vs8r / vl8r group 0, 8*MAX_VLEN_BYTES bytes)
 //   offset 8*MAX_VLEN_BYTES      : v8-v15  (group 1)

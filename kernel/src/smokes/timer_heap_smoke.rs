@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Wave 13 (RT7, P2): timer sleepers under the interleavings that lost
+//! Timer sleepers under the interleavings that lost
 //! rt-motor's wake with the timer heap (gate 185), on every hart.
 //! Feature `timer-heap-smoke`.
 //!
@@ -8,14 +8,14 @@
 //! `WaitReason::Timer(d)`: even ones with periods of 1..=7 ms, odd ones with
 //! 20..=100 us — `vsbench`'s spawn+wait naps 50 us, and a deadline that
 //! short is often due while its sleeper is still switching out, the window
-//! the wave-5 bug lived in. One racer per hart wakes
+//! the earlier lost-timer bug lived in. One racer per hart wakes
 //! a sleeper early by TID with the `Timer(_)` predicate — a notify wake's
 //! shape — but only while that sleeper's deadline is still more than 1 ms
 //! away, so a racer never rescues a sleeper whose timer wake was lost. An
 //! early-woken sleeper blocks again, half the time on a NEW deadline: the
 //! heap then holds a stale entry for it while a tick on another hart pops
 //! due entries — the pop / mid-switch stamp / re-arm / `nearest` sequence
-//! that dropped the entry before the wave-5 fix.
+//! that dropped the entry before the fix.
 //!
 //! After [`RUN_MS`] the observer stops them and prints one line per check
 //! and a verdict, `[THEAP] PASS ...` or `[THEAP] FAIL <why>`:
@@ -46,7 +46,7 @@ const RUN_MS: u64 = 10_000;
 /// A sleeper whose deadline passed this long ago at the end of the run is
 /// stuck. Not a lateness bound: lateness is printed, never judged — the
 /// guest clock follows the host's, and a vCPU descheduled under host load
-/// was measured late by up to 1 s with the heap on AND off (wave 13, 5+5
+/// was measured late by up to 1 s with the heap on AND off (5+5
 /// boots at load 9-15). A lost wake is unbounded: the sleeper never wakes.
 const STUCK_MS: u64 = 2_000;
 /// Racer period.

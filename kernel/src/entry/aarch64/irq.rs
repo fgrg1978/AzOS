@@ -36,7 +36,7 @@ pub fn arm_periodic_timer(period_ticks: u64) {
     TICK_PERIOD.store(period_ticks, Ordering::Relaxed);
     let now = ARCH.now_ticks();
     // Through `timebase`, which records what this core programmed: a task
-    // blocking on a timer deadline compares against that record (wave 11).
+    // blocking on a timer deadline compares against that record.
     azos_drv_sys::timebase::program_at(0, now.wrapping_add(period_ticks));
 }
 
@@ -102,7 +102,7 @@ pub fn fp_survives_interrupt_probe(target_ticks: u64, deadline_cntvct: u64) -> (
 
 /// The PL011 console's receive/transmit interrupt handler: empty the FIFO
 /// into the ring the console readers use (`uart::irq_handler` also refills it
-/// from the TX ring, wave 11, and clears RXIC/RTIC), then wake the reader
+/// from the TX ring, and clears RXIC/RTIC), then wake the reader
 /// parked on input — a TID wake of a `Timer` sleeper, which STAMPS instead
 /// when the task has not committed to `Blocked` yet, so the arm-then-retest in
 /// `readline` has no lost-wakeup window. Only RX work counts and wakes the
@@ -199,14 +199,14 @@ fn handle_irq(_frame: &mut TrapFrame) {
         // NOT be deactivated — there is nothing to EOI.
         return;
     }
-    // Wave 15 (TRACE): the irq class, the GIC INTID; the exit record is the
+    // The irq class, the GIC INTID; the exit record is the
     // scope's drop, at every return below.
     let _irq_scope = azos_trace::IrqScope::enter(intid);
 
     // console-splice-smoke: an interrupt-context kernel line on every
     // interrupt, not only the timer's (on this ISA the timer is the one that
     // fires steadily while the smoke runs) — except the console's own: since
-    // wave 11 the PL011's TX interrupt refills the FIFO from the TX ring, and
+    // The PL011's TX interrupt refills the FIFO from the TX ring, and
     // a line printed from each refill is new TX work for the next one.
     #[cfg(feature = "console-splice-smoke")]
     if intid != PL011_RX_INTID.load(Ordering::Relaxed) {
@@ -290,8 +290,7 @@ fn handle_irq(_frame: &mut TrapFrame) {
         // and is not an optimisation.
         //
         // This write is the next tick; the nearest timer sleeper, when it is
-        // earlier, is programmed after the wake sweep below (wave 11
-        // ONESHOT). Not folded into one write here: before the sweep the
+        // earlier, is programmed after the wake sweep below (ONESHOT). Not folded into one write here: before the sweep the
         // nearest deadline is the one that just expired, and programming a
         // past instant would leave the line asserted.
         let period = TICK_PERIOD.load(Ordering::Relaxed);
@@ -322,7 +321,7 @@ fn handle_irq(_frame: &mut TrapFrame) {
         let uptime_ms = (now != 0 && vdso_hz >= 1000).then(|| now / (vdso_hz / 1000));
         crate::trap::irq::tick_work::<Kernel, TrapFrame>(now, Some(ticks), uptime_ms);
 
-        // Wave 11 ONESHOT: the nearest remaining timer
+        // The nearest remaining timer
         // sleeper, when it is earlier than the tick programmed above — what
         // riscv64's handler gets from `set_next_tick_smart`. Without it this
         // handler programmed `now + period` unconditionally, and a sleeper on
@@ -442,7 +441,7 @@ fn handle_irq(_frame: &mut TrapFrame) {
     // The dispatch takes `lock_irqsave` spinlocks (bindings, ports) and wakes
     // by enqueueing — the PL011 arm's shape. No `schedule()` here (IRQ stack):
     // only the reschedule flag. No FP.
-    // Wave 15: the virtio-blk line (`boot::blk_irq`): the device is
+    // The virtio-blk line (`boot::blk_irq`): the device is
     // acknowledged and its sleeping waiter woken by TID; the waiter reaps.
     if let Some(woke) = azos_drv_virtio::virtio::blk::irq(intid) {
         azos_arch::irq::gic::eoir1(intid);

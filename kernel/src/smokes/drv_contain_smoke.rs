@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The buzzer's placement through a fault and a deadline (wave 13 RT7 and
-//! Phase 4 elasticity). Feature `drv-contain-smoke`; the gate row builds it
+//! The buzzer's placement through a fault and a deadline (elasticity). Feature `drv-contain-smoke`; the gate row builds it
 //! with Kconfig `PANIC_POLICY_CONTAIN`, on the drivers disk, and with
 //! `DRV_BUZZER_CALL_BUDGET_US` between what a call costs in the kernel and in
 //! ring 3 (a few microseconds) for the deadline half.

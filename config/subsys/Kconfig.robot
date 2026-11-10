@@ -29,7 +29,7 @@ choice
       humanoid checks were reachable only from host tests.
 
       The brain-link status packet reports this type
-      (`safety_robot_type()`, kernel/src/tasks/behavior.rs; wave 11).
+      (`safety_robot_type()`, kernel/src/tasks/behavior.rs).
 
     config ROBOT_NONE
         bool "None (no platform chosen at build time)"
@@ -97,7 +97,7 @@ config SAFETY_COMMS_TIMEOUT_S
       tick count was 5 s on QEMU, 7.5 s on the VF2, 1.25 s on the K1).
       No safety check reads the wheeled comms timeout today: the wheeled
       robot's comms-loss stop is rt_motor's own (unlatched, unrecorded).
-      Wave 11: was SAFETY_COMMS_TIMEOUT_TICKS, read by no code.
+      Was SAFETY_COMMS_TIMEOUT_TICKS, read by no code.
 
 config SAFETY_DRONE_COMMS_TIMEOUT_S
     int "Drone comms timeout (seconds)"
@@ -107,8 +107,7 @@ config SAFETY_DRONE_COMMS_TIMEOUT_S
       crates/domains/robot/behavior/src/safety.rs,
       SAFETY_DRONE_COMMS_TIMEOUT_TICKS = TIMER_FREQ x this. `check_drone`
       returns ReturnToLaunch (CommsTimeout) when the last brain command is
-      older than this. Wave 11: was SAFETY_DRONE_COMMS_TIMEOUT_TICKS, read
-      by no code (the layer used a literal 3 s).
+      older than this.
 
 config PID_DT_MS
     int "Motor PID loop delta-T (ms)"
@@ -120,7 +119,7 @@ config PID_DT_MS
       uses when the timer frequency is 0. With a running timer the loop
       measures its real interval from the timer instead, so on every
       board in the tree this value changes the init line and nothing else.
-      Wave 11: the file used its own literal 10 before.
+      The file used its own literal 10 before.
 
 config ML_REPLY_TIMEOUT_US
     int "Behaviour engine: inference service reply budget (us)"
@@ -142,7 +141,7 @@ config MOTOR_COMMANDER_EXIT_STOP
     default y if USE_ROBOT
     default n
     help
-      Owner decision (wave 15): when a ring-3 task that commanded a wheel
+      When a ring-3 task that commanded a wheel
       through the Motor interface (speed, drive, direction) exits or dies with
       that wheel at a non-zero duty, its exit stops the wheel (duty 0,
       coast) and writes a durable SAFETY_ESTOP record, action 14
@@ -271,7 +270,7 @@ config B2_HOLD_MIN_MS
 endmenu # Safety layer and motor control
 
 # ---------------------------------------------------------------------------
-# RC receiver input and geofence (wave 15)
+# RC receiver input and geofence
 # ---------------------------------------------------------------------------
 
 menu "RC input and geofence"

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The endpoint object (wave 15 N5), every ISA.
+//! The endpoint object, every ISA.
 //! Kernel tasks make the fast calls through `syscall_dispatch_out`, the arms
 //! ring 3 reaches.
 //!
@@ -17,12 +17,12 @@
 //! * `ipc_endpoint_slot_reused_after_grace`: a destroyed endpoint's slot is
 //!   held out of the pool until a grace period has passed (`call_rcu`).
 //!   Canary `canary=rcu-free-no-grace`: the slot is back at once, `not ok`.
-//! * `ipc_reply_warrant_moves_to_worker_and_is_send_once` (wave 15 N11): a
+//! * `ipc_reply_warrant_moves_to_worker_and_is_send_once`: a
 //!   server accepts a call and moves its reply warrant to a worker task; the
 //!   server can no longer answer, the worker answers, the caller gets the
 //!   worker's words, and a second reply on the warrant is refused.
 //!   Canary `canary=ipc-reply-twice`: the second reply is delivered, `not ok`.
-//! * `waitgraph_ipc_call_boosts_server` (wave 15 N7g): an RT client's call boosts a low-priority server
+//! * `waitgraph_ipc_call_boosts_server`: an RT client's call boosts a low-priority server
 //!   through the wait graph's IpcCall edge while it serves, and the reply
 //!   puts the server back at its base. Canary `canary=ipc-call-no-edge`: the
 //!   call takes no edge, the server serves at its base, `not ok`.
@@ -261,7 +261,7 @@ azos_ktest::ktest_late! {
     }
 }
 
-// ── Notices on event ports (wave 15 N5b, Kconfig IPC_PORT_NOTICES) ──────────
+// ── Notices on event ports (Kconfig IPC_PORT_NOTICES) ──────────
 //
 // * `ipc_no_senders_on_last_revoke`: two send capabilities (WRITE, no READ)
 //   to an endpoint; revoking the first posts nothing, revoking the last
@@ -829,7 +829,7 @@ azos_ktest::ktest_late! {
     }
 }
 
-// ── Reply warrant (wave 15 N11) ─────────────────────────────────────────────
+// ── Reply warrant ─────────────────────────────────────────────
 
 const WAR_EP: &[u8] = b"n11.war";
 static WAR_READY: AtomicBool = AtomicBool::new(false);
@@ -942,7 +942,7 @@ azos_ktest::ktest_late! {
     }
 }
 
-// ── ABI v2 of the call (wave 15 N11b) ───────────────────────────────────────
+// ── ABI v2 of the call ───────────────────────────────────────
 //
 // * `ipc_v2_call_carries_caps_words_and_badge`: a caller mints a badged copy
 //   of its endpoint capability (`SYS_CAP_DERIVE`) and makes a v2 call
@@ -1094,13 +1094,13 @@ azos_ktest::ktest_late! {
     }
 }
 
-// ── A v2 call taken by a v1 accept (wave 15 N11c) ──────────────────────────
+// ── A v2 call taken by a v1 accept ──────────────────────────
 //
 // * `ipc_v2_call_refused_by_v1_accept`: a caller makes a descriptor-form
 //   call with every inline word the build allows and two capabilities (the
 //   first MOVE, the second DUP, no `MSG_KEEP`; or `IPC_MSG_MAX_CAPS`, if
 //   fewer), more than the registers name, to a server that accepts with the
-//   register form. Owner decision 10-10: the accept refuses it, the call
+//   register form. The accept refuses it, the call
 //   returns `-EMSGFORM`, the caller holds exactly what it held before (the
 //   MOVE one back, the DUP one once: FX3) and the server neither saw the
 //   call nor holds any of them. Counted by table occupancy: the Shm

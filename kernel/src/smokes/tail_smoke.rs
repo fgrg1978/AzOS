@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Wave 13 (RT7): periodic-wake TAIL latency under contention
+//! Periodic-wake TAIL latency under contention
 //! (`tail-smoke`), the AzOS half of a cyclictest + hackbench comparison;
 //! the Linux half is `tools/bench/lat_linux/tail.c`, run the same way.
 //!

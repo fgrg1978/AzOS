@@ -230,7 +230,7 @@ pub const fn collection_target_rdbase(rd_phys_base: u64) -> u64 {
 /// LPI 8192 (`byte[intid - LPI_INTID_BASE]`). An entry left at 0 (the
 /// static table's initial value) is a DISABLED LPI: the ITS still
 /// translates the device's write, and the redistributor drops it — which is
-/// how the first wave-4 boot read `tx used=1` with zero LPIs delivered.
+/// how an early boot read `tx used=1` with zero LPIs delivered.
 /// Priority 0xA0 matches the SPIs `init_distributor` programs; the CPU
 /// interface's PMR is 0xFF, so it is never masked.
 pub const LPI_DEFAULT_PRIORITY: u8 = 0xA0;

@@ -241,7 +241,7 @@ pub fn init_distributor() {
         let typer = mmio_read32(GICD_BASE + GICD_TYPER);
         let it_lines = (typer & 0x1F) as usize;
         // The INTIDs this distributor implements, for the ring-3 bind's
-        // refusal of a line past them (wave 10 IRQ5).
+        // refusal of a line past them.
         note_spi_limit(typer);
 
         // 3. For each SPI (INTID >= 32): default group 1 (NS),
@@ -673,7 +673,7 @@ pub fn user_spi_release(intid: u32) {
 /// tree does not describe the line), and enable it. `false` (nothing written) for a line outside
 /// the SPI range, one the kernel routed for itself, or one past the SPIs the
 /// distributor implements ([`user_spi_implemented`]; the syscall then answers
-/// `-ENODEV` and drops its binding — wave 10 IRQ5). Enables on every call:
+/// `-ENODEV` and drops its binding). Enables on every call:
 /// a bind is "ready to receive", so a line left masked by a driver that died
 /// before its ACK is live again for the next one.
 ///

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Wave 15 smokes: the RC receiver and the geofence wired into the safety
+//! Smokes: the RC receiver and the geofence wired into the safety
 //! path, one property per boot (a latched e-stop would mask the next one).
 //!
 //! The receiver and the GPS are board-blocked, so the test feeders push bytes

@@ -11,7 +11,7 @@ use crate::*;
 // Stage 3 batch 7 (per-arch entry organisation).  aarch64 boot/trap asm
 // sits in entry/aarch64/asm — currently a stub README; will get the real
 // asm in Stage 5 when the kernel boots on that ISA. (x86_64's entry/
-// scaffolding was deleted 2026-09-21, B2-04.)
+// scaffolding was deleted.)
 // `max_harts` is injected rather than duplicated: both files size per-hart
 // tables (`secondary_stacks`, K-C16's trap vectors) and a hand-written `.equ`
 // in each is exactly the class of constant that drifts out of sync silently —
@@ -87,8 +87,8 @@ global_asm!(
     // a Rust helper's Release store publishes the old task's stack as
     // reusable while still running ON that stack, so the helper must not
     // have a frame; injecting the offset keeps the asm store correct even
-    // if fields move. (Passed to context_switch_rvv.S below as well, since
-    // 2026-09-24: that file clears the flag with the same tail now, so the
+    // if fields move. (Passed to context_switch_rvv.S below as well: that file
+    // clears the flag with the same tail, so the
     // two switches take the identical pair of offsets from this one site.)
     context_saving_off = const core::mem::offset_of!(azos_sched::task::Task, context_saving),
     // The TLB root table (`TLB_MAX_HARTS`) is the same Kconfig `NR_CPUS` long.
@@ -100,7 +100,7 @@ global_asm!(
 global_asm!(
     include_str!("asm/context_switch_rvv.S"),
     task_satp_off = const core::mem::offset_of!(azos_sched::task::Task, task_satp),
-    // Passed since 2026-09-24: this file now clears `context_saving` with the
+    // Passed: this file now clears `context_saving` with the
     // same K-C23 fence+sb release tail as the scalar switch, so it needs the
     // same offset. It used to take only `task_satp_off` — and the scheduler
     // paid for that with twelve `cfg` sites that compiled the K-C24
