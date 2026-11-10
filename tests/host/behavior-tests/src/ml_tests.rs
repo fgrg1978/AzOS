@@ -503,7 +503,7 @@ fn the_rangefinders_are_the_floor_under_the_model() {
         arbitrate(Layers::ALL, &i)
     };
     assert_eq!(go(100), Some(((0, 0), Winner::Avoid)));
-    assert_eq!(go(300), Some((crate::behave::TURN, Winner::Avoid)));
+    assert_eq!(go(300), Some(((30, 20), Winner::Avoid)), "the turn bounds what exploring asked");
     assert_eq!(go(900), Some((crate::behave::EXPLORE, Winner::Explore)));
 }
 

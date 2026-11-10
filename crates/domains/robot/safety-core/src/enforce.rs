@@ -80,6 +80,7 @@ pub fn passes() -> u32 {
 fn tick(now: u64) {
     azos_behavior::payload::payload_tick();
     bridge_estop();
+    crate::frames::link_tick(now);
     if azos_actuation::estop_line::take_dead() {
         azos_actuation::gate::latch_and_stop();
         let _ = azos_actuation::logger::log_safety_violation_durable(

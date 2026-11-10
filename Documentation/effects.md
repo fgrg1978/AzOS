@@ -156,6 +156,16 @@ shared by every domain with an actuator.
   and durable record). An unsigned relaxation is refused with a
   `Rule::EstopRelease` receipt (cause `RELEASE_CAUSE_UNSIGNED_RELAX`). A mode
   change never lifts degraded mode.
+- The engine's report of the companion link (`PKT_LINK_STATE`, engine to kernel
+  only) arms the robot type's containment on a loss, and so does a session
+  reported up that goes silent for 1 s (`frames::link_tick`, run by the robot's
+  enforcer): wheeled and Ackermann stop (degraded mode, every motor write
+  refused); a drone is handed to the flight failsafe (hold position, then a
+  controlled landing; its ESCs are cut only on the ground or by an e-stop); a
+  humanoid holds a safe posture (no posture code exists: the hold stops the
+  joints). The per-profile effects are `azos_behavior::containment`, which the
+  engine compiles too. Only the operator's signed degrade clear lifts a
+  containment.
 - The UART bridge (VF2) is the companion's TCP-independent e-stop channel: the
   robot's install claims and initialises the line (independent of `NET`) and
   says at boot whether it is ready (the SoC UART answered and looped a byte

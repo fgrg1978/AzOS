@@ -58,6 +58,16 @@ ml-timeout-canary = []
 ml-grant-canary = []
 ml-unaskable-canary = []
 range-stale-canary = []
+# L1 starts motion from standstill; L1's bound is not applied to what was asked.
+l1-start-canary = []
+l1-raise-canary = []
+# containment.rs, link_watch.rs and the flight failsafe's handoff: a drone's
+# loss stops the drive; a ground robot's does not; a silent engine is not noticed;
+# the handoff disarms once the hold is over.
+drone-cut-canary = []
+ground-drives-canary = []
+link-silence-canary = []
+handoff-disarm-canary = []
 # `safety.rs`'s E03 section is the `geofence` feature and `rc_link.rs`
 # exists only under `rc-input` in the real crate; on here so the suite tests
 # both (the files are pulled in by `#[path]`).

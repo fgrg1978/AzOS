@@ -66,6 +66,27 @@ pub const fn rc_frame_is_fresh_input(failsafe: bool) -> bool {
     !failsafe
 }
 
+/// How long a drone whose companion link was lost holds position before it
+/// lands (µs).
+pub const HANDOFF_HOLD_US: u64 = 10_000_000;
+
+/// The failsafe a lost companion link asks of a drone, `held_us` after the
+/// handoff was requested. Only a server-driven flight (Auto, PosHold) follows
+/// it: under the pilot's sticks, or already landing, the link was not what flew
+/// the drone. It holds position, then lands; it never disarms, since motors
+/// are cut only on the ground or by an e-stop.
+pub const fn handoff_action(server_driven: bool, held_us: u64) -> FailsafeAction {
+    if !server_driven {
+        FailsafeAction::None
+    } else if held_us < HANDOFF_HOLD_US {
+        FailsafeAction::PosHold
+    } else if cfg!(feature = "handoff-disarm-canary") {
+        FailsafeAction::Disarm
+    } else {
+        FailsafeAction::Land
+    }
+}
+
 pub fn check_failsafe(attitude_age_us: u64, rc_age_us: u64, server_age_us: u64) -> FailsafeAction {
     // Priority 1: attitude estimation failure (>50 ms old).
     if attitude_age_us > 50_000 {

@@ -92,6 +92,7 @@ pub fn authority_frame(kind: u8, payload: &[u8]) {
             }
         }
         PKT_DEGRADE => degrade(body),
+        PKT_LINK_STATE => link_state(body),
         PKT_SEMANTIC_LEVEL => {
             let malformed = body.is_empty();
             let level = body.first().copied().unwrap_or(azos_ipc::cap::DEGRADE_LEVEL_CONTAINED);
@@ -151,6 +152,52 @@ fn config(cfg: ConfigCmd) {
         _ => {}
     }
 }
+
+/// The engine's report of the companion link. Reports of loss arm the
+/// profile's containment; a session reported up arms the silence watch
+/// (`link_tick`) and lets a drone's flight handoff lapse. It never lifts a
+/// containment: that stays the operator's signed degrade clear.
+fn link_state(body: &[u8]) {
+    let now = azos_drv_sys::timebase::now();
+    if body.first() == Some(&azos_behavior::containment::LINK_UP) {
+        azos_behavior::link_watch::flight_handoff_clear();
+    }
+    if let Some(loss) = azos_behavior::link_watch::LINK.report(body, now) {
+        companion_lost(loss, now);
+    }
+}
+
+/// A session reported up that stopped being reported: the engine is gone.
+pub fn link_tick(now: u64) {
+    let silence = azos_behavior::containment::LINK_SILENCE_MS * azos_drv_sys::timebase::TIMER_FREQ / 1000;
+    if let Some(loss) = azos_behavior::link_watch::LINK.tick(now, silence) {
+        companion_lost(loss, now);
+    }
+}
+
+/// Arm what the robot type's profile does on a lost link
+/// (`azos_behavior::containment`). An unknown type is contained as a ground
+/// robot.
+fn companion_lost(loss: azos_behavior::link_watch::Loss, now: u64) {
+    use azos_behavior::containment::Profile;
+    let fx = Profile::from_id(safety::safety_robot_type()).unwrap_or(Profile::Wheeled).effects();
+    if fx.flight_handoff {
+        azos_behavior::link_watch::flight_handoff_request(now);
+    }
+    if fx.posture_hold {
+        hold_posture();
+    }
+    if fx.stop_drive {
+        azos_ipc::cap::degraded_set(true);
+    }
+    azos_drv_sys::kwarn!("[COMPANION] link lost ({:?}): containment armed", loss);
+    logger::log_safety_violation(logger::SAFETY_DEGRADE, 1, DEGRADE_REASON_COMPANION_LOST as u32);
+}
+
+/// The humanoid's posture hold. No posture code exists: the hold stops the
+/// joints, which the degraded mode `companion_lost` arms next does for every
+/// drive through the motor gate. A posture controller attaches here.
+fn hold_posture() {}
 
 /// Degraded mode: any reason arms it (a missing reason byte arms it as
 /// malformed); `DEGRADE_CLEAR`, which reaches here only with the operator's

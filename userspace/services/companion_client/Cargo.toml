@@ -27,6 +27,8 @@ ml-timeout-canary = []
 ml-grant-canary = []
 ml-unaskable-canary = []
 range-stale-canary = []
+l1-start-canary = []
+l1-raise-canary = []
 
 [profile.release]
 opt-level = "s"

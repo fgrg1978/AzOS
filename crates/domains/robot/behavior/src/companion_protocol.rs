@@ -137,6 +137,11 @@ pub const PKT_DEGRADE:         u8 = 0x8A;
 /// CONTAINED (fail-closed). The level is sticky until changed; comms-loss
 /// safe-stop is provided by the existing motor watchdog (500 ms).
 pub const PKT_SEMANTIC_LEVEL: u8 = 0x8B;
+/// The ring-3 behaviour engine's report of the companion link to the kernel
+/// (engine to kernel only, never on the wire). Payload = 1 byte, one of
+/// `containment::LINK_*`. A report of loss, or a session reported up that stops
+/// being reported, arms the profile's containment (`containment.rs`).
+pub const PKT_LINK_STATE: u8 = 0x8C;
 
 // Robot types
 pub const ROBOT_WHEELED:   u8 = 0;
@@ -163,6 +168,8 @@ pub const DEGRADE_CLEAR:                  u8 = 0;
 pub const DEGRADE_REASON_PERCEPTION_BLIND: u8 = 1;
 pub const DEGRADE_REASON_SENSOR_INCOHERENT: u8 = 2;
 pub const DEGRADE_REASON_UNMODELLED_HAZARD: u8 = 3;
+/// Recorded when the companion session or verdict was lost (`PKT_LINK_STATE`).
+pub const DEGRADE_REASON_COMPANION_LOST: u8 = 4;
 /// A `PKT_DEGRADE` arrived with no reason byte at all (fail-closed).
 ///
 /// The handler used to read `unwrap_or(DEGRADE_CLEAR)`, so a truncated frame

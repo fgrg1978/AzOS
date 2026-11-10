@@ -42,6 +42,10 @@ mod wire;
 use wire::{build_frame, crc8, put_u16_le, FRAME_OVERHEAD, MAGIC};
 // The camera on the companion link: pacing and framing (pure, host-tested).
 mod camera;
+// What a lost session arms per robot profile; the kernel compiles the same file.
+#[allow(dead_code)]
+#[path = "../../../../crates/domains/robot/behavior/src/containment.rs"]
+mod containment;
 // The behaviour engine's choice of layer and speed (pure, host-tested).
 mod behave;
 // Its inference client: the policy (pure, host-tested) and the helper thread
@@ -55,6 +59,7 @@ const PKT_ACTUATOR: u8 = 0x80;
 const PKT_STATUS: u8 = 0x03;
 const PKT_ESTOP: u8 = 0x88;
 const PKT_PREDICT: u8 = 0x89;
+const PKT_LINK_STATE: u8 = 0x8C;
 const STATUS_PAYLOAD_SIZE: usize = 8;
 /// How often the engine reads the kernel's layer switches (ms).
 const LAYERS_POLL_MS: u64 = 1_000;
@@ -167,6 +172,11 @@ fn authority_init() {
         Some(c) => unsafe { CAP_AUTHORITY = c },
         None => sys::println(b"[companion_client] FAILED: no authority endpoint - the companion's authority frames are refused"),
     }
+}
+
+/// Tell the kernel the state of the companion link (`containment::LINK_*`).
+fn report_link(state: u8) {
+    let _ = authority_submit(PKT_LINK_STATE, &[state]);
 }
 
 /// Hand frame `kind` to the kernel. `false` when it did not reach it.
@@ -1098,6 +1108,16 @@ fn layer_name(w: behave::Winner) -> &'static [u8] {
     }
 }
 
+/// The link to the companion (or its verdict) is lost: what the profile does
+/// at once, then the report that arms the kernel's side. A drone's engine
+/// leaves the drive alone; the flight failsafe takes over.
+fn lose_link(profile: containment::Profile, state: u8) {
+    if profile.effects().stop_drive {
+        motor_stop();
+    }
+    report_link(state);
+}
+
 /// The engine: every period read the sensors, exchange with the companion while
 /// a session is up (dialling again every `CONNECT_RETRY_MS` while none is and
 /// the link has its keys, `companion`),
@@ -1119,6 +1139,9 @@ fn engine(companion: Option<([u8; 4], u16)>, rekey_secs: u64) -> ! {
     let mut camera = Camera::open();
     let mut last_ml: Option<Option<ml::MlOutcome>> = None;
     let mut next_dial = 0u64;
+    let mut next_beat = 0u64;
+    let mut verdict = behave::VerdictWatch::new();
+    let profile = containment::Profile::from_id(azos_limits::ROBOT_TYPE_ID as u8).unwrap_or(containment::Profile::Wheeled);
     let mut last: Option<behave::Winner> = None;
     let mut layers = layers_now(behave::Layers::AVOID_ONLY);
     let mut next_layers = 0u64;
@@ -1154,9 +1177,15 @@ fn engine(companion: Option<([u8; 4], u16)>, rekey_secs: u64) -> ! {
                 sock = None;
                 remote = None;
                 predict = None;
+                next_beat = 0;
+                lose_link(profile, containment::LINK_LOST);
                 next_dial = now + CONNECT_RETRY_MS;
                 sys::print(b"[companion_client] Disconnected, reconnecting...\n");
             }
+        }
+        if sock.is_some() && now >= next_beat {
+            report_link(containment::LINK_UP);
+            next_beat = now + containment::LINK_BEAT_MS;
         }
         let (front_mm, right_mm) = (
             behave::range_reading(sensors.range_front, sensors.range_fresh),
@@ -1168,6 +1197,9 @@ fn engine(companion: Option<([u8; 4], u16)>, rekey_secs: u64) -> ! {
         if ml_outcome.is_some() && last_ml != Some(ml_outcome) {
             report_ml(ml_outcome);
             last_ml = Some(ml_outcome);
+        }
+        if verdict.step(ml, now) {
+            lose_link(profile, containment::LINK_VERDICT_LOST);
         }
         let inputs = behave::Inputs {
             now_ms: now,

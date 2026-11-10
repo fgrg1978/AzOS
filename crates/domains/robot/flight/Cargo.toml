@@ -5,6 +5,10 @@ edition = "2021"
 license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
 
+[features]
+# Host-suite canary (tests/host/flight-tests): a known-bad value, never enabled by a build.
+handoff-disarm-canary = []
+
 [dependencies]
 azos_common = { workspace = true }
 azos_channel = { workspace = true }

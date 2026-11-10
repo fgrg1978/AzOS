@@ -1372,6 +1372,7 @@ mod image_profiles {
             // The forward-secret link client session.
             src!("userspace/services/companion_client/src/link.rs"),
             src!("userspace/services/companion_client/src/behave.rs"),
+            src!("crates/domains/robot/behavior/src/containment.rs"),
             src!("userspace/services/companion_client/src/ml.rs"),
             src!("userspace/services/companion_client/src/mlcall.rs"),
             src!("userspace/services/companion_client/src/camera.rs"),

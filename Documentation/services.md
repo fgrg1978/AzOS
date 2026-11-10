@@ -1047,13 +1047,16 @@ begins with a Noise handshake in `link.rs`: the client is the initiator and spea
 `Noise_IK` toward the companion key the topology pins in `[peer.companion]`, else `Noise_XX` with
 keys derived from the link key; there is no plaintext fallback, and with no key or no
 entropy the engine runs without a companion), chooses a layer (`behave.rs`, host-tested in
-`tests/host/behavior-tests`: L1 avoids an obstacle, with the rangefinders as the floor and the
-inference service's verdict on top (below), L2 follows the companion's command for 2 s, L3
-explores while a session is up; the kernel's switches,
+`tests/host/behavior-tests`: L2 follows the companion's command for 2 s, L3 explores while a
+session is up, and L1 bounds whichever asked, with the rangefinders as the floor and the
+inference service's verdict on top (below); the kernel's switches,
 `behavior enable|disable`, read through the `Behavior` interface, say which may drive) and
 publishes its command with `Motor::command`, so the kernel's drivetrain loop applies it
-through the safety layer's cap, the envelope, the PID and the motor-command watchdog. A
-cycle no layer wins publishes nothing, and the watchdog stops the wheels. The companion's frames
+through the safety layer's cap, the envelope, the PID and the motor-command watchdog. L1 only
+brakes or limits: it never starts motion from standstill and never raises a wheel above what
+the companion (or L3) asked, so a robot with no companion command and no session publishes
+nothing, whatever the rangefinders see, and the watchdog holds the wheels. A cycle with
+nothing asked publishes nothing, and the watchdog stops the wheels. The companion's frames
 that ask for authority (e-stop, degraded mode, the semantic level, a mode change with the
 operator's signed release, payload and configuration effects, an actuator command's
 confidence, any unknown type) go to the kernel through `endpoint.authority`; an emergency
@@ -1064,16 +1067,15 @@ outranks the engine.
 **ML in L1, fail closed.** Each cycle with L1 on and both rangefinder readings, the engine
 calls `Infer` on `endpoint.infer` (`ml.rs`, `mlcall.rs`) for the class of the behaviour model
 (`/fat/BEHAVIOR.MBL`, named by `BEHAVIOR_MODEL_REF`, which the build checks against the
-bundle): go forward lets the layers below drive, turn turns away, stop stops, and the
+bundle): go forward leaves what was asked as it is, turn limits it to the turn, stop stops, and the
 rangefinders' stop and turn distances hold whatever the model says. The call is made by a
 helper thread, because a blocked `SYS_IPC_CALL` has no timeout, and the engine waits on a
 futex for at most Kconfig `ML_REPLY_TIMEOUT_US` (also the deadline the call carries). No reply
 in time, a refusal (`REFUSED`: the signed worst case does not fit), no such model (a bundle
 whose signature failed is never loaded), a reply of another model, logits that are not
 numbers: every one is a missing verdict, and L1 publishes a stop; the engine never drives on
-a verdict it did not get. The verdict may only brake or limit: a turn
-verdict never starts motion, and the command is bounded wheel by wheel by what the layers chose without the
-model, so the model cannot raise a wheel. A topology that grants no inference endpoint runs on the
+a verdict it did not get. The verdict may only brake or limit: the command is bounded wheel
+by wheel by what was asked, so the model cannot start motion or raise a wheel. A topology that grants no inference endpoint runs on the
 rangefinders alone. With L1 on, a cycle in which either rangefinder gave no reading (the read failed, or the
 distance is 0) is a missing verdict too, and the robot stops: a dead rangefinder never lets the model switch
 itself off.
@@ -1089,9 +1091,24 @@ and lends it kernel memory before it answers.
 
 **The companion's prediction.** A `PKT_PREDICT` frame (a predicted next command and a confidence
 byte) is a hint to L1 for 500 ms: a predicted stop or reverse widens the distance at which
-L1 turns away by 300 mm, a predicted turn by 150 mm. The hint only narrows what the layers
-chose, wheel by wheel (the same direction, no faster, a wheel that would reverse stops the command,
+L1 limits to the turn by 300 mm, a predicted turn by 150 mm. The hint only narrows what was
+asked, wheel by wheel (the same direction, no faster, a wheel that would reverse stops the command,
 and a cycle that would not drive does not); only a differential-drive prediction is read, and sits under the kernel's cap and the envelope like every command.
+**A lost session.** The engine reports the link to the kernel through `endpoint.authority`
+(`PKT_LINK_STATE`: up as a beat every 250 ms while a session stands, lost when an established
+session ends, verdict lost when a verdict that had been coming is missing for 2 s). The kernel
+arms the robot type's containment on a loss report, on a report it cannot read, and when a
+session reported up goes 1 s without a report (the engine stopped); a robot that never had a
+session is not contained. The containment is per profile (`containment.rs`, compiled by both
+sides): a wheeled or Ackermann robot stops (the engine publishes `(0, 0)` and the kernel's
+degraded mode refuses every motor write); a drone never has its motors cut in the air: the
+engine starts no manoeuvre and the kernel hands a server-driven flight (Auto, PosHold) to the
+flight failsafe, which holds position and, after `HANDOFF_HOLD_US`, lands; a humanoid holds
+its posture, which with no posture code stops its joints through the same degraded mode. A
+reconnect lifts none of it: the operator's signed degrade clear lifts the ground profiles'
+stop, and a drone's handoff lapses when the session is reported up again (a landing begun
+continues). An e-stop still cuts under every profile.
+
 `REFLEX.ELF` reads the rangefinder and the IMU and overrides motor commands when danger is
 detected (extreme tilt, then an obstacle too close, then a warning distance), whether or not
 the companion link is up. The topology holds a row for each (with `GPIODRV.ELF`, the GPIO driver

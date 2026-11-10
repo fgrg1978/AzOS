@@ -11,6 +11,10 @@ publish = false
 # receiver's safety policy); `geofence` compiles the E03 fence in `safety`.
 rc-input = []
 geofence = []
+# Host-suite canaries (tests/host/behavior-tests): known-bad values, never enabled by a build.
+drone-cut-canary = []
+ground-drives-canary = []
+link-silence-canary = []
 
 [dependencies]
 azos_sync         = { workspace = true }

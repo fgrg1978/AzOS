@@ -186,7 +186,17 @@ pub fn flight_control_task(_: usize) {
         // Server age: use flight target channel.
         let srv_age = CH_FLIGHT_TARGET.age_us(now, azos_drv_sys::timebase::TIMER_FREQ);
 
-        let fs = check_failsafe(att_age, rc_age, srv_age);
+        let mut fs = check_failsafe(att_age, rc_age, srv_age);
+        // A lost companion link hands a server-driven flight to the failsafe:
+        // hold, then land. The motors keep running; only the ground or an
+        // e-stop cuts them.
+        if fs == FailsafeAction::None {
+            if let Some(since) = azos_behavior::link_watch::flight_handoff_since() {
+                let held_us = now.wrapping_sub(since) * 1_000_000 / azos_drv_sys::timebase::TIMER_FREQ;
+                let server_driven = matches!(flight_mode(), FlightMode::Auto | FlightMode::PosHold);
+                fs = handoff_action(server_driven, held_us);
+            }
+        }
         match fs {
             FailsafeAction::Disarm => {
                 azos_drv_sys::kerr!("[FLIGHT] FAILSAFE: Disarm (critical failure)");

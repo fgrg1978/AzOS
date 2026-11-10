@@ -52,6 +52,23 @@ mod failsafe_tests {
         assert!(check_failsafe(100 * MS, 0, 0) == FailsafeAction::Land);
     }
 
+    /// **A lost companion link holds, then lands, and never cuts the motors**:
+    /// a server-driven flight holds for `HANDOFF_HOLD_US` and then lands; the
+    /// pilot's flight, or one already landing, is left alone.
+    ///
+    /// **Canary.** Disarm instead of landing once the hold is over.
+    #[test]
+    fn a_lost_link_holds_then_lands_and_never_disarms() {
+        assert!(handoff_action(true, 0) == FailsafeAction::PosHold);
+        assert!(handoff_action(true, HANDOFF_HOLD_US - 1) == FailsafeAction::PosHold);
+        assert!(handoff_action(true, HANDOFF_HOLD_US) == FailsafeAction::Land);
+        assert!(handoff_action(true, u64::MAX) == FailsafeAction::Land);
+        for held in [0, HANDOFF_HOLD_US, u64::MAX] {
+            assert!(handoff_action(false, held) == FailsafeAction::None, "the pilot's flight is not the link's");
+            assert!(handoff_action(true, held) != FailsafeAction::Disarm, "airborne motors are never cut");
+        }
+    }
+
     #[test]
     fn attitude_loss_outranks_rc_loss_and_server_loss() {
         // Priority, not just detection: all three conditions true at once must

@@ -6,18 +6,21 @@
 //! The safety layer is not here: the kernel caps every command with its
 //! verdict on the sensor bus, the e-stop and the envelope, and the operator's
 //! RC override replaces the command outright. What is left to choose, in
-//! order: L1 avoids an obstacle (the rangefinders are the floor, the model's
-//! verdict sits on top and a missing verdict is a stop), L2 follows the
-//! companion's latest command while it is fresh, L3 explores while the companion's
-//! session is up. A cycle no layer wins publishes nothing, so the drivetrain's
-//! watchdog stops the wheels. The companion's prediction only ever makes L1 more
-//! cautious: it can narrow what the layers chose, never widen it.
+//! order: L2 follows the companion's latest command while it is fresh, L3
+//! explores while the companion's session is up, and L1 bounds whichever of the
+//! two asked (the rangefinders are the floor, the model's verdict sits on top
+//! and a missing verdict is a stop). L1 only brakes or limits: it never starts
+//! motion from standstill and never raises a wheel above what was asked. A cycle
+//! with nothing asked publishes nothing, so the drivetrain's watchdog stops the
+//! wheels. The companion's prediction only ever makes L1 more cautious.
+//!
+//! What a lost session does is the profile's (`containment.rs`), not this file's.
 
 /// A rangefinder reading closer than this stops the robot (mm).
 pub const OBSTACLE_STOP_MM: u16 = 150;
 /// Closer than this, the robot turns away to the right (mm).
 pub const OBSTACLE_TURN_MM: u16 = 400;
-/// The turn: left wheel forward, right wheel slow.
+/// The turn L1 limits a command to: left wheel forward, right wheel slow.
 pub const TURN: (i32, i32) = (60, 20);
 /// Exploring: slow and straight.
 pub const EXPLORE: (i32, i32) = (30, 30);
@@ -50,8 +53,42 @@ impl Layers {
     #[cfg(test)]
     pub const ALL: Layers = Layers { avoid: true, remote: true, explore: true };
     /// What an engine that cannot read the kernel's switches runs: the layer
-    /// that only stops or turns away.
+    /// that only brakes or limits, so nothing drives.
     pub const AVOID_ONLY: Layers = Layers { avoid: true, remote: false, explore: false };
+}
+
+/// The verdict's loss as the engine reports it: a verdict that had been
+/// coming is missing without a break for [`crate::containment::VERDICT_LOSS_MS`].
+/// A model that never answered (still starting, or refused at boot) is held at
+/// a stop by L1 but is not a loss. Fires once per stretch.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct VerdictWatch {
+    had: bool,
+    missing_since: Option<u64>,
+    reported: bool,
+}
+
+impl VerdictWatch {
+    pub const fn new() -> Self {
+        Self { had: false, missing_since: None, reported: false }
+    }
+
+    /// One cycle: `true` the moment the verdict has been missing long enough.
+    pub fn step(&mut self, ml: Ml, now_ms: u64) -> bool {
+        if ml != Ml::Missing {
+            self.had |= matches!(ml, Ml::Go | Ml::Turn | Ml::Stop);
+            self.missing_since = None;
+            self.reported = false;
+            return false;
+        }
+        if !self.had {
+            return false;
+        }
+        let since = *self.missing_since.get_or_insert(now_ms);
+        let lost = !self.reported && now_ms.saturating_sub(since) >= crate::containment::VERDICT_LOSS_MS;
+        self.reported |= lost;
+        lost
+    }
 }
 
 /// The companion's latest drive command and when it arrived.
@@ -154,45 +191,48 @@ pub enum Winner {
 }
 
 /// The command to publish this cycle, percent per wheel, and the layer that
-/// chose it; `None` when no layer drives. A prediction can only lower what the
-/// layers chose, wheel by wheel: it never makes a cycle drive that would not
-/// have, and never raises a wheel.
+/// chose it; `None` when no layer drives. Only an upstream command (the
+/// companion's, or L3 exploring under a session) starts motion; L1 only bounds
+/// it, wheel by wheel: a stop, or a turn that is no faster and never the other
+/// way than what was asked. A cycle with nothing upstream publishes nothing,
+/// whatever the rangefinders say, and the drivetrain's watchdog holds the wheels
+/// at standstill.
 pub fn arbitrate(layers: Layers, i: &Inputs) -> Option<((i32, i32), Winner)> {
-    // What the layers choose without the model's turn: the verdict may brake
-    // or limit that choice, never start motion or raise a wheel.
-    let floor = Inputs { ml: if i.ml == Ml::Turn { Ml::Go } else { i.ml }, predict: None, ..*i };
-    let (base, base_winner) = choose(layers, &floor, Bias::None)?;
+    if cfg!(feature = "l1-start-canary") && upstream(layers, i).is_none() {
+        return layers.avoid.then(|| avoid(i, Bias::None)).flatten().map(|c| (c, Winner::Avoid));
+    }
+    let (asked, winner) = upstream(layers, i)?;
     let bias = if layers.avoid { i.predict.map_or(Bias::None, |p| p.bias(i.now_ms)) } else { Bias::None };
-    let (full, full_winner) = choose(layers, i, bias).unwrap_or((base, base_winner));
-    let cmd = bounded(full, base);
-    Some((cmd, if cmd == base { base_winner } else { full_winner }))
+    let cmd = match layers.avoid.then(|| avoid(i, bias)).flatten() {
+        Some(limit) if cfg!(feature = "l1-raise-canary") => limit,
+        Some(limit) => bounded(limit, asked),
+        None => asked,
+    };
+    Some((cmd, if cmd == asked { winner } else { Winner::Avoid }))
 }
 
-/// `full` bounded by `base`, wheel by wheel. A wheel that would turn the other
+/// `limit` bounded by `asked`, wheel by wheel. A wheel that would turn the other
 /// way stops the whole command: a spin must not become motion forward.
-fn bounded(full: (i32, i32), base: (i32, i32)) -> (i32, i32) {
+fn bounded(limit: (i32, i32), asked: (i32, i32)) -> (i32, i32) {
     let reverses = |f: i32, b: i32| f != 0 && b != 0 && (f > 0) != (b > 0);
-    if reverses(full.0, base.0) || reverses(full.1, base.1) {
+    if reverses(limit.0, asked.0) || reverses(limit.1, asked.1) {
         return (0, 0);
     }
-    (under(full.0, base.0), under(full.1, base.1))
+    (under(limit.0, asked.0), under(limit.1, asked.1))
 }
 
-/// `hinted` bounded by `plain`: the same direction and no faster.
-fn under(hinted: i32, plain: i32) -> i32 {
-    if hinted == 0 || plain == 0 || (hinted > 0) != (plain > 0) {
+/// `limit` bounded by `asked`: the same direction and no faster.
+fn under(limit: i32, asked: i32) -> i32 {
+    if limit == 0 || asked == 0 || (limit > 0) != (asked > 0) {
         0
     } else {
-        hinted.signum() * hinted.abs().min(plain.abs())
+        limit.signum() * limit.abs().min(asked.abs())
     }
 }
 
-fn choose(layers: Layers, i: &Inputs, bias: Bias) -> Option<((i32, i32), Winner)> {
-    if layers.avoid {
-        if let Some(cmd) = avoid(i, bias) {
-            return Some((cmd, Winner::Avoid));
-        }
-    }
+/// What the layers above L1 ask: the companion's fresh command, else exploring
+/// while the session is up.
+fn upstream(layers: Layers, i: &Inputs) -> Option<((i32, i32), Winner)> {
     if layers.remote {
         if let Some(r) = i.remote {
             if i.now_ms.saturating_sub(r.at_ms) <= REMOTE_MAX_AGE_MS {
@@ -207,7 +247,8 @@ fn choose(layers: Layers, i: &Inputs, bias: Bias) -> Option<((i32, i32), Winner)
 }
 
 /// L1: the rangefinders are the floor and the model's verdict sits on top; the
-/// more cautious of the two wins. A stop beats a turn.
+/// more cautious of the two wins. A stop beats a turn. The result is a bound on
+/// what the layers above ask, never a command of its own.
 fn avoid(i: &Inputs, bias: Bias) -> Option<(i32, i32)> {
     let near = [i.front_mm, i.right_mm].into_iter().flatten().min();
     let margin = match bias {

@@ -110,6 +110,23 @@ separate failure, handled by the 500 ms motor-command watchdog in
 at each enforcement point. It is coarse by design. Per-task or self-decaying
 levels are not built.
 
+## Companion loss
+
+Source: `crates/domains/robot/behavior/src/containment.rs`, `link_watch.rs`, `frames.rs`
+
+The engine reports the link with `PKT_LINK_STATE` (engine to kernel only; one byte:
+up, lost, verdict lost). A loss report, an unreadable one, or a session reported up
+that goes 1 s without a report arms the profile of `ROBOT_TYPE_ID`:
+
+| Profile | Effect |
+|---|---|
+| Wheeled, Ackermann | `degraded_set(true)`: CONTAINED, speed cap 0 and every motor write refused; the engine publishes `(0, 0)` |
+| Drone | no degraded mode and no motor cut: a flight handoff the flight task reads (`link_watch::flight_handoff_since`). A server-driven flight (Auto, PosHold) holds position, then after `HANDOFF_HOLD_US` lands; a pilot-flown flight is left to the pilot; ESCs are cut only disarmed or by an e-stop |
+| Humanoid | the posture hold (`frames::hold_posture`; no posture code exists, so it stops the joints) and CONTAINED as above |
+
+The record is `SAFETY_DEGRADE` with `DEGRADE_REASON_COMPANION_LOST`. A reconnect does
+not lift CONTAINED: that stays the operator's signed `PKT_DEGRADE` clear.
+
 ## Enforcement
 
 Source: `crates/domains/robot/behavior/src/safety.rs`, `crates/domains/robot/safety-core/src/actuation.rs`, `crates/domains/robot/robot/src/motor.rs`, `crates/core/ipc/src/cap.rs`

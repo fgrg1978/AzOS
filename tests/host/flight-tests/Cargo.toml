@@ -11,6 +11,9 @@ description = "Host-side tests for the RRT* planner in crates/domains/robot/flig
 # nor `exclude`.
 [workspace]
 
+[features]
+handoff-disarm-canary = []
+
 [dependencies]
 # `path3d.rs` names exactly one external crate — `azos_sync::kmutex` —
 # and the real one puts RV64 `sstatus` asm in the acquire path, so the module

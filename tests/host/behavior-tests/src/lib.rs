@@ -47,6 +47,19 @@ mod ml;
 mod ml_tests;
 #[cfg(test)]
 mod behave_tests;
+// What a lost session arms per profile, the kernel's watch of the link and the
+// flight failsafe's handoff: the real files.
+#[allow(dead_code)]
+#[path = "../../../../crates/domains/robot/behavior/src/containment.rs"]
+mod containment;
+#[allow(dead_code)]
+#[path = "../../../../crates/domains/robot/behavior/src/link_watch.rs"]
+mod link_watch;
+#[allow(dead_code)]
+#[path = "../../../../crates/domains/robot/flight/src/failsafe.rs"]
+mod failsafe;
+#[cfg(test)]
+mod containment_tests;
 
 // The whole protocol vocabulary; the suite reads part of it.
 #[allow(dead_code)]
@@ -403,6 +416,20 @@ mod envelope {
         assert_eq!(motor_envelope(i32::MAX, i32::MIN), (0, 0), "including extremes");
         estop_release(ReleaseAuthority::for_test());
         assert_eq!(motor_envelope(10, -10), (10, -10), "and it must be releasable");
+    }
+
+    /// **The e-stop cuts under every robot type**, whatever a loss of the
+    /// companion link armed: the profiles' containment is no way around it.
+    #[test]
+    fn estop_cuts_under_every_robot_type() {
+        let _g = serial();
+        for ty in [ROBOT_TYPE_WHEELED, ROBOT_TYPE_DRONE, ROBOT_TYPE_HUMANOID, ROBOT_TYPE_ACKERMANN] {
+            reset();
+            safety_set_robot_type(ty);
+            estop_activate();
+            assert_eq!(motor_envelope(10, 10), (0, 0), "type {ty}");
+        }
+        reset();
     }
 
     /// **Reverse must be capped exactly like forward.** A clamp that bounds

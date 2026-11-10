@@ -12377,6 +12377,14 @@ host_job host_canary_row "engine: a timeout passes canary" behavior-tests ml-tim
 host_job host_canary_row "engine: unheld grant is off canary" behavior-tests ml-grant-canary a_grant_the_task_does_not_hold_is_not_off
 host_job host_canary_row "engine: no distance, no stop canary" behavior-tests ml-unaskable-canary a_missing_distance_stops_the_robot
 host_job host_canary_row "engine: stale range canary" behavior-tests range-stale-canary a_failed_range_read_is_no_reading
+# L1 only limits, and a lost session arms each profile's own containment.
+host_job host_canary_row "engine: L1 starts motion canary" behavior-tests l1-start-canary l1_never_starts_motion_from_standstill
+host_job host_canary_row "engine: L1 raises a wheel canary" behavior-tests l1-raise-canary l1_never_exceeds_what_the_companion_asked
+host_job host_canary_row "containment: drone cut canary" behavior-tests drone-cut-canary each_profile_arms_its_own_containment
+host_job host_canary_row "containment: ground keeps driving canary" behavior-tests ground-drives-canary each_profile_arms_its_own_containment
+host_job host_canary_row "containment: silent engine canary" behavior-tests link-silence-canary a_silent_engine_arms_containment
+host_job host_canary_row "containment: drone handoff disarms canary" behavior-tests handoff-disarm-canary a_drones_lost_link_holds_then_lands_and_never_disarms
+host_job host_canary_row "flight: handoff disarms canary" flight-tests handoff-disarm-canary a_lost_link_holds_then_lands_and_never_disarms
 host_job host_canary_row "coreutils: the utilities' image holds only files canary" topology-tests coreutil-grant-canary coreutil_holds_files_and_nothing_else
 host_job host_canary_row "coreutils: the utilities' image holds the write trees canary" topology-tests coreutil-write-canary coreutil_holds_files_and_nothing_else
 host_job host_canary_row "coreutils: argument parser, bundled flags canary" coreutils-tests args-bundle-canary argp_bundles_flags
