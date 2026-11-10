@@ -822,9 +822,14 @@ config SEC_LOG_PER_S
     default 32
     help
       Asked with SEC_LOG only. A bucket for every security record, of this
-      many a second and as many at once, and a quarter of it for each class
-      a task can raise in a loop (capability denials, the decision layer's
-      reports of them, egress), so one flooding class leaves the others room.
+      many a second and as many at once; a quarter of it for each class a
+      task can raise in a loop (capability denials, the decision layer's
+      reports of them), half of it for egress, logins and microphone records,
+      and a quarter of that for each task (each Domain where the caller names
+      it) in the classes it shares; half of it for each task across all
+      classes. The last quarter of the whole is kept for the classes no task
+      can raise in a loop (camera, image load, update, USB, hardening), so
+      one flooding class or task leaves the others room.
       What the cap holds back is counted by class and declared in the chain
       (a `held` record). At most a quarter of the ring a second by default:
       the sealer and `logd` read it every second. Before the kernel installs

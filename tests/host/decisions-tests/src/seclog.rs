@@ -5,7 +5,9 @@
 //! rate cap hold back, and that they are counted. Run with a configuration
 //! with `SEC_LOG` on (the gate row `decisions(seclog)`).
 //!
-//! **Canary.** `canary-no-security-copy` (nothing is copied): every test red.
+//! **Canaries.** `canary-no-security-copy` (nothing is copied): every test
+//! that reads the ring red; `canary-global-security-bucket` (no subject share,
+//! no reserve): the two tests of the shared bucket red.
 
 use azos_decision::{Rule, SecClass, Verdict};
 use azos_seclog::{kind, Event};
@@ -92,6 +94,7 @@ fn seclog_what_the_durable_bucket_holds_back_is_its_report() {
     let _g = ONE.lock().unwrap_or_else(|e| e.into_inner());
     clock();
     azos_decision::set_durable_sink(|_| {});
+    TIME.store(TIME.load(Ordering::Relaxed) + 10_000, Ordering::Relaxed);
     let from = head();
     for _ in 0..(azos_limits::DECISION_DENY_DURABLE_BURST as u32 + 4) {
         azos_decision::record(Rule::CapDenial, Verdict::Refuse, 4242, [0, 0, 0]);
@@ -181,4 +184,79 @@ fn seclog_the_egress_share_is_the_domains() {
     azos_decision::record_keyed(Rule::EnvelopeEgress, Verdict::Admit, 9039, 77, [5399, 3, 0]);
     let (ev, _) = events(from);
     assert!(ev.iter().any(|e| e.0 == SecClass::Egress as u8 && e.3 == 9039), "a held destination is no repeat: {ev:?}");
+}
+
+const RESERVED: [(Rule, SecClass); 5] = [
+    (Rule::CamCapture, SecClass::Camera),
+    (Rule::ExecGrant, SecClass::ImageLoad),
+    (Rule::PackageInstall, SecClass::Update),
+    (Rule::UsbAuthorize, SecClass::Usb),
+    (Rule::HardeningFallback, SecClass::Hardening),
+];
+
+/// One task's refused microphone opens spend its own share: the records of
+/// every other task, whatever their class, are still copied, and the flood's
+/// subject is the one the held count names.
+#[test]
+fn seclog_one_subjects_refusals_do_not_hold_back_other_tasks_records() {
+    let _g = ONE.lock().unwrap_or_else(|e| e.into_inner());
+    clock();
+    TIME.store(TIME.load(Ordering::Relaxed) + 10_000, Ordering::Relaxed);
+    let from = head();
+    for _ in 0..(4 * azos_limits::SEC_LOG_PER_S as u32) {
+        azos_decision::record(Rule::AudioCapture, Verdict::Refuse, 6001, [0, 0, 0]);
+    }
+    for (i, (rule, _)) in RESERVED.iter().enumerate() {
+        azos_decision::record(*rule, Verdict::Admit, 6100 + i as u32, [0, 0, 0]);
+    }
+    let (ev, _) = events(from);
+    for (i, (rule, class)) in RESERVED.iter().enumerate() {
+        assert!(ev.contains(&(*class as u8, *rule as u8, Verdict::Admit as u8, 6100 + i as u32)), "{class:?} held back by one task's flood: {ev:?}");
+    }
+    let mine = ev.iter().filter(|e| e.0 == SecClass::Microphone as u8 && e.3 == 6001).count();
+    assert!(mine <= azos_limits::SEC_LOG_PER_S as usize / 4, "{mine} microphone records copied for one task");
+    let (_, _, top) = azos_decision::security_tally();
+    assert!(top.iter().any(|t| t.0 == 6001 && t.1 > 0), "the flooding task is named: {top:?}");
+}
+
+/// Floods of every class a task can raise, from many tasks at once, leave
+/// the classes it cannot raise in a loop their reserved share.
+#[test]
+fn seclog_the_reserve_outlasts_a_flood_of_every_loopable_class() {
+    let _g = ONE.lock().unwrap_or_else(|e| e.into_inner());
+    clock();
+    TIME.store(TIME.load(Ordering::Relaxed) + 10_000, Ordering::Relaxed);
+    let from = head();
+    for i in 0..200u32 {
+        let s = 20_000 + i;
+        azos_decision::record(Rule::AudioCapture, Verdict::Refuse, s, [0, 0, 0]);
+        azos_decision::record(Rule::Neverallow, Verdict::Refuse, s, [0, 0, 0]);
+        azos_decision::record(Rule::EnvelopeEgress, Verdict::Admit, s, [u64::from(i), 3, 0]);
+        azos_decision::record(Rule::Login, Verdict::Refuse, s, [0, 0, 0]);
+    }
+    for (i, (rule, _)) in RESERVED.iter().enumerate() {
+        azos_decision::record(*rule, Verdict::Admit, 30_000 + i as u32, [0, 0, 0]);
+    }
+    let (ev, _) = events(from);
+    for (i, (rule, class)) in RESERVED.iter().enumerate() {
+        assert!(ev.contains(&(*class as u8, *rule as u8, Verdict::Admit as u8, 30_000 + i as u32)), "{class:?} lost its reserve: {ev:?}");
+    }
+}
+
+/// The subjects held back are the heaviest ones, whatever order they came
+/// in.
+#[test]
+fn seclog_the_held_table_names_the_heaviest_subjects() {
+    let mut top = [(0u32, 0u32); azos_seclog::Held::SUBJECTS];
+    for s in 1..=4u32 {
+        azos_decision::hold_noted(&mut top, s);
+    }
+    for _ in 0..50 {
+        azos_decision::hold_noted(&mut top, 99);
+        azos_decision::hold_noted(&mut top, 99);
+        for s in 10..14u32 {
+            azos_decision::hold_noted(&mut top, s);
+        }
+    }
+    assert!(top.iter().any(|t| t.0 == 99 && t.1 >= 100), "{top:?}");
 }

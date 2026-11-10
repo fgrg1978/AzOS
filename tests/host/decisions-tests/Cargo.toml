@@ -28,6 +28,7 @@ mem-kill-unrecorded-canary = ["azos_decision/mem-kill-unrecorded-canary"]
 # configuration with SEC_LOG on): the `seclog_` tests.
 seclog = ["dep:azos_records", "dep:azos_seclog", "dep:azos_limits"]
 canary-no-security-copy = ["azos_decision/canary-no-security-copy"]
+canary-global-security-bucket = ["azos_decision/canary-global-security-bucket"]
 
 [profile.release]
 overflow-checks = true

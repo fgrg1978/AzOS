@@ -24,3 +24,7 @@ mem-kill-unrecorded-canary = []
 # Host canary (decisions-tests `seclog`), never in a real build: no record is
 # copied to the security ring.
 canary-no-security-copy = []
+# Host canary (decisions-tests `seclog`), never in a real build: the security
+# records' bucket is the whole's alone (no subject share, no reserve,
+# microphone unpaced).
+canary-global-security-bucket = []

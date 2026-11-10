@@ -1940,20 +1940,25 @@ pub fn security_tally() -> (
 /// The security records' rate cap (Kconfig `SEC_LOG_PER_S`): a bucket for
 /// them all; a quarter of it for each class a task can raise in a loop
 /// (capability denials, the decision layer's reports of them), half of it
-/// for egress and logins and a quarter for each Domain (the record's bucket:
-/// its subject's Domain where the caller names it), so a flood of one class
-/// leaves the others room and one application, however many tasks it runs,
-/// cannot spend its class's share to hide another's records. A record costs 1000 of the
-/// whole's tokens and 4000 of a share's, both refilled at the whole's rate:
-/// no division drops a remainder, and the time the tokens did not account
-/// for is kept for the next call.
+/// for egress, logins and microphone records and a quarter of that for each
+/// subject, and a half for each subject across every class (the record's bucket: its Domain where the
+/// caller names it), so a flood of one class or one application leaves the
+/// others room. The classes no task can raise in a loop (camera, image load,
+/// update, USB, hardening) keep the last quarter of the whole for themselves:
+/// the rest may not spend it. A record costs 1000 of the whole's tokens and
+/// 4000 of a share's, both refilled at the whole's rate: no division drops a
+/// remainder, and the time the tokens did not account for is kept for the
+/// next call.
 struct SecCap {
     busy: AtomicBool,
     s: core::cell::UnsafeCell<SecTokens>,
 }
 
 /// Subjects with a share of their own, and the subjects held most.
-const SEC_SUBJECTS: usize = 16;
+const SEC_SUBJECTS: usize = 32;
+
+/// The `subj` class key of a subject's share across every class.
+const SEC_ANY: u8 = u8::MAX;
 
 struct SecTokens {
     at: u64,
@@ -1997,11 +2002,17 @@ fn sec_cap<R>(f: impl FnOnce(&mut SecTokens) -> R) -> R {
 }
 
 const fn sec_paced(class: SecClass) -> bool {
-    matches!(class, SecClass::CapDenial | SecClass::Limited | SecClass::Egress | SecClass::Login)
+    matches!(class, SecClass::CapDenial | SecClass::Limited | SecClass::Egress | SecClass::Login | SecClass::Microphone)
+}
+
+/// The classes the whole's reserve is kept for: the ones a task cannot raise
+/// in a loop.
+const fn sec_reserved(class: SecClass) -> bool {
+    !sec_paced(class)
 }
 
 const fn sec_per_subject(class: SecClass) -> bool {
-    matches!(class, SecClass::Egress | SecClass::Login)
+    matches!(class, SecClass::Egress | SecClass::Login | SecClass::Microphone)
 }
 
 /// What the cap says of a record.
@@ -2014,12 +2025,40 @@ enum SecAdmit {
     Repeat,
 }
 
+/// The slot of `(key, subject)`'s share. A new subject takes the slot whose
+/// holder has waited longest (the fullest) but `keep`: it starts with a full
+/// share.
+fn sec_slot(t: &mut SecTokens, key: u8, subject: u32, rate: u64, keep: Option<usize>) -> usize {
+    if let Some(i) = t.subj.iter().position(|x| x.0 == key && x.1 == subject) {
+        return i;
+    }
+    let i = (0..SEC_SUBJECTS).filter(|&i| Some(i) != keep).max_by_key(|&i| if t.subj[i].0 == 0 { u64::MAX } else { t.subj[i].2 }).unwrap_or(0);
+    t.subj[i] = (key, subject, rate);
+    i
+}
+
+/// Count a record held back against `subject` in the table of the subjects
+/// held most. The subject held least gives its place up and its count on: a
+/// count can only be too high, it never hides a heavy subject.
+#[doc(hidden)]
+pub fn hold_noted(top: &mut [(u32, u32); azos_seclog::Held::SUBJECTS], subject: u32) {
+    match top.iter().position(|x| x.0 == subject && x.1 != 0) {
+        Some(i) => top[i].1 += 1,
+        None => {
+            let i = (0..top.len()).min_by_key(|&i| top[i].1).unwrap_or(0);
+            top[i] = (subject, top[i].1 + 1);
+        }
+    }
+}
+
 /// May a security record of `class` whose bucket is `subject` (a Domain's
 /// key, or the subject itself) be copied now? `dest`: an egress admit's
 /// destination; it counts as the Domain's last only once its record is copied.
 fn sec_admit(class: SecClass, subject: u32, dest: Option<u64>) -> SecAdmit {
     const ONE: u64 = 1000;
     const SHARE: u64 = 4 * ONE;
+    // A subject's records of every class together: half the whole a second.
+    const ANY_COST: u64 = 2 * ONE;
     let rate = azos_limits::SEC_LOG_PER_S as u64 * ONE;
     let (now, hz) = (clock_now(), CLOCK_HZ.load(Ordering::Relaxed).max(1));
     sec_cap(|t| {
@@ -2046,45 +2085,33 @@ fn sec_admit(class: SecClass, subject: u32, dest: Option<u64>) -> SecAdmit {
         if dest.is_some_and(|d| t.dests.contains(&(subject, d))) {
             return SecAdmit::Repeat;
         }
-        let slot = sec_per_subject(class).then(|| {
-            match t.subj.iter().position(|x| x.0 == class as u8 && x.1 == subject) {
-                Some(i) => i,
-                None => {
-                    // A new subject takes the slot whose holder has waited
-                    // longest (the fullest): it starts with a full share.
-                    let i = (0..SEC_SUBJECTS).max_by_key(|&i| if t.subj[i].0 == 0 { u64::MAX } else { t.subj[i].2 }).unwrap_or(0);
-                    t.subj[i] = (class as u8, subject, rate);
-                    i
-                }
-            }
-        });
-        let paced = sec_paced(class);
+        let canary = cfg!(feature = "canary-global-security-bucket");
+        let class_slot = (sec_per_subject(class) && !(canary && class == SecClass::Microphone)).then(|| sec_slot(t, class as u8, subject, rate, None));
+        let any_slot = sec_slot(t, SEC_ANY, subject, rate, class_slot);
+        let paced = sec_paced(class) && !(canary && class == SecClass::Microphone);
         // A class shared by subjects takes half the whole, a subject a quarter.
-        let class_cost = if slot.is_some() { SHARE / 2 } else { SHARE };
-        let ok = t.all >= ONE && (!paced || t.class[c] >= class_cost) && slot.is_none_or(|i| t.subj[i].2 >= SHARE);
+        let class_cost = if class_slot.is_some() { SHARE / 2 } else { SHARE };
+        let floor = if sec_reserved(class) || canary { ONE } else { ONE + rate / 4 };
+        let ok = t.all >= floor
+            && (!paced || t.class[c] >= class_cost)
+            && class_slot.is_none_or(|i| t.subj[i].2 >= SHARE)
+            && (canary || t.subj[any_slot].2 >= ANY_COST);
         if ok {
             t.all -= ONE;
             if paced {
                 t.class[c] -= class_cost;
             }
-            if let Some(i) = slot {
+            if let Some(i) = class_slot {
                 t.subj[i].2 -= SHARE;
             }
+            t.subj[any_slot].2 = t.subj[any_slot].2.saturating_sub(ANY_COST);
             if let Some(d) = dest {
                 t.dests[t.next_dest] = (subject, d);
                 t.next_dest = (t.next_dest + 1) % SEC_SUBJECTS;
             }
             return SecAdmit::Copy;
         }
-        match t.top.iter().position(|x| x.0 == subject && x.1 != 0) {
-            Some(i) => t.top[i].1 += 1,
-            None => {
-                let i = (0..t.top.len()).min_by_key(|&i| t.top[i].1).unwrap_or(0);
-                if t.top[i].1 == 0 {
-                    t.top[i] = (subject, 1);
-                }
-            }
-        }
+        hold_noted(&mut t.top, subject);
         SecAdmit::Hold
     })
 }
