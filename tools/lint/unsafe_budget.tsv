@@ -154,7 +154,7 @@ userspace/services/decisd	1	0	0	0	0	-
 userspace/services/ext4d	2	0	0	0	0	-
 userspace/services/infsrv	11	2	0	0	0	-
 userspace/services/inputd	2	0	0	0	0	-
-userspace/services/logd	2	0	0	0	0	-
+userspace/services/logd	3	0	1	0	0	-
 userspace/services/logind	1	0	0	0	0	-
 userspace/services/lxrt	17	3	1	3	0	-
 userspace/services/lxsrv	28	0	3	0	0	-

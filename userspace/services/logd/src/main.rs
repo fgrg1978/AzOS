@@ -31,6 +31,9 @@
 #![no_main]
 
 use azos_libsys as sys;
+use core::cell::UnsafeCell;
+use core::mem::MaybeUninit;
+use core::ptr::{addr_of, addr_of_mut};
 
 // The source the kernel pushes with; this side reads and writes text, so the
 // producer half is unused here.
@@ -299,6 +302,13 @@ fn ring_index(region: &Region, source: u8) -> Option<usize> {
     (0..region.rings()).find(|&i| region.ring(i).is_some_and(|r| r.source() == source))
 }
 
+/// The sink's state, in `.bss`: two readers of every ring and the batch are
+/// over half the stack the image asks for.
+struct SinkCell(UnsafeCell<MaybeUninit<Sink>>);
+// SAFETY: logd runs one thread, and only `run`, entered once, reaches it.
+unsafe impl Sync for SinkCell {}
+static SINK: SinkCell = SinkCell(UnsafeCell::new(MaybeUninit::uninit()));
+
 /// The sink's state: the region, the files, and how far it has read.
 struct Sink {
     vol: SysVol,
@@ -465,29 +475,45 @@ impl Sink {
     }
 }
 
-#[sys::main(panic_exit = 70)]
-fn run() -> i32 {
-    let Some((base, bytes)) = map_ring() else {
-        // Nothing to sink, and a restart would not change it.
-        say(b"logd: no klog.ring granted (Kconfig KLOG off, or the row has none)\n");
-        return 0;
-    };
-    // SAFETY: a read-only mapping of the kernel's region, held for the life
-    // of the program; `open` checks it is one.
-    let Some(region) = (unsafe { sys::record::Region::open(base as *const u8, bytes) }) else {
-        say(b"logd: the klog.ring is not a record region this build reads\n");
-        return 0;
-    };
-    let root = sys::root_dir();
-    if root < 0 {
-        say(b"logd: no root directory granted\n");
-        return 0;
-    }
-    let mut vol = SysVol { root: root as u32 };
+/// `region`'s reader from every ring's oldest record, into `m`: the value is
+/// built on this frame, not on the caller's.
+#[inline(never)]
+fn reader_into(m: &mut MaybeUninit<Merge<PAYLOAD>>, region: Region) {
+    m.write(Merge::oldest(region));
+}
+
+/// Find the files' state and set the sink up in its cell, resumed after the
+/// files' last records when it can be (true). Its own frame, not `run`'s: the
+/// files' scan and the resume's line are several KiB, and the drain never
+/// needs them.
+#[inline(never)]
+fn open(region: Region, root: u32) -> (&'static mut Sink, bool) {
+    let mut vol = SysVol { root };
     let limit = azos_limits::LOGD_FILE_KB as u64 * 1024;
     let (store, tail) = Store::recover(&mut vol, azos_limits::LOGD_FILES_KEEP as u8, limit);
     let hz = region.ts_hz();
-    let mut rd = sys::record::Merge::<PAYLOAD>::oldest(region);
+    let keep = Keep::<KEYS>::new(azos_limits::LOGD_DECISIONS_ALL, azos_limits::LOGD_DECISIONS_PER_SEC as u64,
+        azos_limits::LOGD_TELEMETRY_PER_SEC as u64, azos_limits::LOGD_POLL_MS as u64);
+    let p: *mut Sink = SINK.0.get().cast();
+    // SAFETY: one thread, and `open` is called once: nothing else reaches the
+    // cell. Field by field, in place (a `Sink` value would be built on this
+    // frame first), and the reference is taken after the last field.
+    let sink = unsafe {
+        reader_into(&mut *addr_of_mut!((*p).rd).cast(), region);
+        addr_of_mut!((*p).committed).copy_from_nonoverlapping(addr_of!((*p).rd), 1);
+        addr_of_mut!((*p).batch).write_bytes(0, 1);
+        addr_of_mut!((*p).vol).write(vol);
+        addr_of_mut!((*p).store).write(store);
+        addr_of_mut!((*p).hz).write(hz);
+        addr_of_mut!((*p).stall).write(Stall::new());
+        addr_of_mut!((*p).keep).write(keep);
+        addr_of_mut!((*p).written).write(0);
+        addr_of_mut!((*p).n).write(0);
+        addr_of_mut!((*p).sec).write(ring_index(&region, SOURCE_SECURITY));
+        addr_of_mut!((*p).ack).write(map_ack());
+        &mut *p
+    };
+    let rd = &mut sink.rd;
 
     // Resume after the files' last records when the kernel log's ring still
     // holds the last one (the same boot): every ring after its own last line.
@@ -515,11 +541,31 @@ fn run() -> i32 {
             }
         }
     }
+    sink.committed = sink.rd;
+    (sink, resumed)
+}
+
+#[sys::main(panic_exit = 70)]
+fn run() -> i32 {
+    let Some((base, bytes)) = map_ring() else {
+        // Nothing to sink, and a restart would not change it.
+        say(b"logd: no klog.ring granted (Kconfig KLOG off, or the row has none)\n");
+        return 0;
+    };
+    // SAFETY: a read-only mapping of the kernel's region, held for the life
+    // of the program; `open` checks it is one.
+    let Some(region) = (unsafe { sys::record::Region::open(base as *const u8, bytes) }) else {
+        say(b"logd: the klog.ring is not a record region this build reads\n");
+        return 0;
+    };
+    let root = sys::root_dir();
+    if root < 0 {
+        say(b"logd: no root directory granted\n");
+        return 0;
+    }
+    let (sink, resumed) = open(region, root as u32);
+    let hz = sink.hz;
     say(b"[logd] AzOS record sink (klog.ring to KLOGn.TXT)\n");
-    let mut sink = Sink { vol, store, hz, rd, committed: rd, stall: Stall::new(),
-        keep: Keep::<KEYS>::new(azos_limits::LOGD_DECISIONS_ALL, azos_limits::LOGD_DECISIONS_PER_SEC as u64,
-            azos_limits::LOGD_TELEMETRY_PER_SEC as u64, azos_limits::LOGD_POLL_MS as u64),
-        written: 0, batch: [0; BATCH], n: 0, sec: ring_index(&region, SOURCE_SECURITY), ack: map_ack() };
     // What the ring dropped before this run read it, and no earlier run
     // wrote (the page's `next` is where the last one stopped): lost.
     if let (Some(p), Some(i)) = (sink.ack, sink.sec) {

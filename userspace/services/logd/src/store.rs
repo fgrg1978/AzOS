@@ -79,9 +79,16 @@ struct Scan {
     seam: bool,
 }
 
-fn scan<V: Vol>(vol: &mut V, slot: u8) -> Option<Scan> {
+impl Scan {
+    const EMPTY: Scan = Scan { size: 0, serial: None, tail: None, seam: false };
+}
+
+/// Read file `slot` into `s`; false when it cannot be opened. Into the caller's
+/// value, not a returned one: each holds a line, and the startup's frames are
+/// on the program's stack.
+fn scan<V: Vol>(vol: &mut V, slot: u8, s: &mut Scan) -> bool {
     let mut lines = Lines::new();
-    let mut s = Scan { size: 0, serial: None, tail: None, seam: false };
+    *s = Scan::EMPTY;
     let mut first = true;
     let name = wire::file_name(slot);
     let ok = vol.read_file(&name, &mut |chunk: &[u8]| {
@@ -117,7 +124,7 @@ fn scan<V: Vol>(vol: &mut V, slot: u8) -> Option<Scan> {
             }
         });
     });
-    ok.then_some(s)
+    ok
 }
 
 /// The ring of files: which one is open, how full it is.
@@ -133,24 +140,30 @@ pub struct Store {
 impl Store {
     /// Find the newest file (the highest serial among the `keep` slots) and
     /// what it ends with. A volume with no file starts at slot 0.
+    #[inline(never)]
     pub fn recover<V: Vol>(vol: &mut V, keep: u8, limit: u64) -> (Store, Option<Tail>) {
         let keep = keep.clamp(1, wire::FILE_SLOTS_MAX as u8);
-        let mut best: Option<(u8, u64, Scan)> = None;
+        // The newest file's scan in `s`, the one under way in `p`.
+        let (mut s, mut p) = (Scan::EMPTY, Scan::EMPTY);
+        let mut best: Option<(u8, u64)> = None;
         for slot in 0..keep {
-            let Some(s) = scan(vol, slot) else { continue };
-            let Some(serial) = s.serial else { continue };
-            if best.as_ref().map_or(true, |b| serial > b.1) {
-                best = Some((slot, serial, s));
+            if !scan(vol, slot, &mut p) {
+                continue;
+            }
+            let Some(serial) = p.serial else { continue };
+            if best.map_or(true, |b| serial > b.1) {
+                best = Some((slot, serial));
+                core::mem::swap(&mut s, &mut p);
             }
         }
-        let Some((slot, serial, s)) = best else {
+        let Some((slot, serial)) = best else {
             return (Store { slot: 0, serial: 0, size: 0, keep, limit }, None);
         };
         // A source with no line in the newest file (it was rotated in a
         // moment ago, or the source is rare) resumes by the files before it,
         // newest first, not from its ring's oldest record, which would write
         // its lines twice.
-        let mut tail = s.tail.unwrap_or(Tail::EMPTY);
+        let tail = s.tail.get_or_insert(Tail::EMPTY);
         let mut crossed = s.seam;
         // Canary: look no further back than the file before the newest.
         #[cfg(feature = "canary-logd-resume-one-file")]
@@ -166,19 +179,20 @@ impl Store {
             }
             let Some(want) = serial.checked_sub(back).filter(|&w| w > 0) else { break };
             // Serial n was written to slot (n - 1) % keep: the files rotate in order.
-            let Some(p) = scan(vol, ((want - 1) % u64::from(keep)) as u8).filter(|p| p.serial == Some(want)) else { break };
+            if !scan(vol, ((want - 1) % u64::from(keep)) as u8, &mut p) || p.serial != Some(want) {
+                break;
+            }
             crossed = p.seam;
-            let Some(p) = p.tail else { break };
+            let Some(p) = &mut p.tail else { break };
             if tail.rec.is_none() {
-                tail.rec = p.rec;
+                tail.rec = p.rec.take();
             }
             tail.last_decision = tail.last_decision.or(p.last_decision);
             tail.last_telemetry = tail.last_telemetry.or(p.last_telemetry);
             tail.last_security = tail.last_security.or(p.last_security);
         }
-        let tail = (tail.rec.is_some() || tail.last_decision.is_some() || tail.last_telemetry.is_some() || tail.last_security.is_some())
-            .then_some(tail);
-        (Store { slot, serial, size: s.size, keep, limit }, tail)
+        let any = tail.rec.is_some() || tail.last_decision.is_some() || tail.last_telemetry.is_some() || tail.last_security.is_some();
+        (Store { slot, serial, size: s.size, keep, limit }, if any { s.tail } else { None })
     }
 
     /// Append `batch` (whole lines). Opens the next file first when it would
