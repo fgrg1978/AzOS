@@ -22194,6 +22194,47 @@ PY
     }
     par -s "userspace: ring-3 holds stop w/o ML" ring3_ml_fail_closed_scenario   # the companion peer on a host port of its own
 
+    # A LOST SESSION ARMS THE WHEELED PROFILE'S STOP. The drive scenario's boot,
+    # with a peer that serves for a short while and then goes away: the engine's
+    # session ends, the kernel arms containment (`[COMPANION] link lost
+    # (Session)`), and no wheel is driven after that line.
+    ring3_session_loss_scenario() {
+        companion_peer_required || return 0
+        local label="userspace: ring-3 session loss stops"
+        printf "  %-26s" "${label}..."
+        mkdir -p "$CI_LOG_DIR"
+        local log="$CI_LOG_DIR/ring3-session-loss.log"
+        local blog="$CI_LOG_DIR/ring3-session-loss-peer.log"
+        rm -f "$log" "$blog"
+
+        kbuild "qemu,actuation-smoke"
+        rm -f $AZOS_OUT/build/disk-compcli.img $AZOS_OUT/build/disk-compcli-linkkey.img $AZOS_OUT/build/compcli_linkkey.bin
+        make_disk $AZOS_OUT/build/disk-compcli-linkkey.img
+        PEER_BOOT_DONE_RE='\[COMPANION\] link lost' \
+            run_companion_peer_boot "$log" "$blog" $AZOS_OUT/build/disk-compcli-linkkey.img 60 \
+            --serve --duration 25 --link-key $AZOS_OUT/build/compcli_linkkey.bin
+
+        if grep -aqiE "panic|\[FATAL\]" "$log" 2>/dev/null; then
+            bad; echo "      kernel panic or fatal exception:"; grep -aiE -m3 "panic|\[FATAL\]|\[PAGE FAULT\]" "$log" | sed "s|^|      |"
+            echo "      logs kept: $log $blog"; return
+        fi
+        local d_line l_line
+        d_line=$(grep -an "\[behave\] remote drives (60,60)" "$log" 2>/dev/null | sed -n 1p | cut -d: -f1)
+        l_line=$(grep -an "\[COMPANION\] link lost (Session)" "$log" 2>/dev/null | sed -n 1p | cut -d: -f1)
+        if [ -z "$d_line" ] || [ -z "$l_line" ] || [ "$d_line" -gt "$l_line" ]; then
+            bad; echo "      the robot did not drive and then lose its session (drive line ${d_line:-none}, loss line ${l_line:-none})"
+            grep -a -m4 "\[behave\]\|COMPANION\]" "$log" | sed "s|^|      |"
+            echo "      logs kept: $log $blog"; return
+        fi
+        if awk -v n="$l_line" 'NR > n && /ACTSMOKE\] kernel motor id=[01] duty=[1-9]/ { f = 1 } END { exit !f }' "$log" 2>/dev/null; then
+            bad; echo "      a wheel was driven after the session was lost"
+            grep -a "ACTSMOKE" "$log" | sed -n '1,4p' | sed "s|^|      |"
+            echo "      logs kept: $log $blog"; return
+        fi
+        ok; rm -f "$log" "$blog"
+    }
+    par -s "userspace: ring-3 session loss stops" ring3_session_loss_scenario   # the companion peer on a host port of its own
+
     # A RING-3 CLIENT THAT RECONNECTS MUST GIVE ITS SOCKET BACK EVERY TIME.
     #
     # `companion_client` reconnects forever by design. A client that ends a
@@ -22248,15 +22289,6 @@ PY
             bad; echo "      companion_client connected ${dials:-0} time(s) in 80 s; a client"
             echo "      that stops at 8 is not releasing its socket."
             grep -a -m3 "companion_client\] Connection failed" "$log" | sed "s|^|      |"
-            echo "      logs kept: $log $blog"; return
-        fi
-        # Each reset ends a session the engine had reported up: the kernel arms the
-        # profile's containment (the wheeled build's stop), and the engine still
-        # dials again.
-        if ! grep -aq "\[COMPANION\] link lost (Session)" "$log" 2>/dev/null \
-           && ! grep -aq "\[COMPANION\] link lost (Silent)" "$log" 2>/dev/null; then
-            bad; echo "      the session ended ${dials} times and the kernel never armed containment"
-            grep -a -m3 "COMPANION\]" "$log" | sed "s|^|      |"
             echo "      logs kept: $log $blog"; return
         fi
         ok; rm -f "$log" "$blog"

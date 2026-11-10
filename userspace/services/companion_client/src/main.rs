@@ -894,7 +894,7 @@ fn exchange(sock: u32, sensors: &SensorData, remote: &mut Option<behave::Remote>
     if n == 0 {
         return true;
     }
-    *last_rx = now_ms;
+    *last_rx = sys::vdso_now_ns() / 1_000_000;
     let fed = link::feed(wire, |inner| {
         let Some((pkt_type, pay_start, pay_len)) = parse_frame(inner, inner.len()) else { return };
         let body = &inner[pay_start..pay_start + pay_len];
@@ -1160,11 +1160,11 @@ fn engine(companion: Option<([u8; 4], u16)>, rekey_secs: u64) -> ! {
         if let (None, Some((ip, port)), true) = (sock, companion, now >= next_dial) {
             sock = dial(ip, port, rekey_secs, now);
             next_dial = now + CONNECT_RETRY_MS;
-            last_rx = now;
+            last_rx = sys::vdso_now_ns() / 1_000_000;
         }
         if let Some(s) = sock {
             let mut up = exchange(s, &sensors, &mut remote, &mut predict, now, &mut last_rx, &mut recv_raw)
-                && !behave::rx_silent(now, last_rx);
+                && !behave::rx_silent(sys::vdso_now_ns() / 1_000_000, last_rx);
             if let (true, Some(c)) = (up, camera.as_mut()) {
                 up = c.step(s, now);
             }
