@@ -211,3 +211,34 @@ fn tool_labels_a_declaration_at_the_very_end() {
     assert_eq!(r.verdict, Verdict::Evidence);
     assert!(render(&r).contains("consistent with a crash or a live export"), "{}", render(&r));
 }
+
+/// An export of the previous format (v4 lines, from a kernel that wrote them) is
+/// reported as an unsupported version, not as malformed records or evidence.
+#[test]
+fn tool_an_export_of_format_4_is_unsupported_not_evidence() {
+    let ev = "0807060504030201443322113b010100010000000000000002000000000000000300000000000000efcdab000000000007000000";
+    let line = format!("v4 4 1000 0 1 2 1 {ev} event microphone rule=59 verdict=1").into_bytes();
+    let v4 = file(1, &[line, b"v4 seam".to_vec()]);
+    let r = verify(&[v4], &Options::default());
+    assert!(r.findings.is_empty() && r.summary.evidence == 0, "{:?}", r.findings);
+    assert!(r.notes.iter().any(|n| n.contains("v4") && n.contains("unsupported version")), "{:?}", r.notes);
+    assert_eq!(r.verdict, Verdict::Incomplete);
+}
+
+/// A high-value sink loss declared while logd's heartbeat moved says on the verdict
+/// line that it rests on logd's own claim.
+#[test]
+fn tool_the_verdict_says_a_high_value_sink_loss_rests_on_logds_claim() {
+    let mut b = tpm_boot([0; 32], 1);
+    b.event(Class::Camera, 3);
+    let lost = b.recs.len() as u64 - 1;
+    b.sink_loss_of(lost, 1, Class::Camera as usize, true);
+    b.seal();
+    let lines: Vec<_> = b.recs.iter().filter(|r| r.env.seq != lost).map(super::line).collect();
+    let text = render(&verify(&[file(1, &lines)], &Options::default()));
+    let verdict = text.lines().find(|l| l.starts_with("verdict:")).unwrap();
+    assert!(verdict.contains("logd's own claim and heartbeat"), "{text}");
+    let lines: Vec<_> = b.recs.iter().map(super::line).collect();
+    let text = render(&verify(&[file(1, &lines)], &Options::default()));
+    assert!(text.contains("on logd's own claim: its own heartbeat was moving"), "{text}");
+}

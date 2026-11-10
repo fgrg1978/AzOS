@@ -9,7 +9,7 @@ releases yet. The ABI crate keeps its own file,
 
 ### Added
 
-- The sealed security log, format v4 (`crates/core/seclog`, `userspace/services/logd`):
+- The sealed security log, format v5 (`crates/core/seclog`, `userspace/services/logd`):
   records chained per boot and sealed, with a TPM counter and extend anchor where
   a TPM exists and the OTA floor as the advisory fallback, and `make seclog-verify`
   to check an export offline (`tools/forensic/seclog_verify`).

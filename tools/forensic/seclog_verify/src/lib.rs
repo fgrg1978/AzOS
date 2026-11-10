@@ -138,6 +138,7 @@ pub fn verify(files: &[Vec<u8>], opts: &Options) -> Report {
     let mut v = Verifier::new();
     let mut findings = Vec::new();
     let mut seals: Vec<Seal> = Vec::new();
+    let mut unsupported: Vec<u8> = Vec::new();
     for f in order {
         for line in f.split(|&b| b == b'\n') {
             let Some(l) = wire::parse(line) else { continue };
@@ -147,6 +148,11 @@ pub fn verify(files: &[Vec<u8>], opts: &Options) -> Report {
             }
             match text::parse(l.msg) {
                 Some(Parsed::Seam) => v.seam(),
+                Some(Parsed::Unsupported(n)) if security => {
+                    if !unsupported.contains(&n) {
+                        unsupported.push(n);
+                    }
+                }
                 Some(Parsed::Record { env, payload }) if security => {
                     if env.kind == kind::SEAL {
                         seals.extend(Seal::decode(&payload[..env.len as usize]));
@@ -160,6 +166,9 @@ pub fn verify(files: &[Vec<u8>], opts: &Options) -> Report {
     let summary = v.finish(&mut |x| findings.push(x));
     let opts = if cfg!(feature = "canary-no-external-check") { &Options::default() } else { opts };
     let mut notes = Vec::new();
+    for n in &unsupported {
+        notes.push(format!("format v{n}: unsupported version (this verifier reads v{}); those records were not checked", azos_seclog::VERSION));
+    }
     if let Some(live) = opts.tpm_anchor {
         match v.live(&live, opts.tpm_counter) {
             Live::Whole => {}
@@ -244,10 +253,10 @@ fn describe(f: &Finding) -> String {
             format!("boot {boot}: {count} {} records lost before they were sealed (the kernel declared it)", class_name(class))
         }
         Finding::ClassLost { boot, class, count, sink: true, claimed: false } => {
-            format!("boot {boot}: {count} {} records sealed and not written by logd, which had stopped (the kernel declared it)", class_name(class))
+            format!("boot {boot}: {count} {} records sealed and not written by logd, whose own heartbeat had stopped when the kernel declared it", class_name(class))
         }
         Finding::ClassLost { boot, class, count, sink: true, claimed: true } => format!(
-            "boot {boot}: {count} {} records sealed and not written by logd, on logd's claim: it was running when the kernel declared it",
+            "boot {boot}: {count} {} records sealed and not written by logd, on logd's own claim: its own heartbeat was moving when the kernel declared it, and nothing else confirms it",
             class_name(class)
         ),
         Finding::Held { boot, class, count } => format!("boot {boot}: the rate cap held back {count} {} records", class_name(class)),
@@ -297,8 +306,8 @@ pub fn render(r: &Report) -> String {
         for (class, sink, claimed, n) in &hv {
             let how = match (*sink, *claimed) {
                 (false, _) => " (never sealed)",
-                (true, false) => " (logd did not write them; it had stopped)",
-                (true, true) => " (logd says it did not write them; it was running)",
+                (true, false) => " (logd did not write them; its own heartbeat had stopped)",
+                (true, true) => " (logd says it did not write them; it rests on logd's own heartbeat and word)",
             };
             let _ = writeln!(o, "  {} {}{}", class_name(*class), n, how);
         }
@@ -330,6 +339,8 @@ pub fn render(r: &Report) -> String {
     if !r.anchored {
         let _ = writeln!(o, "not anchored: pass --tpm-anchor or --witness; offline, an export rewritten whole is consistent with itself");
     }
-    let _ = writeln!(o, "verdict: {:?}", r.verdict);
+    let claimed = r.findings.iter().any(|f| f.high_value_loss() && matches!(f, Finding::ClassLost { sink: true, claimed: true, .. }));
+    let why = if claimed { " (a high-value sink loss rests on logd's own claim and heartbeat, not on anything the kernel observed)" } else { "" };
+    let _ = writeln!(o, "verdict: {:?}{why}", r.verdict);
     o
 }

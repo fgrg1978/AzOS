@@ -844,7 +844,7 @@ subjects it held back most (a table of four, each with its count), and declared 
 **The chain.** Per boot, the `seclog` task folds every record of the ring, in
 sequence order, into `head_i = SHA-256(0x01 || head_{i-1} || canon_i)`
 (`canon`: the format version, every envelope field but the source, the
-payload), from `head_0 = SHA-256("azos/seclog/v4" || boot anchor || nonce)`.
+payload), from `head_0 = SHA-256("azos/seclog/v5" || boot anchor || nonce)`.
 It seals at its first pass, every `SEC_LOG_SEAL_S`, `SEC_LOG_SEAL_URGENT_S`
 after a record of a class whose loss hides what spyware does (every class but
 the denials and their reports) or after it declared a loss, and at an orderly
@@ -952,7 +952,7 @@ who can write the volume can delete unseen.
 
 **Checking an export.** `make seclog-verify SECLOG_EXPORT=<the KLOGn.TXT files
 or their directory>` (no network) reads the files in the order of their serials
-(a serial missing between two present ones is evidence) and reports, per boot:
+(a serial missing between two present ones is evidence) and reports, per boot (lines of another format version are named as an unsupported version and not read; this is format v5):
 records missing from the export (and who declared the loss: the sealer, or the
 sink through the kernel), the classes of what was declared lost, a seal whose
 head the records before it do not give (a rewritten, inserted or removed

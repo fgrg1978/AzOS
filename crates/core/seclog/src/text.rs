@@ -4,8 +4,8 @@
 //! the canonical bytes, so a reader recomputes the chain from the text alone.
 //!
 //! ```text
-//! v4 <seq> <ts> <clock> <kind> <cpu> <flags> <payload hex> [<what>]
-//! v4 seam
+//! v5 <seq> <ts> <clock> <kind> <cpu> <flags> <payload hex> [<what>]
+//! v5 seam
 //! ```
 //!
 //! Numbers are decimal, the payload is lowercase hex (its length is the
@@ -20,7 +20,7 @@ use crate::{kind, Envelope, Event, Seal, PAYLOAD, VERSION};
 /// Bytes of the longest message.
 pub const MSG_MAX: usize = 3 + 6 * 21 + 2 * PAYLOAD + 1 + 64;
 
-const SEAM: &[u8] = b"v4 seam";
+const SEAM: &[u8] = b"v5 seam";
 
 struct Put<'a> {
     out: &'a mut [u8],
@@ -109,6 +109,8 @@ pub fn render_seam(out: &mut [u8]) -> usize {
 pub enum Parsed {
     Record { env: Envelope, payload: [u8; PAYLOAD] },
     Seam,
+    /// A record or seam of another format version: not read.
+    Unsupported(u8),
 }
 
 fn num(t: &[u8]) -> Option<u64> {
@@ -133,15 +135,18 @@ fn nib(c: u8) -> Option<u8> {
     }
 }
 
-/// The record or seam a message names; `None` for anything else (another
-/// version, a field out of range, a payload of odd or too many digits).
+/// The record or seam a message names; `None` for anything else (a field out of range, a payload of odd or too many digits).
 pub fn parse(msg: &[u8]) -> Option<Parsed> {
     if msg == SEAM {
         return Some(Parsed::Seam);
     }
     let mut it = msg.split(|&b| b == b' ');
-    if it.next()? != [b'v', b'0' + VERSION] {
-        return None;
+    let tag = it.next()?;
+    if tag != [b'v', b'0' + VERSION] {
+        return match *tag {
+            [b'v', d @ b'0'..=b'9'] if it.next().is_some_and(|f| f == b"seam" || num(f).is_some()) => Some(Parsed::Unsupported(d - b'0')),
+            _ => None,
+        };
     }
     let mut f = [0u64; 6];
     for v in f.iter_mut() {

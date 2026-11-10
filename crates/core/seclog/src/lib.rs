@@ -29,7 +29,7 @@
 //!
 //! # The chain
 //!
-//! Per boot, in sequence order: `head_0 = SHA-256("azos/seclog/v4" ||
+//! Per boot, in sequence order: `head_0 = SHA-256("azos/seclog/v5" ||
 //! boot_anchor || nonce)`, `head_i = SHA-256(0x01 || head_{i-1} || canon_i)`,
 //! `canon` the record's [canonical bytes](canon) (every envelope field but the
 //! source, and the payload). Seal `k` commits `data_k = SHA-256(0x02 ||
@@ -69,7 +69,7 @@ pub use azos_rings::region::record::Envelope;
 
 /// The version of the format: the first byte of every record's canonical
 /// bytes and the first word of its line.
-pub const VERSION: u8 = 4;
+pub const VERSION: u8 = 5;
 /// Payload bytes a security ring slot holds: the largest kind's, a seal's.
 pub const PAYLOAD: usize = 208;
 /// Class numbers a by-class count covers (index = the class's number).

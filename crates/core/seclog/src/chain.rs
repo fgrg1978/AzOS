@@ -14,7 +14,7 @@ const TAG_DECLARATION: u8 = 3;
 /// `boot_anchor` and whose nonce is `nonce`.
 pub fn genesis(boot_anchor: &Hash, nonce: u64) -> Hash {
     let mut h = Sha256::new();
-    h.update(b"azos/seclog/v4");
+    h.update(b"azos/seclog/v5");
     h.update(boot_anchor);
     h.update(&nonce.to_le_bytes());
     h.finalize()

@@ -213,6 +213,7 @@ fn verify(lines: &[Vec<u8>]) -> (Vec<Finding>, Summary) {
     for l in lines {
         match text::parse(l).expect("every line parses") {
             Parsed::Seam => v.seam(),
+            Parsed::Unsupported(n) => panic!("format v{n}"),
             Parsed::Record { env, payload } => v.record(&env, &payload, &mut |f| found.push(f)),
         }
     }
@@ -624,7 +625,9 @@ fn lines_round_trip_and_bad_lines_are_refused() {
         assert_eq!((env.seq, env.ts, env.kind, env.len, env.cpu, payload), (r.env.seq, r.env.ts, r.env.kind, r.env.len, r.env.cpu, r.payload));
     }
     assert_eq!(text::parse(&seam()), Some(Parsed::Seam));
-    for bad in ["v1 1 2 0 1 0 0 00", "v2 1 2 0 1 0 0 0", "v2 1 2 0 1 0 0 0g", "v2 1 2 300 1 0 0 00", "v2 x 2 0 1 0 0 00", "v2 1 2 0 1 0"] {
+    assert_eq!(text::parse(b"v1 1 2 0 1 0 0 00"), Some(Parsed::Unsupported(1)), "another version is named, not read");
+    assert_eq!(text::parse(b"v4 seam"), Some(Parsed::Unsupported(4)));
+    for bad in ["v5 1 2 0 1 0 0 0", "v5 1 2 0 1 0 0 0g", "v5 1 2 300 1 0 0 00", "v5 x 2 0 1 0 0 00", "v5 1 2 0 1 0", "vx 1 2 0 1 0 0 00"] {
         assert_eq!(text::parse(bad.as_bytes()), None, "{bad}");
     }
     let mut r = b.recs[0].clone();
@@ -650,12 +653,12 @@ fn unhex(s: &str) -> Vec<u8> {
     (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
 }
 
-/// Format version 4, byte for byte: the payloads, the canonical bytes, the
+/// Format version 5, byte for byte: the payloads, the canonical bytes, the
 /// genesis head, one fold, one seal's data and extend, and the line. The
-/// vectors were computed apart from this crate (Python's struct and hashlib);
+/// genesis and the fold were checked apart from this crate (Python's hashlib);
 /// a change to any field is a new format version, never an edit of these.
 #[test]
-fn format_v4_is_frozen() {
+fn format_v5_is_frozen() {
     let e = Event {
         id: 0x0102_0304_0506_0708,
         subject: 0x1122_3344,
@@ -703,20 +706,20 @@ fn format_v4_is_frozen() {
     payload[..Event::LEN].copy_from_slice(&e.encode());
     let mut c = [0u8; azos_seclog::CANON_MAX];
     let n = azos_seclog::canon(&env, &payload, &mut c);
-    assert_eq!(c[..n].to_vec(), unhex("040400000000000000e803000000000000000100020134000807060504030201443322113b010100010000000000000002000000000000000300000000000000efcdab000000000007000000"));
+    assert_eq!(c[..n].to_vec(), unhex("050400000000000000e803000000000000000100020134000807060504030201443322113b010100010000000000000002000000000000000300000000000000efcdab000000000007000000"));
     let genesis = azos_seclog::chain::genesis(&[0xdd; 32], 0x99);
-    assert_eq!(genesis.to_vec(), unhex("2ca2f2b2468d797ec1e3cdcd50330c3a672e8c940b521a6acd710ce523b3c904"));
+    assert_eq!(genesis.to_vec(), unhex("352792a7d0034b6d73c0dc343ff556bbaf55953a51db678f269ab51232cdea62"));
     let head = azos_seclog::chain::fold(&genesis, &env, &payload);
-    assert_eq!(head.to_vec(), unhex("222cf2d00c4a03c1455a4ad7eac1af5e8cae21f36257420df50077640a88f7f9"));
+    assert_eq!(head.to_vec(), unhex("598124c76a4868992c301beb0efb27e7fb26e737ee4dd1496f0248c1b6e63312"));
     let n = azos_seclog::chain::SealNumbers { count: 1, counter: 8, through: 5, sink_lost: 0, sink_start: 0, sink_digest: [0; 32] };
     let data = azos_seclog::chain::seal_data(&[0xdd; 32], 0x99, &n, &head);
-    assert_eq!(data.to_vec(), unhex("9caeeb55de9e216f7bbdb5c677eb126ff5da6a7de3c391d1d230974dd915e0d0"));
-    assert_eq!(extend(&[0xdd; 32], &data).to_vec(), unhex("6c06ab1f5004c77fa0d3c59589563547f09ffee89229d7d289a55932dd0e29b2"));
+    assert_eq!(data.to_vec(), unhex("354292f35cecc893a1a7cd235cd16fbbfff0d540bff78f7c4e1bc7a7bd1c9993"));
+    assert_eq!(extend(&[0xdd; 32], &data).to_vec(), unhex("01ae8c188946f10866a6f2dec5bf5139519e5134eb0f147815cb63fb76c212eb"));
     let mut by_class = [0u32; CLASSES];
     by_class[Class::Egress as usize] = 2;
     assert_eq!(azos_seclog::chain::declaration(&[0; 32], 5, 2, &by_class, false).to_vec(), unhex("b255000223c2f9eb1e052266af913a7a7d065696b9048038a2458cf267a8f7d0"));
     let r = Rec { env, payload };
-    assert_eq!(String::from_utf8(line(&r)).unwrap(), format!("v4 4 1000 0 1 2 1 {ev} event microphone rule=59 verdict=1"));
+    assert_eq!(String::from_utf8(line(&r)).unwrap(), format!("v5 4 1000 0 1 2 1 {ev} event microphone rule=59 verdict=1"));
 }
 
 // Proofs of the review of the sealed security log: each asserts the right
