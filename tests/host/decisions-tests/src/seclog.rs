@@ -260,3 +260,14 @@ fn seclog_the_held_table_names_the_heaviest_subjects() {
     }
     assert!(top.iter().any(|t| t.0 == 99 && t.1 >= 100), "{top:?}");
 }
+
+/// A subject held back more often than a count holds stays at the top of
+/// its range, and so does the count it hands on to a newcomer.
+#[test]
+fn seclog_a_held_count_saturates() {
+    let mut top = [(7u32, u32::MAX); azos_seclog::Held::SUBJECTS];
+    azos_decision::hold_noted(&mut top, 7);
+    azos_decision::hold_noted(&mut top, 8);
+    assert!(top.iter().all(|t| t.1 == u32::MAX), "{top:?}");
+    assert!(top.iter().any(|t| t.0 == 8), "{top:?}");
+}

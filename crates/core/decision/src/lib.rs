@@ -2039,14 +2039,15 @@ fn sec_slot(t: &mut SecTokens, key: u8, subject: u32, rate: u64, keep: Option<us
 
 /// Count a record held back against `subject` in the table of the subjects
 /// held most. The subject held least gives its place up and its count on: a
-/// count can only be too high, it never hides a heavy subject.
+/// count can only be too high, it never hides a heavy subject, and a count
+/// saturates.
 #[doc(hidden)]
 pub fn hold_noted(top: &mut [(u32, u32); azos_seclog::Held::SUBJECTS], subject: u32) {
     match top.iter().position(|x| x.0 == subject && x.1 != 0) {
-        Some(i) => top[i].1 += 1,
+        Some(i) => top[i].1 = top[i].1.saturating_add(1),
         None => {
             let i = (0..top.len()).min_by_key(|&i| top[i].1).unwrap_or(0);
-            top[i] = (subject, top[i].1 + 1);
+            top[i] = (subject, top[i].1.saturating_add(1));
         }
     }
 }
