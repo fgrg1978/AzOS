@@ -158,10 +158,10 @@ shared by every domain with an actuator.
   change never lifts degraded mode.
 - The engine's report of the companion link (`PKT_LINK_STATE`, engine to kernel
   only) arms the robot type's containment on a loss, and so does a session
-  reported up that goes silent for 1 s (`frames::link_tick`, run by the robot's
+  reported up (or whose companion commands reach the kernel) that goes silent for 1 s (`frames::link_tick`, run by the robot's
   enforcer): wheeled and Ackermann stop (degraded mode, every motor write
   refused); a drone is handed to the flight failsafe (hold position, then a
-  controlled landing; its ESCs are cut only on the ground or by an e-stop); a
+  controlled landing, raised from the hold by `flight_failsafe` whatever the server-age chain says; its ESCs are cut only on the ground or by an e-stop); a
   humanoid holds a safe posture (no posture code exists: the hold stops the
   joints). The per-profile effects are `azos_behavior::containment`, which the
   engine compiles too. Only the operator's signed degrade clear lifts a

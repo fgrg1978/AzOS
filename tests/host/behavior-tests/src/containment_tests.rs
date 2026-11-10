@@ -120,13 +120,44 @@ fn a_drones_lost_link_holds_then_lands_and_never_disarms() {
 #[test]
 fn a_reported_loss_arms_once_and_only_for_a_session_that_was_up() {
     let w = LinkWatch::new();
-    assert_eq!(w.report(&[LINK_LOST], 10), None, "never up: nothing to lose");
-    assert_eq!(w.report(&[LINK_UP], 20), None);
-    assert_eq!(w.report(&[LINK_LOST], 30), Some(Loss::Session));
-    assert_eq!(w.report(&[LINK_LOST], 40), None, "once");
+    assert_eq!(w.report(&[LINK_LOST], 10).loss, None, "never up: nothing to lose");
+    assert_eq!(w.report(&[LINK_UP], 20).loss, None);
+    assert_eq!(w.report(&[LINK_LOST], 30).loss, Some(Loss::Session));
+    assert_eq!(w.report(&[LINK_LOST], 40).loss, None, "once");
     w.report(&[LINK_UP], 50);
-    assert_eq!(w.report(&[LINK_VERDICT_LOST], 60), Some(Loss::Verdict));
+    assert_eq!(w.report(&[LINK_VERDICT_LOST], 60).loss, Some(Loss::Verdict));
     assert_eq!(w.tick(1_000_000, 10), None, "nothing is watched after a loss");
+}
+
+/// **A beat after a missing verdict is not a reconnect**: the session never
+/// ended, so a drone's handoff must not lapse on it; a new session after one
+/// that ended or went silent is, once.
+///
+/// **Canary.** `reconnect-any-beat-canary`: every beat is a reconnect.
+#[test]
+fn only_a_new_session_is_a_reconnect() {
+    let w = LinkWatch::new();
+    assert!(!w.report(&[LINK_UP], 10).reconnected, "the first session is not a return");
+    w.report(&[LINK_VERDICT_LOST], 20);
+    assert!(!w.report(&[LINK_UP], 30).reconnected, "the verdict's loss left the session up");
+    assert!(!w.report(&[LINK_UP], 31).reconnected);
+    w.report(&[LINK_LOST], 40);
+    assert!(w.report(&[LINK_UP], 50).reconnected);
+    assert!(!w.report(&[LINK_UP], 51).reconnected, "once");
+    assert_eq!(w.tick(500, 10), Some(Loss::Silent));
+    assert!(w.report(&[LINK_UP], 600).reconnected, "after silence too");
+}
+
+/// **A companion command is a session's sign**: an engine that drives from
+/// commands but never reports up still arms when they stop.
+///
+/// **Canary.** `link-silence-canary` (no silence is noticed).
+#[test]
+fn a_companion_command_seeds_the_silence_watch() {
+    let w = LinkWatch::new();
+    w.heard(100);
+    assert_eq!(w.tick(110, 10), None);
+    assert_eq!(w.tick(111, 10), Some(Loss::Silent));
 }
 
 /// **An engine that stops reporting is a lost session**: a session reported up
@@ -145,8 +176,19 @@ fn a_silent_engine_arms_containment() {
     w.report(&[LINK_UP], 200);
     w.report(&[LINK_UP], 205);
     assert_eq!(w.tick(214, 10), None, "a beat keeps it off");
-    assert_eq!(w.report(&[], 220), Some(Loss::Malformed));
-    assert_eq!(w.report(&[9], 221), Some(Loss::Malformed));
+    assert_eq!(w.report(&[], 220).loss, Some(Loss::Malformed));
+    assert_eq!(w.report(&[9], 221).loss, Some(Loss::Malformed));
+}
+
+/// **A companion that stays connected but sends nothing is a lost session**
+/// after [`LINK_RX_SILENCE_MS`].
+///
+/// **Canary.** `rx-silence-canary`: the silence is never noticed.
+#[test]
+fn a_mute_companion_ends_the_session() {
+    assert!(!rx_silent(10_000, 10_000));
+    assert!(!rx_silent(10_000 + LINK_RX_SILENCE_MS, 10_000));
+    assert!(rx_silent(10_000 + LINK_RX_SILENCE_MS + 1, 10_000));
 }
 
 /// **The flight handoff keeps the time of its first request and lapses when

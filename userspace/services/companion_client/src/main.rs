@@ -864,7 +864,8 @@ fn connect_to_companion(ip: [u8; 4], port: u16) -> isize {
 /// command updates `remote`; a frame asking for authority goes to the kernel;
 /// the predictive channel updates `predict`. `false` when the session ended.
 fn exchange(sock: u32, sensors: &SensorData, remote: &mut Option<behave::Remote>,
-            predict: &mut Option<behave::Predict>, now_ms: u64, recv_raw: &mut [u8; RECV_RAW_SIZE]) -> bool {
+            predict: &mut Option<behave::Predict>, now_ms: u64, last_rx: &mut u64,
+            recv_raw: &mut [u8; RECV_RAW_SIZE]) -> bool {
     let mut payload = [0u8; SENSOR_PAYLOAD_SIZE];
     let mut frame = [0u8; SENSOR_FRAME_SIZE];
     build_sensor_payload(&mut payload, sensors);
@@ -893,6 +894,7 @@ fn exchange(sock: u32, sensors: &SensorData, remote: &mut Option<behave::Remote>
     if n == 0 {
         return true;
     }
+    *last_rx = now_ms;
     let fed = link::feed(wire, |inner| {
         let Some((pkt_type, pay_start, pay_len)) = parse_frame(inner, inner.len()) else { return };
         let body = &inner[pay_start..pay_start + pay_len];
@@ -914,6 +916,8 @@ fn exchange(sock: u32, sensors: &SensorData, remote: &mut Option<behave::Remote>
                     let _ = MotorClient::new(Regs(unsafe { CAP_LEFT })).estop();
                 }
             }
+            // The engine's own report to the kernel: a companion cannot send it.
+            PKT_LINK_STATE => {}
             other => {
                 let _ = authority_submit(other, body);
             }
@@ -1140,6 +1144,7 @@ fn engine(companion: Option<([u8; 4], u16)>, rekey_secs: u64) -> ! {
     let mut last_ml: Option<Option<ml::MlOutcome>> = None;
     let mut next_dial = 0u64;
     let mut next_beat = 0u64;
+    let mut last_rx = 0u64;
     let mut verdict = behave::VerdictWatch::new();
     let profile = containment::Profile::from_id(azos_limits::ROBOT_TYPE_ID as u8).unwrap_or(containment::Profile::Wheeled);
     let mut last: Option<behave::Winner> = None;
@@ -1155,9 +1160,11 @@ fn engine(companion: Option<([u8; 4], u16)>, rekey_secs: u64) -> ! {
         if let (None, Some((ip, port)), true) = (sock, companion, now >= next_dial) {
             sock = dial(ip, port, rekey_secs, now);
             next_dial = now + CONNECT_RETRY_MS;
+            last_rx = now;
         }
         if let Some(s) = sock {
-            let mut up = exchange(s, &sensors, &mut remote, &mut predict, now, &mut recv_raw);
+            let mut up = exchange(s, &sensors, &mut remote, &mut predict, now, &mut last_rx, &mut recv_raw)
+                && !behave::rx_silent(now, last_rx);
             if let (true, Some(c)) = (up, camera.as_mut()) {
                 up = c.step(s, now);
             }

@@ -47,6 +47,7 @@ MAGIC = b"CL"
 PKT_SEMANTIC_LEVEL = 0x8B
 PKT_DEGRADE = 0x8A
 PKT_ESTOP = 0x88
+PKT_LINK_STATE = 0x8C  # the engine's report to the kernel; never valid from a companion
 PKT_UNKNOWN_PROBE = 0x7F  # deliberately not a type the kernel handles
 # The one frame this file SENDS BACK rather than at: ring 3's `companion_client`
 # turns it into motor commands, and so does the kernel's own companion link.
@@ -668,6 +669,9 @@ def script_lies() -> list:
         ("degrade with no reason byte",
          build_packet(PKT_DEGRADE, b""),
          "ARM containment — it used to clear it"),
+        ("a link-state frame, a kind only the engine may send (malformed state)",
+         build_packet(PKT_LINK_STATE, bytes([9])),
+         "dropped by the engine: the kernel never sees it, so no containment arms from it"),
         ("a packet type this build does not act on",
          build_packet(PKT_UNKNOWN_PROBE, b"\x01\x02"),
          "record SAFETY_UNKNOWN_PKT instead of dropping in silence"),
@@ -1000,7 +1004,7 @@ def main() -> int:
         # DIFFERENT failure mode — scenario 1, not this one — and would muddle
         # which behaviour the log is showing.
         time.sleep(2.0)
-    print("[fake-companion] PASS sent 4 frames", flush=True)
+    print("[fake-companion] PASS sent 5 frames", flush=True)
     return 0
 
 

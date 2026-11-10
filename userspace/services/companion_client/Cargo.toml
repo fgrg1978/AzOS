@@ -29,6 +29,7 @@ ml-unaskable-canary = []
 range-stale-canary = []
 l1-start-canary = []
 l1-raise-canary = []
+rx-silence-canary = []
 
 [profile.release]
 opt-level = "s"

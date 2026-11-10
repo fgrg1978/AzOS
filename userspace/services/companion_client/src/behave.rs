@@ -91,6 +91,15 @@ impl VerdictWatch {
     }
 }
 
+/// A session whose companion has sent nothing since `last_rx_ms` is lost: an
+/// open socket is not a session.
+pub fn rx_silent(now_ms: u64, last_rx_ms: u64) -> bool {
+    if cfg!(feature = "rx-silence-canary") {
+        return false;
+    }
+    now_ms.saturating_sub(last_rx_ms) > crate::containment::LINK_RX_SILENCE_MS
+}
+
 /// The companion's latest drive command and when it arrived.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Remote {

@@ -67,6 +67,9 @@ l1-raise-canary = []
 drone-cut-canary = []
 ground-drives-canary = []
 link-silence-canary = []
+reconnect-any-beat-canary = []
+rx-silence-canary = []
+handoff-poshold-canary = []
 handoff-disarm-canary = []
 # `safety.rs`'s E03 section is the `geofence` feature and `rc_link.rs`
 # exists only under `rc-input` in the real crate; on here so the suite tests

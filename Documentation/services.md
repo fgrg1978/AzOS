@@ -1096,9 +1096,11 @@ asked, wheel by wheel (the same direction, no faster, a wheel that would reverse
 and a cycle that would not drive does not); only a differential-drive prediction is read, and sits under the kernel's cap and the envelope like every command.
 **A lost session.** The engine reports the link to the kernel through `endpoint.authority`
 (`PKT_LINK_STATE`: up as a beat every 250 ms while a session stands, lost when an established
-session ends, verdict lost when a verdict that had been coming is missing for 2 s). The kernel
+session ends or its companion sends no frame for 3 s, verdict lost when a verdict that had been
+coming is missing for 2 s; the engine drops a 0x8C frame that arrives on the wire). The kernel
 arms the robot type's containment on a loss report, on a report it cannot read, and when a
-session reported up goes 1 s without a report (the engine stopped); a robot that never had a
+session goes 1 s without a sign (a report, or a companion command handed to the authority
+endpoint: the engine stopped); a robot that never had a
 session is not contained. The containment is per profile (`containment.rs`, compiled by both
 sides): a wheeled or Ackermann robot stops (the engine publishes `(0, 0)` and the kernel's
 degraded mode refuses every motor write); a drone never has its motors cut in the air: the
@@ -1106,8 +1108,9 @@ engine starts no manoeuvre and the kernel hands a server-driven flight (Auto, Po
 flight failsafe, which holds position and, after `HANDOFF_HOLD_US`, lands; a humanoid holds
 its posture, which with no posture code stops its joints through the same degraded mode. A
 reconnect lifts none of it: the operator's signed degrade clear lifts the ground profiles'
-stop, and a drone's handoff lapses when the session is reported up again (a landing begun
-continues). An e-stop still cuts under every profile.
+stop, and a drone's handoff lapses on a new session after one that ended or went silent, or on
+the operator's clear, and when the drone is disarmed (a landing begun continues; a missing
+verdict coming back lifts nothing). An e-stop still cuts under every profile.
 
 `REFLEX.ELF` reads the rangefinder and the IMU and overrides motor commands when danger is
 detected (extreme tilt, then an obstacle too close, then a warning distance), whether or not

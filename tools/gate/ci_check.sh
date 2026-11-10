@@ -12385,6 +12385,10 @@ host_job host_canary_row "containment: ground keeps driving canary" behavior-tes
 host_job host_canary_row "containment: silent engine canary" behavior-tests link-silence-canary a_silent_engine_arms_containment
 host_job host_canary_row "containment: drone handoff disarms canary" behavior-tests handoff-disarm-canary a_drones_lost_link_holds_then_lands_and_never_disarms
 host_job host_canary_row "flight: handoff disarms canary" flight-tests handoff-disarm-canary a_lost_link_holds_then_lands_and_never_disarms
+host_job host_canary_row "flight: stale target keeps the hold canary" flight-tests handoff-poshold-canary a_stale_target_does_not_keep_the_handoff_from_landing
+host_job host_canary_row "containment: any beat reconnects canary" behavior-tests reconnect-any-beat-canary only_a_new_session_is_a_reconnect
+host_job host_canary_row "containment: mute companion canary" behavior-tests rx-silence-canary a_mute_companion_ends_the_session
+host_job host_canary_row "containment: command seeds silence canary" behavior-tests link-silence-canary a_companion_command_seeds_the_silence_watch
 host_job host_canary_row "coreutils: the utilities' image holds only files canary" topology-tests coreutil-grant-canary coreutil_holds_files_and_nothing_else
 host_job host_canary_row "coreutils: the utilities' image holds the write trees canary" topology-tests coreutil-write-canary coreutil_holds_files_and_nothing_else
 host_job host_canary_row "coreutils: argument parser, bundled flags canary" coreutils-tests args-bundle-canary argp_bundles_flags
@@ -21859,10 +21863,10 @@ PY
         # process won a race the test should not have had.
         local i=0
         while [ "$i" -lt 240 ]; do
-            # Either peer's own verdict: the lying script's "sent 4 frames", or
+            # Either peer's own verdict: the lying script's "sent 5 frames", or
             # the serving peer's second ActuatorCmd (its script is two long, so
             # that is the point where both branches have been exercised).
-            grep -aq "sent 4 frames\|ActuatorCmd 'reverse'\|phase 3 done\|reconnect done\|FAIL no-robot" "$blog" 2>/dev/null && break
+            grep -aq "sent 5 frames\|ActuatorCmd 'reverse'\|phase 3 done\|reconnect done\|FAIL no-robot" "$blog" 2>/dev/null && break
             # The kill-switch scenario's peer never stops driving, so its
             # verdict is the kernel's: the smoke task says when it is done.
             grep -aq "ESTOPGPIO] DONE" "$log" 2>/dev/null && break
@@ -21970,6 +21974,12 @@ PY
         fi
         if ! grep -aq "degraded mode armed — reason byte missing" "$log" 2>/dev/null; then
             bad; echo "      the empty DEGRADE frame did not arm containment"
+            echo "      logs kept: $log $blog"; return
+        fi
+        # A link-state frame (0x8C) is the engine's own report; one that arrives on
+        # the wire must be dropped, not forwarded: a malformed one arms containment.
+        if grep -aq "link lost (Malformed)" "$log" 2>/dev/null; then
+            bad; echo "      a 0x8C frame from the companion reached the kernel's link state"
             echo "      logs kept: $log $blog"; return
         fi
         # And the reason the frames arrived at all: the network poller ran.
@@ -22238,6 +22248,15 @@ PY
             bad; echo "      companion_client connected ${dials:-0} time(s) in 80 s; a client"
             echo "      that stops at 8 is not releasing its socket."
             grep -a -m3 "companion_client\] Connection failed" "$log" | sed "s|^|      |"
+            echo "      logs kept: $log $blog"; return
+        fi
+        # Each reset ends a session the engine had reported up: the kernel arms the
+        # profile's containment (the wheeled build's stop), and the engine still
+        # dials again.
+        if ! grep -aq "\[COMPANION\] link lost (Session)" "$log" 2>/dev/null \
+           && ! grep -aq "\[COMPANION\] link lost (Silent)" "$log" 2>/dev/null; then
+            bad; echo "      the session ended ${dials} times and the kernel never armed containment"
+            grep -a -m3 "COMPANION\]" "$log" | sed "s|^|      |"
             echo "      logs kept: $log $blog"; return
         fi
         ok; rm -f "$log" "$blog"
