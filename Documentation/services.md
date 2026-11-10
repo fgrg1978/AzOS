@@ -661,10 +661,11 @@ generation when every sector of it verifies against the digest of the whole bank
 its digest, has a sector that cannot be read, or mixes generations is ignored, never read as zeros,
 and the other bank stands (a refusal record, event 5, names the bank). So no cut and no torn sector
 of a write loses a mark or a floor (host tests cut at every sector boundary and tear every sector,
-with the newest copy in either bank). A sector that cannot be READ is not damage: that boot judges
-by what reads and by the volume's indexes, records it (event 4, and event 1 with reason 3 for each
+with the newest copy in either bank). A sector that cannot be READ is not damage: that boot records it (event 4, and event 1 with reason 3 for each
 index it could not remember) and writes nothing, so a newer copy that failed to read is never
-overwritten. A write or flush that fails is recorded the same way (reason 2). The topology refuses two signers whose
+overwritten. A bank with a sector that did not read, not shown older than the one that reads (a sector of
+it that reads, with a lower generation, shows it), may hold the newest marks: the table then judges
+nothing, and every package is held below its floor until a boot reads the memory in full. A write or flush that fails is recorded the same way (reason 2). The topology refuses two signers whose
 key ids agree on the first 28 bits (the name of the index slot on the volume), so a signer cannot be
 ground to take another's slot or mark. An index put back that is older, one that differs at the same
 serial, and a deleted slot are not used: the floors the device remembered stand, and they stop only

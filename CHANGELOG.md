@@ -127,7 +127,8 @@ releases yet. The ABI crate keeps its own file,
   the envelope and the effect loops. Every motor write is capped by the
   safety layer's fresh verdict (a stale one stops); relaxing a restriction
   needs the operator's signed warrant; the UART bridge carries only the
-  e-stop, straight to the kernel. 
+  e-stop, straight to the kernel (the robot's install initialises the line
+  whether or not the network is built). 
 
 ### Removed
 

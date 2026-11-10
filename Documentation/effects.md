@@ -157,8 +157,10 @@ shared by every domain with an actuator.
   `Rule::EstopRelease` receipt (cause `RELEASE_CAUSE_UNSIGNED_RELAX`). A mode
   change never lifts degraded mode.
 - The UART bridge (VF2) is the companion's TCP-independent e-stop channel: the
-  robot enforcer reads the line and every `PKT_ESTOP` frame latches straight in
-  the kernel; it takes no other frame, and the `Uart` interface refuses to
+  robot's install claims and initialises the line (independent of `NET`) and
+  says at boot whether it is ready, absent (no bridge hardware in the build) or
+  dead (the boot is refused); the robot enforcer reads the line and every
+  `PKT_ESTOP` frame latches straight in the kernel; it takes no other frame, and the `Uart` interface refuses to
   attach the claimed line.
 - Every motor write is capped by the safety layer's fresh verdict
   (`enforce::l0_cap`, two enforcer periods): the drivetrain loop's, a ring-3

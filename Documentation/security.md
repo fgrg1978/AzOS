@@ -27,7 +27,7 @@ board (`config/axes/Kconfig.build`):
 | Kconfig symbol | Default | Turns on |
 |----------------|---------|----------|
 | `SECURE_BOOT_ENFORCED` | `y` unless `BUILD_TYPE_DEV`; forced on `BUILD_TYPE_CERTIFIABLE` | Refusing an unverified kernel image at boot and at OTA install |
-| `LINK_PROVISIONING_ENFORCED` | `y` unless `BUILD_TYPE_DEV` (robot domain only; forced on in certifiable builds) | No boot without a link key, no handshake on an unseeded pool; the UART bridge takes e-stop frames only |
+| `LINK_PROVISIONING_ENFORCED` | `y` unless `BUILD_TYPE_DEV` (robot domain only; forced on in certifiable builds) | No boot without a link key, no handshake on an unseeded pool; on a robot the kernel initialises the UART line itself (whether or not the network is built) and takes only e-stop frames from it |
 | `CONSOLE_LOCKDOWN` | `n` | No recovery console; every authority-table row checked |
 | `TOPOLOGY_SOURCE` | signed required unless `BOARD_QEMU`, where a missing set boots the built-in topology | Where task grants come from |
 | `TOPOLOGY_NEVERALLOW`, `TOPOLOGY_BIND_DEVICE`, `TOPOLOGY_COUNTER_FLOOR` | `y` | The topology admission checks named below |
@@ -809,7 +809,7 @@ sink: `logd` writes them as `@security` lines in its `KLOGn.TXT` files):
 |-------|-------------------|
 | `microphone` | `AudioCapture` (`azos_syscall::sound_host`) |
 | `camera` | `CamCapture` (`azos_syscall::frame_host`) |
-| `egress` | `EnvelopeEgress`: a destination a Domain's socket starts talking to, let out (each connect, and each change of an unconnected socket's destination, wherever the egress gate is installed) or refused; `GuestEgress` (refused only) |
+| `egress` | `EnvelopeEgress`: a destination a Domain's socket starts talking to, let out (each connect, and each change of an unconnected socket's destination, wherever the egress gate is installed; a destination among the last 32 a Domain was let out to is not recorded again) or refused; `GuestEgress` (refused only) |
 | `cap-denial` | `CapDenial`, `Neverallow` |
 | `image-load` | `ExecGrant`, `Livepatch`, `BootChain`, `MeasuredBoot` |
 | `update` | `EnvelopeOta`, `PackageInstall` |
@@ -824,17 +824,19 @@ pkgd's journal, not here.
 
 **The rate cap.** Every copy passes a bucket of `SEC_LOG_PER_S` records a
 second; capability denials and their reports take at most a quarter of it each,
-egress and logins at most half each and a quarter for any one application (its
-root Domain, with every task and child Domain it spawns), so a flood of one class cannot push a microphone
-record out of the ring and one application cannot spend its class's share to hide
-another's. The refill keeps what an integer
+egress, logins and microphone records at most half each and a quarter for any one
+application (its root Domain, with every task and child Domain it spawns), and an
+application's records of every class together at most half of it, so a flood of one
+class or one application cannot spend a share that is another's. The last quarter of
+the bucket is spendable only by the classes no task can raise in a loop (camera,
+image load, update, USB, hardening). The refill keeps what an integer
 division would drop, so calls microseconds apart refill at the rate too. An egress
 admit to a destination the Domain's record was copied for last is no new
 destination and not recorded again; one the cap held back is recorded when there
 is room. A capability denial also passes the per-Domain bucket of its
 durable receipt: what that bucket holds back is not copied, and its
 `RefusalLimited` report is. What the cap holds back is counted by class, with the
-subjects it held most, and declared in the chain (a `held` record).
+subjects it held back most (a table of four, each with its count), and declared in the chain (a `held` record).
 
 **The chain.** Per boot, the `seclog` task folds every record of the ring, in
 sequence order, into `head_i = SHA-256(0x01 || head_{i-1} || canon_i)`
@@ -912,10 +914,12 @@ and an `authPolicy` of 32 bytes that no policy session can satisfy, with the
 password `SHA-256("azos/seclog/v2" || 0x01500003)`, and the counter likewise
 (`0x01500004`, type counter, 8 bytes); then **disables the platform hierarchy or
 sets its password**, so the OS cannot reach it (`NV_ReadPublic` shows an index's
-attributes, not whether its policy can be satisfied: with the platform hierarchy
-open, an attacker could undefine the owner's index and define a platform one with
-a policy of their own, which the kernel would take for undeletable). The kernel
-adopts such indexes and flags the records `undeletable` only when both are. A
+attributes and its policy digest, not whether the digest can be satisfied: with the
+platform hierarchy open, an attacker could undefine the owner's index and define a
+platform one with a policy of their own). The kernel adopts such indexes and flags
+the records `undeletable` only when both are and the policy digest is the kernel's
+own, `azos_tpm::tpm::UNDELETABLE_POLICY`; a policy of any other value is refused as
+not the kernel's. A
 development build with Kconfig `TPM_CREATE_UNDELETABLE` (on by default there, and
 only there) creates them itself when the platform hierarchy is open (its policy
 `azos_tpm::tpm::UNDELETABLE_POLICY`), so the test rows run the whole defence; on a
@@ -926,10 +930,13 @@ writes a `hardening-fallback` record (class `hardening`), the floor being
 advisory. A PCR-bound policy would also keep other software from extending the
 index; the driver has no policy sessions.
 
-A TPM increment or extend that fails ends the hardware seals for the boot: that
-seal and the later ones are advisory, the next boot's anchor is the last seal
-the TPM took, and the verifier links the boots there (or at the first refused
-seal, whose extend the TPM may have taken with its answer lost). After each
+A TPM increment or extend that fails is tried again: nothing is sealed, the
+counter value a failed extend took is kept for the retry (the counter still moves
+once per seal), and the next try waits 1, 2, 4 and 8 s; the retry does not spend
+the day's urgent or declaration budget. After five failures, or on the last pass at
+power-off, that seal and the later ones are advisory, the next boot's anchor is the
+last seal the TPM took, and the verifier links the boots there (or at the first
+refused seal, whose extend the TPM may have taken with its answer lost). After each
 extend the kernel reads the index back: a value its extend does not give
 (something else extended it) becomes the seal's anchor, flagged `diverged`,
 which the verifier tells apart from a rewritten record. Each seal is one NV
@@ -967,7 +974,7 @@ evidence of a removed seal or of someone else's line. The verdict is `Intact`,
 or no reference given) or `Evidence` (exit 0, 1, 2). A declared loss of a
 high-value class is not evidence (the kernel declared it, and an honest flood
 shows it too) but is printed as `LOSS` and listed on its own, by class, and the
-report says whether the TPM indexes were undeletable.
+report says whether the TPM indexes were undeletable. A loss the sink declared says whether logd's heartbeat was moving when the kernel declared it (the mark is in the declaration's digest the seals commit): a running logd's loss is reported as on its claim, a stopped one's as with the sink stopped.
 
 ## Node identity
 
@@ -1175,7 +1182,7 @@ Policy symbol:
 
 | Kconfig symbol | Effect |
 |----------------|--------|
-| `LINK_PROVISIONING_ENFORCED` | Compile-time (cargo feature `link-provisioning-enforced`, which only Kconfig sets), no runtime override; on by default outside `BUILD_TYPE_DEV` (forced on in `BUILD_TYPE_CERTIFIABLE`). Boot halts rather than go on with no valid link key. The UART bridge carries no session and no command: on a robot the kernel takes only its e-stop frames. The link itself is the same Noise session in every build. |
+| `LINK_PROVISIONING_ENFORCED` | Compile-time (cargo feature `link-provisioning-enforced`, which only Kconfig sets), no runtime override; on by default outside `BUILD_TYPE_DEV` (forced on in `BUILD_TYPE_CERTIFIABLE`). Boot halts rather than go on with no valid link key. The UART bridge carries no session and no command: on a robot the kernel initialises the line in the robot's install (independent of `NET`), says at boot whether it is ready, absent (a build without the bridge hardware) or dead, refuses to boot on a dead one, and takes only e-stop frames from it. The link itself is the same Noise session in every build. |
 
 **Node-to-node RPC links** (`userspace/lib/rpc`). Every session is
 authenticated. A node dials with `Noise_IK_25519_ChaChaPoly_SHA256`: the dialer
