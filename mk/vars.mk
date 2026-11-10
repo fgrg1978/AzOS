@@ -349,9 +349,9 @@ ABICHILD_ELF   := $(OUT_BUILD)/abichild.elf
 REFLEX_DIR    := userspace/services/reflex
 REFLEX_BUILT  := $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release/reflex
 REFLEX_ELF    := $(OUT_BUILD)/reflex.elf
-BRAINCLI_DIR  := userspace/services/brain_client
-BRAINCLI_BUILT:= $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release/brain_client
-BRAINCLI_ELF  := $(OUT_BUILD)/brain_client.elf
+COMPCLI_DIR  := userspace/services/companion_client
+COMPCLI_BUILT:= $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release/companion_client
+COMPCLI_ELF  := $(OUT_BUILD)/companion_client.elf
 # captest — ring-3 capability test (positive AND negative halves).
 CAPTEST_DIR   := userspace/tests/captest
 CAPTEST_BUILT := $(UTGT_RV64)/$(TARGET_RISCV64_USER)/release/captest
@@ -495,7 +495,7 @@ EPSRV_ELF_AARCH64     := $(AARCH64_DIR)/epsrv.elf
 ABICHILD_ELF_AARCH64  := $(AARCH64_DIR)/abichild.elf
 VSSRV_ELF_AARCH64     := $(AARCH64_DIR)/vssrv.elf
 REFLEX_ELF_AARCH64    := $(AARCH64_DIR)/reflex.elf
-BRAINCLI_ELF_AARCH64  := $(AARCH64_DIR)/brain_client.elf
+COMPCLI_ELF_AARCH64  := $(AARCH64_DIR)/companion_client.elf
 CAPTEST_ELF_AARCH64   := $(AARCH64_DIR)/captest.elf
 LATBENCH_ELF_AARCH64  := $(AARCH64_DIR)/latbench.elf
 ABITEST_ELF_AARCH64   := $(AARCH64_DIR)/abitest.elf
@@ -540,9 +540,9 @@ LIBSYS_SRC := $(LIBSYS_DIR)/Cargo.toml $(LIBSYS_DIR)/src/lib.rs \
 # Each userspace crate is its own workspace, and `crates/core/libsys` is a path
 # dependency outside it; for such a package cargo hashes the absolute source path
 # into `-C metadata`, rustc turns that into the crate disambiguator, and items
-# are ordered by names that carry it. The same brain_client sources built in two
+# are ordered by names that carry it. The same companion_client sources built in two
 # directories differed in `.strtab`, and with symbols stripped in 2975 bytes of
-# `.text` (measured, after gate 40 refused a brain_client rebuilt in
+# `.text` (measured, after gate 40 refused a companion_client rebuilt in
 # its snapshot directory). The kernel binds each image profile to these bytes.
 # With the wrapper the two directories give identical ELFs, symbols included.
 # `tests/host/seccomp-tests` checks every recipe goes through here.
@@ -705,7 +705,7 @@ FLEET_RUSTFLAGS := -C link-arg=-T$(FLEET_LINKER)
 IMAGE_ELFS := HELLO.ELF=$(HELLO_ELF) SYSTEST.ELF=$(SYSTEST_ELF) \
               GPIODRV.ELF=$(GPIO_DRV_ELF) MLSRV.ELF=$(MLSRV_ELF) UHELLO.ELF=$(UHELLO_ELF) \
               EPSRV.ELF=$(EPSRV_ELF) ABICHILD.ELF=$(ABICHILD_ELF) VSSRV.ELF=$(VSSRV_ELF) \
-              REFLEX.ELF=$(REFLEX_ELF) BRAINCLI.ELF=$(BRAINCLI_ELF) \
+              REFLEX.ELF=$(REFLEX_ELF) COMPCLI.ELF=$(COMPCLI_ELF) \
               CAPTEST.ELF=$(CAPTEST_ELF) LATBENCH.ELF=$(LATBENCH_ELF) \
               ABITEST.ELF=$(ABITEST_ELF) IPCTEST.ELF=$(IPCTEST_ELF) MEMPRESS.ELF=$(MEMPRESS_ELF) \
               VSBENCH.ELF=$(VSBENCH_ELF) \
@@ -867,7 +867,7 @@ endef
 IMAGE_ELFS_AARCH64 := HELLO.ELF=$(HELLO_ELF_AARCH64) SYSTEST.ELF=$(SYSTEST_ELF_AARCH64) \
               GPIODRV.ELF=$(GPIO_DRV_ELF_AARCH64) MLSRV.ELF=$(MLSRV_ELF_AARCH64) UHELLO.ELF=$(UHELLO_ELF_AARCH64) \
               EPSRV.ELF=$(EPSRV_ELF_AARCH64) ABICHILD.ELF=$(ABICHILD_ELF_AARCH64) VSSRV.ELF=$(VSSRV_ELF_AARCH64) \
-              REFLEX.ELF=$(REFLEX_ELF_AARCH64) BRAINCLI.ELF=$(BRAINCLI_ELF_AARCH64) \
+              REFLEX.ELF=$(REFLEX_ELF_AARCH64) COMPCLI.ELF=$(COMPCLI_ELF_AARCH64) \
               CAPTEST.ELF=$(CAPTEST_ELF_AARCH64) LATBENCH.ELF=$(LATBENCH_ELF_AARCH64) \
               ABITEST.ELF=$(ABITEST_ELF_AARCH64) IPCTEST.ELF=$(IPCTEST_ELF_AARCH64) MEMPRESS.ELF=$(MEMPRESS_ELF_AARCH64) \
               VSBENCH.ELF=$(VSBENCH_ELF_AARCH64) \
@@ -998,7 +998,7 @@ UHELLO_ELF_X86_64    := $(X86_64_DIR)/uhello.elf
 EPSRV_ELF_X86_64     := $(X86_64_DIR)/epsrv.elf
 ABICHILD_ELF_X86_64  := $(X86_64_DIR)/abichild.elf
 REFLEX_ELF_X86_64    := $(X86_64_DIR)/reflex.elf
-BRAINCLI_ELF_X86_64  := $(X86_64_DIR)/brain_client.elf
+COMPCLI_ELF_X86_64  := $(X86_64_DIR)/companion_client.elf
 ABITEST_ELF_X86_64   := $(X86_64_DIR)/abitest.elf
 IPCTEST_ELF_X86_64   := $(X86_64_DIR)/ipctest.elf
 MEMPRESS_ELF_X86_64  := $(X86_64_DIR)/mempress.elf
@@ -1053,7 +1053,7 @@ LXHELLO_ELF_X86_64   := $(X86_64_DIR)/lxhello.elf
 LXRT_ELF_X86_64      := $(X86_64_DIR)/linux_rt.elf
 LXRT_NEED_X86_64      = $(shell grep -qs '^CONFIG_LINUX_RUNTIME=y' $(X86_64_KCONFIG) $(X86_64_DEFCONFIG) </dev/null && echo yes)
 IMAGE_ELFS_X86_64 := HELLO.ELF=$(HELLO_ELF_X86_64) SYSTEST.ELF=$(SYSTEST_ELF_X86_64) UHELLO.ELF=$(UHELLO_ELF_X86_64) EPSRV.ELF=$(EPSRV_ELF_X86_64) ABICHILD.ELF=$(ABICHILD_ELF_X86_64) \
-              REFLEX.ELF=$(REFLEX_ELF_X86_64) BRAINCLI.ELF=$(BRAINCLI_ELF_X86_64) \
+              REFLEX.ELF=$(REFLEX_ELF_X86_64) COMPCLI.ELF=$(COMPCLI_ELF_X86_64) \
               ABITEST.ELF=$(ABITEST_ELF_X86_64) IPCTEST.ELF=$(IPCTEST_ELF_X86_64) MEMPRESS.ELF=$(MEMPRESS_ELF_X86_64) \
               CAPTEST.ELF=$(CAPTEST_ELF_X86_64) LATBENCH.ELF=$(LATBENCH_ELF_X86_64) \
               GPIODRV.ELF=$(GPIO_DRV_ELF_X86_64) BUZZDRV.ELF=$(BUZZ_DRV_ELF_X86_64) INADRV.ELF=$(INA_DRV_ELF_X86_64) RNGDRV.ELF=$(RNG_DRV_ELF_X86_64) \

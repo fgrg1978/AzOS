@@ -6,7 +6,7 @@
 
 $(IMAGE_HASHES_BOARD): userspace/image_hashes.py \
                $(HELLO_ELF) $(SYSTEST_ELF) $(GPIO_DRV_ELF) $(MLSRV_ELF_BOARD) \
-               $(UHELLO_ELF) $(REFLEX_ELF) $(BRAINCLI_ELF) $(CAPTEST_ELF) \
+               $(UHELLO_ELF) $(REFLEX_ELF) $(COMPCLI_ELF) $(CAPTEST_ELF) \
                $(LATBENCH_ELF) $(ABITEST_ELF) $(IPCTEST_ELF) $(MEMPRESS_ELF) $(VSBENCH_ELF) \
                $(EPSRV_ELF) $(ABICHILD_ELF) $(VSSRV_ELF) $(BUZZ_DRV_ELF) $(INA_DRV_ELF) \
                $(SH_ELF) $(TERMD_ELF) $(NAMESD_ELF) $(COMPMGR_ELF) $(TOOLBOX_ELF) $(COREUTIL_ELF) $(EXT4D_ELF) $(POWER_ELF) $(TRACECTL_ELF) $(DECISD_ELF) $(INPUTD_ELF) $(COMPSRV_ELF) $(LOGD_ELF) $(WHY_ELF) $(RG_ELF) $(FD_ELF) $(KIBI_ELF) $(PKGD_ELF_BOARD) $(PKG_ELF) $(RPCSRV_ELF) $(ZENOHD_ELF) $(VMMD_ELF) $(PTPD_ELF) $(AUDIOD_ELF) $(RPCQUIC_ELF) $(MCPD_ELF) $(SSHD_ELF) $(LOGIND_ELF) $(FAM_ELFS) $(LXSRV_ELF) $(LXHELLO_ELF)
@@ -89,29 +89,29 @@ $(IMAGE_HASHES_AARCH64): userspace/image_hashes.py $(IMAGE_ELF_PATHS_AARCH64_ON)
 		BUSYBOX.ELF=$(BUSYBOX_ELF_AARCH64) LXTHR.ELF=$(LXTHR_ELF_AARCH64)
 
 # Two disk images from one recipe, differing only in which ELF `autorun` starts.
-# disk.img runs BRAINCLI, the robot's behaviour engine and brain link, a
+# disk.img runs COMPCLI, the robot's behaviour engine and companion link, a
 # long-lived ring-3 program that serves no endpoint (the autorun loader refuses
 # an image whose row serves one: a server is a component manager row; on a
 # build without the drivetrain it exits at once, refusing to run without its
 # motor capabilities); disk-systest.img runs the
 # syscall test, which was built and copied onto the disk for months without
 # anything ever invoking it.
-$(OUT_BUILD)/disk.img:         AUTORUN_ELF := /fat/BRAINCLI.ELF
+$(OUT_BUILD)/disk.img:         AUTORUN_ELF := /fat/COMPCLI.ELF
 $(OUT_BUILD)/disk-systest.img: AUTORUN_ELF := /fat/SYSTEST.ELF
 $(OUT_BUILD)/disk-uhello.img:  AUTORUN_ELF := /fat/UHELLO.ELF
 $(OUT_BUILD)/disk-reflex.img:  AUTORUN_ELF := /fat/REFLEX.ELF
-$(OUT_BUILD)/disk-braincli.img: AUTORUN_ELF := /fat/BRAINCLI.ELF
-# brain_client is the robot's one brain link, an encrypted (Noise) session
-# once the image carries a key (`disk-braincli-linkkey.img`).
-# `brain_client_rekey_secs=10` shortens brain_client's wall-clock rekey so one
+$(OUT_BUILD)/disk-compcli.img: AUTORUN_ELF := /fat/COMPCLI.ELF
+# companion_client is the robot's one companion link, an encrypted (Noise) session
+# once the image carries a key (`disk-compcli-linkkey.img`).
+# `companion_client_rekey_secs=10` shortens companion_client's wall-clock rekey so one
 # 40 s boot sees a client REKEY; the key can only shorten the interval.
-$(OUT_BUILD)/disk-braincli.img: CFG_EXTRA := brain_client_rekey_secs=10\n
+$(OUT_BUILD)/disk-compcli.img: CFG_EXTRA := companion_client_rekey_secs=10\n
 # The robot images start the inference service (MLSRV.ELF, a `start` row) through
 # the component manager: without one the engine's L1 never gets a verdict and
 # holds a stop.
-BRAIN_DISKS := $(OUT_BUILD)/disk.img $(OUT_BUILD)/disk-braincli.img $(OUT_BUILD)/disk-brainlies.img $(OUT_BUILD)/disk-brainrec.img $(OUT_BUILD)/disk-brainestop.img $(OUT_BUILD)/disk-estopgpio.img
-$(BRAIN_DISKS): DISK_EXTRA := $(COMPMGR_ELF)=COMPMGR.ELF
-$(BRAIN_DISKS): $(COMPMGR_ELF)
+COMPANION_DISKS := $(OUT_BUILD)/disk.img $(OUT_BUILD)/disk-compcli.img $(OUT_BUILD)/disk-companionlies.img $(OUT_BUILD)/disk-companionrec.img $(OUT_BUILD)/disk-companionestop.img $(OUT_BUILD)/disk-estopgpio.img
+$(COMPANION_DISKS): DISK_EXTRA := $(COMPMGR_ELF)=COMPMGR.ELF
+$(COMPANION_DISKS): $(COMPMGR_ELF)
 $(OUT_BUILD)/disk-captest.img: AUTORUN_ELF := /fat/CAPTEST.ELF
 $(OUT_BUILD)/disk-latbench.img: AUTORUN_ELF := /fat/LATBENCH.ELF
 $(OUT_BUILD)/disk-abitest.img: AUTORUN_ELF := /fat/ABITEST.ELF
@@ -127,33 +127,33 @@ $(OUT_BUILD)/disk-vsbench.img: AUTORUN_ELF := /fat/VSBENCH.ELF
 $(OUT_BUILD)/disk-vsbench.img: DISK_EXTRA := $(TOOLBOX_ELF)=TOOLBOX.ELF
 $(OUT_BUILD)/disk-vsbench.img: $(TOOLBOX_ELF)
 
-# The "brain lies" scenario: the behaviour engine (BRAINCLI, as on disk.img)
-# runs the brain link, so the lying frames reach its dispatch and, for the
+# The "companion lies" scenario: the behaviour engine (COMPCLI, as on disk.img)
+# runs the companion link, so the lying frames reach its dispatch and, for the
 # ones that ask for authority, the kernel's handler. The link is a Noise
-# session, so the image is in `KEYED_DISKS`, and the peer runs the brain side
+# session, so the image is in `KEYED_DISKS`, and the peer runs the companion side
 # with the key it reads out of the image.
-$(OUT_BUILD)/disk-brainlies.img: AUTORUN_ELF := /fat/BRAINCLI.ELF
+$(OUT_BUILD)/disk-companionlies.img: AUTORUN_ELF := /fat/COMPCLI.ELF
 
 # Same recipe again for the RECORD half of that scenario, which boots a kernel
-# built with `brain-lies-smoke` and reads SAFETY_UNKNOWN_PKT back off the log.
+# built with `companion-lies-smoke` and reads SAFETY_UNKNOWN_PKT back off the log.
 # Its own image rather than a reuse: the probe scans LOG00000.BIN, so a
 # previous run's records on a shared image would let it pass without this boot
 # writing anything.
-$(OUT_BUILD)/disk-brainrec.img: AUTORUN_ELF := /fat/BRAINCLI.ELF
+$(OUT_BUILD)/disk-companionrec.img: AUTORUN_ELF := /fat/COMPCLI.ELF
 
 # And again for the TCP e-stop: `PKT_ESTOP` reaches the behaviour engine, which
 # hands it to the kernel (`endpoint.authority`); without the key the link
 # closes and the frame never reaches it.
 # Its own image name because the Makefile needs an explicit rule per name; a
 # missing one yields no image and a silent boot that reads as a kernel fault.
-$(OUT_BUILD)/disk-brainestop.img: AUTORUN_ELF := /fat/BRAINCLI.ELF
+$(OUT_BUILD)/disk-companionestop.img: AUTORUN_ELF := /fat/COMPCLI.ELF
 
 # The PHYSICAL kill switch. Same shape as the image above — the wheels have to
-# be turning before the switch is pressed, and the brain link is what turns
+# be turning before the switch is pressed, and the companion link is what turns
 # them. `estop_gpio_pin` is deliberately NOT set here: the pin has to be driven
 # high before the poll can see it, which a config line cannot promise. See
 # `estop_gpio_smoke_task`.
-$(OUT_BUILD)/disk-estopgpio.img: AUTORUN_ELF := /fat/BRAINCLI.ELF
+$(OUT_BUILD)/disk-estopgpio.img: AUTORUN_ELF := /fat/COMPCLI.ELF
 
 # The base of the ring-3 drivers disk (`build/disk-drv.img`,
 # after this recipe). No autorun: the drivers are the only ring-3 tasks.
@@ -176,20 +176,20 @@ LINK_KEY_TOOL := tools/sign/link_key_provision.py
 # The behaviour model bundle (see its rule, below). The engine's client names it
 # by the first eight bytes of its manifest's digest (`BEHAVIOR_MODEL_REF`), and
 # the build fails until that constant says what the bundle is.
-BEHAVIOR_MBL_SRC  := userspace/services/brain_client/src/ml.rs
+BEHAVIOR_MBL_SRC  := userspace/services/companion_client/src/ml.rs
 BEHAVIOR_MBL_ARGS := --name behavior-mlp --in-bytes 16 --out-bytes 12 \
 	--variant gguf:1:$(OUT_BUILD)/policy.gguf:1000:20:4096 \
 	--expect-ref-from $(BEHAVIOR_MBL_SRC):BEHAVIOR_MODEL_REF
 
-# Images whose kernel brain link must come up (the link is always a Noise
+# Images whose kernel companion link must come up (the link is always a Noise
 # session, so it needs the link key): a random 32-byte key, as a link-key
 # record (`tools/sign/link_key_provision.py`), in the reserved tail sector 0 the
 # kernel reads (`reserved_tail::LINK_KEY`, unaddressable over the USB export),
 # and the raw key in ::LINK.KEY for the host
-# peers (`tools/gate/fake_brain.py --image`, `tools/gate/link_peer.py --image`). Same
+# peers (`tools/gate/fake_companion.py --image`, `tools/gate/link_peer.py --image`). Same
 # mechanism as `build/disk-linkkey.img` below.
-KEYED_DISKS := $(OUT_BUILD)/disk-brainlies.img $(OUT_BUILD)/disk-brainrec.img \
-	$(OUT_BUILD)/disk-brainestop.img $(OUT_BUILD)/disk-estopgpio.img
+KEYED_DISKS := $(OUT_BUILD)/disk-companionlies.img $(OUT_BUILD)/disk-companionrec.img \
+	$(OUT_BUILD)/disk-companionestop.img $(OUT_BUILD)/disk-estopgpio.img
 provision_link_key = dd if=/dev/urandom of=$@.tmp_linkkey bs=32 count=1 2>/dev/null && \
 	mcopy -i $@ $@.tmp_linkkey ::LINK.KEY && \
 	python3 tools/sign/link_key_provision.py $@ $@.tmp_linkkey && \
@@ -201,14 +201,14 @@ provision_and_sign_config = python3 tools/sign/device_provision.py $@ >/dev/null
 # two disk builds at once (parallel fronts in separate worktrees, or `make -j`)
 # used to share /tmp/_robtos_config.ini and ship each other's CONFIG.INI.
 $(OUT_BUILD)/disk.img $(OUT_BUILD)/disk-systest.img $(OUT_BUILD)/disk-uhello.img \
-$(OUT_BUILD)/disk-reflex.img $(OUT_BUILD)/disk-braincli.img $(OUT_BUILD)/disk-captest.img \
+$(OUT_BUILD)/disk-reflex.img $(OUT_BUILD)/disk-compcli.img $(OUT_BUILD)/disk-captest.img \
 $(OUT_BUILD)/disk-latbench.img $(OUT_BUILD)/disk-abitest.img $(OUT_BUILD)/disk-ipctest.img $(OUT_BUILD)/disk-vsbench.img \
-$(OUT_BUILD)/disk-envelope.img $(OUT_BUILD)/disk-brainlies.img \
-		$(OUT_BUILD)/disk-brainrec.img $(OUT_BUILD)/disk-brainestop.img \
+$(OUT_BUILD)/disk-envelope.img $(OUT_BUILD)/disk-companionlies.img \
+		$(OUT_BUILD)/disk-companionrec.img $(OUT_BUILD)/disk-companionestop.img \
 		$(OUT_BUILD)/disk-estopgpio.img $(OUT_BUILD)/disk-drvbase.img $(OUT_BUILD)/disk-sdktestbase.img $(OUT_BUILD)/disk-lxbench-base.img: \
 		$(HELLO_ELF) $(SYSTEST_ELF) $(GPIO_DRV_ELF) $(MLSRV_ELF) $(UHELLO_ELF) \
 		$(EPSRV_ELF) $(ABICHILD_ELF) $(VSSRV_ELF) \
-		$(REFLEX_ELF) $(BRAINCLI_ELF) $(CAPTEST_ELF) $(LATBENCH_ELF) $(ABITEST_ELF) \
+		$(REFLEX_ELF) $(COMPCLI_ELF) $(CAPTEST_ELF) $(LATBENCH_ELF) $(ABITEST_ELF) \
 		$(VSBENCH_ELF) \
 		$(IPCTEST_ELF) $(MEMPRESS_ELF) \
 		$(OUT_BUILD)/policy.gguf $(OUT_BUILD)/policy.sig $(OUT_BUILD)/behavior.mbl \
@@ -249,7 +249,7 @@ $(OUT_BUILD)/disk-envelope.img $(OUT_BUILD)/disk-brainlies.img \
 	mcopy -i $@ $(ABICHILD_ELF) ::ABICHILD.ELF
 	mcopy -i $@ $(VSSRV_ELF) ::VSSRV.ELF
 	mcopy -i $@ $(REFLEX_ELF) ::REFLEX.ELF
-	mcopy -i $@ $(BRAINCLI_ELF) ::BRAINCLI.ELF
+	mcopy -i $@ $(COMPCLI_ELF) ::COMPCLI.ELF
 	mcopy -i $@ $(CAPTEST_ELF) ::CAPTEST.ELF
 	mcopy -i $@ $(LATBENCH_ELF) ::LATBENCH.ELF
 	mcopy -i $@ $(ABITEST_ELF) ::ABITEST.ELF
@@ -427,7 +427,7 @@ $(VF2_DISK) $(OUT_BUILD)/disk-board-k1.img $(OUT_BUILD)/disk-board-fleet.img: \
 		tools/sign/check_board_keys.py $(IMAGE_HASHES_BOARD) $(BOARD_DIR)/behavior.mbl $(BOARD_DIR)/policy.sig \
 		$(BOARD_PRIV_STAMP) \
 		$(HELLO_ELF) $(SYSTEST_ELF) $(GPIO_DRV_ELF) $(MLSRV_ELF_BOARD) $(PKGD_ELF_BOARD) $(PKG_ELF) $(UHELLO_ELF) \
-		$(EPSRV_ELF) $(ABICHILD_ELF) $(VSSRV_ELF) $(REFLEX_ELF) $(BRAINCLI_ELF) \
+		$(EPSRV_ELF) $(ABICHILD_ELF) $(VSSRV_ELF) $(REFLEX_ELF) $(COMPCLI_ELF) \
 		$(CAPTEST_ELF) $(LATBENCH_ELF) $(ABITEST_ELF) $(IPCTEST_ELF) $(MEMPRESS_ELF) \
 		$(VSBENCH_ELF) $(BUZZ_DRV_ELF) $(INA_DRV_ELF) $(OUT_BUILD)/policy.gguf \
 		$(CONFIG_SIG_TOOLS) $(TOPO_EMIT_DEPS) $(VF2_KCONFIG) $(OUT_BUILD)/k1.config $(OUT_BUILD)/fleet.config
@@ -514,19 +514,19 @@ $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-reflex.img:  AUTORUN_ELF_AARCH64 :
 # without a `behavior` task, which `kernel_main` does not create here), so
 # they are written for every aarch64 image rather than carrying a second
 # CONFIG.INI recipe for one name. Same host peer as riscv64's own
-# `disk-braincli.img`: `tools/gate/fake_brain.py` on 10.0.2.2:9000 (QEMU SLIRP's
+# `disk-compcli.img`: `tools/gate/fake_companion.py` on 10.0.2.2:9000 (QEMU SLIRP's
 # gateway address maps to the host).
-$(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-braincli.img: AUTORUN_ELF_AARCH64 := /fat/BRAINCLI.ELF
+$(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-compcli.img: AUTORUN_ELF_AARCH64 := /fat/COMPCLI.ELF
 # The base of `build/disk-aarch64$(AARCH64_PG_SUFFIX)-drv.img`; see `build/disk-drv.img`.
 $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-drvbase.img: AUTORUN_ELF_AARCH64 :=
 $(OUT_BUILD)/disk-aarch64-lxbench-base.img: AUTORUN_ELF_AARCH64 := /fat/LXSRV.ELF
 $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX).img $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-systest.img $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-abitest.img \
 $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-ipctest.img $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-captest.img $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-vsbench.img \
-$(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-reflex.img $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-braincli.img \
+$(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-reflex.img $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-compcli.img \
 $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-drvbase.img $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-sdktestbase.img $(OUT_BUILD)/disk-aarch64-lxbench-base.img: \
 		$(HELLO_ELF_AARCH64) $(SYSTEST_ELF_AARCH64) $(GPIO_DRV_ELF_AARCH64) $(MLSRV_ELF_AARCH64) \
 		$(UHELLO_ELF_AARCH64) $(EPSRV_ELF_AARCH64) $(ABICHILD_ELF_AARCH64) $(VSSRV_ELF_AARCH64) \
-		$(REFLEX_ELF_AARCH64) $(BRAINCLI_ELF_AARCH64) $(CAPTEST_ELF_AARCH64) \
+		$(REFLEX_ELF_AARCH64) $(COMPCLI_ELF_AARCH64) $(CAPTEST_ELF_AARCH64) \
 		$(LATBENCH_ELF_AARCH64) $(ABITEST_ELF_AARCH64) $(IPCTEST_ELF_AARCH64) $(MEMPRESS_ELF_AARCH64) \
 		$(VSBENCH_ELF_AARCH64) $(OUT_BUILD)/policy.gguf $(OUT_BUILD)/policy.sig $(OUT_BUILD)/behavior.mbl \
 		tools/keys/test_priv.bin $(CONFIG_SIG_TOOLS)
@@ -556,7 +556,7 @@ $(OUT_BUILD)/disk-aarch64$(AARCH64_PG_SUFFIX)-drvbase.img $(OUT_BUILD)/disk-aarc
 	mcopy -i $@ $(ABICHILD_ELF_AARCH64) ::ABICHILD.ELF
 	mcopy -i $@ $(VSSRV_ELF_AARCH64) ::VSSRV.ELF
 	mcopy -i $@ $(REFLEX_ELF_AARCH64) ::REFLEX.ELF
-	mcopy -i $@ $(BRAINCLI_ELF_AARCH64) ::BRAINCLI.ELF
+	mcopy -i $@ $(COMPCLI_ELF_AARCH64) ::COMPCLI.ELF
 	mcopy -i $@ $(CAPTEST_ELF_AARCH64) ::CAPTEST.ELF
 	mcopy -i $@ $(LATBENCH_ELF_AARCH64) ::LATBENCH.ELF
 	mcopy -i $@ $(ABITEST_ELF_AARCH64) ::ABITEST.ELF
@@ -784,24 +784,24 @@ $(OUT_BUILD)/disk-configtamper.img: $(OUT_BUILD)/disk.img
 	@rm -f $@.tmp_tamper.sig
 	@echo "[DISK] FAT32 image: $@ (CONFIG.SIG tampered — boots into fail-closed state)"
 
-# W2-A4: BRAINCLI autorun + the brain-link key. brain_client refuses
-# to start without one, and the peer (`fake_brain.py --link-key`) needs the same
-# bytes, so the key is also left at build/braincli_linkkey.bin.
+# W2-A4: COMPCLI autorun + the companion-link key. companion_client refuses
+# to start without one, and the peer (`fake_companion.py --link-key`) needs the same
+# bytes, so the key is also left at build/compcli_linkkey.bin.
 #
 # the KERNEL no longer reads /fat/LINK.KEY, and neither
-# does brain_client (`link_key_init` now goes through the kernel-hosted `linkkey` endpoint)
+# does companion_client (`link_key_init` now goes through the kernel-hosted `linkkey` endpoint)
 # — see `build/disk-linkkey.img`'s own comment above for the mechanism this
 # mirrors (reserved tail sector 0, `reserved_tail::LINK_KEY`,
 # unaddressable over the USB MSC export). Unlike that recipe, this one has no
-# peer that still needs a FAT copy: `fake_brain.py --link-key` reads
-# build/braincli_linkkey.bin directly on the host, so the `mcopy ::LINK.KEY`
+# peer that still needs a FAT copy: `fake_companion.py --link-key` reads
+# build/compcli_linkkey.bin directly on the host, so the `mcopy ::LINK.KEY`
 # line is dropped outright rather than kept alongside the reserved-sector
 # write.
-$(OUT_BUILD)/disk-braincli-linkkey.img: $(OUT_BUILD)/disk-braincli.img $(LINK_KEY_TOOL)
+$(OUT_BUILD)/disk-compcli-linkkey.img: $(OUT_BUILD)/disk-compcli.img $(LINK_KEY_TOOL)
 	@cp $< $@
-	@dd if=/dev/urandom of=$(OUT_BUILD)/braincli_linkkey.bin bs=32 count=1 2>/dev/null
-	python3 tools/sign/link_key_provision.py $@ $(OUT_BUILD)/braincli_linkkey.bin
-	@echo "[DISK] FAT32 image with BRAINCLI autorun + reserved-sector link key: $@"
+	@dd if=/dev/urandom of=$(OUT_BUILD)/compcli_linkkey.bin bs=32 count=1 2>/dev/null
+	python3 tools/sign/link_key_provision.py $@ $(OUT_BUILD)/compcli_linkkey.bin
+	@echo "[DISK] FAT32 image with COMPCLI autorun + reserved-sector link key: $@"
 
 # ── Secure-boot fixtures (Ed25519 accept / reject) ───────────────────────────
 #
@@ -1008,7 +1008,7 @@ $(OUT_BUILD)/disk-x86_64-systest.img $(OUT_BUILD)/disk-x86_64-captest.img $(OUT_
 	mcopy -i $@ $(EPSRV_ELF_X86_64) ::EPSRV.ELF
 	mcopy -i $@ $(ABICHILD_ELF_X86_64) ::ABICHILD.ELF
 	mcopy -i $@ $(REFLEX_ELF_X86_64) ::REFLEX.ELF
-	mcopy -i $@ $(BRAINCLI_ELF_X86_64) ::BRAINCLI.ELF
+	mcopy -i $@ $(COMPCLI_ELF_X86_64) ::COMPCLI.ELF
 	mcopy -i $@ $(ABITEST_ELF_X86_64) ::ABITEST.ELF
 	mcopy -i $@ $(IPCTEST_ELF_X86_64) ::IPCTEST.ELF
 	mcopy -i $@ $(MEMPRESS_ELF_X86_64) ::MEMPRESS.ELF

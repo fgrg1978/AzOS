@@ -326,7 +326,7 @@ fn only_the_held_device_can_be_released() {
     assert_eq!(safe_state::release(KIND_MOTOR, 1, 1, &sign(&s.key, 1)), Ok(()), "nonce 1 was not spent");
 }
 
-/// The body of a hold-release frame as the brain link carries it after the
+/// The body of a hold-release frame as the companion link carries it after the
 /// mode id: nonce, signature, device kind, device subject.
 fn frame_body(nonce: u64, sig: &[u8; RELEASE_SIG_BYTES], kind: u8, subject: u16) -> Vec<u8> {
     let mut b = Vec::new();

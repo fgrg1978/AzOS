@@ -967,7 +967,7 @@ pub const RULES: &[RuleInfo] = &[
     },
     RuleInfo {
         // The subject is the session the attempt was for (0 before one exists; for a session, its user root).
-        // `method` is 1 password, 2 key, 3 token, 4 local console, 5 the brain link (its pre-shared link key,
+        // `method` is 1 password, 2 key, 3 token, 4 local console, 5 the companion link (its pre-shared link key,
         // checked at boot: a keyless boot is refused, subject 0), `attempt` how many failed in a row, `reason`
         // 0 admitted, 1 wrong secret, 2 locked out, 3 the method is not allowed on this transport, 4 the board
         // holds no root to verify with, 5 no signed topology is loaded (no table of accounts to check). No secret is ever a number here.

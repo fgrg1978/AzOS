@@ -2944,13 +2944,13 @@ fn ioring_idl_lanes(abi: &impl Abi, floor_ns: u64) {
     let _ = sys::ioring_destroy_typed(ring.cap);
 }
 
-/// Bytes one receive of the `ioring-recv` lanes asks for: `brain_client`'s
-/// wire buffer (`RECV_RAW_SIZE`), the receive it polls the brain link with.
+/// Bytes one receive of the `ioring-recv` lanes asks for: `companion_client`'s
+/// wire buffer (`RECV_RAW_SIZE`), the receive it polls the companion link with.
 const RECV_LANE_BYTES: usize = 512;
 /// The local port of the lane's quiet socket (nothing ever sends to it).
 const RECV_LANE_PORT: u16 = 7110;
 
-/// `ioring-recv`: the poll `brain_client` makes of its link every tick, on a
+/// `ioring-recv`: the poll `companion_client` makes of its link every tick, on a
 /// quiet bound datagram socket (nothing queued, so each receive answers `-EAGAIN`):
 ///  * `recv-call`      — `NODE_RECV` as a syscall, into a stack buffer;
 ///  * `ioring-recv xN` — N `OP_NET_RECV` entries through one `SYS_RING_ENTER`,
@@ -2961,7 +2961,7 @@ const RECV_LANE_PORT: u16 = 7110;
 ///    receive on a socket, so this lane is AzOS only
 ///    (`LANES_NOT_COMPARABLE` in `tools/bench/vsbench_compare.sh`).
 ///
-/// `brain_client`'s own change is `recv-call` against `ioring-rfix x1`, one
+/// `companion_client`'s own change is `recv-call` against `ioring-rfix x1`, one
 /// receive per submit; run with the ring pass (`-icount shift=0`) the figures
 /// are instructions per receive. Every completion is checked, result and
 /// refusal flag, and a wrong one prints `FAIL rc=`, which

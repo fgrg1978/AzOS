@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Brain-protocol wire-format microbenchmarks.
+//! Companion-protocol wire-format microbenchmarks.
 //!
-//! These are the encode/decode primitives on the kernel↔brain TCP hot
+//! These are the encode/decode primitives on the kernel↔companion TCP hot
 //! path.  `parse_packet` is also `#[wcet(50_us)]`-instrumented; the
 //! synthetic number here is the contention-free baseline to compare the
 //! runtime distribution against.
 
 use azos_bench::{BenchResult, report, best_of};
 use azos_drv_sys::wcet::read_cycles;
-use azos_behavior::brain_protocol as bp;
+use azos_behavior::companion_protocol as bp;
 
 /// CRC-8/MAXIM (poly 0x31) over a 64-byte sensor payload.  Pure bit-twiddle
 /// loop — 8 shifts per byte; the integrity-check cost on every frame.

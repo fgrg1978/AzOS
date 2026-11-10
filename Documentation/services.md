@@ -78,9 +78,9 @@ Source: `crates/core/topology/src/builder.rs` (the `*_CAPS` constants and the `p
 | `AUDIOD.ELF` | `userspace/services/audiod` | Kconfig `AUDIOD` | `endpoint.audio` (`Sound`) | `sound.0` | R `endpoint.audio`, RW `sound.0`, W `time` (the mixer thread's own deadline reservation, Kconfig `AUDIOD_PUMP_*`); the row itself is best effort, its calls served on `azos_srv` |
 | `VMMD.ELF` | `userspace/services/vmmd` | wherever the hypervisor core is built (Kconfig `HV`) | `endpoint.vmctl` (`VmCtl`) | `Vm`, `Vcpu` | RX `vm.0`, RWX `vcpu.0.k`, R `endpoint.vmctl`, RW `/fat/VM`, `ROOT_RO` |
 | `LXSRV.ELF` | `userspace/services/lxsrv` | `lx-server` builds | nothing | | R `entropy`, `ROOT_RO` |
-| `MLSRV.ELF` | `userspace/services/infsrv` | by its row (`start`), where Kconfig `USERSPACE_MLSRV` is on; its client is `BRAINCLI.ELF` | `Infer`, `Decisions` (its receipts) and the verdict-log lease on `endpoint.infer` | | READ `endpoint.infer`, `WRITE` `memctl`, `ROOT_RO` |
+| `MLSRV.ELF` | `userspace/services/infsrv` | by its row (`start`), where Kconfig `USERSPACE_MLSRV` is on; its client is `COMPCLI.ELF` | `Infer`, `Decisions` (its receipts) and the verdict-log lease on `endpoint.infer` | | READ `endpoint.infer`, `WRITE` `memctl`, `ROOT_RO` |
 | lxrt | `userspace/services/lxrt` | mapped into each Linux process | the Linux system-call surface | | no row |
-| `BRAINCLI.ELF`, `REFLEX.ELF` | `userspace/services/brain_client`, `userspace/services/reflex` | the `autorun` choice | | | `BRAINCLI.ELF` `ROOT_RO` only; `REFLEX.ELF` none; the grant a running one gets is the `autorun` row's |
+| `COMPCLI.ELF`, `REFLEX.ELF` | `userspace/services/companion_client`, `userspace/services/reflex` | the `autorun` choice | | | `COMPCLI.ELF` `ROOT_RO` only; `REFLEX.ELF` none; the grant a running one gets is the `autorun` row's |
 
 The interfaces the services share, from `userspace/lib/`:
 
@@ -964,7 +964,7 @@ argument registers to the call the runtime answers, and the runtime writes the x
 ## infsrv
 
 Source: `userspace/services/infsrv/src/` (`lib.rs` is the broker, `main.rs` the program),
-`crates/core/devif/src/infer.rs`, `userspace/lib/ml/src/bundle.rs`; its client is the robot's behaviour engine (`BRAINCLI.ELF`). Tests: `tests/host/infsrv-tests`. The image is
+`crates/core/devif/src/infer.rs`, `userspace/lib/ml/src/bundle.rs`; its client is the robot's behaviour engine (`COMPCLI.ELF`). Tests: `tests/host/infsrv-tests`. The image is
 `MLSRV.ELF`: the topology row, the seccomp profile and the disk-image recipes name it.
 
 The ring-3 inference service.
@@ -1019,39 +1019,39 @@ The latest verdict of each context (`azos_rings::Log<Verdict, 1>`) is published 
 object the service makes; `InferLog::log` lends it read-only and names the caller's cell, and a
 real-time reader polls it with no call (`infsrv::verdict::LogReader`).
 
-**Started by its own row** (`start`, Kconfig `USERSPACE_MLSRV`), by the component manager. Its client is the behaviour engine (`BRAINCLI.ELF`): the autorun row's `WRITE` grant on `endpoint.infer` carries a badge the kernel stamps (`azos_devif::infer::CALLER_BADGE`), is withheld from every image whose seccomp profile does not list `azos_devif::key::INFER`, and only the engine's does.
+**Started by its own row** (`start`, Kconfig `USERSPACE_MLSRV`), by the component manager. Its client is the behaviour engine (`COMPCLI.ELF`): the autorun row's `WRITE` grant on `endpoint.infer` carries a badge the kernel stamps (`azos_devif::infer::CALLER_BADGE`), is withheld from every image whose seccomp profile does not list `azos_devif::key::INFER`, and only the engine's does.
 The start-up self-test classifies the policy file
 `/fat/POLICY.GGF` once its signature `/fat/POLICY.SIG` (a `DSIG`) verifies (Kconfig
 `INFER_MODEL_SIG_REQUIRED`, default y; with it off the file is classified unchecked). Its row is `soft_rt` at priority 16 and grants `READ` on
 `endpoint.infer`, `WRITE` on `memctl` and `ROOT_RO`; it serves on its main thread. It runs
 hard-float on aarch64.
 
-## brain_client and reflex
+## companion_client and reflex
 
-Source: `userspace/services/brain_client/src/main.rs`,
-`userspace/services/brain_client/src/link.rs`, `userspace/services/brain_client/src/ml.rs`,
-`userspace/services/brain_client/src/mlcall.rs`, `userspace/services/brain_client/src/camera.rs`,
+Source: `userspace/services/companion_client/src/main.rs`,
+`userspace/services/companion_client/src/link.rs`, `userspace/services/companion_client/src/ml.rs`,
+`userspace/services/companion_client/src/mlcall.rs`, `userspace/services/companion_client/src/camera.rs`,
 `userspace/services/reflex/src/main.rs`.
 
-Two programs of the robot domain. `BRAINCLI.ELF` is the robot's behaviour engine and its
-one brain link, the autorun program of the robot disk image (`disk.img`). Every period
+Two programs of the robot domain. `COMPCLI.ELF` is the robot's behaviour engine and its
+one companion link, the autorun program of the robot disk image (`disk.img`). Every period
 (`SENSOR_PERIOD_MS`) it reads the sensors through io_ring `Sensor::read` calls, exchanges
-with the brain while a session is up (sealed sensor packets out, frames in; every connection
+with the companion while a session is up (sealed sensor packets out, frames in; every connection
 begins with a Noise handshake in `link.rs`: the client is the initiator and speaks first,
-`Noise_IK` toward the brain key the topology pins in `[peer.brain]`, else `Noise_XX` with
+`Noise_IK` toward the companion key the topology pins in `[peer.companion]`, else `Noise_XX` with
 keys derived from the link key; there is no plaintext fallback, and with no key or no
-entropy the engine runs without a brain), chooses a layer (`behave.rs`, host-tested in
+entropy the engine runs without a companion), chooses a layer (`behave.rs`, host-tested in
 `tests/host/behavior-tests`: L1 avoids an obstacle, with the rangefinders as the floor and the
-inference service's verdict on top (below), L2 follows the brain's command for 2 s, L3
+inference service's verdict on top (below), L2 follows the companion's command for 2 s, L3
 explores while a session is up; the kernel's switches,
 `behavior enable|disable`, read through the `Behavior` interface, say which may drive) and
 publishes its command with `Motor::command`, so the kernel's drivetrain loop applies it
 through the safety layer's cap, the envelope, the PID and the motor-command watchdog. A
-cycle no layer wins publishes nothing, and the watchdog stops the wheels. The brain's frames
+cycle no layer wins publishes nothing, and the watchdog stops the wheels. The companion's frames
 that ask for authority (e-stop, degraded mode, the semantic level, a mode change with the
 operator's signed release, payload and configuration effects, an actuator command's
 confidence, any unknown type) go to the kernel through `endpoint.authority`; an emergency
-flag is a `Motor::estop`. An e-stop replaces the brain's standing command with a stop, so
+flag is a `Motor::estop`. An e-stop replaces the companion's standing command with a stop, so
 clearing the latch does not resume it. The operator's RC override is the kernel's and
 outranks the engine.
 
@@ -1073,28 +1073,28 @@ distance is 0) is a missing verdict too, and the robot stops: a dead rangefinder
 itself off.
 
 **The camera.** With the camera granted (`frame.0`, `READ`) the engine reads the newest frame
-through `Frame::next` while a brain session is up and sends it on that session as a
-`PKT_CAMERA` message, at most once per Kconfig `BRAIN_CAMERA_PERIOD_MS` (also the kernel's
+through `Frame::next` while a companion session is up and sends it on that session as a
+`PKT_CAMERA` message, at most once per Kconfig `COMPANION_CAMERA_PERIOD_MS` (also the kernel's
 capture period while the engine is attached). A frame is sealed into the link's transmit
 buffer and sent a piece per cycle without waiting; the sensor frames wait behind it, and a
 socket that takes nothing for two seconds ends the session. A frame that is not a JPEG that
 fits one message (16 KiB) is skipped. The first `next` of a task finds a pool without buffers
 and lends it kernel memory before it answers.
 
-**The brain's prediction.** A `PKT_PREDICT` frame (a predicted next command and a confidence
+**The companion's prediction.** A `PKT_PREDICT` frame (a predicted next command and a confidence
 byte) is a hint to L1 for 500 ms: a predicted stop or reverse widens the distance at which
 L1 turns away by 300 mm, a predicted turn by 150 mm. The hint only narrows what the layers
 chose, wheel by wheel (the same direction, no faster, a wheel that would reverse stops the command,
 and a cycle that would not drive does not); only a differential-drive prediction is read, and sits under the kernel's cap and the envelope like every command.
 `REFLEX.ELF` reads the rangefinder and the IMU and overrides motor commands when danger is
 detected (extreme tilt, then an obstacle too close, then a warning distance), whether or not
-the brain link is up. The topology holds a row for each (with `GPIODRV.ELF`, the GPIO driver
+the companion link is up. The topology holds a row for each (with `GPIODRV.ELF`, the GPIO driver
 of `userspace/drivers/gpio_drv`). The rows carry no capabilities of their own beyond
-`ROOT_RO` on `BRAINCLI.ELF` and, on `GPIODRV.ELF`, `READ` on `endpoint.pm-gpio` (it serves
+`ROOT_RO` on `COMPCLI.ELF` and, on `GPIODRV.ELF`, `READ` on `endpoint.pm-gpio` (it serves
 `DevicePower` for `power`): the `autorun` key of `CONFIG.INI` picks one of the three to
 run, and the grant a running one gets comes from the generic `autorun` row
 (`find_task(b"autorun")`). One autorun program runs at a time, so REFLEX and the engine are
-never on one machine: the robot disk image's autorun is BRAINCLI, and REFLEX (which writes
+never on one machine: the robot disk image's autorun is COMPCLI, and REFLEX (which writes
 each wheel with `speed` and `drive`, outside the drivetrain loop the engine publishes to)
 runs only from `disk-reflex.img`, a test image without an engine. It does not coexist with
 the engine and is not meant to.

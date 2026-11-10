@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The `LinkKey` interface: the brain-link PSK, for the one ring-3 task that
+//! The `LinkKey` interface: the companion-link PSK, for the one ring-3 task that
 //! speaks the link.
 //!
 //! The key lives in a reserved sector no USB host can address; the kernel
@@ -15,8 +15,8 @@
 //! The same endpoint also issues the node's DICE identity ([`LinkKey::node_key`]),
 //! as an op of its own: the Noise static key of the caller's own image, so a
 //! task that needs an identity does not need the board's secret, which never
-//! leaves the kernel for it. It also hands out the brain's pinned static key
-//! ([`LinkKey::brain_pk`]), the one datum of the signed topology the link
+//! leaves the kernel for it. It also hands out the companion's pinned static key
+//! ([`LinkKey::companion_pk`]), the one datum of the signed topology the link
 //! client needs.
 
 use crate::outcome::Out;
@@ -49,11 +49,11 @@ pub trait LinkKey {
     /// admits this op and not [`LinkKey::read`].
     fn node_key(&mut self) -> Out<[u64; KEY_WORDS]>;
 
-    /// The brain's static X25519 PUBLIC key, as four little-endian words: the
-    /// `noise_pk` of the signed topology's `[peer.brain]` row, the key a
-    /// `Noise_IK` link toward the brain is pinned to. `NO_RESOURCE` when the
+    /// The companion's static X25519 PUBLIC key, as four little-endian words: the
+    /// `noise_pk` of the signed topology's `[peer.companion]` row, the key a
+    /// `Noise_IK` link toward the companion is pinned to. `NO_RESOURCE` when the
     /// topology has no such row or the row pins no key (the link then runs
     /// `Noise_XX`, authenticated by the link key). Public, but still `READ`:
     /// the link client is the only task that has a use for it.
-    fn brain_pk(&mut self) -> Out<[u64; KEY_WORDS]>;
+    fn companion_pk(&mut self) -> Out<[u64; KEY_WORDS]>;
 }

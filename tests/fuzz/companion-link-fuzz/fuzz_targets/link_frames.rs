@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! libFuzzer target: everything the brain link decodes off the wire.
+//! libFuzzer target: everything the companion link decodes off the wire.
 //!
 //! `data[0] % 4` picks the surface, the rest is the peer's bytes:
 //!  0. an IK initiator reading a fuzzed reply frame (message 2);
 //!  1. an XX initiator reading a fuzzed reply frame (message 2);
 //!  2. an established link reading a raw frame stream (`frame_len` and
 //!     `open_frame` until it stops);
-//!  3. tamper: real sealed messages from the brain's side, bytes XOR-ed at
+//!  3. tamper: real sealed messages from the companion's side, bytes XOR-ed at
 //!     input-chosen offsets, read by the link. Property: the link never
 //!     completes a message that differs from what was sealed (a forgery past
 //!     the AEAD), and an untampered stream round-trips.
@@ -20,9 +20,9 @@ use libfuzzer_sys::fuzz_target;
 use std::sync::OnceLock;
 
 const PSK: [u8; 32] = [7; 32];
-const BRAIN_SK: [u8; 32] = [0x77; 32];
+const COMPANION_SK: [u8; 32] = [0x77; 32];
 const E_ROBOT: [u8; 32] = [0xAA; 32];
-const E_BRAIN: [u8; 32] = [0xBB; 32];
+const E_COMPANION: [u8; 32] = [0xBB; 32];
 const MAX_BODY: usize = max_body_for(MAX_MESSAGE_BYTES);
 
 fn prologue(pb: u8) -> Vec<u8> {
@@ -40,16 +40,16 @@ fn pair() -> (Link, CipherState) {
     SESSION.get_or_init(handshake).clone()
 }
 
-/// A completed IK handshake: the robot's link and the brain's send cipher.
+/// A completed IK handshake: the robot's link and the companion's send cipher.
 fn handshake() -> (Link, CipherState) {
-    let pinned = x25519_pubkey(&BRAIN_SK);
+    let pinned = x25519_pubkey(&COMPANION_SK);
     let mut ini = Initiator::new(&PSK, Some(&pinned)).unwrap();
     let mut out = [0u8; HANDSHAKE_OUT_MAX];
     let n = ini.step(None, &E_ROBOT, &mut out).unwrap();
-    let mut bhs = HandshakeState::responder(Pattern::Ik, &BRAIN_SK, &prologue(PATTERN_IK)).unwrap();
+    let mut bhs = HandshakeState::responder(Pattern::Ik, &COMPANION_SK, &prologue(PATTERN_IK)).unwrap();
     bhs.read_message(&out[1 + FRAME_HEAD..n], &mut []).unwrap();
     let mut buf = [0u8; 256];
-    let m = bhs.write_message(&E_BRAIN, &[], &mut buf).unwrap();
+    let m = bhs.write_message(&E_COMPANION, &[], &mut buf).unwrap();
     let mut frame = (m as u16).to_be_bytes().to_vec();
     frame.extend_from_slice(&buf[..m]);
     ini.step(Some(&frame), &E_ROBOT, &mut out).unwrap();
@@ -80,7 +80,7 @@ fn read_all(rx: &mut Link, stream: &[u8]) -> Vec<Vec<u8>> {
     done
 }
 
-fn brain_seal(cs: &mut CipherState, plain: &[u8]) -> Vec<u8> {
+fn companion_seal(cs: &mut CipherState, plain: &[u8]) -> Vec<u8> {
     let head = ((plain.len() + 16) as u16).to_be_bytes();
     let mut body = plain.to_vec();
     let tag = cs.encrypt(&head, &mut body).unwrap();
@@ -95,7 +95,7 @@ fuzz_target!(|data: &[u8]| {
     let _ = frame_len(rest, MAX_BODY);
     match sel % 4 {
         0 | 1 => {
-            let pinned = x25519_pubkey(&BRAIN_SK);
+            let pinned = x25519_pubkey(&COMPANION_SK);
             let mut ini = Initiator::new(&PSK, if sel % 4 == 0 { Some(&pinned) } else { None }).unwrap();
             let mut out = [0u8; HANDSHAKE_OUT_MAX];
             ini.step(None, &E_ROBOT, &mut out).unwrap();
@@ -116,7 +116,7 @@ fuzz_target!(|data: &[u8]| {
             let (mut a, mut b_send) = pair();
             let mut sealed = Vec::new();
             for m in &msgs {
-                sealed.extend(brain_seal(&mut b_send, m));
+                sealed.extend(companion_seal(&mut b_send, m));
             }
             let original = sealed.clone();
             for f in rest[3..].chunks_exact(3).take(rest[2] as usize) {

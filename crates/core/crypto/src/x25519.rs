@@ -46,7 +46,7 @@ pub fn x25519(scalar: &[u8; 32], point: &[u8; 32]) -> [u8; 32] {
 ///
 /// RFC 7748 §6.1 makes this check optional and says protocols "MAY" perform
 /// it; for us it is mandatory, because of *where* the multiplication
-/// happens: the brain-link handshake derives its shared secrets
+/// happens: the companion-link handshake derives its shared secrets
 /// from a peer public key that has not been authenticated yet — the peer's
 /// static key is only checked afterwards. A peer who sends one of the twelve
 /// small-order Curve25519 points (all-zero, `u=1`, the two order-8 points,

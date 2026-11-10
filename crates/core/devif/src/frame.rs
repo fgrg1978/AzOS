@@ -15,7 +15,7 @@
 //! The first `next` of a task makes it a **reader** of the camera: it takes
 //! only frames committed after that, and the camera captures while somebody
 //! reads. There are `FRAME_READERS` readers at once; the kernel's own sender
-//! to the brain is one more and not counted. A reader ends with [`Frame::close`]
+//! to the companion is one more and not counted. A reader ends with [`Frame::close`]
 //! or with its task. Under `FRAME_POOL_BACKPRESSURE` a reader that stops
 //! reading holds capture back for every reader until it closes or exits.
 //!

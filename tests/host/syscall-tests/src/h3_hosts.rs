@@ -186,7 +186,7 @@ fn an_adapter_refusal_is_the_servers_answer() {
     }
 }
 
-/// Containment (brain-triggered degraded mode) refuses the acting class (`WRITE`: every SPI byte),
+/// Containment (companion-triggered degraded mode) refuses the acting class (`WRITE`: every SPI byte),
 /// leaves `EXEC` and the bus-observing ops of other interfaces alone, and
 /// records nothing: a holder contained is the safety system working.
 ///

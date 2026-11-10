@@ -1625,7 +1625,7 @@ const EPHEMERAL_SPAN: u32 = EPHEMERAL_MAX as u32 - EPHEMERAL_MIN as u32 + 1;
 /// no-op: `close`/`abort` do nothing, `send` and `recv`
 /// answer -1, `state` answers `Closed`. A bare slot index has no such check:
 /// a kernel task that closed "its" slot after a wait closed whichever
-/// connection held the slot by then -- the brain link's, after a refused
+/// connection held the slot by then -- the companion link's, after a refused
 /// connect let RST free the slot and the link's dial took it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct TcpHandle {
@@ -2262,7 +2262,7 @@ fn listen_h(port: u16, v6: bool) -> Option<TcpHandle> {
 ///
 /// **First-SYN behavior**: this function does NOT block on ARP — if the
 /// destination MAC is not cached, `ip::send` returns -1, the SYN is dropped
-/// silently, and the caller must retry (typically via the brain-task's
+/// silently, and the caller must retry (typically via the companion-task's
 /// outer reconnect loop).  Use `connect_with_yield` instead for a
 /// blocking-with-yield variant that issues the SYN only once ARP has
 /// resolved, eliminating the "first attempt always stalls" pattern under
@@ -2315,7 +2315,7 @@ fn connect_h<A: Into<IpAddr>>(dst_ip: A, dst_port: u16, src_port: u16) -> Option
         }
     }
 
-    // **A 4-tuple still in TIME-WAIT is reclaimed, not duplicated.** The brain
+    // **A 4-tuple still in TIME-WAIT is reclaimed, not duplicated.** The companion
     // link dials from a fixed local port, so after `close()` from Established
     // its reconnect names exactly the 4-tuple our old slot holds for
     // `TIME_WAIT_MS`. Nothing checked: `alloc` handed out a second slot for
@@ -2429,7 +2429,7 @@ fn connect_with_yield_h<A: Into<IpAddr>, F: FnMut()>(
 /// measurement** — neither half alone was enough.
 ///
 /// The deadlines: `rt_motor_task`'s watchdog SAFE-STOPs after 500 ms without a
-/// command, and `brain_client` runs its loop every 50 ms. A send that blocks
+/// command, and `companion_client` runs its loop every 50 ms. A send that blocks
 /// for a loop period delays one command; one that blocks for the watchdog
 /// interval stops the robot. So the ceiling is an order of magnitude under the
 /// watchdog, and at most one loop period.
@@ -2465,7 +2465,7 @@ pub const ARP_RESOLVE_SPIN_CAP: u32 = 5_000_000;
 ///
 /// **The defect this closes.** `ip::send` answers an ARP miss by emitting a
 /// request and returning -1, and `send_data` turns any transmit failure into
-/// -1 — which reaches ring 3 as a fatal error. `brain_client` treats any
+/// -1 — which reaches ring 3 as a fatal error. `companion_client` treats any
 /// negative as fatal and tears down a healthy `Established` connection over a
 /// cache miss. Measured: the ARP microbenchmarks were evicting the
 /// gateway's entry, and the symptom read as a TCP transport bug three layers
@@ -2478,7 +2478,7 @@ pub const ARP_RESOLVE_SPIN_CAP: u32 = 5_000_000;
 /// **Why pre-resolve instead of reporting the transient.** Returning 0
 /// ("retry later", which is what this function already answers for a closed
 /// peer window and for a full send window) was considered and REJECTED:
-/// callers that read 0 as success — `brain_client` does —
+/// callers that read 0 as success — `companion_client` does —
 /// would silently drop the frame, trading a visible failure for silent data
 /// loss. Pre-resolving keeps the return contract untouched, so no existing
 /// caller changes behaviour.
@@ -2512,7 +2512,7 @@ pub(crate) fn send_data_with_yield<F: FnMut()>(r: impl Into<Ref>, data: &[u8], m
 /// tens of µs on hardware and orders of magnitude more under QEMU TCG, so the
 /// same constant meant two unrelated stalls. `send` sits on the actuation path
 /// — `rt_motor_task`'s watchdog SAFE-STOPs the machine after 500 ms without a
-/// command, and `brain_client` drives its loop at 50 ms — so the question that
+/// command, and `companion_client` drives its loop at 50 ms — so the question that
 /// matters is "how long can this block", and only a clock answers it.
 ///
 /// **The iteration cap is a fail-safe, not the budget.** If the timer ever
@@ -2575,7 +2575,7 @@ fn resolve_peer_mac<F: FnMut()>(
 /// return value is what went on the wire in this call, 0 when nothing may be
 /// sent now (the caller retries), -1 when the connection cannot send or the
 /// segment could not be transmitted. `socket_send` hands that straight to
-/// ring 3, and `brain_client` reads any negative as fatal, so none of it is
+/// ring 3, and `companion_client` reads any negative as fatal, so none of it is
 /// allowed to mean "queued for later".
 ///
 /// **Several segments may be in flight.** What may be sent is bounded by
@@ -3273,7 +3273,7 @@ fn handle(src_ip: &IpAddr, dst_ip: &IpAddr, data: &[u8], ce: bool) {
 
     // Sensor-pump (#39) trace probe: log every inbound TCP segment with
     // flags + seq + ack + payload length so we can compare against what
-    // the brain claims to send.  Gated on `--features qemu` so production
+    // the companion claims to send.  Gated on `--features qemu` so production
     // builds pay nothing.
     #[cfg(feature = "qemu")]
     {
@@ -3371,9 +3371,9 @@ fn handle(src_ip: &IpAddr, dst_ip: &IpAddr, data: &[u8], ce: bool) {
                 // which is the half of RFC 5961 that does not hold: it cuts a
                 // blind reset from 2^32 guesses to 2^32 / 2^16 = 65 536 spoofed
                 // segments against a 4-tuple that was public knowledge (the
-                // brain's local port was fixed at 12345). About a second of
-                // packets tore the brain link down. The kernel now dials the
-                // brain from a port drawn per connection from the dynamic range
+                // companion's local port was fixed at 12345). About a second of
+                // packets tore the companion link down. The kernel now dials the
+                // companion from a port drawn per connection from the dynamic range
                 // (`kernel/src/main.rs`), so the 4-tuple is predictable, not
                 // fixed.
                 //
@@ -3449,7 +3449,7 @@ fn handle(src_ip: &IpAddr, dst_ip: &IpAddr, data: &[u8], ce: bool) {
                     // already-ACKed SYN slot and discards — so the app received
                     // (len-1) bytes of the FIRST post-connect segment. Streaming
                     // senders (sensor pump) self-realign after one frame and the
-                    // brain MAGIC-resyncs past it, which is why this stayed
+                    // companion MAGIC-resyncs past it, which is why this stayed
                     // latent; a one-shot request/response (the encrypted-link handshake
                     // reply, #34/#74) has no second frame to recover, so it
                     // surfaced as "stub reads 65 of 66 bytes" → handshake stall.
@@ -5856,9 +5856,9 @@ fn send_syn_segment(
 /// **Why silence is the wrong answer here.** Three concrete failures on this
 /// machine, all of them recovery problems rather than protocol pedantry:
 ///
-/// * **After the robot reboots**, the brain's socket survives. We come up with
+/// * **After the robot reboots**, the companion's socket survives. We come up with
 ///   an empty connection table, its segments match no slot, and we say nothing.
-///   The brain sees a black hole until its own retransmission budget runs out
+///   The companion sees a black hole until its own retransmission budget runs out
 ///   — on Linux defaults that is `tcp_retries2` = 15, minutes — and for that
 ///   whole window the operator believes they are commanding a robot that is
 ///   not listening. An RST ends it in microseconds on a one-hop link.

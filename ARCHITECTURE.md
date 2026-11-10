@@ -349,7 +349,7 @@ links the AHRS and flight math (`crates/lib/control/`) and the ESC and RC
 drivers (`crates/drivers/rc-esc`). It is linked only when the image selects `USE_ROBOT` (kernel feature
 `use-robot`) and plugs into the shared actuation authority as an extension:
 its effect provider (`azos_safety_core::actuation::ROBOT`, the contract in
-`crates/core/ext-api`), installed at boot through `azos_actuation::providers`. The behaviour engine and the brain link are ring 3: `userspace/services/brain_client`
+`crates/core/ext-api`), installed at boot through `azos_actuation::providers`. The behaviour engine and the companion link are ring 3: `userspace/services/companion_client`
 (which asks the inference service `infsrv` for a verdict each cycle and stops on a
 missing one) and `reflex`.
 

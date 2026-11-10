@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! RED/GREEN host tests for the e-stop release rule: **the brain may
+//! RED/GREEN host tests for the e-stop release rule: **the companion may
 //! REQUEST an e-stop release; it may never CLEAR the latch.** A release now
 //! requires a [`super::safety::ReleaseAuthority`], and the only production
 //! way to construct one is [`super::safety::verify_operator_release`] — an
 //! Ed25519 signature over a fixed context + a strictly-increasing nonce,
-//! checked against a key the brain link never receives.
+//! checked against a key the companion link never receives.
 //!
 //! These tests drive the REAL functions `crates/domains/robot/safety-core/src/frames.rs`'s two
 //! `PKT_MODE` dispatch sites call (`safety::verify_operator_release`,
@@ -120,7 +120,7 @@ fn reset() -> super::flight_recorder::RecorderGuard {
 /// `1 + RELEASE_PROOF_BYTES` as exactly this: no proof to check at all, so it
 /// never even calls `verify_operator_release`. Pinned here as: with the
 /// authority key provisioned and the latch armed, simply NOT calling
-/// `verify_operator_release` (the brain-request path) leaves the latch
+/// `verify_operator_release` (the companion-request path) leaves the latch
 /// armed — there is no other function in this module that clears it.
 #[test]
 fn a_bare_request_does_not_clear_the_latch() {
@@ -131,7 +131,7 @@ fn a_bare_request_does_not_clear_the_latch() {
     estop_activate();
     assert!(estop_is_active(), "precondition: armed");
 
-    // The brain-request path: `crates/domains/robot/safety-core/src/frames.rs` sees a 1-byte payload, computes no
+    // The companion-request path: `crates/domains/robot/safety-core/src/frames.rs` sees a 1-byte payload, computes no
     // proof, and calls neither `verify_operator_release` nor `estop_release`.
     // There is nothing to call here — that absence IS the fix.
     assert!(estop_is_active(), "a bare request must leave the latch exactly as armed as it found it");

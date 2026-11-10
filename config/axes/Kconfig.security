@@ -72,7 +72,7 @@ choice
                                   boot halts without a link key, the
                                   handshake is refused on an unseeded
                                   entropy pool, and the UART bridge
-                                  (brain-protocol frames outside any
+                                  (companion-protocol frames outside any
                                   Noise session) is down.
           Each implied switch carries its own cost and deployment
           requirement; read its help before building with this posture.
@@ -183,7 +183,7 @@ config CONSOLE_LOCKDOWN
       safe mode, without SH.ELF, or when the user shell is given up
       on), it is seeded with Cap<Motor> and WRITE on the `power`, `config` and `ota` endpoints, and the
       two lockdown-only rows proceed unchecked. The check's predicate
-      also answers "no" during a brain-loss containment episode, so
+      also answers "no" during a companion-loss containment episode, so
       enforcing those rows on every build would refuse `ota rollback`
       in the middle of one.
 

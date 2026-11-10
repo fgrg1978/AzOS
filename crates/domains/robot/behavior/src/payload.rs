@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! E04: Payload Abstraction — spray pump, gripper servo, camera trigger.
 //!
-//! The Brain Server sends `PKT_PAYLOAD` commands that route here.
+//! The companion server sends `PKT_PAYLOAD` commands that route here.
 //! All hardware assignments are named constants — no magic numbers.
 //!
 //! Hardware assignments (VF2 GPIO / PWM):
@@ -25,7 +25,7 @@ use azos_drv_sys::timebase::now;
 use azos_drv_gpio::gpio::{GpioDir, gpio_set_direction, gpio_write};
 use azos_drv_actuator::pwm::{pwm_enable, pwm_set_period, pwm_set_duty};
 
-use crate::brain_protocol::{
+use crate::companion_protocol::{
     PayloadCmd,
     PAYLOAD_TYPE_SPRAY, PAYLOAD_TYPE_GRIPPER, PAYLOAD_TYPE_CAM_TRIGGER,
     PAYLOAD_OFF,
@@ -74,7 +74,7 @@ pub const GRIPPER_PWM_RANGE_NS: u32 = GRIPPER_PWM_OPEN_NS - GRIPPER_PWM_CLOSED_N
 /// raw `500_000` (10 MHz QEMU literal) — 125 ms on VF2 (4 MHz), 20.8 ms on
 /// K1 (24 MHz). Reachable: `payload_exec`'s shutter path is the one caller
 /// (`:169` in this file at the time of the audit), dispatched from both
-/// brain paths in `crates/domains/robot/safety-core/src/frames.rs`.
+/// companion paths in `crates/domains/robot/safety-core/src/frames.rs`.
 pub const CAM_TRIGGER_PULSE_TICKS: u64 = azos_drv_sys::timebase::TIMER_FREQ / 20;
 
 // ── Runtime state (lock-free atomics) ────────────────────────────────────────
@@ -136,7 +136,7 @@ pub fn payload_init() {
 /// offset rather than by which file wrote the record.
 pub const PAYLOAD_ACTUATOR_TYPE_BASE: u8 = 0x10;
 
-/// Execute a decoded `PayloadCmd` received from the Brain Server.
+/// Execute a decoded `PayloadCmd` received from the companion server.
 ///
 /// Returns `true` if the command type was recognised, handled, and NOT
 /// refused.
@@ -145,12 +145,12 @@ pub const PAYLOAD_ACTUATOR_TYPE_BASE: u8 = 0x10;
 /// function had no e-stop check at all, no capability, and wrote no record
 /// on success — a 12 V spray pump kept running through a latched e-stop,
 /// same class of gap `motor.rs`'s chokepoint closed for the wheels. Checked
-/// HERE, the single chokepoint the brain's frames reach
+/// HERE, the single chokepoint the companion's frames reach
 /// (`azos_safety_core::frames`, from the ring-3 behaviour engine through the
 /// `Authority` interface), the same way `motor_set_reporting` is the wheels'.
 /// While the machine is contained a payload frame that acts (anything but
 /// spray off) needs the operator's signed
-/// warrant before it gets here (`brain_protocol::relax_body_len`). There is no
+/// warrant before it gets here (`companion_protocol::relax_body_len`). There is no
 /// `Cap<Payload>` kind yet: the authority grant stands for it.
 pub fn payload_exec(cmd: PayloadCmd) -> bool {
     if crate::safety::estop_is_active() {

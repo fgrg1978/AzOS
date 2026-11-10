@@ -1144,7 +1144,7 @@ fn a_keep_alive_probe_is_answered() {
 // ── TIME-WAIT and port reuse ────────────────────────────────────────────────
 
 /// Reconnecting from the port of a connection still in TIME-WAIT — what the
-/// brain link does after closing from Established — reclaims the old slot,
+/// companion link does after closing from Established — reclaims the old slot,
 /// starts past every sequence number it used, and establishes.
 #[test]
 fn a_connect_from_a_4_tuple_in_time_wait_establishes() {

@@ -6,10 +6,10 @@
 ///   VF2 GND              → ESP32-C3 GND
 ///
 /// The ESP32 connects to WiFi, then opens a TCP connection to the
-/// brain server.  All bytes received on UART are forwarded to TCP,
+/// companion server.  All bytes received on UART are forwarded to TCP,
 /// and all bytes received from TCP are forwarded to UART.
 ///
-/// Brain protocol packets ("BR" + type + len + payload + CRC8) flow
+/// Companion protocol packets ("CL" + type + len + payload + CRC8) flow
 /// transparently — no parsing needed on the ESP32 side.
 ///
 /// Build: Arduino IDE or PlatformIO with ESP32-C3 board support.
@@ -24,9 +24,9 @@
 const char* WIFI_SSID     = "ROBOT_NET";
 const char* WIFI_PASSWORD = "robot12345";
 
-// Brain server (macOS running server.py)
-const char* BRAIN_HOST = "192.168.1.100";
-const uint16_t BRAIN_PORT = 9000;
+// Companion server (macOS running server.py)
+const char* COMPANION_HOST = "192.168.1.100";
+const uint16_t COMPANION_PORT = 9000;
 
 // UART to VF2
 const int UART_BAUD = 115200;
@@ -113,7 +113,7 @@ void loop() {
         return;
     }
 
-    // Connect TCP to brain server if needed
+    // Connect TCP to companion server if needed
     if (!tcp.connected()) {
         if (was_connected) {
             Serial.println("[BRIDGE] TCP disconnected — reconnecting");
@@ -125,9 +125,9 @@ void loop() {
 
         if (millis() - last_reconnect > RECONNECT_INTERVAL_MS) {
             last_reconnect = millis();
-            Serial.printf("[BRIDGE] Connecting to %s:%d...\n", BRAIN_HOST, BRAIN_PORT);
+            Serial.printf("[BRIDGE] Connecting to %s:%d...\n", COMPANION_HOST, COMPANION_PORT);
 
-            if (tcp.connect(BRAIN_HOST, BRAIN_PORT)) {
+            if (tcp.connect(COMPANION_HOST, COMPANION_PORT)) {
                 Serial.println("[BRIDGE] TCP connected — bridge active");
                 tcp.setNoDelay(true);  // disable Nagle for low latency
                 was_connected = true;
@@ -144,7 +144,7 @@ void loop() {
 
     led_on();  // solid ON = bridge active
 
-    // UART → TCP (VF2 sensor packets → brain server)
+    // UART → TCP (VF2 sensor packets → companion server)
     int uart_avail = Serial1.available();
     if (uart_avail > 0) {
         int to_read = (uart_avail < BUF_SIZE) ? uart_avail : BUF_SIZE;
@@ -155,7 +155,7 @@ void loop() {
         }
     }
 
-    // TCP → UART (brain server actuator cmds → VF2)
+    // TCP → UART (companion server actuator cmds → VF2)
     int tcp_avail = tcp.available();
     if (tcp_avail > 0) {
         int to_read = (tcp_avail < BUF_SIZE) ? tcp_avail : BUF_SIZE;

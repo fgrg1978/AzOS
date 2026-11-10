@@ -2164,7 +2164,7 @@ pub fn ioring_lanes(abi: &impl Abi, floor_ns: u64) {
 }
 
 /// `ioring-recv`'s Linux side (`ioring_recv_lanes` in `main.rs`): the receive
-/// `brain_client` polls its link with, on a quiet bound datagram socket, as a
+/// `companion_client` polls its link with, on a quiet bound datagram socket, as a
 /// syscall (`recv-call`) and as N `IORING_OP_RECV` entries through one
 /// `io_uring_enter` (`ioring-recv xN`). Both carry `MSG_DONTWAIT`, which makes
 /// the receive answer `-EAGAIN` at once (the AzOS call answers `0`: nothing

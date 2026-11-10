@@ -167,7 +167,7 @@ pub struct Want {
     /// offered only when a frame of it fits.
     pub max_frame: usize,
     /// Bytes a Motion-JPEG frame may be at most to be of use: what the
-    /// consumer can carry on (the brain link's camera packet), which is less
+    /// consumer can carry on (the companion link's camera packet), which is less
     /// than a slot. A larger frame is dropped as `oversize`, and a frame size
     /// that cannot be shown to fit is not offered ([`frame_candidate`]).
     pub max_jpeg: usize,

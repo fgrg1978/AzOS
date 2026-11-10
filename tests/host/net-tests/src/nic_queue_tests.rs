@@ -20,8 +20,8 @@ const MAC_A: [u8; 6] = [0x02, 0xAA, 0x00, 0x00, 0x00, 0x01];
 const IP_A: [u8; 4] = [10, 1, 0, 2];
 const MAC_B: [u8; 6] = [0x02, 0xBB, 0x00, 0x00, 0x00, 0x02];
 const IP_B: [u8; 4] = [192, 168, 7, 2];
-const BRAIN_ON_B: [u8; 4] = [192, 168, 7, 50];
-const BRAIN_ON_A: [u8; 4] = [10, 1, 0, 50];
+const COMPANION_ON_B: [u8; 4] = [192, 168, 7, 50];
+const COMPANION_ON_A: [u8; 4] = [10, 1, 0, 50];
 
 /// Frames the sink got: (interface, frame, stamp).
 static SUNK: Mutex<Vec<(u8, Vec<u8>, u64)>> = Mutex::new(Vec::new());
@@ -154,14 +154,14 @@ fn eth1_is_taken_once_and_the_primary_interface_is_refused_and_recorded() {
 fn the_interface_the_link_peer_is_reached_by_is_never_handed_over() {
     let _s = begin();
     let first = azos_decision::total() + 1;
-    *PEER.lock().unwrap() = Some(BRAIN_ON_B);
-    assert_eq!(ip::route(&BRAIN_ON_B).map(|e| e.ifindex), Some(2), "precondition: the peer is on eth1");
+    *PEER.lock().unwrap() = Some(COMPANION_ON_B);
+    assert_eq!(ip::route(&COMPANION_ON_B).map(|e| e.ifindex), Some(2), "precondition: the peer is on eth1");
     assert_eq!(nic_queue::take(9, 2, 0), Err(Refusal::LinkPath));
     assert!(!nic_queue::taken(2));
     let r = refusals(first);
     assert_eq!(r.len(), 1);
     assert_eq!((r[0].subject, r[0].n), (9, [2, 0, Refusal::LinkPath.code()]));
-    *PEER.lock().unwrap() = Some(BRAIN_ON_A);
+    *PEER.lock().unwrap() = Some(COMPANION_ON_A);
     assert_eq!(nic_queue::take(9, 2, 0), Ok(MAC_B), "the link leaves by eth0: eth1 may go");
 }
 

@@ -373,7 +373,7 @@ pub(crate) fn create_service_tasks(hart_id: usize) {
     // 15 busy workers at DEFAULT_PRIORITY starve the listener task on a 4-CPU
     // QEMU and the test never sees any OTA data on the wire.
     // Skip the 15 DEFAULT_PRIORITY stress workers when *either* the
-    // OTA receiver or the behavior (brain) server is configured. Same
+    // OTA receiver or the behavior (companion) server is configured. Same
     // reasoning in both cases: 15 busy-yield workers on 4 QEMU CPUs
     // pile up enough scheduler load to starve the listener / TCP-dial
     // task and the test never sees its event on the wire — the E2E
@@ -383,7 +383,7 @@ pub(crate) fn create_service_tasks(hart_id: usize) {
     let skip_for_ota = azos_config::CFG_OTA_AUTO_RECV_PORT
         .load(Ordering::Relaxed) != 0;
     #[cfg(feature = "boot-selftests")]
-    let skip_for_brain = azos_config::BEHAVIOR_SERVER_PORT
+    let skip_for_companion = azos_config::BEHAVIOR_SERVER_PORT
         .load(Ordering::Relaxed) != 0;
     // `bench-minimal` boots only what a measurement needs, and these workers
     // are created with `try_task_create_affinity`, which the bench-minimal
@@ -394,7 +394,7 @@ pub(crate) fn create_service_tasks(hart_id: usize) {
     #[cfg(feature = "boot-selftests")]
     let skip_for_bench = cfg!(feature = "bench-minimal");
     #[cfg(feature = "boot-selftests")]
-    if skip_for_ota || skip_for_brain || skip_for_bench {
+    if skip_for_ota || skip_for_companion || skip_for_bench {
         let reason = if skip_for_bench { "bench-minimal" }
             else if skip_for_ota { "ota_auto_recv_port" } else { "behavior_server_port" };
         kprintln!("[SCHED] Skipping {} stress-test workers ({} set)", NUM_WORKERS, reason);
@@ -443,7 +443,7 @@ pub(crate) fn create_service_tasks(hart_id: usize) {
     }
 
     // Phase U4: autorun ELF — if CONFIG.INI has `autorun=<path>`, spawn a
-    // task that loads and exec's that ELF at boot (e.g. brain client).
+    // task that loads and exec's that ELF at boot (e.g. companion client).
     // Kconfig AUTORUN: without it the key is not read.
     #[cfg(feature = "autorun")]
     if let Some(path) = azos_config::cfg_get(b"autorun") {
@@ -474,7 +474,7 @@ pub(crate) fn create_service_tasks(hart_id: usize) {
             // present, so CONFIG.INI names an autorun, AND a NIC — was that
             // `net-poll` (priority 12, also hart 3) never ran a single
             // iteration. The RX ring was never drained: no ARP reply learned,
-            // no SYN ever emitted, brain link permanently down. No gate
+            // no SYN ever emitted, companion link permanently down. No gate
             // scenario caught it because every networked scenario boots
             // diskless and every disk-backed scenario boots without a NIC.
             //
@@ -483,7 +483,7 @@ pub(crate) fn create_service_tasks(hart_id: usize) {
             // hart 3 it competes only with `net-poll`, which now blocks on a
             // timer every iteration (`b912aa2`) instead of
             // spinning, so the starvation the priority bump was reaching for
-            // no longer exists. `userspace: the brain lies` is the scenario
+            // no longer exists. `userspace: the companion lies` is the scenario
             // that fails if this is put back.
             azos_sched::task_create_affinity("autorun", autorun_task, len,
                                         AUTORUN_PRIORITY, place::pin(place::AUTORUN));

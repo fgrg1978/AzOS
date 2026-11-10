@@ -64,7 +64,7 @@ mod tests {
     }
 
     // ──────────────────────────────────────────────────────────────────────
-    // OT01.A — Header roundtrip + brain-side encode/kernel-side decode sync
+    // OT01.A — Header roundtrip + companion-side encode/kernel-side decode sync
     // ──────────────────────────────────────────────────────────────────────
 
 

@@ -8,9 +8,9 @@
 //! RC override replaces the command outright. What is left to choose, in
 //! order: L1 avoids an obstacle (the rangefinders are the floor, the model's
 //! verdict sits on top and a missing verdict is a stop), L2 follows the
-//! brain's latest command while it is fresh, L3 explores while the brain's
+//! companion's latest command while it is fresh, L3 explores while the companion's
 //! session is up. A cycle no layer wins publishes nothing, so the drivetrain's
-//! watchdog stops the wheels. The brain's prediction only ever makes L1 more
+//! watchdog stops the wheels. The companion's prediction only ever makes L1 more
 //! cautious: it can narrow what the layers chose, never widen it.
 
 /// A rangefinder reading closer than this stops the robot (mm).
@@ -21,13 +21,13 @@ pub const OBSTACLE_TURN_MM: u16 = 400;
 pub const TURN: (i32, i32) = (60, 20);
 /// Exploring: slow and straight.
 pub const EXPLORE: (i32, i32) = (30, 30);
-/// The brain's command drives for this long after it arrives (ms).
+/// The companion's command drives for this long after it arrives (ms).
 pub const REMOTE_MAX_AGE_MS: u64 = 2_000;
-/// The actuator type of a differential drive (`brain_protocol::ACT_DIFF_DRIVE`).
+/// The actuator type of a differential drive (`companion_protocol::ACT_DIFF_DRIVE`).
 pub const ACTUATOR_DIFF_DRIVE: u8 = 0;
 /// A prediction is of the next command: it biases L1 for this long (ms).
 pub const PREDICT_MAX_AGE_MS: u64 = 500;
-/// A prediction the brain is less sure of than this is ignored.
+/// A prediction the companion is less sure of than this is ignored.
 pub const PREDICT_MIN_CONFIDENCE: u8 = 128;
 /// A predicted stop or reverse widens the turn-away distance by this (mm).
 pub const PREDICT_OBSTACLE_MARGIN_MM: u16 = 300;
@@ -54,7 +54,7 @@ impl Layers {
     pub const AVOID_ONLY: Layers = Layers { avoid: true, remote: false, explore: false };
 }
 
-/// The brain's latest drive command and when it arrived.
+/// The companion's latest drive command and when it arrived.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Remote {
     pub left: i32,
@@ -63,9 +63,9 @@ pub struct Remote {
 }
 
 impl Remote {
-    /// The brain's command after an e-stop: a stop, as of `now_ms`. Once the
+    /// The companion's command after an e-stop: a stop, as of `now_ms`. Once the
     /// operator clears the latch, the command that preceded the e-stop does
-    /// not resume; the brain has to send a new one.
+    /// not resume; the companion has to send a new one.
     pub const fn stop(now_ms: u64) -> Remote {
         Remote { left: 0, right: 0, at_ms: now_ms }
     }
@@ -86,7 +86,7 @@ pub enum Ml {
     Missing,
 }
 
-/// The brain's prediction of its next command and how sure it is.
+/// The companion's prediction of its next command and how sure it is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Predict {
     pub left: i32,
@@ -139,7 +139,7 @@ pub struct Inputs {
     pub front_mm: Option<u16>,
     pub right_mm: Option<u16>,
     pub remote: Option<Remote>,
-    /// The brain's session is up.
+    /// The companion's session is up.
     pub session_up: bool,
     pub ml: Ml,
     pub predict: Option<Predict>,

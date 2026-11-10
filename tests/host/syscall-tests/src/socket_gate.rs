@@ -8,7 +8,7 @@
 // syscall validated only `fd < MAX_SOCKETS` -- so "any task could enumerate
 // fd 0..15 and read another task's inbound TCP stream, inject bytes into
 // its outbound stream, or tear down its connection. That includes the OTA
-// channel and the brain link." These tests drive the real gate against the
+// channel and the companion link." These tests drive the real gate against the
 // real socket table (`azos_net::socket`, pulled in whole -- see
 // `tests/host/syscall-tests/shims/net`), with `azos_sched::current_user_pt`
 // / `current_task_tid` standing in for "who is calling right now" (see

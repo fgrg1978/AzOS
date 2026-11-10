@@ -5,13 +5,13 @@
 
 The OS does not depend on that client. This tool only runs when asked, and
 writes or compares the one file named by `--out` (nothing is written into any
-other repository by default). The optional brain repo (`AzOSRobotBrain/`) is
+other repository by default). The optional companion repo (`AzOSRobotBrain/`) is
 Python; it doesn't see the Rust `crates/core/limits/src/generated.rs`
 directly. Without coordination the two sides drift (TCP_MAX_CONNS,
 MAX_SOCKETS, MTU, etc.) and bugs only surface at deployment.
 
 This script reads the kernel's active `.config` and writes a Python
-companion module (the brain's is `AzOSRobotBrain/protocol_consts.py`) with the
+companion module (the companion's is `AzOSRobotBrain/protocol_consts.py`) with the
 subset of options the client cares about — TCP/network sizing, AEAD wire
 constants, profile flags, architecture flags.
 
@@ -19,21 +19,21 @@ Run after a Kconfig change, when the client's mirror should follow:
 
     cd azos
     make defconfig-generic-sbc-riscv64-dev          # or any defconfig
-    python3 tools/build/export_kernel_consts.py --out <brain repo>/protocol_consts.py
+    python3 tools/build/export_kernel_consts.py --out <companion repo>/protocol_consts.py
 
-The output file is regenerated; manual edits are lost.  Brain code that
+The output file is regenerated; manual edits are lost.  Companion code that
 needs a value imports it:
 
     from protocol_consts import KERNEL_TCP_MAX_CONNS
 
 Drift detection, both sides:
   * `--check` (the protocol-sync step of tools/gate/ci_full.sh, `make ci-full`,
-    which runs it only when the brain repo is found) exits 1 when the file
+    which runs it only when the companion repo is found) exits 1 when the file
     holds other values than this `.config`
     gives (its header, which names the source, is not compared), or when an
     EXPORTED symbol is not declared in the Kconfig tree any more;
-  * the brain's pytest loads `protocol_consts.py` and checks the invariants
-    the brain relies on (e.g. `KERNEL_TCP_MAX_CONNS` against its connection
+  * the companion's pytest loads `protocol_consts.py` and checks the invariants
+    the companion relies on (e.g. `KERNEL_TCP_MAX_CONNS` against its connection
     pool sizing).
 `--self-test` runs the check against a planted drift.
 """
@@ -49,17 +49,17 @@ from typing import Optional
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "../lib"))
 import azos_tools  # noqa: E402
 
-# ── The brain-relevant subset of Kconfig options ─────────────────────────
+# ── The companion-relevant subset of Kconfig options ─────────────────────────
 #
 # Each entry: (kconfig_name, python_name, type)
 # type ∈ {"int", "bool", "str"}.
 #
 # Keep this list tight — exporting EVERY Kconfig option would couple the
-# brain to internal kernel decisions that don't affect cross-side
-# behaviour.  The criterion for inclusion is: "does the brain need to
+# companion to internal kernel decisions that don't affect cross-side
+# behaviour.  The criterion for inclusion is: "does the companion need to
 # reason about this number / flag to talk to the kernel correctly?"
 EXPORTED: list[tuple[str, str, str]] = [
-    # ── Architecture / board (informational; brain may key behaviour on these)
+    # ── Architecture / board (informational; companion may key behaviour on these)
     ("ARCH_RISCV64",         "KERNEL_ARCH_RISCV64",         "bool"),
     ("ARCH_AARCH64",         "KERNEL_ARCH_AARCH64",         "bool"),
     ("ARCH_X86_64",          "KERNEL_ARCH_X86_64",          "bool"),
@@ -67,28 +67,28 @@ EXPORTED: list[tuple[str, str, str]] = [
     ("BOARD_VF2",            "KERNEL_BOARD_VF2",            "bool"),
     ("BOARD_K1",             "KERNEL_BOARD_K1",             "bool"),
 
-    # ── Profile (drives brain-side capacity decisions: connection pool,
+    # ── Profile (drives companion-side capacity decisions: connection pool,
     #    metric histogram buckets, etc.): the limits tier of the HWCLASS axis.
     #    A `|` list is true when any of its symbols is.
     ("HWCLASS_EMBEDDED",     "KERNEL_PROFILE_EMBEDDED",     "bool"),
     ("HWCLASS_SBC|HWCLASS_DESKTOP", "KERNEL_PROFILE_EDGE",  "bool"),
     ("HWCLASS_SERVER",       "KERNEL_PROFILE_FLEET",        "bool"),
 
-    # ── Connection / socket caps (brain MUST stay under these)
+    # ── Connection / socket caps (companion MUST stay under these)
     ("TCP_MAX_CONNS",        "KERNEL_TCP_MAX_CONNS",        "int"),
     ("MAX_SOCKETS",          "KERNEL_MAX_SOCKETS",          "int"),
 
-    # ── Network buffers (brain TCP buffer sizing matches kernel)
+    # ── Network buffers (companion TCP buffer sizing matches kernel)
     ("TCP_BUF_SIZE",         "KERNEL_TCP_BUF_SIZE",         "int"),
 
-    # ── Security (the brain mirrors the kernel boot policy)
+    # ── Security (the companion mirrors the kernel boot policy)
     ("SECURE_BOOT_ENFORCED", "KERNEL_SECURE_BOOT_ENFORCED", "bool"),
 
-    # ── OTA (brain's fleet-OTA endpoint validates max image size)
+    # ── OTA (companion's fleet-OTA endpoint validates max image size)
     ("OTA_MAX_IMAGE_SIZE_MB", "KERNEL_OTA_MAX_IMAGE_SIZE_MB", "int"),
     ("OTA_SIG_MANDATORY",     "KERNEL_OTA_SIG_MANDATORY",     "bool"),
 
-    # ── Task / resource ceilings (brain capacity planner uses these)
+    # ── Task / resource ceilings (companion capacity planner uses these)
     ("MAX_TASKS",            "KERNEL_MAX_TASKS",            "int"),
 ]
 
@@ -129,12 +129,12 @@ def parse_config(path: Path) -> dict[str, str]:
 
 
 def render_python(cfg: dict[str, str], sha12: Optional[str]) -> str:
-    """Emit the brain-side Python module."""
+    """Emit the companion-side Python module."""
     lines: list[str] = [
-        '"""GENERATED — kernel ↔ brain compile-time constant bridge.',
+        '"""GENERATED — kernel ↔ companion compile-time constant bridge.',
         "",
         "Run `python3 tools/build/export_kernel_consts.py` from the azos repo",
-        "to regenerate.  Manual edits are lost.  This is the brain-side",
+        "to regenerate.  Manual edits are lost.  This is the companion-side",
         "mirror.",
         "",
         f"Source: azos/.config",
@@ -227,7 +227,7 @@ def check(out_path: Path, text: str) -> int:
         for l in sorted(want - have):
             print(f"  kernel: {l}", file=sys.stderr)
         for l in sorted(have - want):
-            print(f"  brain:  {l}", file=sys.stderr)
+            print(f"  companion:  {l}", file=sys.stderr)
         return 1
     print(f"[CHECK] {out_path} is up-to-date.")
     return 0
@@ -272,7 +272,7 @@ def self_test() -> int:
 def main() -> int:
     if sys.argv[1:] == ["--self-test"]:
         return self_test()
-    p = argparse.ArgumentParser(description="Export kernel Kconfig → brain Python")
+    p = argparse.ArgumentParser(description="Export kernel Kconfig → companion Python")
     p.add_argument(
         "--config",
         default=".config",

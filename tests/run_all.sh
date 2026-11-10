@@ -53,7 +53,7 @@ done
 # ── 2. Build userspace ELFs ──
 section "Build: userspace ELFs"
 
-for elf in brain_client reflex; do
+for elf in companion_client reflex; do
     cd "$OS_DIR/userspace/services/$elf"
     if CARGO_TARGET_DIR="$AZOS_OUT/tgt/userspace/services/$elf" cargo build --release 2>&1 | grep -q "Finished"; then
         pass_section "Build $elf"

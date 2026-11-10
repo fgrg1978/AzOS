@@ -18,7 +18,7 @@
 //!    it from there, so nothing is generated into the source tree.
 //! 5. Writes `crates/drivers/sys/wcet_points.json` (committed) only when its
 //!    content changes, through a temp file in the same directory and a rename.
-//!    An external bench collector (the brain repo's `tools/bench_e2e_collect.py`)
+//!    An external bench collector (the companion repo's `tools/bench_e2e_collect.py`)
 //!    reads it by this path; nothing in this repository does.
 //!
 //! **Stable IDs**: sorting by module-qualified name before assignment means

@@ -859,7 +859,7 @@ fn check_console_io() {
 fn check_paths_and_nul() {
     // The kernel reads paths with `copy_cstr_from_user`, which scans for a
     // NUL and never sees the slice length. This is the real bug found
-    // in brain_client.
+    // in companion_client.
 
     // A path with no terminator must be rejected BY THE WRAPPER, before the
     // ecall, so the kernel never scans past the literal.

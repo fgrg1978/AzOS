@@ -286,7 +286,7 @@ fn a_task_that_exits_reads_no_more() {
 }
 
 /// **What a task does to its buffer never reaches another reader.** The task
-/// scribbles over the copy it got; the brain link's sender, a reader of the same
+/// scribbles over the copy it got; the companion link's sender, a reader of the same
 /// frame, still gets the bytes the producer wrote.
 ///
 /// **Canary.** `frame-reader-writes-canary` (the pool's view of a frame

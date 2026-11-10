@@ -7,7 +7,7 @@
 //! First user: the VisionFive 2's `gmac0` (`starfive,jh7110-dwmac`, compatible
 //! `snps,dwmac-5.20`, `jh7110.dtsi` `ethernet@16030000`), wired to a Motorcomm
 //! YT8531 RGMII PHY at MDIO address 0 (`jh7110-common.dtsi`, `phy0`), the
-//! brain link without the ESP32 bridge. The driver is generic over the
+//! companion link without the ESP32 bridge. The driver is generic over the
 //! register window ([`Mmio`]), the clock ([`Ticks`]) and the DMA domain ([`DmaOps`]), so the whole
 //! bring-up sequence, the descriptor rings and the MDIO/PHY state machine run
 //! on the host against a model of the device (`tests/host/drivers-tests`,

@@ -12,7 +12,7 @@
 //! The capture task never waits on a reader: under the default
 //! `FRAME_POOL_OVERWRITE_OLDEST` a slow TCP sender only loses frames it
 //! would have skipped anyway. It captures only while a reader is attached,
-//! every `BRAIN_CAMERA_PERIOD_MS`.
+//! every `COMPANION_CAMERA_PERIOD_MS`.
 //!
 //! The pool's buffers are kernel-owned contiguous memory objects made when the
 //! first reader attaches ([`lend_buffers`]); a frame's stamp is the vDSO clock in nanoseconds.
@@ -174,7 +174,7 @@ pub(crate) fn camera_capture_init() {
 }
 
 /// The producer: while a reader is attached, one capture every
-/// `BRAIN_CAMERA_PERIOD_MS`; otherwise blocked until an attach wakes it.
+/// `COMPANION_CAMERA_PERIOD_MS`; otherwise blocked until an attach wakes it.
 fn camera_capture_task(_: usize) {
     use azos_drv_sys::timebase::{now, TIMER_FREQ};
     CAPTURE_TID.store(azos_sched::current_task_tid(), Ordering::Release);
@@ -182,7 +182,7 @@ fn camera_capture_task(_: usize) {
     loop {
         if POOL.any_attached() {
             camera_capture_once();
-            let end = now() + azos_limits::BRAIN_CAMERA_PERIOD_MS as u64 * (TIMER_FREQ / 1000);
+            let end = now() + azos_limits::COMPANION_CAMERA_PERIOD_MS as u64 * (TIMER_FREQ / 1000);
             while now() < end {
                 azos_sched::task_block(azos_sched::WaitReason::Timer(end));
             }

@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-# AzOS, with its optional brain client — Full CI check.
+# AzOS, with its optional companion client — Full CI check.
 #
 # Validates:
 #   1. azos: the feature combos build clean (needs nothing outside this repo)
 #   2. AzOSRobotBrain: pytest suite passes
-#   3. Protocol sync: brain_protocol.rs matches protocol.py, and the brain's
+#   3. Protocol sync: companion_protocol.rs matches protocol.py, and the companion's
 #      protocol_consts.py holds the values this .config gives
 #      (tools/build/export_kernel_consts.py --check)
 #
-# Steps 2 and 3 run when the brain repo is found (tools/lib/brain_dir.sh:
-# AZOS_BRAIN_DIR, then the siblings of the checkout) and BRAIN is not 0; absent,
-# they print one skip line and the run is not red. BRAIN=1 requires the repo.
+# Steps 2 and 3 run when the companion repo is found (tools/lib/companion_dir.sh:
+# AZOS_COMPANION_DIR, then the siblings of the checkout) and COMPANION is not 0; absent,
+# they print one skip line and the run is not red. COMPANION=1 requires the repo.
 #
 # Usage: bash tools/gate/ci_full.sh
 
@@ -21,9 +21,9 @@ set -euo pipefail
 qgrep() { local rc; grep "$@"; rc=$?; cat >/dev/null; return "$rc"; }
 
 OS_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
-. "$OS_DIR/tools/lib/brain_dir.sh"
-brain_resolve "$OS_DIR" || exit 1
-BRAIN_DIR="$BRAIN_PATH"
+. "$OS_DIR/tools/lib/companion_dir.sh"
+companion_resolve "$OS_DIR" || exit 1
+COMPANION_DIR="$COMPANION_PATH"
 CARGO="${CARGO:-cargo}"
 # Outputs live under $AZOS_OUT (tools/lib/out_dir.py), never in the checkout.
 AZOS_OUT="${AZOS_OUT:-$(python3 "$(dirname "$0")/../lib/out_dir.py")}"; export AZOS_OUT
@@ -94,13 +94,13 @@ check_build "vf2"               env KCONFIG_CONFIG="$SEL_DIR/ci-full-vf2.config"
 check_build "k1"                env KCONFIG_CONFIG="$SEL_DIR/ci-full-k1.config" $CARGO build --release -p azos_kernel $(sel k1)
 echo ""
 
-# ── 2. AzOS Robot Brain tests ────────────────────────────────────────────
-echo "[2/3] AzOS Robot Brain tests"
-if [ "$BRAIN_STATE" = required ]; then
-    echo "  FAIL — BRAIN=1 but no AzOSRobotBrain at ${BRAIN_PATH:-the sibling of the checkout}"
+# ── 2. AzOS Robot Companion tests ────────────────────────────────────────────
+echo "[2/3] AzOS Robot Companion tests"
+if [ "$COMPANION_STATE" = required ]; then
+    echo "  FAIL — COMPANION=1 but no AzOSRobotBrain at ${COMPANION_PATH:-the sibling of the checkout}"
     FAIL=$((FAIL + 1))
-elif [ "$BRAIN_STATE" = found ]; then
-    cd "$BRAIN_DIR"
+elif [ "$COMPANION_STATE" = found ]; then
+    cd "$COMPANION_DIR"
     # Syntax check
     check "syntax (server.py)"   python3 -m py_compile server.py
     check "syntax (protocol.py)" python3 -m py_compile protocol.py
@@ -123,17 +123,17 @@ elif [ "$BRAIN_STATE" = found ]; then
         FAIL=$((FAIL + 1))
     fi
 else
-    echo "  SKIP — $(brain_skip_reason)"
+    echo "  SKIP — $(companion_skip_reason)"
 fi
 echo ""
 
 # ── 3. Protocol sync ───────────────────────────────────────────────
 echo "[3/3] Protocol sync"
-RUST_PROTO="$OS_DIR/crates/domains/robot/behavior/src/brain_protocol.rs"
-PY_PROTO="$BRAIN_DIR/protocol.py"
+RUST_PROTO="$OS_DIR/crates/domains/robot/behavior/src/companion_protocol.rs"
+PY_PROTO="$COMPANION_DIR/protocol.py"
 
-if [ "$BRAIN_STATE" != found ]; then
-    echo "  SKIP — $(brain_skip_reason)"
+if [ "$COMPANION_STATE" != found ]; then
+    echo "  SKIP — $(companion_skip_reason)"
 elif [ -f "$RUST_PROTO" ] && [ -f "$PY_PROTO" ]; then
     SYNC_OK=true
 
@@ -167,13 +167,13 @@ else
     WARN=$((WARN + 1))
 fi
 
-# The kernel constants the brain mirrors (TCP caps, OTA size, task ceiling,
+# The kernel constants the companion mirrors (TCP caps, OTA size, task ceiling,
 # board and limits tier): its protocol_consts.py against this checkout's
 # .config. A drift warns, as the packet check above does: the mirror follows
-# one chosen .config, and the brain's own pytest asserts what it relies on.
-PY_CONSTS="$BRAIN_DIR/protocol_consts.py"
-if [ "$BRAIN_STATE" != found ]; then
-    echo "  SKIP — $(brain_skip_reason)"
+# one chosen .config, and the companion's own pytest asserts what it relies on.
+PY_CONSTS="$COMPANION_DIR/protocol_consts.py"
+if [ "$COMPANION_STATE" != found ]; then
+    echo "  SKIP — $(companion_skip_reason)"
 elif [ -f "$OS_DIR/.config" ]; then
     if CONSTS_OUT="$(python3 "$OS_DIR/tools/build/export_kernel_consts.py" --config "$OS_DIR/.config" --out "$PY_CONSTS" --check 2>&1)"; then
         echo "  Kernel constants:             PASS"

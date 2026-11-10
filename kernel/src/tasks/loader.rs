@@ -258,7 +258,7 @@ pub(crate) fn load_and_exec_image(path_slice: &[u8]) {
     // Every hardware syscall checks the caller's capability table: the typed
     // calls resolve a handle, the untyped ones ask `cap_check`. Before ring 3
     // was granted anything, every `sensor_read`/`motor_speed` from ring 3
-    // returned E_PERM, and reflex and brain_client could be started and still
+    // returned E_PERM, and reflex and companion_client could be started and still
     // do nothing: reflex treats a failed range read as "no obstacle"
     // (`range_front > 0` guards the comparison), so a blind daemon and a daemon
     // on a clear road produce byte-identical output.
@@ -298,7 +298,7 @@ pub(crate) fn load_and_exec_image(path_slice: &[u8]) {
                     }
                     for cap in topo.caps_of(task) {
                         let target = cap.target.as_str();
-                        // A kernel-hosted endpoint (the brain-link PSK, the
+                        // A kernel-hosted endpoint (the companion-link PSK, the
                         // entropy pool, ...) goes only to an image whose seccomp
                         // row LISTS its interface. The topology names the
                         // `autorun` ROW, not an image, so without this the key
@@ -555,8 +555,8 @@ pub(crate) fn load_and_exec_image(path_slice: &[u8]) {
 /// never fire only while it is strictly larger than `MAX_VAL`.
 ///
 /// That margin is what the assert below holds. Raising `MAX_VAL` past 63
-/// would otherwise bring back an old bug (`/fat/BRAINCLI.ELF` cut to
-/// `/fat/BRAINCLI.EL`, surfacing as "[AUTORUN] File not found") at a cut
+/// would otherwise bring back an old bug (a 17-byte autorun path cut to
+/// 16, surfacing as "[AUTORUN] File not found") at a cut
 /// point with no counter behind it. The build fails instead.
 // Shared by every ISA — `autorun_task` itself lost its riscv64-only gate for
 // the same reason (see that function's own doc): this buffer and its length

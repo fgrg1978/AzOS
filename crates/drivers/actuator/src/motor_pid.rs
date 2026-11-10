@@ -292,7 +292,7 @@ pub fn motor_pid_init() {
 /// Set the target speed for both channels (ticks per second).
 ///
 /// Positive = forward, negative = reverse.
-/// Called from the deliberative layer (behavior task / brain protocol).
+/// Called from the deliberative layer (behavior task / companion protocol).
 pub fn motor_pid_set_target(speed_l: i16, speed_r: i16) {
     TARGET_SPEED_L.store(speed_l, Ordering::Relaxed);
     TARGET_SPEED_R.store(speed_r, Ordering::Relaxed);

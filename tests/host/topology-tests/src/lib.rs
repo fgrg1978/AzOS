@@ -1891,17 +1891,17 @@ mod builder_tests {
     }
 
     #[test]
-    fn default_topology_has_supervisor_and_the_robots_brain_link() {
+    fn default_topology_has_supervisor_and_the_robots_companion_link() {
         let t = default_minimal();
-        // supervisor, brain_link, autorun (P1 cap-seed migration entry —
+        // supervisor, companion_link, autorun (P1 cap-seed migration entry —
         // see `default_topology_has_autorun_motor_grants` below).
-        // 5: supervisor, brain_link, autorun, the
+        // 5: supervisor, companion_link, autorun, the
         // `VSSRV.ELF` benchmark server (a `fork()`ed peer can never be
         // addressed by capability) and the
         // `EPSRV.ELF` row — the first named after an IMAGE, which is how a
         // spawned process gets any capability at all.
         // +3: the unconditional board service registry rows
-        // (`GPIODRV.ELF`/`REFLEX.ELF`/`BRAINCLI.ELF`) — an
+        // (`GPIODRV.ELF`/`REFLEX.ELF`/`COMPCLI.ELF`) — an
         // ELF ships on a board volume iff the topology declares a service it
         // provides. See `crates/core/topology/src/builder.rs`'s
         // `TASK_GPIODRV_IMAGE` block comment.
@@ -1916,8 +1916,8 @@ mod builder_tests {
         // +1 with transparent RPC: the RPC server (RPCSRV.ELF).
         // +1 with the structured kernel log: its sink (LOGD.ELF).
         assert_eq!(t.tasks_len(), if cfg!(feature = "ipc-endpoint-canary") { 28 } else { 26 }
-            - !azos_topology::builder::BRAIN_LINK_ROW as usize
-            - !azos_topology::builder::BRAINCLI_ROW as usize
+            - !azos_topology::builder::COMPANION_LINK_ROW as usize
+            - !azos_topology::builder::COMPCLI_ROW as usize
             - 2 * !azos_topology::builder::PKGD_ROW as usize
             - !azos_topology::builder::INADRV_ROW as usize
             - !azos_topology::builder::BUZZDRV_ROW as usize
@@ -1944,10 +1944,10 @@ mod builder_tests {
             .expect("supervisor present");
         let class = t.find_class(&supervisor.class_name).unwrap();
         assert_eq!(class.name, MaybeStr::from_bytes(b"safety_critical"));
-        let brain = t.find_task(&MaybeStr::from_bytes(b"brain_link"));
-        assert_eq!(brain.is_some(), azos_topology::builder::BRAIN_LINK_ROW, "the brain link's row is the robot extension's");
-        if let Some(brain) = brain {
-            assert!(t.find_class(&brain.class_name).is_some());
+        let companion = t.find_task(&MaybeStr::from_bytes(b"companion_link"));
+        assert_eq!(companion.is_some(), azos_topology::builder::COMPANION_LINK_ROW, "the companion link's row is the robot extension's");
+        if let Some(companion) = companion {
+            assert!(t.find_class(&companion.class_name).is_some());
         }
     }
 
@@ -1988,22 +1988,22 @@ mod builder_tests {
     fn board_service_registry_declares_the_three_real_board_images() {
         let t = default_minimal();
         assert_eq!(
-            t.find_task(&MaybeStr::from_bytes(b"BRAINCLI.ELF")).is_some(),
-            azos_topology::builder::BRAINCLI_ROW,
-            "the brain client's row follows USERSPACE_BRAINCLI"
+            t.find_task(&MaybeStr::from_bytes(b"COMPCLI.ELF")).is_some(),
+            azos_topology::builder::COMPCLI_ROW,
+            "the companion client's row follows USERSPACE_COMPCLI"
         );
         let mut names = vec![&b"GPIODRV.ELF"[..], &b"REFLEX.ELF"[..]];
-        if azos_topology::builder::BRAINCLI_ROW {
-            names.push(b"BRAINCLI.ELF");
+        if azos_topology::builder::COMPCLI_ROW {
+            names.push(b"COMPCLI.ELF");
         }
         for name in names {
             let task = t
                 .find_task(&MaybeStr::from_bytes(name))
                 .unwrap_or_else(|| panic!("board service row missing: {:?}", core::str::from_utf8(name)));
-            // `BRAINCLI.ELF` reads `CONFIG.INI` beneath the read-only root
+            // `COMPCLI.ELF` reads `CONFIG.INI` beneath the read-only root
             // directory and holds nothing else; `GPIODRV.ELF` serves its
             // `DevicePower` endpoint (`pm_endpoint_tests`).
-            let want = usize::from(name == b"BRAINCLI.ELF" || name == b"GPIODRV.ELF");
+            let want = usize::from(name == b"COMPCLI.ELF" || name == b"GPIODRV.ELF");
             let caps = t.caps_of(task);
             assert_eq!(
                 caps.len(),
@@ -2112,7 +2112,7 @@ mod builder_tests {
             !caps.iter().any(|c| c.kind == CapKind::Endpoint && c.target == MaybeStr::from_bytes(b"power")),
             "the default topology must not grant the power endpoint to autorun",
         );
-        // The brain-link key: the kernel-hosted `linkkey` endpoint, READ only,
+        // The companion-link key: the kernel-hosted `linkkey` endpoint, READ only,
         // one grant, never transferable. The kernel additionally withholds it
         // from any image whose seccomp row does not list the interface
         // (kernel/src/tasks/loader.rs autorun seeding), so this row alone does
@@ -2331,14 +2331,14 @@ mod state_tests {
         // get() now returns the loaded topology.
         let t = get().expect("post-init get must yield topology");
         assert_eq!(t.classes_len(), 6);
-        // supervisor, brain_link, autorun (P1 cap-seed migration entry).
-        // 5: supervisor, brain_link, autorun, the
+        // supervisor, companion_link, autorun (P1 cap-seed migration entry).
+        // 5: supervisor, companion_link, autorun, the
         // `VSSRV.ELF` benchmark server (a `fork()`ed peer can never be
         // addressed by capability) and the
         // `EPSRV.ELF` row — the first named after an IMAGE, which is how a
         // spawned process gets any capability at all.
         // +3: the unconditional board service registry rows
-        // (`GPIODRV.ELF`/`REFLEX.ELF`/`BRAINCLI.ELF`) — an
+        // (`GPIODRV.ELF`/`REFLEX.ELF`/`COMPCLI.ELF`) — an
         // ELF ships on a board volume iff the topology declares a service it
         // provides. See `crates/core/topology/src/builder.rs`'s
         // `TASK_GPIODRV_IMAGE` block comment.
@@ -2351,8 +2351,8 @@ mod state_tests {
         // +1 with transparent RPC: the RPC server (RPCSRV.ELF).
         // +1 with the structured kernel log: its sink (LOGD.ELF).
         assert_eq!(t.tasks_len(), if cfg!(feature = "ipc-endpoint-canary") { 28 } else { 26 }
-            - !azos_topology::builder::BRAIN_LINK_ROW as usize
-            - !azos_topology::builder::BRAINCLI_ROW as usize
+            - !azos_topology::builder::COMPANION_LINK_ROW as usize
+            - !azos_topology::builder::COMPCLI_ROW as usize
             - 2 * !azos_topology::builder::PKGD_ROW as usize
             - !azos_topology::builder::INADRV_ROW as usize
             - !azos_topology::builder::BUZZDRV_ROW as usize
@@ -2386,13 +2386,13 @@ mod state_tests {
 
         // get() still returns the originally-loaded topology.
         let t = get().expect("topology still installed");
-        // 5: supervisor, brain_link, autorun, the
+        // 5: supervisor, companion_link, autorun, the
         // `VSSRV.ELF` benchmark server (a `fork()`ed peer can never be
         // addressed by capability) and the
         // `EPSRV.ELF` row — the first named after an IMAGE, which is how a
         // spawned process gets any capability at all.
         // +3: the unconditional board service registry rows
-        // (`GPIODRV.ELF`/`REFLEX.ELF`/`BRAINCLI.ELF`) — an
+        // (`GPIODRV.ELF`/`REFLEX.ELF`/`COMPCLI.ELF`) — an
         // ELF ships on a board volume iff the topology declares a service it
         // provides. See `crates/core/topology/src/builder.rs`'s
         // `TASK_GPIODRV_IMAGE` block comment.
@@ -2405,8 +2405,8 @@ mod state_tests {
         // +1 with transparent RPC: the RPC server (RPCSRV.ELF).
         // +1 with the structured kernel log: its sink (LOGD.ELF).
         assert_eq!(t.tasks_len(), if cfg!(feature = "ipc-endpoint-canary") { 28 } else { 26 }
-            - !azos_topology::builder::BRAIN_LINK_ROW as usize
-            - !azos_topology::builder::BRAINCLI_ROW as usize
+            - !azos_topology::builder::COMPANION_LINK_ROW as usize
+            - !azos_topology::builder::COMPCLI_ROW as usize
             - 2 * !azos_topology::builder::PKGD_ROW as usize
             - !azos_topology::builder::INADRV_ROW as usize
             - !azos_topology::builder::BUZZDRV_ROW as usize
@@ -3831,8 +3831,8 @@ mod row_sched_tests {
         // The three board programs: best_effort at the service number, 24,
         // declared as such (no row relies on the clamp).
         let mut boards = vec![&b"GPIODRV.ELF"[..], b"REFLEX.ELF"];
-        if azos_topology::builder::BRAINCLI_ROW {
-            boards.push(b"BRAINCLI.ELF");
+        if azos_topology::builder::COMPCLI_ROW {
+            boards.push(b"COMPCLI.ELF");
         }
         for n in boards {
             assert_eq!(applied(&t, n), ("best_effort".into(), 24, 24));
@@ -3863,8 +3863,8 @@ mod row_sched_tests {
         }
         // Rows that name no task the kernel creates; resolved all the same.
         assert_eq!(applied(&t, b"supervisor"), ("safety_critical".into(), 0, 0));
-        if azos_topology::builder::BRAIN_LINK_ROW {
-            assert_eq!(applied(&t, b"brain_link"), ("best_effort".into(), 24, 24));
+        if azos_topology::builder::COMPANION_LINK_ROW {
+            assert_eq!(applied(&t, b"companion_link"), ("best_effort".into(), 24, 24));
         }
         // Gate-only rows: the servers of `autorun` (16), one above it.
         #[cfg(feature = "ipc-endpoint-canary")]
@@ -4088,7 +4088,7 @@ mod memory_admission_tests {
 
     #[test]
     fn ring3_rows_are_images_and_autorun() {
-        let t = topo(b"[task.autorun]\n[task.GPIODRV.ELF]\n[task.supervisor]\n[task.brain_link]\n[task.x.elf]\n");
+        let t = topo(b"[task.autorun]\n[task.GPIODRV.ELF]\n[task.supervisor]\n[task.companion_link]\n[task.x.elf]\n");
         let r: Vec<bool> = t.tasks().iter().map(|t| t.is_ring3()).collect();
         assert_eq!(r, vec![true, true, false, false, true]);
     }
@@ -7322,7 +7322,7 @@ mod mcp_row_tests {
 
     /// **The builder's copy of the mask is the interface's.** The topology crate
     /// cannot depend on `azos_devif`, so it restates the bit of `node_key`; the
-    /// op table says which op that is, and that `read` and `brain_pk` are other
+    /// op table says which op that is, and that `read` and `companion_pk` are other
     /// bits.
     ///
     /// **Canary.** Move `node_key` in the trait (or change the builder's
@@ -7333,7 +7333,7 @@ mod mcp_row_tests {
         let bit = |name: &str| LinkKeyIdl::OPS.iter().find(|o| o.name == name).map(|o| 1u64 << o.op).expect("an op of that name");
         assert_eq!(azos_topology::builder::LINK_KEY_NODE_KEY_OPS, bit("node_key"));
         assert_eq!(azos_devif::linkkey::NODE_KEY_OPS, bit("node_key"));
-        assert_eq!(azos_devif::linkkey::NODE_KEY_OPS & (bit("read") | bit("brain_pk")), 0);
+        assert_eq!(azos_devif::linkkey::NODE_KEY_OPS & (bit("read") | bit("companion_pk")), 0);
     }
 
     /// **The builder's copy of the signer mask is the interface's.** The topology
@@ -7472,7 +7472,7 @@ mod mcp_row_tests {
     /// reserved-sector key, which is also the seed every node key derives from.
     /// The rows that need an identity (`RPCSRV.ELF`, `MCPD.ELF`) hold `READ` on
     /// `linkkey` masked to `node_key` and nothing else on that endpoint. Only the
-    /// `autorun` row (the kernel seeds `brain_client`, the link itself, from it)
+    /// `autorun` row (the kernel seeds `companion_client`, the link itself, from it)
     /// is `READ` unmasked. The network-facing `SSHD.ELF` holds no `linkkey` at all:
     /// its host key is in the keystore.
     ///

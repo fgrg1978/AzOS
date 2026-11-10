@@ -49,7 +49,7 @@
 //! `Σ N × locked pages + Σ N × ceiling pages × (2 if it may fork, else 1)
 //! + kernel reserve <= free pages`, over the ring-3 rows, with `free pages`
 //! read from the page allocator after the kernel heap and the DMA pool are
-//! taken. Kernel rows (`supervisor`, `brain_link`, ...) run on the kernel's
+//! taken. Kernel rows (`supervisor`, `companion_link`, ...) run on the kernel's
 //! own mappings and hold no user frames; they are not counted. Pure
 //! arithmetic, so `tests/host/topology-tests` pins it; the kernel calls it once,
 //! before the first ring-3 task exists.

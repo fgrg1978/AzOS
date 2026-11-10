@@ -80,8 +80,8 @@ and its limits. Authors start from the two templates.
 | [design/page-size.md](design/page-size.md) | The base page per ISA and the larger-translation mechanisms. |
 | [design/lx-driver-slices.md](design/lx-driver-slices.md) | Linux driver slices in ring 3: the module sources each needs and what running the ext4 module set in a ring-3 server requires. |
 | [design/arch/aarch64-trap-return-windows.md](design/arch/aarch64-trap-return-windows.md) | Masking interrupts across the aarch64 trap return. |
-| [design/forward-secret-link.md](design/forward-secret-link.md) | The forward-secret encrypted brain link. |
-| [design/robot/degrade-levels.md](design/robot/degrade-levels.md) | The four graded degrade levels the brain can select. |
+| [design/forward-secret-link.md](design/forward-secret-link.md) | The forward-secret encrypted companion link. |
+| [design/robot/degrade-levels.md](design/robot/degrade-levels.md) | The four graded degrade levels the companion can select. |
 | [design/robot/motor-envelope.md](design/robot/motor-envelope.md) | The gate between a motor command and the PWM hardware. |
 | [design/robot/transactional-control-ticks.md](design/robot/transactional-control-ticks.md) | Surviving a recoverable fault inside the control loop. |
 | [design/prior-art/linux-bsd.md](design/prior-art/linux-bsd.md) | Prior art: Linux and BSD kernel mechanisms. |

@@ -253,7 +253,7 @@ const E_EPERM: isize = -1;
 // at least once per period.
 
 /// Budget for one child verdict, in milliseconds of real `mtime`. Generous
-/// on purpose: this kernel runs a benchmark suite, a brain-link handshake
+/// on purpose: this kernel runs a benchmark suite, a companion-link handshake
 /// spinning at ~400k yields per two seconds, and a telemetry task alongside
 /// the test, and a starved child that eventually answers must not be reported
 /// as a dead one. The QEMU scenario's own 180 s ceiling is the real backstop.

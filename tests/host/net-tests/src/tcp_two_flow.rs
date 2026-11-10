@@ -17,15 +17,15 @@
 //!
 //! **The control flow.** `CONTROL_MSG` = 31 B written every
 //! `CONTROL_PERIOD_MS` = 100 ms. 31 B is a diff-drive ActuatorCmd sealed for
-//! the brain link: a 13 B frame (payload 3 + 2 x 2 channels, `FRAME_OVERHEAD`
-//! 6, in `crates/domains/robot/behavior/src/brain_protocol.rs`) in one Noise transport
+//! the companion link: a 13 B frame (payload 3 + 2 x 2 channels, `FRAME_OVERHEAD`
+//! 6, in `crates/domains/robot/behavior/src/companion_protocol.rs`) in one Noise transport
 //! frame of `secure_channel::FRAME_OVERHEAD` 18 (`crates/core/crypto/src/secure_channel.rs`).
 //! 100 ms is the order of the behaviour engine's period (`SENSOR_PERIOD_MS` in
-//! `userspace/services/brain_client/src/main.rs`), which sends one sensor frame per pass. On the robot
-//! the actuator command travels brain to robot, and the telemetry this stack
+//! `userspace/services/companion_client/src/main.rs`), which sends one sensor frame per pass. On the robot
+//! the actuator command travels companion to robot, and the telemetry this stack
 //! sends shares one socket with the camera; here both flows are this stack's
 //! senders on separate connections, because this stack's congestion response
-//! is what is measured. TCP, as the brain link is.
+//! is what is measured. TCP, as the companion link is.
 //!
 //! **Loss.** Queue drops always. In the lossy runs, also each data segment of
 //! either flow, new or resent, independently with probability 2% before the

@@ -3,15 +3,15 @@
 #![no_std]
 
 //! The robot's behaviour stack as the kernel keeps it: the safety layer's
-//! checks and envelope (run by the robot enforcer), the brain protocol's
+//! checks and envelope (run by the robot enforcer), the companion protocol's
 //! framing and the frames that ask for authority, the payload drivers, the RC
 //! receiver's policy, the sensor bus and the layer switches the ring-3
-//! behaviour engine (`userspace/services/brain_client`) reads. Choosing a
+//! behaviour engine (`userspace/services/companion_client`) reads. Choosing a
 //! motion is the engine's.
 
 pub mod types;
 pub mod switches;
-pub mod brain_protocol;
+pub mod companion_protocol;
 pub mod safety;
 // The RC receiver's safety policy (Kconfig `RC_INPUT`).
 #[cfg(feature = "rc-input")]
@@ -27,13 +27,13 @@ pub use azos_actuation::{estop, logger};
 pub use types::*;
 
 pub use switches::{layer_mask, layer_set_enabled};
-pub use brain_protocol::{
+pub use companion_protocol::{
     build_packet, parse_packet, crc8,
     encode_sensor_packet, encode_status_packet, decode_actuator_cmd,
     decode_predict_cmd, PredictCmd,
     encode_camera_header,
     decode_mode_cmd, decode_waypoint_cmd, decode_config_cmd,
-    ActuatorCmd as BrainActuatorCmd,
+    ActuatorCmd as CompanionActuatorCmd,
     ModeCmd, WaypointCmd, ConfigCmd,
     PKT_SENSOR, PKT_CAMERA, PKT_STATUS, PKT_OTA_ACK,
     PKT_ACTUATOR, PKT_MODE, PKT_WAYPOINT, PKT_CONFIG, PKT_PAYLOAD,

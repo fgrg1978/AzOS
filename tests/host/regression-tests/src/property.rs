@@ -10,12 +10,12 @@
 //! This file seeds the kernel with a small starter set; new property
 //! tests should land here as we promote modules.
 //!
-//! `brain_protocol_props` (added below the ring / window modules) uses
-//! `#[path]` to pull in the pure-Rust `brain_protocol.rs` directly,
+//! `companion_protocol_props` (added below the ring / window modules) uses
+//! `#[path]` to pull in the pure-Rust `companion_protocol.rs` directly,
 //! matching the same pattern used for `dtb_src` in `lib.rs`. The
 //! behavior crate pulls in `azos_drv_*` (MMIO-bound, not host-
 //! compilable), so we cannot add it as a dev-dep — instead we include
-//! the source file directly. `brain_protocol.rs` has no crate imports;
+//! the source file directly. `companion_protocol.rs` has no crate imports;
 //! it only uses `core`/`std` — clean compile on Apple Silicon.
 
 #[cfg(test)]
@@ -113,21 +113,21 @@ mod window_clamp_invariants {
     }
 }
 
-// ── brain_protocol round-trip + fuzz properties (TS01) ────────────
+// ── companion_protocol round-trip + fuzz properties (TS01) ────────────
 //
-// We include brain_protocol.rs directly via `#[path]` so we exercise the
+// We include companion_protocol.rs directly via `#[path]` so we exercise the
 // exact source shipped in the kernel without dragging in azos_behavior
 // (which depends on azos_drv_* — MMIO-bound, cannot host-compile).
-// brain_protocol.rs has no `use crate::*` imports; it only relies on
+// companion_protocol.rs has no `use crate::*` imports; it only relies on
 // core types, so it compiles cleanly on the host target.
 
 #[allow(dead_code, unused_imports, clippy::all)]
-#[path = "../../../../crates/domains/robot/behavior/src/brain_protocol.rs"]
-mod brain_protocol_src;
+#[path = "../../../../crates/domains/robot/behavior/src/companion_protocol.rs"]
+mod companion_protocol_src;
 
 #[cfg(test)]
-mod brain_protocol_props {
-    use super::brain_protocol_src as bp;
+mod companion_protocol_props {
+    use super::companion_protocol_src as bp;
     use proptest::prelude::*;
 
     // ── Named constants for frame structure ──────────────────────────────

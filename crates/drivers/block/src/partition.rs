@@ -44,7 +44,7 @@
 //!
 //! # The AzOS records partition
 //!
-//! On a GPT medium the kernel's own records (the brain-link key, the entropy
+//! On a GPT medium the kernel's own records (the companion-link key, the entropy
 //! seed, the device record, the topology counter floor: `kernel/src/
 //! reserved_tail.rs`) live in a small partition of type
 //! [`GPT_RECORDS_GUID`], 653ED7AA-51CA-43D8-9AF7-54775962C612 (generated once,

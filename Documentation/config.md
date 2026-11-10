@@ -469,7 +469,7 @@ The index lists every declared option: 1323.
 | `BOOT_INI_MAX_KB` | `config/subsys/Kconfig.topology` | Largest CONFIG.INI the boot reads (KiB) |
 | `BOOT_SELFTESTS` | `config/axes/Kconfig.build` | Boot self-tests: start the demo, stress and probe work at boot |
 | `BOOT_SLOTS` | `config/subsys/Kconfig.ota` | A/B boot slots: slot validation, boot counter, recovery mode, boot confirmation |
-| `BRAIN_CAMERA_PERIOD_MS` | `config/subsys/Kconfig.drivers` | Frame class: capture period while a reader is attached (ms) |
+| `COMPANION_CAMERA_PERIOD_MS` | `config/subsys/Kconfig.drivers` | Frame class: capture period while a reader is attached (ms) |
 | `BUILD_TYPE_CERTIFIABLE` | `config/axes/Kconfig.build` | Certifiable: release, with secure boot and signed OTA forced on |
 | `BUILD_TYPE_DEV` | `config/axes/Kconfig.build` | Development: test machinery and the TEST key allowed |
 | `BUILD_TYPE_RELEASE` | `config/axes/Kconfig.build` | Release: test machinery forced off, TEST key refused |
@@ -772,7 +772,7 @@ The index lists every declared option: 1323.
 | `KTRACE_TS_TIMEBASE` | `config/kernel/Kconfig.trace` | The monotonic timebase (the clock vDSO's) |
 | `LAT_FAT_SMOKE` | `config/axes/Kconfig.build` | Gate kernel: the latency smoke with its disk load through FAT32 |
 | `LAT_TRACE` | `config/kernel/Kconfig.trace` | Interrupts-masked / preemption-disabled window tracer |
-| `LINK_PROVISIONING_ENFORCED` | `config/subsys/Kconfig.secure-boot` | Brain link provisioning: no boot without a link key |
+| `LINK_PROVISIONING_ENFORCED` | `config/subsys/Kconfig.secure-boot` | Companion link provisioning: no boot without a link key |
 | `LINUX_ABI` | `config/axes/Kconfig.personality` | Linux syscall personality (static Linux binaries) |
 | `LINUX_DRIVERS` | `config/axes/Kconfig.personality` | Linux driver support (ring-3 servers) |
 | `LINUX_IO_MAX` | `config/axes/Kconfig.personality` | Linux personality: bytes one read/write/readv/writev moves at most |
@@ -1365,7 +1365,7 @@ The index lists every declared option: 1323.
 | `USERSPACE_ABITEST` | `tools/build/gen_userspace_kconfig.py` | ABITEST.ELF (userspace/tests/abitest) |
 | `USERSPACE_AUDIOD` | `tools/build/gen_userspace_kconfig.py` | AUDIOD.ELF (userspace/services/audiod) |
 | `USERSPACE_BEHAVIOR` | `tools/build/gen_userspace_kconfig.py` | BEHAVIOR.ELF (userspace/services/famtools) |
-| `USERSPACE_BRAINCLI` | `tools/build/gen_userspace_kconfig.py` | BRAINCLI.ELF (userspace/services/brain_client) |
+| `USERSPACE_COMPCLI` | `tools/build/gen_userspace_kconfig.py` | COMPCLI.ELF (userspace/services/companion_client) |
 | `USERSPACE_BUZZDRV` | `tools/build/gen_userspace_kconfig.py` | BUZZDRV.ELF (userspace/drivers/buzz_drv) |
 | `USERSPACE_CAPTEST` | `tools/build/gen_userspace_kconfig.py` | CAPTEST.ELF (userspace/tests/captest) |
 | `USERSPACE_COMPMGR` | `tools/build/gen_userspace_kconfig.py` | COMPMGR.ELF (userspace/services/compmgr) |

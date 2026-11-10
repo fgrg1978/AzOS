@@ -39,7 +39,7 @@ so the gate never compensates (a compensation would put the kernel's hold on a
 wheel for a command that moved nothing). Each wheel then names its caller, and
 the caller's exit puts a stop on the loop's channel as well as on the wheels
 (`motor_commander::exit_stop`). It is the ring-3 behaviour engine's way to command
-the robot (`BRAINCLI.ELF`).
+the robot (`COMPCLI.ELF`).
 
 **The gate.** `azos_actuation::effect_gate` is the second check. It is built with
 Kconfig `EFFECT_WRITE_AHEAD` (default `y` when the robot domain is built in) and
@@ -93,7 +93,7 @@ shared by every domain with an actuator.
   write from every path is clamped, so no command can slip in between the latch
   and the stop.
 - `gate::latch_and_stop` is the sequence the e-stop sources end in (ring 3,
-  the brain's `PKT_ESTOP` (through `Authority` or the UART bridge), the RC link, the kill switch and the system
+  the companion's `PKT_ESTOP` (through `Authority` or the UART bridge), the RC link, the kill switch and the system
   watchdog): it latches, then runs the stop of every effect provider the
   extensions installed (`providers::install`, the contract in
   `crates/core/ext-api`), in installation order. A geofence breach and the boot's
@@ -138,7 +138,7 @@ shared by every domain with an actuator.
   bounds); it retires the payload pulse, latches the e-stop on an RC link
   loss or kill switch (Kconfig `RC_INPUT`) and arms and latches the geofence
   (Kconfig `GEOFENCE`).
-- A frame of the brain protocol that asks for authority is answered in the
+- A frame of the companion protocol that asks for authority is answered in the
   kernel (`azos_safety_core::frames`): the behaviour engine hands it over (in
   ring 3 through the `Authority` interface: `put` the payload in 48-byte
   pieces, then `frame`; `WRITE` without the containment step, because an
@@ -156,7 +156,7 @@ shared by every domain with an actuator.
   and durable record). An unsigned relaxation is refused with a
   `Rule::EstopRelease` receipt (cause `RELEASE_CAUSE_UNSIGNED_RELAX`). A mode
   change never lifts degraded mode.
-- The UART bridge (VF2) is the brain's TCP-independent e-stop channel: the
+- The UART bridge (VF2) is the companion's TCP-independent e-stop channel: the
   robot enforcer reads the line and every `PKT_ESTOP` frame latches straight in
   the kernel; it takes no other frame, and the `Uart` interface refuses to
   attach the claimed line.

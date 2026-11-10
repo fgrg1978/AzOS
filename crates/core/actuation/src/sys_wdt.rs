@@ -213,7 +213,7 @@ pub fn system_wdt_task(_: usize) {
     // empirical observation showed sys-wdt never reaches its
     // loop body under QEMU TCG — only the early-boot "[WDT] crash counter reset"
     // line emits, then nothing.  Moved the auto-report to `behavior_task` which
-    // demonstrably runs (visible via [BRAIN] log entries throughout bench).
+    // demonstrably runs (visible via [COMPANION] log entries throughout bench).
     // sys-wdt liveness is a separate preexisting issue, tracked separately.
 
     loop {

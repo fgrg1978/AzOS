@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The encrypted link's secure channel (the robot extension's brain link is its user): a Noise handshake (`noise.rs`) and the
+//! The encrypted link's secure channel (the robot extension's companion link is its user): a Noise handshake (`noise.rs`) and the
 //! Noise transport it yields, framed for a TCP byte stream.
 //!
 //! Pure `no_std`, no allocation, no RNG, no clock: the caller hands in every
@@ -10,11 +10,11 @@
 //!
 //! ## Roles
 //!
-//! The robot is the TCP client (it dials the brain) and the Noise
-//! **initiator**; the brain is the TCP server and the Noise responder. One
+//! The robot is the TCP client (it dials the companion) and the Noise
+//! **initiator**; the companion is the TCP server and the Noise responder. One
 //! inversion fewer than the previous design, and the one `IK` needs: its
-//! initiator already knows the responder's static key, which is the brain's,
-//! pinned in the signed topology (`[peer.brain]`, `noise_pk`).
+//! initiator already knows the responder's static key, which is the companion's,
+//! pinned in the signed topology (`[peer.companion]`, `noise_pk`).
 //!
 //! ## Keys, from the one provisioned secret
 //!
@@ -22,19 +22,19 @@
 //! an X25519 scalar. Static keys derive from it, one per side and per purpose:
 //!
 //! ```text
-//! static_sk(side) = HKDF-SHA256(salt = "azos-brain-link-v1 static",
-//!                               ikm  = link key, info = "azos brain-link <side> static v1")
+//! static_sk(side) = HKDF-SHA256(salt = "azos-companion-link-v2 static",
+//!                               ikm  = link key, info = "azos companion-link <side> static v2")
 //! ```
 //!
-//! * pinned brain key: **`Noise_IK`**. The robot is given the brain's static
+//! * pinned companion key: **`Noise_IK`**. The robot is given the companion's static
 //!   public key (it need not be derivable from the link key: the operator's
-//!   own key makes it a second factor). The brain proves it holds the private
-//!   half in message 2; the brain checks that the robot's static (sent in
+//!   own key makes it a second factor). The companion proves it holds the private
+//!   half in message 2; the companion checks that the robot's static (sent in
 //!   message 1) is the one the link key derives.
 //! * no pinned key: **`Noise_XX`**, both statics the derived ones. After
-//!   message 2 the robot compares the brain's static with the key the link
-//!   key derives for the brain and aborts before sending its own static in
-//!   message 3; the brain makes the mirrored check after message 3. A peer
+//!   message 2 the robot compares the companion's static with the key the link
+//!   key derives for the companion and aborts before sending its own static in
+//!   message 3; the companion makes the mirrored check after message 3. A peer
 //!   without the link key cannot present either static, so XX is
 //!   authenticated by the same secret as before, not trust-on-first-use.
 //!
@@ -44,15 +44,15 @@
 //! ## Wire
 //!
 //! ```text
-//! robot -> brain   [pattern 'I' | 'X']                     once, before frame 1
+//! robot -> companion   [pattern 'I' | 'X']                     once, before frame 1
 //! frame            [length u16 BE][body]                   length = body bytes
-//! IK    1 robot -> brain  e, es, s, ss      2 brain -> robot  e, ee, se
-//! XX    1 robot -> brain  e                 2 brain -> robot  e, ee, s, es
-//!       3 robot -> brain  s, se
+//! IK    1 robot -> companion  e, es, s, ss      2 companion -> robot  e, ee, se
+//! XX    1 robot -> companion  e                 2 companion -> robot  e, ee, s, es
+//!       3 robot -> companion  s, se
 //! transport frame  [length u16 BE][ChaCha20-Poly1305 ciphertext || tag]
 //! ```
 //!
-//! Handshake payloads are empty. The prologue is `"azos-brain-link-v1"` and
+//! Handshake payloads are empty. The prologue is `"azos-companion-link-v2"` and
 //! the pattern byte, so the byte the responder had to read before it could
 //! pick a pattern is bound into the transcript.
 //!
@@ -90,7 +90,7 @@
 //!
 //! ## There is no other mode
 //!
-//! The brain link is always this session: no plaintext mode, no MAC-only mode,
+//! The companion link is always this session: no plaintext mode, no MAC-only mode,
 //! and no runtime switch (a key in `/fat/CONFIG.INI` would live on the FAT
 //! volume of a removable card, so it would be an attacker-writable
 //! downgrade). A frame travels only inside a message of an
@@ -104,7 +104,7 @@
 //! provisioning around that fact, fixed at COMPILE time like
 //! `secure-boot-enforced`: a boot without a link key halts, a handshake
 //! without seeded entropy is refused, and the UART bridge, which carries
-//! brain-protocol frames outside any session, is down. See
+//! companion-protocol frames outside any session, is down. See
 //! [`link_provisioning_enforced`].
 
 use crate::chachapoly::TAG_LEN;
@@ -118,18 +118,22 @@ use crate::x25519::x25519_pubkey;
 
 /// Length of the link key (a pre-shared secret, never a curve scalar).
 pub const PSK_BYTES: usize = 32;
-/// The pattern byte for `Noise_IK` (the brain's static key is pinned).
+/// The pattern byte for `Noise_IK` (the companion's static key is pinned).
 pub const PATTERN_IK: u8 = b'I';
 /// The pattern byte for `Noise_XX`.
 pub const PATTERN_XX: u8 = b'X';
+/// The link protocol version. The frame header carries none: the version
+/// lives in the prologue and the HKDF labels below, so a peer at another
+/// version fails the handshake at its first message and never mid-session.
+pub const LINK_VERSION: u8 = 2;
 /// The prologue's fixed part; the pattern byte follows it.
-pub const PROLOGUE_LABEL: &[u8] = b"azos-brain-link-v1";
+pub const PROLOGUE_LABEL: &[u8] = b"azos-companion-link-v2";
 /// HKDF salt of the derived static keys.
-pub const STATIC_SALT: &[u8] = b"azos-brain-link-v1 static";
+pub const STATIC_SALT: &[u8] = b"azos-companion-link-v2 static";
 /// HKDF info of the robot's derived static key.
-pub const KERNEL_STATIC_INFO: &[u8] = b"azos brain-link kernel static v1";
-/// HKDF info of the brain's derived static key (the XX identity).
-pub const BRAIN_STATIC_INFO: &[u8] = b"azos brain-link brain static v1";
+pub const KERNEL_STATIC_INFO: &[u8] = b"azos companion-link kernel static v2";
+/// HKDF info of the companion's derived static key (the XX identity).
+pub const COMPANION_STATIC_INFO: &[u8] = b"azos companion-link companion static v2";
 
 /// Bytes of a frame's length prefix.
 pub const FRAME_HEAD: usize = 2;
@@ -208,15 +212,15 @@ fn derive_static(psk: &[u8; PSK_BYTES], info: &[u8]) -> [u8; DH_LEN] {
     sk
 }
 
-/// The robot's static private key for the brain link.
+/// The robot's static private key for the companion link.
 pub fn kernel_static_key(psk: &[u8; PSK_BYTES]) -> [u8; DH_LEN] {
     derive_static(psk, KERNEL_STATIC_INFO)
 }
 
-/// The brain's derived static private key (the XX identity; an IK brain uses
+/// The companion's derived static private key (the XX identity; an IK companion uses
 /// the key the operator pinned instead).
-pub fn brain_static_key(psk: &[u8; PSK_BYTES]) -> [u8; DH_LEN] {
-    derive_static(psk, BRAIN_STATIC_INFO)
+pub fn companion_static_key(psk: &[u8; PSK_BYTES]) -> [u8; DH_LEN] {
+    derive_static(psk, COMPANION_STATIC_INFO)
 }
 
 // ── The link key's reserved-sector record ──────────────────────────────
@@ -365,7 +369,7 @@ fn prologue(pattern_byte: u8) -> [u8; PROLOGUE_LABEL.len() + 1] {
 pub struct Initiator {
     hs: HandshakeState,
     pattern: Pattern,
-    /// The brain's static public key the XX handshake must show; `None` for
+    /// The companion's static public key the XX handshake must show; `None` for
     /// IK, where the pinned key is the one the handshake authenticates.
     expect: Option<[u8; DH_LEN]>,
     sent_pattern: bool,
@@ -373,20 +377,20 @@ pub struct Initiator {
 }
 
 impl Initiator {
-    /// A handshake keyed by `psk`: `Noise_IK` toward `brain_pinned` when the
-    /// brain's static public key is pinned, `Noise_XX` otherwise.
-    pub fn new(psk: &[u8; PSK_BYTES], brain_pinned: Option<&[u8; DH_LEN]>) -> Result<Self, HandshakeError> {
+    /// A handshake keyed by `psk`: `Noise_IK` toward `companion_pinned` when the
+    /// companion's static public key is pinned, `Noise_XX` otherwise.
+    pub fn new(psk: &[u8; PSK_BYTES], companion_pinned: Option<&[u8; DH_LEN]>) -> Result<Self, HandshakeError> {
         let mut sk = kernel_static_key(psk);
-        let (pattern, pb, expect) = match brain_pinned {
+        let (pattern, pb, expect) = match companion_pinned {
             Some(_) => (Pattern::Ik, PATTERN_IK, None),
             None => {
-                let mut bsk = brain_static_key(psk);
+                let mut bsk = companion_static_key(psk);
                 let pk = x25519_pubkey(&bsk);
                 secure_zero(&mut bsk);
                 (Pattern::Xx, PATTERN_XX, Some(pk))
             }
         };
-        let hs = HandshakeState::initiator(pattern, &sk, brain_pinned, &prologue(pb));
+        let hs = HandshakeState::initiator(pattern, &sk, companion_pinned, &prologue(pb));
         secure_zero(&mut sk);
         Ok(Initiator { hs: hs?, pattern, expect, sent_pattern: false, failed: false })
     }
@@ -399,7 +403,7 @@ impl Initiator {
         }
     }
 
-    /// Our static public key (what the brain checks against the key the link
+    /// Our static public key (what the companion checks against the key the link
     /// key derives).
     pub fn local_static(&self) -> &[u8; DH_LEN] {
         self.hs.local_static()
@@ -443,7 +447,7 @@ impl Initiator {
                 Ok(_) | Err(noise::Error::BufferTooSmall) => return Err(HandshakeError::UnexpectedPayload),
                 Err(e) => return Err(e.into()),
             }
-            // XX: the brain's static is known now, before ours goes out.
+            // XX: the companion's static is known now, before ours goes out.
             if let (Some(want), Some(got)) = (self.expect.as_ref(), self.hs.remote_static()) {
                 if !ct_eq(want, got) {
                     return Err(HandshakeError::PeerKeyMismatch);

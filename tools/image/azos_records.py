@@ -3,7 +3,7 @@
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 """azos_records.py — where the kernel's records lie on a disk image.
 
-The kernel keeps its records (the brain-link key, the entropy seed, the device
+The kernel keeps its records (the companion-link key, the entropy seed, the device
 record, the topology counter floor) one sector each, in TAIL_SECTORS sectors
 (`kernel/src/reserved_tail.rs`):
 

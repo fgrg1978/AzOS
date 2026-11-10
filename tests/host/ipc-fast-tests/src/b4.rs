@@ -42,7 +42,7 @@ fn a_kind_is_one_bit_and_the_rest_of_the_word_is_reserved() {
     }
 }
 
-/// Two hops: the brain (an agent) sends to the planner (a service), the
+/// Two hops: the companion (an agent) sends to the planner (a service), the
 /// planner forwards to the actuator (another service). Each hop ORs the
 /// sender's principal into what it carries, so the actuator reads both
 /// kinds; the label never shrinks along the way, whatever a sender writes in
@@ -50,11 +50,11 @@ fn a_kind_is_one_bit_and_the_rest_of_the_word_is_reserved() {
 /// the planner's hop loses the agent, red.
 #[test]
 fn a_label_propagates_across_two_hops_and_only_grows() {
-    let brain = principal_bit(3);
+    let companion = principal_bit(3);
     let planner = principal_bit(1);
     let actuator = principal_bit(1);
 
-    let hop1 = send_label(0, brain);
+    let hop1 = send_label(0, companion);
     assert_eq!(hop1, LABEL_AGENT);
     // The planner copies what it read into the message it sends.
     let hop2 = send_label(hop1, planner);

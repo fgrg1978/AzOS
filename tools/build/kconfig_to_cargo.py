@@ -31,7 +31,7 @@ If the .config file is absent the script emits nothing (allows existing manual
 
 Phase C4 changes vs C1:
   - Replaced the generic _ENABLED suffix path that produced phantom features
-    (brain-l1, brain-l2, brain-l3) which do not exist in any Cargo.toml.
+    (companion-l1, companion-l2, companion-l3) which do not exist in any Cargo.toml.
   - The Kconfig-to-feature map is read from the `# cargo-feature:` tags on the
     Kconfig symbols (see below), not written here. No nested crate feature is emitted any more:
     the last one, azos_mm/small-mem for the embedded tier, was dropped
@@ -743,7 +743,7 @@ def enabled_features(cfg: dict[str, str]) -> list[str]:
     Only features that exist in kernel/Cargo.toml (bare names) or in a
     kernel-dependency crate (crate/feat notation) are produced.  The generic
     _ENABLED suffix path that existed in the C1 version has been removed to
-    prevent phantom features like brain-l1/l2/l3.
+    prevent phantom features like companion-l1/l2/l3.
     """
     features: list[str] = []
     seen: set[str] = set()

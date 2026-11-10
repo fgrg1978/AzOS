@@ -591,7 +591,7 @@ shape (Kconfig `NET_NIC_QUEUES`):
   interface keeps its address and routes. Every NIC the stack drives has one
   queue, so taking queue 0 takes the NIC.
 - **What is never handed over.** The primary interface, which every kernel
-  service runs on, and the interface the route to the link peer (the brain the
+  service runs on, and the interface the route to the link peer (the companion the
   behaviour engine dials, CONFIG.INI `behavior_server_ip`, which carries the
   e-stop) leaves by. The attach is then
   refused with `-EPERM` and recorded (`Rule::NicQueue`). These checks run at

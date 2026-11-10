@@ -521,12 +521,12 @@ $(REFLEX_ELF): $(REFLEX_DIR)/src/main.rs $(REFLEX_DIR)/Cargo.toml \
 	cp $(REFLEX_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(BRAINCLI_ELF): $(BRAINCLI_DIR)/src/main.rs $(BRAINCLI_DIR)/src/link.rs $(BRAINCLI_DIR)/src/behave.rs $(BRAINCLI_DIR)/src/ml.rs $(BRAINCLI_DIR)/src/mlcall.rs $(BRAINCLI_DIR)/src/camera.rs $(BRAINCLI_DIR)/src/wire.rs $(BRAINCLI_DIR)/Cargo.toml \
+$(COMPCLI_ELF): $(COMPCLI_DIR)/src/main.rs $(COMPCLI_DIR)/src/link.rs $(COMPCLI_DIR)/src/behave.rs $(COMPCLI_DIR)/src/ml.rs $(COMPCLI_DIR)/src/mlcall.rs $(COMPCLI_DIR)/src/camera.rs $(COMPCLI_DIR)/src/wire.rs $(COMPCLI_DIR)/Cargo.toml \
                crates/core/crypto/src/secure_channel.rs \
                $(LIBSYS_SRC)
 	@mkdir -p $(OUT_BUILD)
-	cd $(BRAINCLI_DIR) && export CARGO_TARGET_DIR="$(UTGT_RV64)" && $(USPACE_BUILD) $(RV_UFLAGS)
-	cp $(BRAINCLI_BUILT) $@
+	cd $(COMPCLI_DIR) && export CARGO_TARGET_DIR="$(UTGT_RV64)" && $(USPACE_BUILD) $(RV_UFLAGS)
+	cp $(COMPCLI_BUILT) $@
 	@echo "[USPACE] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
 $(CAPTEST_ELF): $(CAPTEST_DIR)/src/main.rs $(CAPTEST_DIR)/Cargo.toml \
@@ -1170,12 +1170,12 @@ $(REFLEX_ELF_AARCH64): $(REFLEX_DIR)/src/main.rs $(REFLEX_DIR)/Cargo.toml \
 	cp $(UTGT_AARCH64)/$(TARGET_AARCH64)/release/reflex $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
-$(BRAINCLI_ELF_AARCH64): $(BRAINCLI_DIR)/src/main.rs $(BRAINCLI_DIR)/src/link.rs $(BRAINCLI_DIR)/src/behave.rs $(BRAINCLI_DIR)/src/ml.rs $(BRAINCLI_DIR)/src/mlcall.rs $(BRAINCLI_DIR)/src/camera.rs $(BRAINCLI_DIR)/src/wire.rs $(BRAINCLI_DIR)/Cargo.toml \
+$(COMPCLI_ELF_AARCH64): $(COMPCLI_DIR)/src/main.rs $(COMPCLI_DIR)/src/link.rs $(COMPCLI_DIR)/src/behave.rs $(COMPCLI_DIR)/src/ml.rs $(COMPCLI_DIR)/src/mlcall.rs $(COMPCLI_DIR)/src/camera.rs $(COMPCLI_DIR)/src/wire.rs $(COMPCLI_DIR)/Cargo.toml \
                crates/core/crypto/src/secure_channel.rs \
                $(LIBSYS_SRC)
 	@mkdir -p $(AARCH64_DIR)
-	cd $(BRAINCLI_DIR) && export CARGO_TARGET_DIR="$(UTGT_AARCH64)" && $(USPACE_BUILD) $(AARCH64_UFLAGS)
-	cp $(UTGT_AARCH64)/$(TARGET_AARCH64)/release/brain_client $@
+	cd $(COMPCLI_DIR) && export CARGO_TARGET_DIR="$(UTGT_AARCH64)" && $(USPACE_BUILD) $(AARCH64_UFLAGS)
+	cp $(UTGT_AARCH64)/$(TARGET_AARCH64)/release/companion_client $@
 	@echo "[USPACE-AARCH64] Built $@ ($$(wc -c < $@ | tr -d ' ') bytes)"
 
 $(CAPTEST_ELF_AARCH64): $(CAPTEST_DIR)/src/main.rs $(CAPTEST_DIR)/Cargo.toml \
@@ -1254,12 +1254,12 @@ $(REFLEX_ELF_X86_64): $(REFLEX_DIR)/src/main.rs $(REFLEX_DIR)/Cargo.toml \
 	cd $(REFLEX_DIR) && export CARGO_TARGET_DIR="$(UTGT_X86_64)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
 	cp $(UTGT_X86_64)/$(X86_64_UBUILT)/reflex $@
 
-$(BRAINCLI_ELF_X86_64): $(BRAINCLI_DIR)/src/main.rs $(BRAINCLI_DIR)/src/link.rs $(BRAINCLI_DIR)/src/behave.rs $(BRAINCLI_DIR)/src/ml.rs $(BRAINCLI_DIR)/src/mlcall.rs $(BRAINCLI_DIR)/src/camera.rs $(BRAINCLI_DIR)/src/wire.rs $(BRAINCLI_DIR)/Cargo.toml \
+$(COMPCLI_ELF_X86_64): $(COMPCLI_DIR)/src/main.rs $(COMPCLI_DIR)/src/link.rs $(COMPCLI_DIR)/src/behave.rs $(COMPCLI_DIR)/src/ml.rs $(COMPCLI_DIR)/src/mlcall.rs $(COMPCLI_DIR)/src/camera.rs $(COMPCLI_DIR)/src/wire.rs $(COMPCLI_DIR)/Cargo.toml \
                crates/core/crypto/src/secure_channel.rs \
                $(LIBSYS_SRC) $(X86_64_KCONFIG)
 	@mkdir -p $(X86_64_DIR)
-	cd $(BRAINCLI_DIR) && export CARGO_TARGET_DIR="$(UTGT_X86_64)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
-	cp $(UTGT_X86_64)/$(X86_64_UBUILT)/brain_client $@
+	cd $(COMPCLI_DIR) && export CARGO_TARGET_DIR="$(UTGT_X86_64)" && $(USPACE_BUILD) $(X86_64_UFLAGS)
+	cp $(UTGT_X86_64)/$(X86_64_UBUILT)/companion_client $@
 
 $(ABITEST_ELF_X86_64): $(ABITEST_DIR)/src/main.rs $(ABICHILD_DIR)/src/shared.rs $(ABITEST_DIR)/Cargo.toml \
                $(LIBSYS_SRC) $(X86_64_KCONFIG)

@@ -60,7 +60,7 @@ fn a_missing_range_is_no_sample_and_a_simulated_one_is_flagged() {
 }
 
 /// A converter with no reading publishes nothing, and the lines pack to the
-/// bits the brain's protocol names.
+/// bits the companion's protocol names.
 ///
 /// **Canary:** make `battery_sample` answer a fixed 3700 mV for `None`: the
 /// first assertion sees a sample.

@@ -5,7 +5,7 @@
 //! **The ABA.** Kernel tasks and the socket table held a bare slot index and
 //! closed it after a wait. A peer's RST frees the slot under its holder, the
 //! next connect takes the same slot, and the old holder's `close` then closes
-//! the NEW connection: vsbench's TCP lane was cut 3/3 that way when the brain
+//! the NEW connection: vsbench's TCP lane was cut 3/3 that way when the companion
 //! link's connect was refused. A [`tcp::TcpHandle`] carries the generation its
 //! slot had when it was issued, and every operation through a stale handle is
 //! a no-op.

@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! The reserved tail of the boot medium: the last [`TAIL_SECTORS`] sectors,
 //! past the end of the filesystem, holding the board's secrets and records
-//! one sector each (the brain-link key, the entropy seed, the device record,
+//! one sector each (the companion-link key, the entropy seed, the device record,
 //! the topology counter floor).
 //!
 //! U06-9/#30: the link key and the entropy seed used to be FAT32 files, and
@@ -47,7 +47,7 @@ pub const TAIL_SECTORS: u32 = 8;
 /// picking the same literal; Kconfig `TOPOLOGY_FLOOR_SECTOR` names the
 /// topology floor's.
 ///
-/// The brain-link key, which is also the board's device seed (DICE, the
+/// The companion-link key, which is also the board's device seed (DICE, the
 /// keystore, the volume keys): `azos_crypto::secure_channel`'s link-key
 /// record, written from the host by `tools/sign/link_key_provision.py`, never by
 /// the kernel.

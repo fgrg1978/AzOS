@@ -1,5 +1,5 @@
 [package]
-name = "brain_client"
+name = "companion_client"
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0 OR GPL-2.0-only"
@@ -11,8 +11,8 @@ azos_abi = { path = "../../../crates/core/abi" }
 # The Infer interface the engine calls (ml.rs) and the Kconfig numbers it uses.
 azos_devif = { path = "../../../crates/core/devif" }
 azos_limits = { path = "../../../crates/core/limits" }
-# brain_client runs the same Noise handshake and transport as the kernel's own
-# brain link (`azos_crypto::secure_channel`). `azos_crypto` is
+# companion_client runs the same Noise handshake and transport as the kernel's own
+# companion link (`azos_crypto::secure_channel`). `azos_crypto` is
 # already `#[no_std]`, `default-features = false` on its two dalek deps, and
 # already builds for this exact bare-metal target as a kernel dependency —
 # adding it here pulls in no new target requirement.
@@ -43,7 +43,8 @@ panic = "abort"
 # The FAT32 image(s) this crate builds and their board-volume defaults
 # (tools/build/gen_userspace_kconfig.py -> make config, "Userspace programs").
 [package.metadata.azos]
-# The robot extension's client of the brain: the topology has its row, and the
+images = ["COMPCLI.ELF"]
+# The robot extension's client of the companion: the topology has its row, and the
 # volume its image, whenever USE_ROBOT is on and nowhere else (a gate
 # configuration that asks for every program turns it on too).
 default = "USE_ROBOT"

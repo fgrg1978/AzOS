@@ -341,14 +341,14 @@ VSBENCH_LAT="${VSBENCH_LAT:-1}"
 # kernel. Linux's equivalent (softirq) is part of every Linux boot, so the
 # product kernel, daemons and all, is the comparable AzOS here.
 #
-# ITS BRAIN LINK STAYS ON. disk-vsbench.img points it at 10.0.2.2:9000, which
+# ITS COMPANION LINK STAYS ON. disk-vsbench.img points it at 10.0.2.2:9000, which
 # on user networking is the host, which answers RST. Until SK it cut the lane:
 # the behavior task closed, by index, the TCP slot its refused connect had
 # had after the RST freed it for vsbench's `connect` (3 of 3 boots `FAIL
 # rc=-3001`). FIXED by SK (generation-checked TcpHandle): a stale handle no
 # longer closes the slot's next owner. `VSBENCH_TCP_AZOS_CONFIG=key=value`
 # still overrides one CONFIG.INI line of the TCP boot (re-signed with the
-# TEST key), e.g. `behavior_server_port=0` to take the brain link out.
+# TEST key), e.g. `behavior_server_port=0` to take the companion link out.
 #
 # Reported per lane and side: guest ns per KiB, which under `-icount` is
 # instructions per KiB of the whole guest; bytes/s on the guest clock; bytes/s
@@ -364,7 +364,7 @@ VSBENCH_TCP="${VSBENCH_TCP:-1}"
 VSBENCH_TCP_SMP="${VSBENCH_TCP_SMP:-1}"
 TCP_ICOUNT_ARGS="-icount shift=0,sleep=off"
 TCP_LINUX_IP="ip=10.0.2.15::10.0.2.2:255.255.255.0::eth0:off"
-# The AzOS TCP boot's CONFIG.INI override (see "ITS BRAIN LINK STAYS ON");
+# The AzOS TCP boot's CONFIG.INI override (see "ITS COMPANION LINK STAYS ON");
 # empty, the default, ships disk-vsbench.img's CONFIG.INI unchanged.
 VSBENCH_TCP_AZOS_CONFIG="${VSBENCH_TCP_AZOS_CONFIG:-}"
 # LINUX_IMAGE is resolved below (tools/bench/vsbench_linux.conf; see "The Linux
@@ -1045,7 +1045,7 @@ if [ -n "$L_LOG" ]; then
     # buffer for a socket receive (`IORING_RECVSEND_FIXED_BUF` is send-zc's), so
     # there is no Linux event to put beside it; `recv-call` and `ioring-recv xN`
     # are the pair, and `recv-call` against `ioring-rfix x1` is the change
-    # `brain_client` made.
+    # `companion_client` made.
     #
     # A list, not a deletion, and not a silent filter: an excluded lane that
     # leaves no trace is how "we compared these" quietly becomes untrue.

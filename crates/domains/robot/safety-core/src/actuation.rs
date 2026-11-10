@@ -265,7 +265,7 @@ pub fn install() {
     // The UART bridge line is the kernel's e-stop channel before any ring-3
     // program can attach it (`enforce::bridge_estop`).
     azos_drv_bus::uart_bridge::bridge_claim_for_estop();
-    // The brain protocol's authority frames, from the ring-3 behaviour engine.
+    // The companion protocol's authority frames, from the ring-3 behaviour engine.
     azos_syscall::authority_host::set_handler(crate::frames::submitted);
 
     // `#[allow(dead_code)]`: unused only under `gate-skip-smoke`, which
@@ -322,7 +322,7 @@ pub fn install() {
     // the pins, for every caller — this
     // kernel's own `rt_motor_task` included, whose refused writes still
     // leave duty 0 on the channel. The two conditions are a latched e-stop
-    // and brain-loss containment (`DEGRADE_LEVEL_CONTAINED`, speed cap 0 %).
+    // and companion-loss containment (`DEGRADE_LEVEL_CONTAINED`, speed cap 0 %).
     fn actuation_halt() -> bool {
         azos_behavior::safety::estop_is_active()
             || azos_ipc::cap::degraded_active()

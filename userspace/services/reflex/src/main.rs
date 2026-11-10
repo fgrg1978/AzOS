@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Reflex Daemon -local obstacle avoidance without brain connection.
+//! Reflex Daemon -local obstacle avoidance without companion connection.
 //!
-//! Runs as a user-mode process alongside brain_client. Continuously reads
+//! Runs as a user-mode process alongside companion_client. Continuously reads
 //! the rangefinder and IMU, and overrides motor commands when danger is
-//! detected. This is a safety layer that works even if the brain server
+//! detected. This is a safety layer that works even if the companion server
 //! is unreachable or the TCP link is down.
 //!
-//! Priority: reflex overrides brain commands when triggered.
+//! Priority: reflex overrides companion commands when triggered.
 //! Implementation: reads sensors at high rate, publishes motor commands
 //! only when an override is needed (obstacle or tilt detected).
 //!
@@ -15,7 +15,7 @@
 //!   1. E-STOP:  extreme tilt (fall) → motors off
 //!   2. BACKUP:  obstacle < CRITICAL_MM → reverse briefly
 //!   3. TURN:    obstacle < WARNING_MM → turn away
-//!   4. PASS:    no danger → do nothing (brain_client controls)
+//!   4. PASS:    no danger → do nothing (companion_client controls)
 
 #![no_std]
 #![no_main]
@@ -56,7 +56,7 @@ const BACKUP_SPEED_PCT: u32 = 30;
 const TURN_SPEED_PCT: u32 = 40;
 
 // Timing
-const REFLEX_PERIOD_MS: u64 = 25;       // 40 Hz -faster than brain's 20 Hz
+const REFLEX_PERIOD_MS: u64 = 25;       // 40 Hz -faster than companion's 20 Hz
 const BACKUP_DURATION_MS: u64 = 500;     // reverse for 500ms
 const TURN_DURATION_MS: u64 = 400;       // turn for 400ms
 const ESTOP_HOLD_MS: u64 = 2000;         // hold e-stop for 2s before re-checking
@@ -316,7 +316,7 @@ fn run() {
         if overriding && sensors.front_clear() {
             sys::print(b"[reflex] Clear -releasing control\n");
             overriding = false;
-            // Don't set motor speed -let brain_client resume control
+            // Don't set motor speed -let companion_client resume control
         }
 
         sys::sleep(REFLEX_PERIOD_MS);

@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 exclude = [
-    "userspace/services/brain_client",
+    "userspace/services/companion_client",
     "userspace/services/reflex",
     # uhello — minimal Rust user-space ELF.
     "userspace/tests/uhello",

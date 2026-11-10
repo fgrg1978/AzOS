@@ -4,7 +4,7 @@
 //!
 //! A blocked `SYS_IPC_CALL` has no timeout of its own, and an inference service
 //! that is alive and not answering must not hold the engine, which publishes
-//! the motor command and keeps the brain link. So a helper thread makes the
+//! the motor command and keeps the companion link. So a helper thread makes the
 //! call, one at a time, and the engine waits for it with a futex timeout: a
 //! call that does not come back in the budget is a missing verdict
 //! (`ml::cycle`), and so is every cycle until it does.

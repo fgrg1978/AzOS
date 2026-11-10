@@ -1,6 +1,6 @@
 # Motor output envelope
 
-The robot profile treats the brain as untrusted: a planner, possibly driven by
+The robot profile treats the companion as untrusted: a planner, possibly driven by
 a language or vision model, that sends motor commands over a link. The kernel
 decides what reaches the wheels. This note describes the gate that sits
 between any command and the PWM hardware, the three limits it composes, and
@@ -24,7 +24,7 @@ allocation and no I/O. The steps, in order:
    `crates/domains/robot/safety-core/src/flight_ctrl.rs` reads the same e-stop latch
    every tick). The robot type is a build-time choice
    (`ROBOT_TYPE_ID`, Kconfig `config/subsys/Kconfig.robot`).
-3. **Confidence cap.** If the most recent brain command was marked
+3. **Confidence cap.** If the most recent companion command was marked
    low-confidence, the cap becomes `min(cap, SAFETY_LOW_CONFIDENCE_CAP_PCT)` (40).
 4. **Degrade-level cap.** The cap becomes `min(cap, level_cap_pct(degrade_level()))`
    (see [degrade-levels.md](degrade-levels.md)).
@@ -90,10 +90,10 @@ durable `SAFETY_ESTOP` record written that does not latch
 
 ## Confidence-aware limit
 
-Source: `crates/domains/robot/behavior/src/brain_protocol.rs`, `crates/domains/robot/behavior/src/safety.rs`, `crates/domains/robot/safety-core/src/frames.rs`
+Source: `crates/domains/robot/behavior/src/companion_protocol.rs`, `crates/domains/robot/behavior/src/safety.rs`, `crates/domains/robot/safety-core/src/frames.rs`
 
 Commands are not equally trustworthy. A scripted or planned step is more
-reliable than a single reactive action taken from one camera frame. The brain
+reliable than a single reactive action taken from one camera frame. The companion
 marks a command with `FLAG_LOW_CONFIDENCE` (0x04, a bit of
 `ActuatorCmd.flags`; `ActuatorCmd::is_low_confidence`). When the kernel
 receives an actuator command it records the flag with `cmd_set_low_confidence`,
@@ -101,7 +101,7 @@ and `motor_envelope` reads it through `cmd_low_confidence`. An uncertain action
 is then physically bounded tighter (`SAFETY_LOW_CONFIDENCE_CAP_PCT`) than a
 deterministic one.
 
-The signal can only tighten the envelope. The brain cannot use it to loosen
+The signal can only tighten the envelope. The companion cannot use it to loosen
 anything.
 
 ## Why a runtime gate
@@ -124,7 +124,7 @@ output.
 
 ## Limitations
 
-Source: `crates/domains/robot/behavior/src/safety.rs`, `crates/domains/robot/behavior/src/brain_protocol.rs`
+Source: `crates/domains/robot/behavior/src/safety.rs`, `crates/domains/robot/behavior/src/companion_protocol.rs`
 
 * The speed unit is a duty percentage per wheel. The envelope does not know
   the robot's real velocity, mass or stopping distance.

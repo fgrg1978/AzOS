@@ -150,7 +150,7 @@ pub fn entropy_feed(ep: u32, bytes: &[u8]) -> Result<(), u32> {
     Ok(())
 }
 
-/// The 32-byte brain-link PSK from the kernel-hosted `linkkey` endpoint `ep`
+/// The 32-byte companion-link PSK from the kernel-hosted `linkkey` endpoint `ep`
 /// (`READ`). `Err` is the outcome: `NOT_READY` when the kernel holds no key
 /// (absent, unprovisioned or all zero: `buf` is untouched), `DENIED` for a
 /// capability without `READ`, `NO_SERVER` when the call did not reach the
@@ -173,16 +173,16 @@ pub fn link_key_read(ep: u32, buf: &mut [u8; linkkey::KEY_WORDS * 8]) -> Result<
     Ok(())
 }
 
-/// The brain's pinned static Noise public key from the kernel-hosted `linkkey`
+/// The companion's pinned static Noise public key from the kernel-hosted `linkkey`
 /// endpoint `ep` (`READ`): `Ok(Some(key))` when the signed topology's
-/// `[peer.brain]` row pins one (the link is `Noise_IK` toward it), `Ok(None)`
+/// `[peer.companion]` row pins one (the link is `Noise_IK` toward it), `Ok(None)`
 /// when nothing is pinned (`Noise_XX`). `Err` is the outcome of a call that
 /// failed: `DENIED` for a capability without `READ`, `NO_SERVER` when the
 /// call did not reach the kernel's interface. A caller must not read an `Err`
 /// as "nothing pinned": that would let a failed call downgrade `IK` to `XX`.
-pub fn brain_pk_read(ep: u32) -> Result<Option<[u8; linkkey::KEY_WORDS * 8]>, u32> {
+pub fn companion_pk_read(ep: u32) -> Result<Option<[u8; linkkey::KEY_WORDS * 8]>, u32> {
     let mut c = LinkKeyClient::new(Ep(ep));
-    let out = match c.brain_pk() {
+    let out = match c.companion_pk() {
         Ok(o) => o,
         Err(_) => return Err(outcome::NO_SERVER),
     };

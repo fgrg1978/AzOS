@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The brain-link key's reserved-sector record
+//! The companion-link key's reserved-sector record
 //! (`crates/core/crypto/src/secure_channel.rs` `link_key_record_decode`).
 //!
 //! The kernel installs the key only from a valid record: a raw key, a torn

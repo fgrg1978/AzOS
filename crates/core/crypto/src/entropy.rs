@@ -338,7 +338,7 @@ impl Pool {
     /// seed file only when the operator vouches for it (`random.trust_*`);
     /// here a seed that is the sole source on a board with no TRNG is the
     /// only way the pool ever seeds, and refusing to credit it would leave
-    /// the brain link's handshake refused forever. When another
+    /// the companion link's handshake refused forever. When another
     /// source has seeded the pool, an attacker-supplied file is not allowed to
     /// count toward that: it only stirs.
     ///

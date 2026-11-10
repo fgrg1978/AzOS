@@ -10,13 +10,13 @@
 /// QEMU/K1: stubs (no bridge hardware).
 ///
 /// Architecture:
-///   VF2 ──UART1 (TX/RX/GND)──→ ESP32-C3 ──WiFi/TCP──→ macOS (brain server)
+///   VF2 ──UART1 (TX/RX/GND)──→ ESP32-C3 ──WiFi/TCP──→ macOS (companion server)
 ///
-/// On a robot the line is the brain's TCP-independent e-stop channel: the
-/// kernel reads it and takes only `PKT_ESTOP` frames (MAGIC "BR" framed;
+/// On a robot the line is the companion's TCP-independent e-stop channel: the
+/// kernel reads it and takes only `PKT_ESTOP` frames (MAGIC "CL" framed;
 /// `azos_safety_core::enforce`). Otherwise it is the `Uart` interface's port 1.
 /// The ESP32 firmware is a transparent byte relay between its UART and a TCP
-/// socket to the brain server.
+/// socket to the companion server.
 
 use core::sync::atomic::AtomicBool;
 

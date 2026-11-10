@@ -42,9 +42,9 @@ for _d in reversed(module_dirs()):
         sys.path.insert(0, _d)
 
 
-# The brain repo (a sibling checkout, `AzOSRobotBrain`) is an optional client of
+# The companion repo (a sibling checkout, `AzOSRobotBrain`) is an optional client of
 # the OS: nothing here builds, runs or gates on it unless it is asked for.
-BRAIN_REPO_NAME = "AzOSRobotBrain"
+COMPANION_REPO_NAME = "AzOSRobotBrain"
 
 
 def _git_common_sibling():
@@ -56,24 +56,24 @@ def _git_common_sibling():
             capture_output=True, text=True, check=True).stdout.strip()
     except (OSError, subprocess.CalledProcessError):
         return None
-    return os.path.join(os.path.dirname(os.path.dirname(common)), BRAIN_REPO_NAME) if common else None
+    return os.path.join(os.path.dirname(os.path.dirname(common)), COMPANION_REPO_NAME) if common else None
 
 
-def brain_state():
-    """(state, path): where the brain repo is and whether the run uses it.
+def companion_state():
+    """(state, path): where the companion repo is and whether the run uses it.
 
-    AZOS_BRAIN_DIR (or BRAIN_DIR) is taken verbatim, even when it names nothing,
+    AZOS_COMPANION_DIR (or COMPANION_DIR) is taken verbatim, even when it names nothing,
     so a run can hide the repo. Unset, the sibling of the checkout, then of the
-    main checkout. BRAIN=0 turns the brain off, BRAIN=1 requires it.
+    main checkout. COMPANION=0 turns the companion off, COMPANION=1 requires it.
 
-        "off"       BRAIN=0
-        "found"     the repo is there and BRAIN is not 0
-        "absent"    not there, BRAIN unset: the brain rows skip
-        "required"  not there but BRAIN=1: the run fails
+        "off"       COMPANION=0
+        "found"     the repo is there and COMPANION is not 0
+        "absent"    not there, COMPANION unset: the companion rows skip
+        "required"  not there but COMPANION=1: the run fails
     """
-    want = os.environ.get("BRAIN", "")
-    explicit = os.environ.get("AZOS_BRAIN_DIR") or os.environ.get("BRAIN_DIR")
-    cands = [explicit] if explicit else [os.path.join(os.path.dirname(ROOT), BRAIN_REPO_NAME), _git_common_sibling()]
+    want = os.environ.get("COMPANION", "")
+    explicit = os.environ.get("AZOS_COMPANION_DIR") or os.environ.get("COMPANION_DIR")
+    cands = [explicit] if explicit else [os.path.join(os.path.dirname(ROOT), COMPANION_REPO_NAME), _git_common_sibling()]
     path = next((os.path.realpath(c) for c in cands if c and os.path.isdir(c)), None)
     if want == "0":
         return "off", path
@@ -82,16 +82,16 @@ def brain_state():
     return ("required" if want == "1" else "absent"), (os.path.realpath(explicit) if explicit else None)
 
 
-def brain_dir():
-    """The brain repo's path when the run uses it, else None."""
-    state, path = brain_state()
+def companion_dir():
+    """The companion repo's path when the run uses it, else None."""
+    state, path = companion_state()
     return path if state == "found" else None
 
 
 if __name__ == "__main__":
-    # `python3 tools/lib/azos_tools.py brain` prints "<state> <path>".
-    if sys.argv[1:] == ["brain"]:
-        _s, _p = brain_state()
+    # `python3 tools/lib/azos_tools.py companion` prints "<state> <path>".
+    if sys.argv[1:] == ["companion"]:
+        _s, _p = companion_state()
         print(_s, _p or "")
     else:
-        sys.exit("usage: azos_tools.py brain")
+        sys.exit("usage: azos_tools.py companion")

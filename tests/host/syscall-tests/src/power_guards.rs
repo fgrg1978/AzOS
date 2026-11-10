@@ -119,7 +119,7 @@ fn read_only_reads_and_write_only_writes() {
 }
 
 /// A contained system refuses the acting class and keeps observation live
-/// (brain-triggered degraded mode), and the refusal is not a missing-grant record.
+/// (companion-triggered degraded mode), and the refusal is not a missing-grant record.
 ///
 /// **Canary.** Drop the containment test in `Caller::allows`: the write is
 /// served while contained.

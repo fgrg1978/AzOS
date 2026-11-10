@@ -92,7 +92,7 @@ fn spec(epoch: u32, fw: u32) -> Spec {
             part(3, "SCHED.TOM", data(epoch + 3, 700)),
             part(4, "CONFIG.INI", data(epoch + 4, 300)),
             part(4, "CONFIG.SIG", data(epoch + 5, 64)),
-            part(5, "BRAIN.ELF", data(epoch + 6, 20000)),
+            part(5, "COMPCLI.ELF", data(epoch + 6, 20000)),
             part(5, "GPIO.ELF", data(epoch + 7, 5000)),
         ],
     }
@@ -544,7 +544,7 @@ fn a_tampered_part_is_refused_and_leaves_no_marker() {
 #[test]
 fn a_medium_that_corrupts_a_part_is_caught_by_the_read_back() {
     let s = spec(2, 2);
-    let mut st = Mem { corrupt: Some(b"/fat/PKG/SYS_B/BRAIN.ELF".to_vec()), ..Mem::default() };
+    let mut st = Mem { corrupt: Some(b"/fat/PKG/SYS_B/COMPCLI.ELF".to_vec()), ..Mem::default() };
     let r = do_stage(&mut st, &s, BootMeta::default());
     assert_eq!(r.unwrap_err(), Refusal::PartHash(7));
     assert!(st.file("/fat/PKG/SYS_B/UPDATE.MAN").is_none(), "the marker is withdrawn");
@@ -975,7 +975,7 @@ fn the_switched_slot_boots_the_sets_images_topology_and_config() {
         let at = format!("/fat/PKG/SYS_B/{}", p.name);
         assert_eq!(st.file(&at), Some(&p.bytes), "{} is in the directory the boot resolves to", p.name);
     }
-    for must in ["CAPS.TOM", "CAPS.SIG", "SCHED.TOM", "CONFIG.INI", "BRAIN.ELF", "GPIO.ELF"] {
+    for must in ["CAPS.TOM", "CAPS.SIG", "SCHED.TOM", "CONFIG.INI", "COMPCLI.ELF", "GPIO.ELF"] {
         assert!(names_of(&set).iter().any(|n| n == must), "{must}");
     }
 }

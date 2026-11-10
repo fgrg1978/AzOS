@@ -19,7 +19,7 @@
 //!    integration cost (e.g. syscall overhead, lock contention).
 //!
 //! Output format mirrors the kernel's `[WCET]` log lines so the
-//! brain `parse_wcet` collector can ingest it unchanged:
+//! companion `parse_wcet` collector can ingest it unchanged:
 //!
 //!     [HOST-UBENCH] <name> min=<ns> max=<ns> avg=<ns> samples=<n>
 //!
@@ -35,11 +35,11 @@ use core::time::Duration;
 use std::hint::black_box;
 use std::time::Instant;
 
-// Pull the same brain_protocol source the kernel ships, via #[path].
+// Pull the same companion_protocol source the kernel ships, via #[path].
 // Mirrors the pattern in property.rs.
 #[allow(dead_code, unused_imports, clippy::all)]
-#[path = "../../../../crates/domains/robot/behavior/src/brain_protocol.rs"]
-mod brain_protocol_src;
+#[path = "../../../../crates/domains/robot/behavior/src/companion_protocol.rs"]
+mod companion_protocol_src;
 
 // ── Microbench primitives ────────────────────────────────────────────────────
 
@@ -117,7 +117,7 @@ fn measure_timer_floor() -> u64 {
 /// this way in the coverage run and took the whole suite -- and therefore all
 /// of its regions -- out of the report, which is the one place they had no
 /// business being enforced. The measurement still runs and still prints,
-/// because the brain's `parse_wcet` collector ingests it either way.
+/// because the companion's `parse_wcet` collector ingests it either way.
 ///
 /// Note what those uninstrumented figures also say about the ceilings: 35-73 ns
 /// against limits of 5000-10000 ns is 70-140x of slack, so these catch a
@@ -147,7 +147,7 @@ fn bench_crc8() {
         // dead-stripping the call when its result is unused.  Without
         // it, release builds report 0 ns/iter because the loop body is
         // optimised away entirely.
-        black_box(brain_protocol_src::crc8(black_box(&payload)));
+        black_box(companion_protocol_src::crc8(black_box(&payload)));
     });
     // Sanity bound: 64-byte CRC on a 2024-era host should be ≤ 1 µs.
     // If this fires, someone replaced the table with a loop or added an
@@ -160,10 +160,10 @@ fn bench_build_parse_packet_roundtrip() {
     let payload = [0x42u8; 32];
     let mut frame = [0u8; 256];
     let (min, _max, _avg) = measure("build_parse_packet_32B", || {
-        let n = black_box(brain_protocol_src::build_packet(
+        let n = black_box(companion_protocol_src::build_packet(
             0x01, black_box(&payload), &mut frame,
         ));
-        black_box(brain_protocol_src::parse_packet(black_box(&frame[..n])));
+        black_box(companion_protocol_src::parse_packet(black_box(&frame[..n])));
     });
     // Pure parser, no I/O.  Should be ≤ 2 µs even with allocation
     // (which there shouldn't be any of).
@@ -177,11 +177,11 @@ fn bench_parse_packet_only() {
     // annotation observes at runtime.
     let payload = [0x42u8; 32];
     let mut frame = [0u8; 256];
-    let n = brain_protocol_src::build_packet(0x01, &payload, &mut frame);
+    let n = companion_protocol_src::build_packet(0x01, &payload, &mut frame);
     let frame_slice = &frame[..n];
 
     let (min, _max, _avg) = measure("parse_packet_32B", || {
-        black_box(brain_protocol_src::parse_packet(black_box(frame_slice)));
+        black_box(companion_protocol_src::parse_packet(black_box(frame_slice)));
     });
     // Parser-only — should be sub-microsecond on host.  CRC verify
     // dominates; for 32-byte payload that's ~40 byte CRC.
@@ -200,13 +200,13 @@ fn bench_timer_floor_diagnostic() {
 
 // ── Compile-time alignment check ─────────────────────────────────────────────
 
-/// Ensure the same `brain_protocol_src` path used by `property.rs` is in
+/// Ensure the same `companion_protocol_src` path used by `property.rs` is in
 /// scope here too.  Catches accidental relocation of the source file.
 #[test]
-fn brain_protocol_src_path_is_intact() {
-    let _ = brain_protocol_src::crc8;
-    let _ = brain_protocol_src::build_packet;
-    let _ = brain_protocol_src::parse_packet;
+fn companion_protocol_src_path_is_intact() {
+    let _ = companion_protocol_src::crc8;
+    let _ = companion_protocol_src::build_packet;
+    let _ = companion_protocol_src::parse_packet;
 }
 
 #[allow(dead_code)]

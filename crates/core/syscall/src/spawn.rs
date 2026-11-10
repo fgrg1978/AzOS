@@ -670,7 +670,7 @@ pub(crate) fn seed_caps(tid: u32, key: &str) -> Seeded {
 /// kernel-hosted endpoint goes only to a task whose filter LISTS its interface
 /// (`ImageProfile::ifaces`; the autorun loader's rule, `kernel/src/tasks/loader.rs`;
 /// a native fork child is seeded under its parent's filter by it). The
-/// topology names the `autorun` ROW, not an image, so without this the brain-link
+/// topology names the `autorun` ROW, not an image, so without this the companion-link
 /// key would go to whichever blessed image CONFIG.INI names -- and the
 /// audit-mode rows (CAPTEST.ELF, ABITEST.ELF) let an unlisted call through.
 pub(crate) fn withheld(spec: &azos_topology::CapSpec, f: &azos_sched::filter::SyscallFilter) -> bool {

@@ -97,13 +97,13 @@ pub(crate) fn rtwd_flap_task(_arg: usize) {
     }
 }
 #[cfg(any(feature = "reflex-smoke", feature = "envelope-smoke", feature = "geofence-smoke",
-          feature = "brain-lies-smoke", feature = "cap-deny-smoke", feature = "disk-part-row",
+          feature = "companion-lies-smoke", feature = "cap-deny-smoke", feature = "disk-part-row",
           feature = "rc-failsafe-smoke", feature = "fence-refuse-smoke",
           all(feature = "ktest", feature = "use-robot")))]
 mod safety;
 #[cfg(any(feature = "reflex-smoke", feature = "envelope-smoke",
           all(feature = "geofence-smoke", not(feature = "ktest")),
-          feature = "brain-lies-smoke", feature = "cap-deny-smoke", feature = "disk-part-row",
+          feature = "companion-lies-smoke", feature = "cap-deny-smoke", feature = "disk-part-row",
           feature = "rc-failsafe-smoke", feature = "fence-refuse-smoke"))]
 pub(crate) use safety::*;
 // RC receiver and geofence wiring, one property per boot.
@@ -460,15 +460,15 @@ pub(crate) fn spawn_system_smokes() {
         );
     }
 
-    // brain-lies-smoke: wait for the peer's unknown-packet frame and read the
+    // companion-lies-smoke: wait for the peer's unknown-packet frame and read the
     // SAFETY_UNKNOWN_PKT record back off the flight recorder. Priority is the
     // default, NOT the real-time band: a task in that band on the NIC's hart
-    // is what starved `net-poll` when the brain-lies scenario was written, and
+    // is what starved `net-poll` when the companion-lies scenario was written, and
     // this one depends on exactly that link working.
-    #[cfg(feature = "brain-lies-smoke")]
+    #[cfg(feature = "companion-lies-smoke")]
     {
         azos_sched::task_create(
-            "brain-lies-smoke", brain_lies_smoke_task, 0,
+            "companion-lies-smoke", companion_lies_smoke_task, 0,
             azos_sched::DEFAULT_PRIORITY,
         );
     }

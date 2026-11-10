@@ -43,7 +43,7 @@ fn pinned_ref() -> u64 {
     azos_devif::infer::model_ref(&d)
 }
 
-const ENGINE_CLIENT: &str = include_str!("../../../../userspace/services/brain_client/src/ml.rs");
+const ENGINE_CLIENT: &str = include_str!("../../../../userspace/services/companion_client/src/ml.rs");
 
 /// `const BEHAVIOR_MODEL_REF: u64 = 0x...;` of the engine's client.
 fn engine_ref() -> u64 {
@@ -56,14 +56,14 @@ fn engine_ref() -> u64 {
 /// **The engine asks for the bundle the build ships.**
 ///
 /// **Canary.** Change one digit of `BEHAVIOR_MODEL_REF` in
-/// `userspace/services/brain_client/src/ml.rs`: red (and the build refuses
+/// `userspace/services/companion_client/src/ml.rs`: red (and the build refuses
 /// the image, `tools/image/make_mbl.py --expect-ref-from`).
 #[test]
 fn the_engines_model_reference_is_the_bundles() {
     assert_eq!(
         engine_ref(),
         pinned_ref(),
-        "userspace/services/brain_client/src/ml.rs BEHAVIOR_MODEL_REF is not the model_ref of the bundle the build \
+        "userspace/services/companion_client/src/ml.rs BEHAVIOR_MODEL_REF is not the model_ref of the bundle the build \
          ships (the build says the right value: tools/image/make_mbl.py --expect-ref-from)"
     );
 }

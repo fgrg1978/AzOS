@@ -3,7 +3,7 @@
 //! Capability + syscall ABI test for a ring-3 process.
 //!
 //! A ring-3 program reaches hardware only through the capabilities the
-//! topology seeds into its table. Without them `reflex` and `brain_client`
+//! topology seeds into its table. Without them `reflex` and `companion_client`
 //! load, exec, and sit forever doing nothing — reflex reads a failed
 //! rangefinder as "no obstacle", because `obstacle_front()` guards the
 //! comparison with `range_front > 0`. A blind daemon and a daemon on a clear
@@ -370,7 +370,7 @@ fn stamped_reads() {
 /// A camera frame reaches this task through the `frame` endpoint, into a
 /// buffer it made: the first call makes it a reader and the camera starts
 /// capturing, so a frame arrives within a few capture periods (the kernel's
-/// `BRAIN_CAMERA_PERIOD_MS`; polled for 5 s). The frame is a JPEG (SOI to
+/// `COMPANION_CAMERA_PERIOD_MS`; polled for 5 s). The frame is a JPEG (SOI to
 /// EOI), acquired before the call on the vDSO clock, and the next one is a
 /// later frame. A buffer smaller than the pool's buffer is refused and takes
 /// no frame. Where no camera is built the endpoint is not granted and nothing

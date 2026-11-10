@@ -7,7 +7,7 @@
 
 The frame lint (tools/lint/stack_frames.py) asks whether any single function is too
 big for the stack. That is not what overflows a stack. Once every
-brain-peer boot died in a kernel page fault with no frame anywhere near the
+companion-peer boot died in a kernel page fault with no frame anywhere near the
 limit: ten small and medium frames in one chain summed past the 12 KiB a
 16 KiB task stack has above its guard page. This tool asks the question that
 actually matters -- how deep can one trap go -- and it found that the embedded

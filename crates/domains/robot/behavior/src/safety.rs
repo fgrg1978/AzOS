@@ -2,11 +2,11 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! On-board safety profiles — kernel-level safety checks per robot type.
 //!
-//! These run ON the robot, independent of the brain server. Even if TCP
-//! is down, WiFi is dead, and the brain is off, these checks ALWAYS run.
+//! These run ON the robot, independent of the companion server. Even if TCP
+//! is down, WiFi is dead, and the companion is off, these checks ALWAYS run.
 //!
 //! Architecture:
-//!   Brain safety (policy/safety.py) — high-level, VLM-informed decisions
+//!   Companion safety (policy/safety.py) — high-level, VLM-informed decisions
 //!   Kernel safety (this module) — hard limits, cannot be overridden
 //!
 //! The kernel safety layer runs as part of L0 (emergency stop) in the
@@ -26,7 +26,7 @@ use core::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use crate::types::*;
 
 // ---------------------------------------------------------------------------
-// Robot type constants (must match brain_protocol.rs)
+// Robot type constants (must match companion_protocol.rs)
 // ---------------------------------------------------------------------------
 pub const ROBOT_TYPE_WHEELED: u8 = 0;
 pub const ROBOT_TYPE_DRONE: u8 = 1;
@@ -198,7 +198,7 @@ pub fn safety_robot_type() -> u8 {
 // ---------------------------------------------------------------------------
 
 /// Reduced speed cap (% of max) applied to LOW-CONFIDENCE commands.
-/// When the brain marks a command low-confidence (e.g. a reactive-LLM action vs
+/// When the companion marks a command low-confidence (e.g. a reactive-LLM action vs
 /// a deterministic plan/scripted step), the robot self-limits: act, but cautiously.
 pub const SAFETY_LOW_CONFIDENCE_CAP_PCT: u8 = 40;
 
@@ -247,13 +247,13 @@ pub const SAFETY_DEGRADE_SLOW_CAP_PCT: i32 = azos_degrade_policy::DEGRADE_SPEED_
 /// Re-exported from `azos_degrade_policy::DEGRADE_SPEED_CAP_CONTAINED_PCT`.
 pub const SAFETY_DEGRADE_CONTAINED_CAP_PCT: i32 = azos_degrade_policy::DEGRADE_SPEED_CAP_CONTAINED_PCT;
 
-/// Whether the most recent brain command was flagged low-confidence.
+/// Whether the most recent companion command was flagged low-confidence.
 /// Set at command ingest from `FLAG_LOW_CONFIDENCE`; read by `motor_envelope` at
 /// the chokepoint. Conservative on staleness: stays low until a high-confidence
 /// command clears it (and the watchdog safe-stops on comms loss regardless).
 static CMD_LOW_CONF: AtomicBool = AtomicBool::new(false);
 
-/// Record the confidence of the most recent brain command.
+/// Record the confidence of the most recent companion command.
 pub fn cmd_set_low_confidence(low: bool) {
     CMD_LOW_CONF.store(low, Ordering::Release);
 }
@@ -277,7 +277,7 @@ pub fn cmd_low_confidence() -> bool {
 /// This complements, and does not replace, the sensor-reactive L0 `safety_check`
 /// upstream: L0 reacts to the world (obstacle, tilt, battery); this validates the
 /// command's own MAGNITUDE — a hard ESTOP override, the per-robot-type speed cap
-/// (`SAFETY_*_MAX_SPEED_PCT`), and a tighter cap when the brain marked
+/// (`SAFETY_*_MAX_SPEED_PCT`), and a tighter cap when the companion marked
 /// the command low-confidence. `(speed_l, speed_r)` are percent (±100); returns
 /// the clamped pair.
 ///
@@ -652,7 +652,7 @@ fn isqrt(n: u64) -> u64 {
 // the e-stop, so the actuation gate refuses every motor write until an
 // operator releases it; and the caller writes a durable `SAFETY_ESTOP`
 // record (`ESTOP_ACTION_GEOFENCE`, detail = metres beyond the fence). The
-// brain's polygon fence (`server.py`) is a second, independent layer.
+// companion's polygon fence (`server.py`) is a second, independent layer.
 //
 // The whole section is the `geofence` feature (Kconfig `GEOFENCE`): off, the
 // fence and its checks in `safety_check` are not compiled.
@@ -665,7 +665,7 @@ mod geofence {
 use super::*;
 use azos_sync::SpinLock;
 
-/// Geofence configuration stored in a SpinLock for atomic updates from brain.
+/// Geofence configuration stored in a SpinLock for atomic updates from companion.
 struct GeofenceConfig {
     /// Centre latitude (micro-degrees × 10⁶, i.e. degrees * 1_000_000).
     center_lat_udeg: i32,

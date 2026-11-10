@@ -160,7 +160,7 @@ Source: `crates/lib/*/*/Cargo.toml`.
 |---|---|
 | `safety-core` | The safety path of the actuation authority: the motor gate (`actuation.rs`), the real-time motor loop (`rt_motor.rs`), flight control (`flight_ctrl.rs`), the transactional control ticks rolled back on a synchronous exception (`txn.rs`). |
 | `degrade-policy` | The graded degrade levels and their speed ceilings (leaf crate). |
-| `behavior` | The kernel-side robot behaviour: the safety layer (L0), brain-protocol framing, payload drivers, RC policy, the sensor bus and the layer switches the ring-3 engine reads. |
+| `behavior` | The kernel-side robot behaviour: the safety layer (L0), companion-protocol framing, payload drivers, RC policy, the sensor bus and the layer switches the ring-3 engine reads. |
 | `sensors` | The sensors the robot extension produces, at the instance numbers the topology's `sensor.<n>` endpoints name. |
 | `flight` | Flight controller (mixer, PID, modes); its pure math is `crates/lib/control/flight-math`. |
 | `nav` | Waypoints, mission, occupancy grid, obstacle avoidance. |
@@ -270,7 +270,7 @@ ISA by the `mk/userspace.mk` rules.
 
 | Directory | Contents |
 |---|---|
-| `services/` | `compmgr` (component manager), `sh` and `toolbox` (shell and tools), `termd` (terminal server), `namesd` (name server), `logd` (sink of the structured kernel log and the sealed security log), `coreutil` (multicall image of the basic utilities), `ext4d` (read-only ext4 server), `logind` and `sshd` (login service, SSH server), `pkgd` and `pkg` (package installer), `decisd` and `why` (decision server and query), `inputd` (input server), `compositor` (display server and trusted surface), `power`, `tracectl`, `mcpd`, `ptpd`, `audiod` (audio server), `zenohd`, `rpcsrv` and `rpcquic`, `vmmd` (virtual machine monitor), `lxsrv` and `lxrt` (Linux driver server, Linux runtime), `infsrv` (inference broker; its client is the robot engine), `famtools` (four small tool images: behavior, config, flight, ota), and the robot-domain `brain_client` (the ring-3 behaviour engine and brain link) and `reflex`. |
+| `services/` | `compmgr` (component manager), `sh` and `toolbox` (shell and tools), `termd` (terminal server), `namesd` (name server), `logd` (sink of the structured kernel log and the sealed security log), `coreutil` (multicall image of the basic utilities), `ext4d` (read-only ext4 server), `logind` and `sshd` (login service, SSH server), `pkgd` and `pkg` (package installer), `decisd` and `why` (decision server and query), `inputd` (input server), `compositor` (display server and trusted surface), `power`, `tracectl`, `mcpd`, `ptpd`, `audiod` (audio server), `zenohd`, `rpcsrv` and `rpcquic`, `vmmd` (virtual machine monitor), `lxsrv` and `lxrt` (Linux driver server, Linux runtime), `infsrv` (inference broker; its client is the robot engine), `famtools` (four small tool images: behavior, config, flight, ota), and the robot-domain `companion_client` (the ring-3 behaviour engine and companion link) and `reflex`. |
 | `drivers/` | Ring-3 hosts of drivers: `buzz_drv`, `ina_drv`, `gpio_drv`, `rng_drv`. |
 | `lib/` | Libraries for ring-3 programs: `compose` (the compositor's pixel engine), `compositor`, `decisions`, `inspect`, `names`, `packages`, `power`, `term` (typed objects over IPC); `rpc`, `quic`, `tls`, `zenoh`, `mcp`, `ml`, `ualloc` (hardened allocator), `linux_rt`, `relibc-azos` (overlay for the relibc C library); `coreutils` (the basic utilities, over a `Host` trait), `ext4` (the read-only ext4 parser), `srv` (the ring-3 server runtime), `login` (the `Login` object and the credential the login service checks); `tls-probe` (a rustls client/server handshake run over memory or a stream). |
 | `tests/` | Ring-3 test programs: `abitest` and `abichild` (the processes it spawns), `captest`, `ipctest`, `hello`, `uhello` (a minimal `no_std` program over `libsys`), `epsrv`, `syscall_test`, the `lx*` programs (`lxbench`, `lxhello`, `lxmod`, `lxthreads`) and `relibc`. |
@@ -283,7 +283,7 @@ Source: `userspace/*/`, the header of each program's `main.rs`.
 | Path | Contents |
 |---|---|
 | `tests/host/` (one `<name>-tests` crate per area, plus `flight-sim`) | One host-side (`std`) crate per area, built with the host toolchain. Most build the real pure modules of a kernel crate with `#[path]` or link the crate itself, against small shims for the target-specific parts. |
-| `tests/fuzz/` | Fuzz targets for parsers and decoders: config, dtb, elf, brain-link, fs, gguf, net, sh, topology. |
+| `tests/fuzz/` | Fuzz targets for parsers and decoders: config, dtb, elf, companion-link, fs, gguf, net, sh, topology. |
 | `tests/qemu_boot.sh`, `tests/run_all.sh` | The emulator scenario runners. |
 | `tools/build/` | What `make` runs while it builds: the Kconfig bridge (`kconfig_to_cargo.py`, `gen_userspace_kconfig.py`), the SDK and user-link helpers, the third-party fetch and builds; `make_help.txt` is `make help`. |
 | `tools/gate/` | The gate: `ci_check.sh` (`make ci`), its short tiers `gate_tier.sh` (`make check0`, `make check1`), its row table `gate_rows.tsv` and the helpers its rows run. |

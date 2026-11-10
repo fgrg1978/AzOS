@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Brain Protocol — binary wire format for Robot ↔ Brain Server communication.
+//! Companion Protocol — binary wire format for Robot ↔ companion server communication.
 //!
 //! Packet frame:
 //!   MAGIC[2] | TYPE[1] | LEN[2 LE] | PAYLOAD[0..65535] | CRC8[1]
@@ -64,7 +64,7 @@
 use wcet_macro::wcet;
 
 
-pub const MAGIC: [u8; 2]       = *b"BR";
+pub const MAGIC: [u8; 2]       = *b"CL";
 
 // Packet types — Robot → Server
 pub const PKT_SENSOR:  u8 = 0x01;
@@ -114,16 +114,16 @@ pub const PKT_CONFIG:    u8 = 0x83;
 pub const PKT_OTA_BEGIN: u8 = 0x84;
 pub const PKT_OTA_CHUNK: u8 = 0x85;
 pub const PKT_OTA_END:   u8 = 0x86;
-/// E04: Brain → Robot: control an attached payload (spray, gripper, cam trigger).
+/// E04: Companion → Robot: control an attached payload (spray, gripper, cam trigger).
 pub const PKT_PAYLOAD:   u8 = 0x87;
 pub const PKT_ESTOP:     u8 = 0x88;
-/// Brain → Robot speculative-actuation prediction. Carries the brain's
+/// Companion → Robot speculative-actuation prediction. Carries the companion's
 /// predicted NEXT actuator command + a confidence byte, so the kernel can act on
 /// it ahead of the confirmed command (gated by the Fase-1 safety envelope and the
 /// `SPECULATIVE_ACTUATION` config, default off). Payload = ActuatorCmd bytes
 /// followed by one confidence byte (0..=255; 255 = certain).
 pub const PKT_PREDICT:   u8 = 0x89;
-/// Brain → Robot degraded-mode trigger. The brain arms degraded mode
+/// Companion → Robot degraded-mode trigger. The companion arms degraded mode
 /// when it detects a situational hazard only it can perceive (most concretely:
 /// perception has failed for several cycles — it has gone blind). In degraded
 /// mode the kernel contains the userspace blast radius (every write/actuation
@@ -131,7 +131,7 @@ pub const PKT_PREDICT:   u8 = 0x89;
 /// while the in-kernel control loop keeps running and safe-stops as normal.
 /// Payload = 1 reason byte (`DEGRADE_*`); reason 0 = clear.
 pub const PKT_DEGRADE:         u8 = 0x8A;
-/// Brain → Robot graded semantic-level command. Selects an ordered
+/// Companion → Robot graded semantic-level command. Selects an ordered
 /// restriction level (0 = FULL / normal … 3 = CONTAINED / stop + cap-denial).
 /// Payload = 1 byte: the level index. Out-of-range index → kernel clamps to
 /// CONTAINED (fail-closed). The level is sticky until changed; comms-loss
@@ -147,7 +147,7 @@ pub const ROBOT_ACKERMANN: u8 = 3;
 // ActuatorCmd flags
 pub const FLAG_EMERGENCY: u8 = 0x01;
 pub const FLAG_ALERT:     u8 = 0x02;
-/// The brain marks a command as low-confidence (e.g. a reactive-LLM
+/// The companion marks a command as low-confidence (e.g. a reactive-LLM
 /// action vs a deterministic scripted/plan step). The kernel tightens the motor
 /// envelope for low-confidence commands (confidence-aware real-time).
 pub const FLAG_LOW_CONFIDENCE: u8 = 0x04;
@@ -158,7 +158,7 @@ pub const ESTOP_REASON_SAFETY:    u8 = 1;
 pub const ESTOP_REASON_GEOFENCE:  u8 = 2;
 
 // DEGRADE reason codes (PKT_DEGRADE payload byte 0). Reason 0 clears degraded
-// mode (brain recovered); any non-zero reason arms it.
+// mode (companion recovered); any non-zero reason arms it.
 pub const DEGRADE_CLEAR:                  u8 = 0;
 pub const DEGRADE_REASON_PERCEPTION_BLIND: u8 = 1;
 pub const DEGRADE_REASON_SENSOR_INCOHERENT: u8 = 2;
@@ -172,8 +172,8 @@ pub const DEGRADE_REASON_UNMODELLED_HAZARD: u8 = 3;
 /// atomic, fails closed. Two handlers, one piece of state, opposite answers.
 ///
 /// A distinct value rather than reusing an existing reason, so the flight
-/// recorder can tell "the brain said the sensors are incoherent" from "we
-/// could not read what the brain said".
+/// recorder can tell "the companion said the sensors are incoherent" from "we
+/// could not read what the companion said".
 pub const DEGRADE_REASON_MALFORMED: u8 = 0xFF;
 
 // OTA ACK status codes (PKT_OTA_ACK payload byte 0)
@@ -284,7 +284,7 @@ pub const MAX_CHANNELS: usize = 8;
 
 // ── ActuatorCmd ───────────────────────────────────────────────────────────────
 
-/// Decoded actuator command from the Brain Server.
+/// Decoded actuator command from the companion server.
 #[derive(Clone, Copy)]
 pub struct ActuatorCmd {
     pub actuator_type: u8,
@@ -307,7 +307,7 @@ impl ActuatorCmd {
         self.flags & FLAG_EMERGENCY != 0
     }
 
-    /// Whether the brain marked this command low-confidence (the kernel
+    /// Whether the companion marked this command low-confidence (the kernel
     /// tightens the motor envelope when set).
     pub fn is_low_confidence(&self) -> bool {
         self.flags & FLAG_LOW_CONFIDENCE != 0
@@ -469,7 +469,7 @@ pub fn decode_actuator_cmd(payload: &[u8]) -> Option<ActuatorCmd> {
 
 // ── PredictCmd decoder (speculative actuation) ───────────────────────
 
-/// A predicted next actuator command plus the brain's confidence in it.
+/// A predicted next actuator command plus the companion's confidence in it.
 #[derive(Clone, Copy)]
 pub struct PredictCmd {
     /// The predicted next command.
@@ -521,7 +521,7 @@ pub const MODE_PAYLOAD_SIZE: usize = 1;
 /// actually filled in, reads as `0` by default — `0` would let the single
 /// most common malformed-frame case rearm the robot. Not a small value like
 /// `1` or `2` either: those are the values most likely to be the first "real"
-/// mode ids a brain implementation assigns, so claiming one as the reset
+/// mode ids a companion implementation assigns, so claiming one as the reset
 /// sentinel would collide with an actual operating mode the moment one is
 /// defined. `0xFF` sits at the far end of the byte range, away from where
 /// sequential mode ids will be allocated, cannot arise from a zeroed or
@@ -533,7 +533,7 @@ pub const MODE_PAYLOAD_SIZE: usize = 1;
 /// `AzOSRobotBrain/protocol.py`.
 pub const MODE_ID_ESTOP_RESET: u8 = 0xFF;
 
-/// Decoded mode command from the Brain Server.
+/// Decoded mode command from the companion server.
 #[derive(Clone, Copy, Debug)]
 pub struct ModeCmd {
     pub mode_id: u8,
@@ -551,7 +551,7 @@ pub fn decode_mode_cmd(payload: &[u8]) -> Option<ModeCmd> {
 /// e-stop / degraded-mode containment.
 ///
 /// A pure predicate so the two `crates/domains/robot/safety-core/src/frames.rs` dispatch sites — the TCP
-/// brain link and the `feature = "vf2"` UART bridge, which is compiled out of
+/// companion link and the `feature = "vf2"` UART bridge, which is compiled out of
 /// every QEMU build — and the host tests all share one answer, instead of two
 /// (or three) copies of the same comparison that can silently drift apart.
 pub fn mode_clears_containment(mode_id: u8) -> bool {
@@ -635,7 +635,7 @@ const WP_OFF_SPEED:     usize = 10;
 const WP_OFF_ACTION:    usize = 12;
 const WP_OFF_FLAGS:     usize = 13;
 
-/// Decoded waypoint command from the Brain Server.
+/// Decoded waypoint command from the companion server.
 #[derive(Clone, Copy, Debug)]
 pub struct WaypointCmd {
     pub lat_deg7:  i32,   // latitude × 1e7
@@ -671,7 +671,7 @@ const CFG_OFF_KEY:      usize = 0;
 const CFG_OFF_VALUE:    usize = 1;
 const CFG_OFF_RESERVED: usize = 2;
 
-/// Decoded config command from the Brain Server.
+/// Decoded config command from the companion server.
 ///
 /// 4-byte format: config_key(u8) + value(u8) + reserved(u16 LE).
 #[derive(Clone, Copy, Debug)]
@@ -721,7 +721,7 @@ const PL_OFF_CHANNEL:  usize = 1;
 const PL_OFF_VALUE:    usize = 2;
 const PL_OFF_DURATION: usize = 3;
 
-/// Decoded payload command from the Brain Server.
+/// Decoded payload command from the companion server.
 #[derive(Clone, Copy, Debug)]
 pub struct PayloadCmd {
     /// Which payload type (PAYLOAD_TYPE_*).

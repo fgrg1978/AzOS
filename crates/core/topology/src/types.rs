@@ -1001,8 +1001,8 @@ fn warrant_ok(w: &[u8]) -> bool {
         .is_some_and(|(kind, prefix)| prefix.len() <= MAX_TARGET_LEN && crate::parser::parse_cap_kind(kind).is_ok())
 }
 
-/// The name of the peer class the brain link reads: `[peer.brain]`.
-const BRAIN_PEER: &[u8] = b"brain";
+/// The name of the peer class the companion link reads: `[peer.companion]`.
+const COMPANION_PEER: &[u8] = b"companion";
 
 /// One class of remote nodes: `[peer.NAME]` with `nodes = [2, 3]`. A node
 /// belongs to at most one class, so an `export` to a class names its nodes
@@ -1080,7 +1080,7 @@ impl<'a> ExportSpec<'a> {
     }
 }
 
-/// One `[pipeline.NAME]` section: a data path (camera -> ML -> brain, say)
+/// One `[pipeline.NAME]` section: a data path (camera -> ML -> companion, say)
 /// and the physically contiguous DMA memory it needs, in 4 KiB pages
 /// (declared as `dma_kb`, rounded up).
 #[derive(Clone, Copy, Debug)]
@@ -3858,12 +3858,12 @@ impl<'a> Topology<'a> {
         self.peers().iter().find(|p| p.name.as_bytes() == name)
     }
 
-    /// The static Noise key the `[peer.brain]` row pins for the brain link: the
+    /// The static Noise key the `[peer.companion]` row pins for the companion link: the
     /// key of the first node of the class. `None` when the topology has no such
     /// row or the row pins no key, and the link then runs `Noise_XX`,
     /// authenticated by the link key.
-    pub fn brain_noise_pk(&self) -> Option<[u8; 32]> {
-        let p = self.find_peer(BRAIN_PEER)?;
+    pub fn companion_noise_pk(&self) -> Option<[u8; 32]> {
+        let p = self.find_peer(COMPANION_PEER)?;
         p.noise_pk_of(*p.nodes().first()?).copied()
     }
 

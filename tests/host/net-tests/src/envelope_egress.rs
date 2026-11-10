@@ -218,7 +218,7 @@ fn a_ring3_sockaddr_in6_reaches_the_ipv6_connect() {
     assert!(matches!(socket::WireAddr::parse(&raw4[..n4]), Some(socket::WireAddr::V4(SockAddr { port: 53, addr: PRIVATE, .. }))));
 }
 
-/// What is not gated: loopback, a kernel-owned socket (the brain link, OTA,
+/// What is not gated: loopback, a kernel-owned socket (the companion link, OTA,
 /// TFTP belong to no Domain), and a build with no gate installed.
 #[test]
 fn loopback_the_kernels_own_sockets_and_a_missing_gate_are_not_held() {

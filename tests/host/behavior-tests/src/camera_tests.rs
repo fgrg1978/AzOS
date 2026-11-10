@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The camera on the engine's brain link (`userspace/services/brain_client/src/camera.rs`
+//! The camera on the engine's companion link (`userspace/services/companion_client/src/camera.rs`
 //! and `wire.rs`, the real files): when a frame is due and the message a frame
-//! becomes, checked against the brain protocol's own encoder
-//! (`brain_protocol::build_packet`, `encode_camera_header`).
+//! becomes, checked against the companion protocol's own encoder
+//! (`companion_protocol::build_packet`, `encode_camera_header`).
 
-use crate::brain_protocol::{build_packet, encode_camera_header, CAMERA_FMT_JPEG, CAMERA_HDR_SIZE, PKT_CAMERA};
+use crate::companion_protocol::{build_packet, encode_camera_header, CAMERA_FMT_JPEG, CAMERA_HDR_SIZE, PKT_CAMERA};
 use crate::camera::*;
 use crate::wire;
 
@@ -44,7 +44,7 @@ fn a_frame_is_due_once_per_period() {
     assert!(!late.due(0), "a clock near the end of its range does not wrap into a due frame");
 }
 
-/// **A frame is one camera message**: the brain protocol's frame around the
+/// **A frame is one camera message**: the companion protocol's frame around the
 /// 5-byte header (the JPEG's own size, the JPEG format) and the JPEG, with the
 /// length and the CRC the protocol's own encoder gives, and the JPEG bytes
 /// exact.

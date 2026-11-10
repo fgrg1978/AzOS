@@ -6,7 +6,7 @@
 //! ## What it is for
 //!
 //! A general entropy source for ring 3. Its first caller is
-//! `userspace/services/brain_client`, which needs fresh randomness for the X25519
+//! `userspace/services/companion_client`, which needs fresh randomness for the X25519
 //! ephemeral key of each forward-secret link handshake and for the record nonce
 //! prefixes; before this interface ring 3 had no source of randomness at all.
 //! A task reaches it through an `Endpoint` capability to the kernel-hosted
@@ -18,7 +18,7 @@
 //! Unseeded means refused, on every build.
 //! This interface has no fallback: the pool's `fill` writes nothing while
 //! unseeded, and handing out counter-derived bytes under the name "entropy" is
-//! exactly what V1.2 refused. The brain link's handshake draws its ephemeral
+//! exactly what V1.2 refused. The companion link's handshake draws its ephemeral
 //! key here, so an unseeded pool is a link that does not run.
 //!
 //! The answer is `NOT_READY`. It changes within a boot only when a ring-3

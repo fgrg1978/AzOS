@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! `kernel_main`'s Phase G2, persistent state recovery: the signed CONFIG.INI,
-//! the OTA boot validation and secure boot, the brain link key and its ring-3
+//! the OTA boot validation and secure boot, the companion link key and its ring-3
 //! door, the operator's e-stop release authority, the keyless-link policy
 //! gate, and the configuration applied to the subsystems, all before the
 //! network and the first task.
@@ -39,12 +39,12 @@ pub(crate) fn recover_persistent_state() {
         #[cfg(feature = "boot-slots")]
         boot_validate_and_verify_slots();
 
-        // ── Brain link key (reserved tail sector) ───────────────────────
-        // The 32-byte pre-shared key the brain link's Noise static keys derive
+        // ── Companion link key (reserved tail sector) ───────────────────────
+        // The 32-byte pre-shared key the companion link's Noise static keys derive
         // from (`azos_crypto::secure_channel`).
-        // The brain's matching key lives in env `AZOS_BRAIN_LINK_KEY`. The link
+        // The companion's matching key lives in env `AZOS_BRAIN_LINK_KEY`. The link
         // is always a Noise session: without a key it does not run at all (the
-        // control and camera dials close at once, `brain_dial`), it is never
+        // control and camera dials close at once, `companion_dial`), it is never
         // downgraded to anything weaker.
         //
         // U06-9/#30: this used to be an ordinary FAT32 file,
@@ -68,7 +68,7 @@ pub(crate) fn recover_persistent_state() {
         // requirement. The load below always runs so the trust state is
         // visible on the console; only the "refuse to boot" half is gated.
         //
-        // The brain link is the Robot domain's: without it there is
+        // The companion link is the Robot domain's: without it there is
         // no link to key and nothing below runs.
         //
         // The one reader of the key, for this boot's load and for the ring-3
@@ -105,7 +105,7 @@ pub(crate) fn recover_persistent_state() {
             match read {
                 Ok(()) => {
                     kprintln!("[SECCHAN] link key loaded ({} bytes, reserved sector {}) — \
-                               brain link authenticated",
+                               companion link authenticated",
                         key_buf.len(), crate::reserved_tail::LINK_KEY);
                     link_keyed = true;
                     link_key_reason = "key loaded";
@@ -113,13 +113,13 @@ pub(crate) fn recover_persistent_state() {
                 Err(azos_crypto::secure_channel::LinkKeyFault::Malformed) => {
                     azos_drv_sys::kerr!("[SECCHAN] link key REFUSED: reserved sector {} holds no valid \
                                link-key record (magic, version or integrity tag wrong, or a zero \
-                               key) — brain link down",
+                               key) — companion link down",
                         crate::reserved_tail::LINK_KEY);
                     link_key_reason = "key sector malformed (no valid link-key record)";
                 }
                 Err(azos_crypto::secure_channel::LinkKeyFault::Absent) => {
                     azos_drv_sys::kwarn!("[SECCHAN] link key absent (reserved sector {} unreadable, \
-                               not ours, or all-zero) — brain link down",
+                               not ours, or all-zero) — companion link down",
                         crate::reserved_tail::LINK_KEY);
                     link_key_reason = "key sector absent/unprovisioned";
                 }
@@ -148,7 +148,7 @@ pub(crate) fn recover_persistent_state() {
         // module note for the finding and the three acceptable authorities.
         // This is the ONE hook registration this change adds to `main.rs`:
         // the Ed25519 PUBLIC key of the operator who may release an armed
-        // e-stop latch. The brain link never receives this file — only the
+        // e-stop latch. The companion link never receives this file — only the
         // holder of the matching PRIVATE key can produce a signature
         // `safety::verify_operator_release` accepts. Absent, wrong-size or
         // all-zero ⇒ `operator_authority_init` is never called with a usable
@@ -242,29 +242,29 @@ pub(crate) fn recover_persistent_state() {
         //
         // A keyless link is refused in every build, so the refusal is a
         // `login` decision record in every build (`azos_decision::RULES`:
-        // method 5 the brain link, attempt 0, reason 4 no key to verify
+        // method 5 the companion link, attempt 0, reason 4 no key to verify
         // with); the console line names its id. It is made before the flight
         // recorder is armed (`install_board_hw`, below), so it is in the ring
         // and the journal, not on the medium.
         #[cfg(feature = "use-robot")]
         {
             if !link_keyed {
-                const LOGIN_METHOD_BRAIN_LINK: u64 = 5;
+                const LOGIN_METHOD_COMPANION_LINK: u64 = 5;
                 const LOGIN_NO_KEY: u64 = 4;
                 let receipt = azos_decision::record_receipt(
                     azos_decision::Rule::Login,
                     azos_decision::Verdict::Refuse,
                     0,
-                    [LOGIN_METHOD_BRAIN_LINK, 0, LOGIN_NO_KEY],
+                    [LOGIN_METHOD_COMPANION_LINK, 0, LOGIN_NO_KEY],
                 );
                 if azos_crypto::secure_channel::link_provisioning_enforced() {
-                    azos_drv_sys::kerr!("[SECCHAN] FATAL: brain link has no key — {} — \
+                    azos_drv_sys::kerr!("[SECCHAN] FATAL: companion link has no key — {} — \
                                link-provisioning-enforced is compiled in, refusing to boot \
                                (decision {})",
                         link_key_reason, receipt);
                     loop { azos_arch::Cpu::wait_for_interrupt(&azos_arch::ARCH); }
                 }
-                azos_drv_sys::kwarn!("[SECCHAN] WARNING: brain link has no key — {} \
+                azos_drv_sys::kwarn!("[SECCHAN] WARNING: companion link has no key — {} \
                            (link-provisioning-enforced not compiled in — booting anyway, \
                            the link stays down; decision {})",
                     link_key_reason, receipt);
@@ -309,7 +309,7 @@ pub(crate) fn recover_persistent_state() {
         azos_behavior::layer_set_enabled(3,
             azos_config::BEHAVIOR_L3_ENABLED.load(Ordering::Relaxed));
 
-        // The brain the behaviour engine dials.
+        // The companion the behaviour engine dials.
         #[cfg(feature = "use-robot")]
         let bport = azos_config::BEHAVIOR_SERVER_PORT.load(Ordering::Relaxed);
         #[cfg(feature = "use-robot")]

@@ -8,7 +8,7 @@
 //! the policy `FRAME_POOL_*`). It starts with no buffer: the boot lends it
 //! kernel memory objects when the first reader attaches, and until then
 //! nothing is claimed and no reader attaches. A reader is a cursor: reader [`LINK`] is the
-//! brain link's sender, readers `1..` are the ring-3 tasks that called `next`.
+//! companion link's sender, readers `1..` are the ring-3 tasks that called `next`.
 //! The producers (the capture task, a USB camera's class driver) write frames
 //! in the nanoseconds of the vDSO clock.
 //!
@@ -49,7 +49,7 @@ pub const SLOTS: usize = azos_limits::FRAME_POOL_SLOTS as usize;
 pub const BYTES: usize = azos_limits::FRAME_BYTES as usize;
 /// Ring-3 readers at once.
 pub const RING3_READERS: usize = azos_limits::FRAME_READERS as usize;
-/// The reader the brain link's sender is.
+/// The reader the companion link's sender is.
 pub const LINK: usize = 0;
 /// Cursors of the pool: the sender and the ring-3 readers.
 pub const READERS: usize = 1 + RING3_READERS;

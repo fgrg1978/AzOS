@@ -10,7 +10,7 @@
 //! module, so every robot caller still reaches it under its old path.
 //!
 //! What stays robot-specific is installed at boot, not called by name: the
-//! robot extension's effect provider (`crate::providers`) makes the brain's
+//! robot extension's effect provider (`crate::providers`) makes the companion's
 //! cached remote action the stop when the latch arms (see [`estop_activate`]).
 
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -40,7 +40,7 @@ pub fn estop_activate() {
     // `remote_actuation_from` already fixed exactly this for an `ActuatorCmd`
     // carrying `FLAG_EMERGENCY`, and its doc says why in as many words. It was
     // fixed for one entry point out of five. Putting it HERE instead covers
-    // all of them at once — the two brain-link handlers, the ring-3 syscall,
+    // all of them at once — the two companion-link handlers, the ring-3 syscall,
     // the physical kill switch, and whatever is added next — which is the only
     // arrangement under which the next entry point cannot forget it. The GPIO
     // kill switch already forgot `estop_activate` itself once.
@@ -121,7 +121,7 @@ static ESTOP_REFUSED_CLEARS: core::sync::atomic::AtomicU32 =
 ///
 /// The ordinal is 1-based and is what the caller puts in the record's detail
 /// field, so a single entry says "this was the 100th" rather than "it happened
-/// again". `brain_protocol::refusal_is_worth_recording` holds the policy and
+/// again". `companion_protocol::refusal_is_worth_recording` holds the policy and
 /// the reasoning.
 pub fn note_refused_estop_clear() -> Option<u32> {
     let prior = ESTOP_REFUSED_CLEARS.fetch_add(1, Ordering::Relaxed);
@@ -134,7 +134,7 @@ pub fn note_refused_estop_clear() -> Option<u32> {
 
 /// Deactivate remote emergency stop. **Not `pub`** — see
 /// [`estop_release`]/[`ReleaseAuthority`] below:
-/// the brain may REQUEST a release, it may never CLEAR the
+/// the companion may REQUEST a release, it may never CLEAR the
 /// latch, so the unchecked clear itself must not be reachable from outside
 /// this module. Body unchanged from the earlier `pub fn
 /// estop_deactivate`.
@@ -164,9 +164,9 @@ pub fn estop_cleared_at() -> u64 {
 //
 // **The finding.** `MODE_ID_ESTOP_RESET` over TCP/UART and the geofence probe
 // that latched its own breach could all clear the latch on their own say-so —
-// the brain, in particular, is the same model the envelope exists to bound,
+// the companion, in particular, is the same model the envelope exists to bound,
 // clearing the one control that bounds it. Decision: a release requires an
-// authority the model does NOT hold. The brain may REQUEST a release; it may
+// authority the model does NOT hold. The companion may REQUEST a release; it may
 // never CLEAR the latch.
 //
 // **Three authorities were named as acceptable; this module implements one
@@ -187,7 +187,7 @@ pub fn estop_cleared_at() -> u64 {
 //     beside `verify_operator_release`, reading the caller's `CapTable`.
 //  3. **A signed operator command (implemented).** Ed25519 verify already
 //     exists (`azos_crypto::ed25519`, used by secure boot) and needs no
-//     new crate. The operator holds a key the brain never receives; the
+//     new crate. The operator holds a key the companion never receives; the
 //     kernel verifies a signature over a fixed context, what is released,
 //     this robot's device id and a monotonic nonce (`release_message`); the
 //     nonce and the signature are appended to the *existing* `PKT_MODE`/`MODE_ID_ESTOP_RESET`
@@ -196,7 +196,7 @@ pub fn estop_cleared_at() -> u64 {
 //
 // **Boot-replay note.** `logger::estop_action_latches` reads action code 3 as
 // "released", every other code (including 4, "refused") as "still latched".
-// A brain-only request that this module refuses MUST be recorded under 4,
+// A companion-only request that this module refuses MUST be recorded under 4,
 // never 3 — writing 3 without actually clearing would make a reboot replay
 // the latch as released when it was not. Callers in `crates/domains/robot/safety-core/src/frames.rs` are
 // responsible for this; see the two `PKT_MODE` dispatch sites.
@@ -314,7 +314,7 @@ pub const RELEASE_SIG_BYTES: usize = azos_crypto::ed25519::ED25519_SIGNATURE_SIZ
 /// Wire length of the operator-release proof appended to a `PKT_MODE`
 /// payload beyond the historical 1-byte `mode_id`: an 8-byte big-endian nonce
 /// plus a 64-byte Ed25519 signature. A payload of exactly `MODE_PAYLOAD_SIZE`
-/// (1 byte, `crate::brain_protocol`) is — and remains — a bare request; only
+/// (1 byte, `crate::companion_protocol`) is — and remains — a bare request; only
 /// a payload at least this much LONGER can carry a proof.
 pub const RELEASE_PROOF_BYTES: usize = 8 + RELEASE_SIG_BYTES;
 
@@ -502,7 +502,7 @@ fn operator_pubkey() -> Option<[u8; 32]> {
     *OPERATOR_PUBKEY.lock()
 }
 
-/// Monotonic floor for accepted release nonces. Kept separately from the brain
+/// Monotonic floor for accepted release nonces. Kept separately from the companion
 /// link's own replay protection (the Noise message counter): this proof can
 /// also arrive over a path that has none (the UART bridge), and must not trust
 /// a counter it does not own.
@@ -528,7 +528,7 @@ static RELEASE_NONCE_FLOOR: AtomicU64 = AtomicU64::new(0);
 ///
 /// Called once at boot (`crates/domains/robot/safety-core::boot_latch::seed_release_
 /// nonce_floor`), before `operator_authority_init` can accept a key or a
-/// brain frame can reach [`verify_operator_release`] — see
+/// companion frame can reach [`verify_operator_release`] — see
 /// [`RELEASE_NONCE_FLOOR`]'s own doc for why persistence, not
 /// challenge-response, is this project's fix. `fetch_max`, so calling this
 /// more than once, or with a floor lower than one a test or an earlier call
@@ -655,13 +655,13 @@ pub fn record_unsigned_relax(kind: u8, first: u8) {
     );
 }
 
-/// Mirrors `brain_protocol::mode_estop_record`'s refusal action code (4,
+/// Mirrors `companion_protocol::mode_estop_record`'s refusal action code (4,
 /// "refused MODE clear"). That function already returns this exact value for
 /// "wrong mode id, still armed"; the two `crates/domains/robot/safety-core/src/frames.rs` `PKT_MODE`
 /// dispatch sites need the identical number for "right mode id, no valid
 /// release proof" — see [`ReleaseDenial`]'s doc for why both must be
 /// indistinguishable to the flight recorder. A frozen mirror, not a shared
-/// constant, because `brain_protocol.rs` is outside this change's file
+/// constant, because `companion_protocol.rs` is outside this change's file
 /// ownership — same pattern as `abi::CapHandle::MAX_CAPS_PER_TASK_MIRROR`.
 pub const ESTOP_ACTION_REFUSED_MIRROR: u8 = 4;
 
@@ -944,7 +944,7 @@ pub fn safe_mode_active() -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// Pure halves of the records above (moved from `brain_protocol.rs`)
+// Pure halves of the records above (moved from `companion_protocol.rs`)
 // ---------------------------------------------------------------------------
 
 /// Is this refused e-stop clear worth a flight-recorder entry?

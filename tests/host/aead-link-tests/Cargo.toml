@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
-description = "Host-side tests of the brain link's Noise secure channel (crates/core/crypto::secure_channel). Pins the wire bytes AzOSRobotBrain/secure_channel.py must reproduce. Excluded from workspace."
+description = "Host-side tests of the companion link's Noise secure channel (crates/core/crypto::secure_channel). Pins the wire bytes AzOSRobotBrain/secure_channel.py must reproduce. Excluded from workspace."
 
 # Run with:
 #   cd tests/host/aead-link-tests && cargo +stable test --release -- --nocapture

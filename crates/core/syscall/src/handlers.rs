@@ -818,7 +818,7 @@ pub(crate) const E_CONTAINED: i64 = azos_abi::error::Errno::EAGAIN.to_syscall_re
 ///
 /// A kernel task holds no capabilities — `cap_check` and `socket_access_ok`
 /// both let `user_pt == 0` through — so "a write through a capability" does not
-/// describe it. The kernel's own brain link, which carries the order that ends
+/// describe it. The kernel's own companion link, which carries the order that ends
 /// containment, does not traverse these handlers (`socket_access_ok`'s doc);
 /// this keeps a refusal off that link if it ever starts to.
 ///
@@ -863,7 +863,7 @@ pub(crate) const USER_VA_TOP: usize = azos_sched::process::USER_STACK_TOP;
 
 // ── ELF bounce buffer for SYS_SPAWN_EX and the Linux execve ────────────────────────────
 //
-// Largest ELF the tree currently produces is ~12.5 KiB (`$AZOS_OUT/build/brain_client.elf`);
+// Largest ELF the tree currently produces is ~12.5 KiB (`$AZOS_OUT/build/companion_client.elf`);
 // 128 KiB leaves an order of magnitude of headroom while staying far cheaper in
 // `.bss` than the shell's 256 KiB buffer (which VF2/K1 linker scripts also pay
 // for).
@@ -2693,7 +2693,7 @@ fn socket_owner_for_caller() -> Option<u32> {
 /// register straight through with no per-task fd table in between — so any
 /// task could enumerate fd 0..15 and read another task's inbound TCP stream,
 /// inject bytes into its outbound stream, or tear down its connection. That
-/// includes the OTA channel and the brain link. Sixteen guesses covered the
+/// includes the OTA channel and the companion link. Sixteen guesses covered the
 /// whole table.
 ///
 /// Same shape as the owner-stamp gates of the untyped port and shared-memory
@@ -2935,7 +2935,7 @@ fn recvfrom_bounced(fd: u64, buf_ptr: u64, count: usize, addr_ptr: u64) -> i64 {
 pub fn sys_send_syscall(fd: u64, buf_ptr: u64, len: u64, _flags: u64) -> i64 {
     // Ownership gate: this is the byte-injection half of the finding — an
     // ungated send lets any task write into another task's outbound stream,
-    // e.g. forging commands on the brain link or corrupting an OTA image.
+    // e.g. forging commands on the companion link or corrupting an OTA image.
     if !socket_access_ok(fd) { return -1; }
     // An empty datagram is a message; an empty write to a stream is nothing.
     let empty = len == 0 && azos_net::socket::socket_is_datagram(fd as i32);

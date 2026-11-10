@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-"""The encrypted brain link, end to end, against a booted kernel.
+"""The encrypted companion link, end to end, against a booted kernel.
 
 `link auth accepts valid key` shows the key loads. This peer runs what follows
-it on the kernel's own brain link: a handshake, sealed frames both ways, a
+it on the kernel's own companion link: a handshake, sealed frames both ways, a
 rekey in each direction, and a tampered frame the kernel must close on. The crypto is AzOSRobotBrain's
 `secure_channel.py`, imported from the sibling repo — nothing here restates it
-— and the brain-protocol framing is `fake_brain.py`'s, which its `--selftest`
-pins against `brain_protocol.rs`.
+— and the companion-protocol framing is `fake_companion.py`'s, which its `--selftest`
+pins against `companion_protocol.rs`.
 
 Listens where the kernel dials (CONFIG.INI `behavior_server_ip:port`, which the
 standard image sets to 10.0.2.2:9000 — SLIRP maps that to this host), accepts,
-and runs the brain-side (responder) handshake: the kernel dials and speaks
+and runs the companion-side (responder) handshake: the kernel dials and speaks
 first. Noise_XX with the keys derived from the link key, or Noise_IK when
 `--noise-sk` gives the private half of the key the kernel's signed topology
-pins (`noise_pk` of its `[peer.brain]` row; the image must carry that row).
-Every message is one brain-protocol frame: the session is the only layer.
+pins (`noise_pk` of its `[peer.companion]` row; the image must carry that row).
+Every message is one companion-protocol frame: the session is the only layer.
 The PSK is read out of the image
 the kernel boots (`::LINK.KEY`, with mtools): the Makefile draws that key from
 /dev/urandom and keeps no other copy, so the image is the only source.
@@ -27,19 +27,19 @@ Phases, each ending in a `[link-peer] phase N done` line for
   1. open a sealed SensorPacket from the kernel;
   2. send sealed ActuatorCmd drive frames, which the kernel applies to both
      wheels (`[ACTSMOKE] kernel motor id=N duty=60` under `actuation-smoke`);
-  3. force a brain-side rekey — the next seal starts with a rekey frame — seal
-     PKT_ESTOP behind it, then keep driving. As with `fake_brain.py
+  3. force a companion-side rekey — the next seal starts with a rekey frame — seal
+     PKT_ESTOP behind it, then keep driving. As with `fake_companion.py
      --kernel-estop`, the drive frames after the stop are what the gate asserts
      on: a latch is visible from outside only as later commands that move no
      wheel, and every one of them is sealed under the new generation;
-  4. keep opening kernel frames after the brain's REKEY, and after at least
+  4. keep opening kernel frames after the companion's REKEY, and after at least
      one kernel REKEY (a `link-rekey-smoke` kernel rekeys every few seconds);
   5. send one frame with a flipped ciphertext bit; the kernel must close (there
      is no REJECT frame), dial again, and complete a second handshake whose
      session id differs from the first.
 
 The robot sends its camera frames on this same connection (the engine's
-`PKT_CAMERA`, at most one per `BRAIN_CAMERA_PERIOD_MS`), so phase 4 also waits
+`PKT_CAMERA`, at most one per `COMPANION_CAMERA_PERIOD_MS`), so phase 4 also waits
 for a sealed camera frame among the control frames.
 
 Any failure prints `[link-peer] FAIL <what>` and exits non-zero; a complete
@@ -59,27 +59,27 @@ import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "../lib"))
 import azos_tools  # noqa: E402
-# The optional brain repo, found by tools/lib/azos_tools.py (AZOS_BRAIN_DIR, then the siblings).
-BRAIN_DIR = azos_tools.brain_dir()
-if BRAIN_DIR is None:
-    print("[link-peer] FAIL import — no AzOSRobotBrain (set AZOS_BRAIN_DIR)", flush=True)
+# The optional companion repo, found by tools/lib/azos_tools.py (AZOS_COMPANION_DIR, then the siblings).
+COMPANION_DIR = azos_tools.companion_dir()
+if COMPANION_DIR is None:
+    print("[link-peer] FAIL import — no AzOSRobotBrain (set AZOS_COMPANION_DIR)", flush=True)
     sys.exit(4)
 
-sys.path.insert(1, BRAIN_DIR)
+sys.path.insert(1, COMPANION_DIR)
 
-import fake_brain  # noqa: E402
+import fake_companion  # noqa: E402
 
 try:
-    import protocol as brain_protocol  # noqa: E402
+    import protocol as companion_protocol  # noqa: E402
     import secure_channel as sc_mod  # noqa: E402
 except ImportError as e:
-    print(f"[link-peer] FAIL import — AzOSRobotBrain is not importable from {BRAIN_DIR}: {e}",
+    print(f"[link-peer] FAIL import — AzOSRobotBrain is not importable from {COMPANION_DIR}: {e}",
           flush=True)
     sys.exit(4)
 
 SC = sc_mod.SecureChannel
-# ActuatorCmd both wheels at 60 %, the frame `fake_brain.py --kernel-estop` drives with.
-DRIVE = fake_brain.actuator_payload(60, 60)
+# ActuatorCmd both wheels at 60 %, the frame `fake_companion.py --kernel-estop` drives with.
+DRIVE = fake_companion.actuator_payload(60, 60)
 
 
 def say(msg: str) -> None:
@@ -118,7 +118,7 @@ class Link:
         self.messages = 0
         self.sensors = 0
         self.since_kernel_rekey = 0
-        self.since_brain_rekey = -1  # counts from the brain's REKEY
+        self.since_companion_rekey = -1  # counts from the companion's REKEY
         self.dropped = 0
         self.types: dict = {}
 
@@ -137,7 +137,7 @@ class Link:
         return bytes(out)
 
     def handshake(self, timeout: float) -> str:
-        """Brain-side (responder) handshake; returns the session id as hex."""
+        """Companion-side (responder) handshake; returns the session id as hex."""
         self.conn.settimeout(timeout)
         try:
             self.sc.begin(self._recv_exact(1)[0])
@@ -183,22 +183,22 @@ class Link:
             self._message(payload)
 
     def _message(self, frame: bytes) -> None:
-        parsed = brain_protocol.parse_packet(frame)
+        parsed = companion_protocol.parse_packet(frame)
         if parsed is None:
             self.dropped += 1
             return
         ptype, payload = parsed
-        if ptype == brain_protocol.SENSOR_PACKET:
+        if ptype == companion_protocol.SENSOR_PACKET:
             try:
-                brain_protocol.SensorPacket.from_bytes(payload)
+                companion_protocol.SensorPacket.from_bytes(payload)
             except ValueError as e:
-                raise PeerFailure(f"SensorPacket refused by the brain's parser: {e}") from None
+                raise PeerFailure(f"SensorPacket refused by the companion's parser: {e}") from None
             self.sensors += 1
         self.types[ptype] = self.types.get(ptype, 0) + 1
         self.messages += 1
         self.since_kernel_rekey += 1
-        if self.since_brain_rekey >= 0:
-            self.since_brain_rekey += 1
+        if self.since_companion_rekey >= 0:
+            self.since_companion_rekey += 1
 
     def pump(self, seconds: float) -> None:
         """Read and open what the kernel sends for up to `seconds`."""
@@ -239,14 +239,14 @@ class Link:
         if rekey:
             self.sc.request_rekey()
         generation = self.sc.tx_generation
-        wire = self.sc.seal_message(fake_brain.build_packet(ptype, payload))
+        wire = self.sc.seal_message(fake_companion.build_packet(ptype, payload))
         if rekey:
             # The seal starts with an empty-message frame: a bare tag.
             if (len(wire) < 2 * sc_mod.FRAME_OVERHEAD
                     or wire[:sc_mod.FRAME_HEAD] != sc_mod.TAG_LEN.to_bytes(sc_mod.FRAME_HEAD, "big")
                     or self.sc.tx_generation != generation + 1):
-                raise PeerFailure("brain REKEY — the seal did not start with a rekey frame")
-            self.since_brain_rekey = 0
+                raise PeerFailure("companion REKEY — the seal did not start with a rekey frame")
+            self.since_companion_rekey = 0
         if tamper:
             flipped = bytearray(wire)
             flipped[-1 - sc_mod.TAG_LEN] ^= 0x01  # a ciphertext byte of the last frame
@@ -263,7 +263,7 @@ class Link:
         sent = 0
         end = time.monotonic() + seconds
         while time.monotonic() < end:
-            self.send(fake_brain.PKT_ACTUATOR, DRIVE)
+            self.send(fake_companion.PKT_ACTUATOR, DRIVE)
             sent += 1
             self.pump(gap)
             if self.eof:
@@ -289,7 +289,7 @@ def accept(srv, n: int, wait: float, psk: bytes, timeout: float, static_key=None
 
 def non_camera_types(link) -> list:
     """Packet types other than CAMERA_FRAME that `link` opened."""
-    return sorted(t for t in link.types if t != brain_protocol.CAMERA_FRAME)
+    return sorted(t for t in link.types if t != companion_protocol.CAMERA_FRAME)
 
 
 def run(args) -> None:
@@ -311,32 +311,32 @@ def run(args) -> None:
     sent = link.drive(args.drive_s, args.gap, "phase 2")
     say(f"phase 2 done: {sent} sealed ActuatorCmd drive frames")
 
-    # Phase 3 — brain REKEY, PKT_ESTOP behind it, then keep asking.
-    link.send(fake_brain.PKT_ESTOP, bytes([0]), rekey=True)
-    say(f"brain REKEY sent: tx generation {link.sc.tx_generation}, PKT_ESTOP sealed after it")
+    # Phase 3 — companion REKEY, PKT_ESTOP behind it, then keep asking.
+    link.send(fake_companion.PKT_ESTOP, bytes([0]), rekey=True)
+    say(f"companion REKEY sent: tx generation {link.sc.tx_generation}, PKT_ESTOP sealed after it")
     after = link.drive(args.after_s, args.gap, "phase 3")
     say(f"phase 3 done: {after} drive frames after the e-stop, "
         f"tx generation {link.sc.tx_generation}")
 
-    # Phase 4 — the kernel→brain direction across both rekeys.
+    # Phase 4 — the kernel→companion direction across both rekeys.
     link.wait_for(
         lambda: link.kernel_rekeys >= 1 and link.since_kernel_rekey >= 1
-        and link.since_brain_rekey >= 1,
+        and link.since_companion_rekey >= 1,
         args.phase_timeout,
         lambda: (f"phase 4: a kernel REKEY followed by an opened record (kernel_rekeys="
                  f"{link.kernel_rekeys}, after_kernel_rekey={link.since_kernel_rekey}, "
-                 f"after_brain_rekey={link.since_brain_rekey})"),
+                 f"after_companion_rekey={link.since_companion_rekey})"),
     )
     say(f"phase 4 done: kernel_rekeys={link.kernel_rekeys} "
         f"rx_generation={link.sc.rx_generation} "
         f"after_kernel_rekey={link.since_kernel_rekey} "
-        f"after_brain_rekey={link.since_brain_rekey}")
-    link.wait_for(lambda: link.types.get(brain_protocol.CAMERA_FRAME, 0) >= 1,
+        f"after_companion_rekey={link.since_companion_rekey}")
+    link.wait_for(lambda: link.types.get(companion_protocol.CAMERA_FRAME, 0) >= 1,
                   args.phase_timeout, "phase 4: a sealed camera frame on the control connection")
-    say(f"camera frames on the control connection: {link.types[brain_protocol.CAMERA_FRAME]}")
+    say(f"camera frames on the control connection: {link.types[companion_protocol.CAMERA_FRAME]}")
 
     # Phase 5 — a tampered frame ends the session; a new one replaces it.
-    link.send(fake_brain.PKT_ACTUATOR, DRIVE, tamper=True)
+    link.send(fake_companion.PKT_ACTUATOR, DRIVE, tamper=True)
     say("tampered frame sent (one ciphertext bit flipped)")
     link.wait_for(lambda: link.eof, args.phase_timeout,
                   "phase 5: close after the tampered frame", end_ok=True)
@@ -386,10 +386,10 @@ def selftest() -> int:
     initiator side (the kernel's role), in memory. A broken import, a moved
     attribute or a framing change fails here instead of as a QEMU boot that
     reads like a kernel fault."""
-    fake_brain.selftest()
+    fake_companion.selftest()
     where = os.path.realpath(os.path.dirname(os.path.abspath(sc_mod.__file__)))
-    if where != BRAIN_DIR:
-        raise PeerFailure(f"selftest — secure_channel imported from {where}, not {BRAIN_DIR}")
+    if where != COMPANION_DIR:
+        raise PeerFailure(f"selftest — secure_channel imported from {where}, not {COMPANION_DIR}")
     psk = os.urandom(sc_mod.KEY_BYTES)
     kernel = SC(psk, is_initiator=True)
     wire = _Wire()
@@ -410,29 +410,29 @@ def selftest() -> int:
     def kernel_sends(ptype: int, payload: bytes, rekey: bool = False) -> bytes:
         if rekey:
             kernel.request_rekey()
-        return kernel.seal_message(brain_protocol.build_packet(ptype, payload))
+        return kernel.seal_message(companion_protocol.build_packet(ptype, payload))
 
-    sensor = brain_protocol.SensorPacket(1, 7400, (0, 0, 1000), (0, 0, 0), 0, 0, 0, 0, 0, 0)
+    sensor = companion_protocol.SensorPacket(1, 7400, (0, 0, 1000), (0, 0, 0), 0, 0, 0, 0, 0, 0)
     # A kernel REKEY, then a SensorPacket, fed one byte at a time.
-    for b in kernel_sends(brain_protocol.SENSOR_PACKET, sensor.to_bytes(), rekey=True):
+    for b in kernel_sends(companion_protocol.SENSOR_PACKET, sensor.to_bytes(), rekey=True):
         link.feed(bytes([b]))
     assert (link.kernel_rekeys, link.sensors, link.since_kernel_rekey) == (1, 1, 1), vars(link)
     # A camera-sized message: one frame.
-    link.feed(kernel_sends(brain_protocol.CAMERA_FRAME, bytes(5000)))
-    assert link.types.get(brain_protocol.CAMERA_FRAME) == 1 and link.dropped == 0
-    assert non_camera_types(link) == [brain_protocol.SENSOR_PACKET], link.types
+    link.feed(kernel_sends(companion_protocol.CAMERA_FRAME, bytes(5000)))
+    assert link.types.get(companion_protocol.CAMERA_FRAME) == 1 and link.dropped == 0
+    assert non_camera_types(link) == [companion_protocol.SENSOR_PACKET], link.types
 
-    # Brain REKEY + PKT_ESTOP, as phase 3 seals it.
-    link.send(fake_brain.PKT_ESTOP, bytes([0]), rekey=True)
+    # Companion REKEY + PKT_ESTOP, as phase 3 seals it.
+    link.send(fake_companion.PKT_ESTOP, bytes([0]), rekey=True)
     opened = _open_all(kernel, wire.sent[-1])
     assert [k for k, _ in opened] == [SC.RECORD_REKEY, SC.RECORD_DATA], opened
-    parsed = brain_protocol.parse_packet(opened[1][1])
-    assert parsed == (fake_brain.PKT_ESTOP, bytes([0])), parsed
-    link.feed(kernel_sends(brain_protocol.SENSOR_PACKET, sensor.to_bytes()))
-    assert link.since_brain_rekey == 1
+    parsed = companion_protocol.parse_packet(opened[1][1])
+    assert parsed == (fake_companion.PKT_ESTOP, bytes([0])), parsed
+    link.feed(kernel_sends(companion_protocol.SENSOR_PACKET, sensor.to_bytes()))
+    assert link.since_companion_rekey == 1
 
     # Phase 5: the tampered frame is refused and ends the session.
-    link.send(fake_brain.PKT_ACTUATOR, DRIVE, tamper=True)
+    link.send(fake_companion.PKT_ACTUATOR, DRIVE, tamper=True)
     try:
         _open_all(kernel, wire.sent[-1])
         raise PeerFailure("selftest — the tampered frame opened")
@@ -460,8 +460,8 @@ def main() -> int:
     ap.add_argument("--reconnect-wait", type=float, default=60.0,
                     help="seconds to wait for the kernel to dial again after the close")
     ap.add_argument("--noise-sk", default="",
-                    help="hex of the brain's static private key, for a kernel whose signed "
-                         "topology pins its public half ([peer.brain] noise_pk, Noise_IK); "
+                    help="hex of the companion's static private key, for a kernel whose signed "
+                         "topology pins its public half ([peer.companion] noise_pk, Noise_IK); "
                          "empty: Noise_XX")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args()

@@ -3,7 +3,7 @@
 //! The compile-time link policy (`link-provisioning-enforced`) and the session's
 //! end.
 //!
-//! The brain link has one mode, the Noise session; what the policy decides is
+//! The companion link has one mode, the Noise session; what the policy decides is
 //! the provisioning around it (no boot without a key, no handshake without
 //! seeded entropy, no UART bridge), read by the kernel through
 //! `link_provisioning_enforced()`. Run both ways; the first test asserts different
@@ -32,12 +32,12 @@ fn policy_const_matches_the_feature_that_was_actually_enabled() {
 fn a_terminal_event_ends_the_session_at_the_event() {
     let mut s = ik();
     assert!(s.robot.is_established());
-    let mut f = brain_seal(&mut s.brain_send, b"forged");
+    let mut f = companion_seal(&mut s.companion_send, b"forged");
     f[3] ^= 1;
     assert!(robot_open(&mut s.robot, &f).is_err());
     // Not at the drop: a session that failed one frame carries no more.
     assert!(!s.robot.is_established());
-    let good = brain_seal(&mut s.brain_send, b"after");
+    let good = companion_seal(&mut s.companion_send, b"after");
     assert!(robot_open(&mut s.robot, &good).is_err(), "a closed session opened a frame");
 }
 
@@ -50,5 +50,5 @@ fn a_session_still_round_trips_in_this_target() {
         out.truncate(n);
         out
     };
-    assert_eq!(brain_open(&mut s.brain_recv, &f).unwrap(), b"hello");
+    assert_eq!(companion_open(&mut s.companion_recv, &f).unwrap(), b"hello");
 }

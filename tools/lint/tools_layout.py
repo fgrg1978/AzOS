@@ -75,15 +75,15 @@ ROLES = {
     ],
     "gate": [
         "check_fast.py", "check_fast.sh", "ci_cargo.py", "ci_check.sh", "ci_full.sh",
-        "reclaim_row.py", "console_allow.tsv", "console_judge.py", "console_splice_count.sh", "core_check.py", "coverage.sh", "debug_row.py", "fake_brain.py", "fuzz.sh", "gate_needs.tsv",
+        "reclaim_row.py", "console_allow.tsv", "console_judge.py", "console_splice_count.sh", "core_check.py", "coverage.sh", "debug_row.py", "fake_companion.py", "fuzz.sh", "gate_needs.tsv",
         "gate_pgroup.sh", "gate_pgroup_selftest.sh", "gate_rows.py", "gate_rows.tsv", "gate_tier.sh",
         "asym_dtb.sh", "compile_plan.py", "validate_env.sh", "hyp_refusal_row.py", "image_header.py", "ipv6_tcp_row.sh",
         "kaslr_boot_row.sh", "ktest_registry.py", "land_bisect.sh", "link_peer.py",
-        "net_pair_smoke.sh", "nobrain_check.sh",
+        "net_pair_smoke.sh", "nocompanion_check.sh",
         "netboot/", "nvme_dma_mask_row.sh", "preset_boot_green.tsv", "qemu_a64.py", "qemu_sendkeys.py", "qemu_tap.py", "repro_check.sh", "rows_for_diff.py",
         "sbom.sh", "text_equiv.py", "triage.py", "vmmd_withhold_row.sh", "volume_stale_selftest.sh",
     ],
-    "lint": ["brain_dep_lint.py", "profile_cut_lint.py", "gate_select_lint.py", 
+    "lint": ["companion_dep_lint.py", "profile_cut_lint.py", "gate_select_lint.py", 
         "aarch64_fp_free_check.sh", "advisories.sh", "arch_cfg_lint.baseline", "arch_cfg_lint.py",
         "arch_layout_lint.py", "boot_seq_lint.baseline", "boot_seq_lint.py",
         "check_livepatch_layout.py", "check_make_help.sh", "check_neverallow.py", "check_presets.py",
@@ -116,7 +116,7 @@ ROLES = {
         "symbolize_bt.py", "test_debug.py", "test_farm.py", "test_rr.py", "test_stall_attach.py",
         "tftp_serve.py", "worktree_seed.py",
     ],
-    "lib": ["azos_tools.py", "brain_dir.sh", "out_dir.py", "qemu_count.sh", "rust_channel.sh", "volume_stale.sh"],
+    "lib": ["azos_tools.py", "companion_dir.sh", "out_dir.py", "qemu_count.sh", "rust_channel.sh", "volume_stale.sh"],
     "forensic": ["seclog_verify/"],
 }
 
@@ -527,9 +527,9 @@ def self_test():
     eq("python bootstrap in lib", rewrite_anchors(py, "tools/lib/out_dir.py", "tools/out_dir.py",
                                                   "tools/lib/out_dir.py", ents), py.replace('"lib"', '"."'))
     eq("python outside the repo",
-       rewrite_anchors('os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../Brain")', "tools/build/a.py",
+       rewrite_anchors('os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../Companion")', "tools/build/a.py",
                        "tools/a.py", "tools/build/a.py", ents),
-       'os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../../Brain")')
+       'os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../../Companion")')
     leg = ('import os, sys\nsys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))\n'
            'ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))\n')
     eq("legacy python", rewrite_anchors(leg, "tools/build/a.py", "tools/a.py", "tools/build/a.py", ents),

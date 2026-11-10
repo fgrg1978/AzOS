@@ -125,7 +125,7 @@ config TCP_EPHEMERAL_PORT_MIN
     range 1024 65535
     default 49152
     help
-      A connect that names no local port (NODE_CONNECT, the brain link,
+      A connect that names no local port (NODE_CONNECT, the companion link,
       the camera link) takes a free one from
       TCP_EPHEMERAL_PORT_MIN..TCP_EPHEMERAL_PORT_MAX (tcp.rs,
       TcpLayer::ephemeral_port). A port is free while no connection
@@ -382,7 +382,7 @@ config NET_NIC_QUEUES
       its receive ring with a timestamp, what it pushes on its transmit ring
       leaves on a kick (QUEUE_NICQ_KICK). The stack sees nothing of a taken
       queue. The primary interface and the interface the route to the link
-      peer (the brain, which carries the e-stop) leaves by are never handed
+      peer (the companion, which carries the e-stop) leaves by are never handed
       over: the attach is refused and recorded (Rule::NicQueue). Every NIC
       the stack drives has one queue pair, so taking it takes the NIC. The
       frames of one kick share a doorbell; a frame that asked for a stamp is

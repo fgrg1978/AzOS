@@ -43,7 +43,7 @@ Outputs:
     python3 tools/sign/sign_ota.py bundle OUT.AZU --epoch 5 --fw-version 42 \\
         --kernel kernel.bin --caps CAPS.TOM --caps-sig CAPS.SIG \\
         --sched SCHED.TOM --config CONFIG.INI [--config-sig CONFIG.SIG] \\
-        [--image BRAIN.ELF ...] [--platform qemu|vf2|k1] [--priv KEY]
+        [--image COMPCLI.ELF ...] [--platform qemu|vf2|k1] [--priv KEY]
 
 One signed manifest over the kernel (and its `.sig`, made here with the same key
 unless `--kernel-sig` names one), the topology, the configuration and the

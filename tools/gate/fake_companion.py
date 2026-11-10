@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-"""A brain that lies, for the `brain lies` QEMU scenarios.
+"""A companion that lies, for the `companion lies` QEMU scenarios.
 
 Listens where the kernel dials (`behavior_server_ip:behavior_server_port` from
 CONFIG.INI, which the standard disk image sets to 10.0.2.2:9000 — QEMU's SLIRP
@@ -12,7 +12,7 @@ Why that shape and not a corrupt one: a bit-garbled frame is dropped by
 `parse_packet`'s CRC check before it ever reaches the dispatch, which tests the
 parser rather than the safety layer. What has never been exercised is a frame
 that passes every structural check and carries content the kernel must refuse.
-That is the "brain lies" failure mode the product thesis names, and the design
+That is the "companion lies" failure mode the product thesis names, and the design
 review records that nothing sends one:
 
     "No QEMU scenario sends a PKT_SEMANTIC_LEVEL to a booted kernel. The
@@ -21,11 +21,11 @@ review records that nothing sends one:
 
 This is the sender for that.
 
-Not a stand-in for the brain repo. It speaks the wire format and nothing
+Not a stand-in for the companion repo. It speaks the wire format and nothing
 else — no perception, no planning — because the point is to be a peer the
 kernel cannot distinguish from a real one at the frame level. That includes the
-link: the kernel's brain link is always a Noise session, so every mode below
-(except `--reconnect`, which resets connections) first runs the brain side of
+link: the kernel's companion link is always a Noise session, so every mode below
+(except `--reconnect`, which resets connections) first runs the companion side of
 the handshake, with AzOSRobotBrain's `secure_channel.py`, keyed from the link
 key the image carries (`--link-key FILE` or `--image IMG`), and then sends each
 frame as one sealed message.
@@ -39,21 +39,21 @@ import subprocess
 import sys
 import time
 
-MAGIC = b"BR"
+MAGIC = b"CL"
 
-# From crates/domains/robot/behavior/src/brain_protocol.rs. Restated rather than generated
+# From crates/domains/robot/behavior/src/companion_protocol.rs. Restated rather than generated
 # because this file must be able to send a type the kernel does NOT know, which
 # a generated mirror could not express.
 PKT_SEMANTIC_LEVEL = 0x8B
 PKT_DEGRADE = 0x8A
 PKT_ESTOP = 0x88
 PKT_UNKNOWN_PROBE = 0x7F  # deliberately not a type the kernel handles
-# The one frame this file SENDS BACK rather than at: ring 3's `brain_client`
-# turns it into motor commands, and so does the kernel's own brain link.
+# The one frame this file SENDS BACK rather than at: ring 3's `companion_client`
+# turns it into motor commands, and so does the kernel's own companion link.
 PKT_ACTUATOR = 0x80
 
 # `PKT_MODE` / `MODE_ID_ESTOP_RESET`: the only rearm path in the tree (see
-# `crates/domains/robot/behavior/src/brain_protocol.rs`). Added, alongside the
+# `crates/domains/robot/behavior/src/companion_protocol.rs`). Added, alongside the
 # rule that this frame — sent BARE, exactly as below — is now a
 # REQUEST the kernel records but never acts on by itself. See
 # `kernel_estop_release` for the frame that DOES clear the latch: the same
@@ -78,7 +78,7 @@ DEVICE_ID_BYTES = 16
 DEGRADE_LEVEL_CONTAINED = 3
 
 # ActuatorCmd payload, transcribed from `apply_actuator_cmd` in
-# `userspace/services/brain_client/src/main.rs`:
+# `userspace/services/companion_client/src/main.rs`:
 #
 #   [0] act_type    -- READ AND IGNORED by the client (`let _act_type`)
 #   [1] n_channels  -- must be >= 2 or the client applies NOTHING, silently
@@ -90,9 +90,9 @@ DEGRADE_LEVEL_CONTAINED = 3
 # green scenario that proves nothing.
 ACT_FLAG_EMERGENCY = 0x01
 
-# The link: brain_client and the kernel's own brain link both run the
+# The link: companion_client and the kernel's own companion link both run the
 # Noise session. The crypto is AzOSRobotBrain's `secure_channel.py`, imported
-# from the optional brain repo the way `tools/gate/link_peer.py` imports it (found by
+# from the optional companion repo the way `tools/gate/link_peer.py` imports it (found by
 # tools/lib/azos_tools.py), so nothing here restates it. Imported only when a
 # mode needs a session: `--selftest` and `--reconnect` stay free of the sibling
 # repo.
@@ -100,27 +100,27 @@ def load_secure_channel():
     import os
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "../lib"))
     import azos_tools
-    brain_dir = azos_tools.brain_dir()
-    if brain_dir is None:
-        print("[fake-brain] FAIL import — no AzOSRobotBrain (set AZOS_BRAIN_DIR)", flush=True)
+    companion_dir = azos_tools.companion_dir()
+    if companion_dir is None:
+        print("[fake-companion] FAIL import — no AzOSRobotBrain (set AZOS_COMPANION_DIR)", flush=True)
         sys.exit(4)
-    if brain_dir not in sys.path:
-        sys.path.insert(0, brain_dir)
+    if companion_dir not in sys.path:
+        sys.path.insert(0, companion_dir)
     try:
         import secure_channel  # noqa: E402
     except ImportError as e:
-        print(f"[fake-brain] FAIL import — AzOSRobotBrain is not importable from {brain_dir}: {e}",
+        print(f"[fake-companion] FAIL import — AzOSRobotBrain is not importable from {companion_dir}: {e}",
               flush=True)
         sys.exit(4)
     return secure_channel
 
 
 class EncPeer:
-    """One accepted connection of `--serve`: the brain-side (Noise responder)
+    """One accepted connection of `--serve`: the companion-side (Noise responder)
     handshake, then sealed frames both ways. The client dials and speaks first.
 
-    The dialer is the robot's behaviour engine (`brain_client`, ring 3), the
-    image's one brain link.
+    The dialer is the robot's behaviour engine (`companion_client`, ring 3), the
+    image's one companion link.
 
     States: `await` (nothing received yet), `hs` (mid-handshake), `est`
     (session established), `dead`. `role` is None until the first message.
@@ -178,23 +178,23 @@ class EncPeer:
             if kind == self.sc_mod.SecureChannel.RECORD_REKEY:
                 self.client_rekeys += 1
                 self.rekey_pending = self.client_rekeys
-                print(f"[fake-brain] client REKEY #{self.client_rekeys} opened", flush=True)
+                print(f"[fake-companion] client REKEY #{self.client_rekeys} opened", flush=True)
                 continue
             ptype = payload[2] if len(payload) > 2 else None
             if self.role is None:
                 self.role = "client"
-                print(f"[fake-brain] session is the client's "
+                print(f"[fake-companion] session is the client's "
                       f"(first message type 0x{ptype or 0:02x})", flush=True)
             if ptype == 0x01:
                 self.sensors += 1
                 if self.sensors == 1:
-                    print("[fake-brain] opened a sealed SensorPacket from the client "
+                    print("[fake-companion] opened a sealed SensorPacket from the client "
                           "(first of this session)", flush=True)
                 # The rekey frame only announces the ratchet; the rekey is
                 # COMPLETE once a message sealed under the new key opens.
                 # Printed only here.
                 if self.rekey_pending:
-                    print(f"[fake-brain] client REKEY #{self.rekey_pending} completed: "
+                    print(f"[fake-companion] client REKEY #{self.rekey_pending} completed: "
                           "a SensorPacket opened under the new key", flush=True)
                     self.rekey_pending = 0
 
@@ -217,7 +217,7 @@ def load_psk(link_key: str = None, image: str = None) -> bytes:
         except (OSError, subprocess.SubprocessError) as e:
             raise SystemExit(f"error: cannot read ::LINK.KEY from {image}: {e}")
     else:
-        raise SystemExit("error: this mode speaks to the kernel's brain link, which is "
+        raise SystemExit("error: this mode speaks to the kernel's companion link, which is "
                          "always a Noise session: give --link-key FILE or --image IMG")
     if len(psk) != 32:
         raise SystemExit(f"error: the link key is {len(psk)} bytes, need exactly 32")
@@ -225,7 +225,7 @@ def load_psk(link_key: str = None, image: str = None) -> bytes:
 
 
 class SealedConn:
-    """A blocking socket carrying the brain side of one Noise session: what
+    """A blocking socket carrying the companion side of one Noise session: what
     the kernel-link modes (`kernel_estop`, the lying script) send with
     `sendall` is sealed first, one frame per message. Receives are drained
     unopened: this side never needs the kernel's frames, and its own send
@@ -261,9 +261,9 @@ class SealedConn:
                 if reply:
                     sock.sendall(reply)
         except (OSError, ValueError, PermissionError) as e:
-            print(f"[fake-brain] FAIL handshake — {e}", flush=True)
+            print(f"[fake-companion] FAIL handshake — {e}", flush=True)
             return None
-        print(f"[fake-brain] session established sid={sc.session_id.hex()}", flush=True)
+        print(f"[fake-companion] session established sid={sc.session_id.hex()}", flush=True)
         return cls(sock, sc)
 
     def sendall(self, frame: bytes) -> None:
@@ -280,7 +280,7 @@ class SealedConn:
 
 
 def crc8(data: bytes) -> int:
-    """CRC-8/MAXIM, polynomial 0x31 — transcribed from `brain_protocol.rs`.
+    """CRC-8/MAXIM, polynomial 0x31 — transcribed from `companion_protocol.rs`.
 
     Transcribed rather than imported: the kernel's copy is Rust in a `no_std`
     crate, and a Python reimplementation that disagreed would make every frame
@@ -312,27 +312,27 @@ def actuator_payload(left: int, right: int, flags: int = 0,
 def announce_port(host: str, srv) -> int:
     """Print the port actually bound and return it. `--port 0` asks the OS for
     a free one; the gate row reads it back from this line and points the
-    image's CONFIG.INI at it (ci_check.sh `run_brain_peer_boot`), so no other
+    image's CONFIG.INI at it (ci_check.sh `run_companion_peer_boot`), so no other
     guest on the host -- they all dial 9000 -- can reach this peer."""
     port = srv.getsockname()[1]
-    print(f"[fake-brain] listening on {host}:{port}", flush=True)
+    print(f"[fake-companion] listening on {host}:{port}", flush=True)
     return port
 
 
 def kernel_estop(host: str, port: int, duration: float, gap: float,
                  psk: bytes, send_estop: bool = True) -> int:
-    """Drive the KERNEL's own brain link, then `PKT_ESTOP`, then keep driving.
+    """Drive the KERNEL's own companion link, then `PKT_ESTOP`, then keep driving.
 
     A different target from `--serve`. That mode answers ring 3's
-    `brain_client`; this one talks to the kernel's `behavior_task` brain link,
+    `companion_client`; this one talks to the kernel's `behavior_task` companion link,
     which is the only thing that handles `PKT_ESTOP` over TCP. The two do not
     run in the same image: this mode's image has the link key and the
-    REFLEX autorun, the ring-3 client's has BRAINCLI.
+    REFLEX autorun, the ring-3 client's has COMPCLI.
 
     **The script is drive / stop / DRIVE AGAIN, and the third phase is the
     assertion.** `PKT_ESTOP` latches, so what follows it is the only way to see
     the latch from outside: every command after it must reach the wheels as
-    duty 0. Asserting on the `[BRAIN] ESTOP received` console line instead
+    duty 0. Asserting on the `[COMPANION] ESTOP received` console line instead
     would be a false green — measured on the ring-3 path, where a handler that
     skipped the latch still printed "envelope latched" and the robot drove 20
     more times.
@@ -347,13 +347,13 @@ def kernel_estop(host: str, port: int, duration: float, gap: float,
     srv.listen(1)
     port = announce_port(host, srv)
     srv.settimeout(duration)
-    print(f"[fake-brain] kernel-estop mode on {host}:{port}", flush=True)
+    print(f"[fake-companion] kernel-estop mode on {host}:{port}", flush=True)
     try:
         conn, addr = srv.accept()
     except socket.timeout:
-        print("[fake-brain] FAIL no-robot — nothing connected", flush=True)
+        print("[fake-companion] FAIL no-robot — nothing connected", flush=True)
         return 2
-    print(f"[fake-brain] robot connected from {addr[0]}", flush=True)
+    print(f"[fake-companion] robot connected from {addr[0]}", flush=True)
     conn = SealedConn.accept(conn, psk)
     if conn is None:
         return 4
@@ -386,7 +386,7 @@ def kernel_estop(host: str, port: int, duration: float, gap: float,
             # Phase 1 — get the wheels moving.
             for _ in range(int(max(1.0, duration * 0.3) / gap)):
                 conn.sendall(drive); sent += 1; drain(conn); time.sleep(gap)
-            print(f"[fake-brain] phase 1 done: {sent} drive frames", flush=True)
+            print(f"[fake-companion] phase 1 done: {sent} drive frames", flush=True)
 
             # Phase 2 — the e-stop, unless the stop is coming from somewhere
             # else. `--kernel-drive` is this same script with the frame
@@ -395,9 +395,9 @@ def kernel_estop(host: str, port: int, duration: float, gap: float,
             # only have been the switch.
             if send_estop:
                 conn.sendall(estop)
-                print("[fake-brain] sent PKT_ESTOP", flush=True)
+                print("[fake-companion] sent PKT_ESTOP", flush=True)
             else:
-                print("[fake-brain] withholding PKT_ESTOP (drive-only)", flush=True)
+                print("[fake-companion] withholding PKT_ESTOP (drive-only)", flush=True)
             time.sleep(gap)
             drain(conn)
 
@@ -405,12 +405,12 @@ def kernel_estop(host: str, port: int, duration: float, gap: float,
             after = 0
             for _ in range(int(max(1.0, duration * 0.5) / gap)):
                 conn.sendall(drive); after += 1; drain(conn); time.sleep(gap)
-            print(f"[fake-brain] phase 3 done: {after} drive frames "
+            print(f"[fake-companion] phase 3 done: {after} drive frames "
                   f"after the e-stop", flush=True)
         except OSError as e:
-            print(f"[fake-brain] link error {e}", flush=True)
+            print(f"[fake-companion] link error {e}", flush=True)
             return 3
-    print(f"[fake-brain] PASS kernel-estop script complete", flush=True)
+    print(f"[fake-companion] PASS kernel-estop script complete", flush=True)
     return 0
 
 
@@ -471,7 +471,7 @@ def kernel_estop_release(host: str, port: int, duration: float, gap: float,
                          operator_priv, psk: bytes, device_id: bytes) -> int:
     """Drive / latch / REQUEST (must not clear) / RELEASE (must clear).
 
-    Proves that rule end to end over the same TCP brain
+    Proves that rule end to end over the same TCP companion
     link `--kernel-estop` uses: `PKT_ESTOP` latches, a bare `PKT_MODE`
     `MODE_ID_ESTOP_RESET` (phase 3) is recorded but changes nothing — the
     wheels must stay at duty 0 through phase 4 — and only the operator-signed
@@ -489,13 +489,13 @@ def kernel_estop_release(host: str, port: int, duration: float, gap: float,
     srv.listen(1)
     port = announce_port(host, srv)
     srv.settimeout(duration)
-    print(f"[fake-brain] kernel-estop-release mode on {host}:{port}", flush=True)
+    print(f"[fake-companion] kernel-estop-release mode on {host}:{port}", flush=True)
     try:
         conn, addr = srv.accept()
     except socket.timeout:
-        print("[fake-brain] FAIL no-robot — nothing connected", flush=True)
+        print("[fake-companion] FAIL no-robot — nothing connected", flush=True)
         return 2
-    print(f"[fake-brain] robot connected from {addr[0]}", flush=True)
+    print(f"[fake-companion] robot connected from {addr[0]}", flush=True)
     conn = SealedConn.accept(conn, psk)
     if conn is None:
         return 4
@@ -506,7 +506,7 @@ def kernel_estop_release(host: str, port: int, duration: float, gap: float,
     try:
         release = build_packet(PKT_MODE, mode_release_payload(operator_priv, 1, device_id))
     except (OSError, ValueError) as e:
-        print(f"[fake-brain] FAIL could not build the release proof: {e}", flush=True)
+        print(f"[fake-companion] FAIL could not build the release proof: {e}", flush=True)
         return 4
 
     def drain(c):
@@ -528,30 +528,30 @@ def kernel_estop_release(host: str, port: int, duration: float, gap: float,
         try:
             for _ in range(n_each):
                 conn.sendall(drive); drain(conn); time.sleep(gap)
-            print("[fake-brain] phase 1 done: driving", flush=True)
+            print("[fake-companion] phase 1 done: driving", flush=True)
 
             conn.sendall(estop); drain(conn); time.sleep(gap)
-            print("[fake-brain] sent PKT_ESTOP", flush=True)
+            print("[fake-companion] sent PKT_ESTOP", flush=True)
 
             conn.sendall(request); drain(conn); time.sleep(gap)
-            print("[fake-brain] sent bare ESTOP_RESET (request only)", flush=True)
+            print("[fake-companion] sent bare ESTOP_RESET (request only)", flush=True)
 
             # THE FIRST ASSERTION WINDOW: must stay at duty 0.
             for _ in range(n_each):
                 conn.sendall(drive); drain(conn); time.sleep(gap)
-            print("[fake-brain] phase 3 done: request must not have cleared", flush=True)
+            print("[fake-companion] phase 3 done: request must not have cleared", flush=True)
 
             conn.sendall(release); drain(conn); time.sleep(gap)
-            print("[fake-brain] sent signed ESTOP_RESET (operator release)", flush=True)
+            print("[fake-companion] sent signed ESTOP_RESET (operator release)", flush=True)
 
             # THE SECOND ASSERTION WINDOW: must drive again.
             for _ in range(n_each):
                 conn.sendall(drive); drain(conn); time.sleep(gap)
-            print("[fake-brain] phase 5 done: release must have cleared", flush=True)
+            print("[fake-companion] phase 5 done: release must have cleared", flush=True)
         except OSError as e:
-            print(f"[fake-brain] link error {e}", flush=True)
+            print(f"[fake-companion] link error {e}", flush=True)
             return 3
-    print("[fake-brain] PASS kernel-estop-release script complete", flush=True)
+    print("[fake-companion] PASS kernel-estop-release script complete", flush=True)
     return 0
 
 
@@ -561,7 +561,7 @@ def selftest() -> int:
     A wrong CRC produces a scenario that fails for the wrong reason: the kernel
     drops the frame at `parse_packet` and the log looks identical to a kernel
     that received nothing. These vectors are small enough to check by hand
-    against `brain_protocol.rs`.
+    against `companion_protocol.rs`.
     """
     # An empty-payload SEMANTIC_LEVEL: the exact frame the fail-closed branch
     # is written for.
@@ -645,16 +645,16 @@ def selftest() -> int:
         assert rm[2] == PKT_MODE and rm[3] == 73 and rm[4] == 0
         assert rm[-1] == crc8(rm[:-1])
     except ImportError:
-        print("[fake-brain] selftest: 'cryptography' not installed, skipping "
+        print("[fake-companion] selftest: 'cryptography' not installed, skipping "
               "the release-proof framing check", file=sys.stderr)
 
-    print("[fake-brain] selftest ok — framing matches brain_protocol.rs")
+    print("[fake-companion] selftest ok — framing matches companion_protocol.rs")
     return 0
 
 
 # Each entry: (label, frame, what the kernel is expected to do).
 def script_lies() -> list:
-    """The 'brain lies' sequence: valid frames, refusable content."""
+    """The 'companion lies' sequence: valid frames, refusable content."""
     return [
         ("semantic-level truncated (no payload byte)",
          build_packet(PKT_SEMANTIC_LEVEL, b""),
@@ -677,13 +677,13 @@ def serve(host: str, port: int, duration: float, emergency: bool, psk: bytes) ->
     **Why draining is not optional.** An earlier stand-in accepted, read with a
     1 s timeout and then stopped reading while holding the connection open. The
     peer's receive window filled, TCP applied backpressure, and ring 3's
-    `brain_client` logged "Send failed, disconnecting" — which reads exactly
+    `companion_client` logged "Send failed, disconnecting" — which reads exactly
     like a kernel transport bug and was reported as one. A test peer that does
     not consume is a false-bug generator, and the symptom shows up on the side
     that works. So: non-blocking, every open connection drained every pass.
 
     **Why it tells the dialers apart by their first message.** Two dialers
-    reach this port — the kernel's own brain link and ring 3's `brain_client`
+    reach this port — the kernel's own companion link and ring 3's `companion_client`
     — and under QEMU's SLIRP the source port seen here is the translated one.
     Both run the same Noise session, keyed the same, so the handshake does not
     tell them apart either; the first message does (`EncPeer`). The kernel's
@@ -723,7 +723,7 @@ def serve(host: str, port: int, duration: float, emergency: bool, psk: bytes) ->
         # assertion, not an afterthought.
         script.append(("post-estop drive", actuator_payload(60, 60)))
 
-    print(f"[fake-brain] serving on {host}:{port} for {duration:.0f}s; "
+    print(f"[fake-companion] serving on {host}:{port} for {duration:.0f}s; "
           f"script = {[n for n, _ in script]}", flush=True)
 
     conns = {}          # sock -> [addr, step, bytes_in]
@@ -732,7 +732,7 @@ def serve(host: str, port: int, duration: float, emergency: bool, psk: bytes) ->
     retired = []        # EncPeers of closed connections, for the summary
     accepts = 0
     sent = 0
-    brain_rekeys = 0
+    companion_rekeys = 0
     t0 = time.time()
     while time.time() - t0 < duration:
         try:
@@ -740,14 +740,14 @@ def serve(host: str, port: int, duration: float, emergency: bool, psk: bytes) ->
             c.setblocking(False)
             conns[c] = [a, 0, 0]
             accepts += 1
-            print(f"[fake-brain] accept #{accepts}", flush=True)
+            print(f"[fake-companion] accept #{accepts}", flush=True)
             # The client speaks first (on the encrypted link the TCP client is the Noise
             # initiator); this side only answers.
             enc[c] = EncPeer(sc_mod, psk)
         except socket.timeout:
             pass
         except OSError as e:
-            print(f"[fake-brain] accept error {e}", flush=True)
+            print(f"[fake-companion] accept error {e}", flush=True)
 
         for c in list(conns):
             a, step, got = conns[c]
@@ -756,13 +756,13 @@ def serve(host: str, port: int, duration: float, emergency: bool, psk: bytes) ->
             except BlockingIOError:
                 continue
             except OSError as e:
-                print(f"[fake-brain] conn error {e}", flush=True)
+                print(f"[fake-companion] conn error {e}", flush=True)
                 conns.pop(c, None)
                 if c in enc:
                     retired.append(enc.pop(c))
                 continue
             if not d:
-                print(f"[fake-brain] a peer closed after {got} B", flush=True)
+                print(f"[fake-companion] a peer closed after {got} B", flush=True)
                 conns.pop(c, None)
                 if c in enc:
                     retired.append(enc.pop(c))
@@ -773,7 +773,7 @@ def serve(host: str, port: int, duration: float, emergency: bool, psk: bytes) ->
             try:
                 reply = ep.feed(d)
             except Exception as e:  # noqa: BLE001 — any refusal ends it
-                print(f"[fake-brain] encrypted session refused: {e}", flush=True)
+                print(f"[fake-companion] encrypted session refused: {e}", flush=True)
                 c.close()
                 conns.pop(c, None)
                 retired.append(enc.pop(c))
@@ -783,7 +783,7 @@ def serve(host: str, port: int, duration: float, emergency: bool, psk: bytes) ->
                 c.sendall(reply)
                 c.setblocking(False)
             if ep.state == "est" and was != "est":
-                print(f"[fake-brain] encrypted session established "
+                print(f"[fake-companion] encrypted session established "
                       f"sid={ep.sc.session_id.hex()}", flush=True)
             if ep.state != "est" or was != "est" or ep.role != "client":
                 # Nothing to answer: the handshake is still running or just
@@ -796,7 +796,7 @@ def serve(host: str, port: int, duration: float, emergency: bool, psk: bytes) ->
             name, payload = script[min(step, len(script) - 1)]
             frame = build_packet(PKT_ACTUATOR, payload)
             try:
-                # Once per session, on the third command: a brain-side
+                # Once per session, on the third command: a companion-side
                 # REKEY, so the client's receive ratchet is exercised.
                 rekey = step == 2
                 wire = ep.seal(frame, rekey=rekey)
@@ -804,30 +804,30 @@ def serve(host: str, port: int, duration: float, emergency: bool, psk: bytes) ->
                 c.sendall(wire)
                 c.setblocking(False)
                 if rekey:
-                    brain_rekeys += 1
-                    print(f"[fake-brain] sent brain REKEY (tx generation "
+                    companion_rekeys += 1
+                    print(f"[fake-companion] sent companion REKEY (tx generation "
                           f"{ep.sc.tx_generation})", flush=True)
                 sent += 1
                 if step < len(script):
-                    print(f"[fake-brain] sent ActuatorCmd '{name}' (sealed)", flush=True)
+                    print(f"[fake-companion] sent ActuatorCmd '{name}' (sealed)", flush=True)
             except OSError as e:
-                print(f"[fake-brain] send error {e}", flush=True)
+                print(f"[fake-companion] send error {e}", flush=True)
                 conns.pop(c, None)
                 continue
             conns[c] = [a, step + 1, got]
 
     peers = retired + list(enc.values())
     est = [p for p in peers if p.state in ("est", "dead") and p.sc.session_id]
-    print(f"[fake-brain] encrypted sessions={len(est)} "
+    print(f"[fake-companion] encrypted sessions={len(est)} "
           f"sealed_sensor_packets_opened={sum(p.sensors for p in peers)} "
           f"client_rekeys={sum(p.client_rekeys for p in peers)} "
-          f"brain_rekeys={brain_rekeys}", flush=True)
+          f"companion_rekeys={companion_rekeys}", flush=True)
 
     if accepts == 0:
         # Never treat silence as success.
-        print("[fake-brain] FAIL no-robot — nothing connected", flush=True)
+        print("[fake-companion] FAIL no-robot — nothing connected", flush=True)
         return 2
-    print(f"[fake-brain] PASS accepts={accepts} actuator_frames_sent={sent}",
+    print(f"[fake-companion] PASS accepts={accepts} actuator_frames_sent={sent}",
           flush=True)
     return 0
 
@@ -844,7 +844,7 @@ def reconnect(host: str, port: int, duration: float) -> int:
     closes with SO_LINGER 0 so the client's next send fails at once rather than
     after a FIN it may not notice.
 
-    Both dialers get the same treatment — the kernel's own brain link reaches
+    Both dialers get the same treatment — the kernel's own companion link reaches
     this port too, and SLIRP hides which is which. The count that matters is
     therefore taken from the kernel log, not from `accepts` here.
     """
@@ -854,7 +854,7 @@ def reconnect(host: str, port: int, duration: float) -> int:
     srv.listen(8)
     port = announce_port(host, srv)
     srv.settimeout(0.2)
-    print(f"[fake-brain] resetting every connection on {host}:{port} "
+    print(f"[fake-companion] resetting every connection on {host}:{port} "
           f"for {duration:.0f}s", flush=True)
 
     accepts = 0
@@ -865,7 +865,7 @@ def reconnect(host: str, port: int, duration: float) -> int:
         except socket.timeout:
             continue
         except OSError as e:
-            print(f"[fake-brain] accept error {e}", flush=True)
+            print(f"[fake-companion] accept error {e}", flush=True)
             continue
         accepts += 1
         c.settimeout(1.5)
@@ -885,12 +885,12 @@ def reconnect(host: str, port: int, duration: float) -> int:
         except OSError:
             pass
         c.close()
-        print(f"[fake-brain] reset #{accepts} after {got} B", flush=True)
+        print(f"[fake-companion] reset #{accepts} after {got} B", flush=True)
 
     if accepts == 0:
-        print("[fake-brain] FAIL no-robot — nothing connected", flush=True)
+        print("[fake-companion] FAIL no-robot — nothing connected", flush=True)
         return 2
-    print(f"[fake-brain] reconnect done accepts={accepts}", flush=True)
+    print(f"[fake-companion] reconnect done accepts={accepts}", flush=True)
     return 0
 
 
@@ -914,7 +914,7 @@ def main() -> int:
                          "drive throughout, so whatever stops the robot was "
                          "not this peer")
     ap.add_argument("--kernel-estop", action="store_true",
-                    help="drive the KERNEL brain link, send PKT_ESTOP, then "
+                    help="drive the KERNEL companion link, send PKT_ESTOP, then "
                          "keep driving -- the third phase is the assertion")
     ap.add_argument("--kernel-estop-release", action="store_true",
                     help="drive / latch / bare ESTOP_RESET (must NOT clear) / "
@@ -932,9 +932,9 @@ def main() -> int:
     ap.add_argument("--link-key", type=str, default=None, metavar="FILE",
                     help="the link key as 32 raw bytes at this path (the SAME "
                          "bytes the robot image carries in its key sector): the "
-                         "Noise session every mode but --reconnect runs, brain "
+                         "Noise session every mode but --reconnect runs, companion "
                          "side (AzOSRobotBrain's secure_channel). --serve also "
-                         "sends one brain-side REKEY per session")
+                         "sends one companion-side REKEY per session")
     ap.add_argument("--image", type=str, default=None, metavar="IMG",
                     help="read the link key from ::LINK.KEY of this disk image "
                          "(mtools) instead of --link-key; --kernel-estop-release "
@@ -970,18 +970,18 @@ def main() -> int:
     srv.bind((args.host, args.port))
     srv.listen(1)
     srv.settimeout(args.wait)
-    print(f"[fake-brain] listening on {args.host}:{srv.getsockname()[1]}", flush=True)
+    print(f"[fake-companion] listening on {args.host}:{srv.getsockname()[1]}", flush=True)
 
     try:
         conn, addr = srv.accept()
     except socket.timeout:
         # Never treat silence as success: a robot that never dialled is a
         # failure of the scenario, not a pass with nothing to assert.
-        print(f"[fake-brain] FAIL no-robot — nothing connected within "
+        print(f"[fake-companion] FAIL no-robot — nothing connected within "
               f"{args.wait:.0f}s", flush=True)
         return 2
 
-    print(f"[fake-brain] robot connected from {addr[0]}", flush=True)
+    print(f"[fake-companion] robot connected from {addr[0]}", flush=True)
     conn = SealedConn.accept(conn, psk)
     if conn is None:
         return 4
@@ -989,7 +989,7 @@ def main() -> int:
         conn.settimeout(5.0)
         for label, frame, expect in script_lies():
             conn.sendall(frame)
-            print(f"[fake-brain] sent {label} "
+            print(f"[fake-companion] sent {label} "
                   f"({len(frame)} B) — expect: {expect}", flush=True)
             time.sleep(args.gap)
         # Hold the connection open briefly. Closing immediately would make the
@@ -997,7 +997,7 @@ def main() -> int:
         # DIFFERENT failure mode — scenario 1, not this one — and would muddle
         # which behaviour the log is showing.
         time.sleep(2.0)
-    print("[fake-brain] PASS sent 4 frames", flush=True)
+    print("[fake-companion] PASS sent 4 frames", flush=True)
     return 0
 
 

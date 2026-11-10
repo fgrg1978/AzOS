@@ -592,7 +592,7 @@ mod profiles {
     /// **The authority interface is the behaviour engine's alone.** The
     /// autorun row grants `endpoint.authority` to whichever image runs under
     /// it; the loader withholds a grant whose interface the image's row does
-    /// not list (`spawn::withheld_by_profile`), so only `BRAINCLI.ELF` holds it.
+    /// not list (`spawn::withheld_by_profile`), so only `COMPCLI.ELF` holds it.
     ///
     /// **Canary.** List `AUTHORITY` in `REFLEX.ELF`'s row: red.
     #[test]
@@ -600,7 +600,7 @@ mod profiles {
         let holders: Vec<&str> = IMAGE_PROFILES.iter()
             .filter(|p| image_filter(p).iface_listed(azos_devif::key::AUTHORITY))
             .map(|p| p.image).collect();
-        assert_eq!(holders, vec!["BRAINCLI.ELF"]);
+        assert_eq!(holders, vec!["COMPCLI.ELF"]);
     }
 
     /// Each family's interface is its tool's alone, and the four
@@ -623,7 +623,7 @@ mod profiles {
         // `disable` stay `BEHAVIOR.ELF`'s.
         let reader = |img: &str, k: u16| match (img, k) {
             ("OTA.ELF", k) if k == key::OTA => Some("PKGD.ELF"),
-            ("BEHAVIOR.ELF", k) if k == key::BEHAVIOR => Some("BRAINCLI.ELF"),
+            ("BEHAVIOR.ELF", k) if k == key::BEHAVIOR => Some("COMPCLI.ELF"),
             _ => None,
         };
         for (img, k) in fams {
@@ -1058,10 +1058,10 @@ mod image_profiles {
         ("entropy_read", &["SYS_IPC_CALL"]),
         // And the feed, over the same call.
         ("entropy_feed", &["SYS_IPC_CALL"]),
-        // So is the brain-link key's.
+        // So is the companion-link key's.
         ("link_key_read", &["SYS_IPC_CALL"]),
-        // And the brain's pinned key, from the same endpoint.
-        ("brain_pk_read", &["SYS_IPC_CALL"]),
+        // And the companion's pinned key, from the same endpoint.
+        ("companion_pk_read", &["SYS_IPC_CALL"]),
         // A signature by a kernel-held key: the call, and the one-page memory
         // object the message and the signature travel in (made, mapped, given back).
         ("keys_sign", &["SYS_IPC_CALL", "SYS_MO_CREATE", "SYS_MO_MAP", "SYS_MO_UNMAP"]),
@@ -1367,15 +1367,15 @@ mod image_profiles {
             src!("userspace/lib/srv/src/sys/port.rs"),
         ]),
         ("REFLEX.ELF", Lang::Rust, &[src!("userspace/services/reflex/src/main.rs")]),
-        ("BRAINCLI.ELF", Lang::Rust, &[
-            src!("userspace/services/brain_client/src/main.rs"),
+        ("COMPCLI.ELF", Lang::Rust, &[
+            src!("userspace/services/companion_client/src/main.rs"),
             // The forward-secret link client session.
-            src!("userspace/services/brain_client/src/link.rs"),
-            src!("userspace/services/brain_client/src/behave.rs"),
-            src!("userspace/services/brain_client/src/ml.rs"),
-            src!("userspace/services/brain_client/src/mlcall.rs"),
-            src!("userspace/services/brain_client/src/camera.rs"),
-            src!("userspace/services/brain_client/src/wire.rs"),
+            src!("userspace/services/companion_client/src/link.rs"),
+            src!("userspace/services/companion_client/src/behave.rs"),
+            src!("userspace/services/companion_client/src/ml.rs"),
+            src!("userspace/services/companion_client/src/mlcall.rs"),
+            src!("userspace/services/companion_client/src/camera.rs"),
+            src!("userspace/services/companion_client/src/wire.rs"),
         ]),
         ("CAPTEST.ELF", Lang::Rust, &[
             src!("userspace/tests/captest/src/main.rs"),
@@ -1661,7 +1661,7 @@ mod image_profiles {
     /// text that submits the entry)`. The kernel runs the entry only while
     /// the row lists the op's class, and the source text must still be there.
     const RING_ENTRY_OPS: &[(&str, u16, &str)] = &[
-        ("BRAINCLI.ELF", azos_abi::invoke::MEMOBJ_ACQUIRE, "push_register("),
+        ("COMPCLI.ELF", azos_abi::invoke::MEMOBJ_ACQUIRE, "push_register("),
     ];
 
     // ── The scanner ─────────────────────────────────────────────────────
@@ -2379,7 +2379,7 @@ mod image_profiles {
     /// the task at the first call (and is withheld from its row's grants).
     ///
     /// **Canaries.** Add `azos_devif::key::OTA` to `SH.ELF`'s row: red, naming
-    /// it. Drop `key::ENTROPY` from `BRAINCLI.ELF`'s: red.
+    /// it. Drop `key::ENTROPY` from `COMPCLI.ELF`'s: red.
     #[test]
     fn every_image_profile_lists_exactly_the_interfaces_its_binary_calls() {
         for p in IMAGE_PROFILES {
@@ -2570,7 +2570,7 @@ mod image_profiles {
     /// has not been told about in advance — which was exactly the gap:
     /// `every_module_a_binary_declares_is_scanned` used to check only
     /// `mod` declarations WITHIN files `SOURCES` already hardcoded, one
-    /// level, never asking whether a newly added file — `BRAINCLI.ELF`
+    /// level, never asking whether a newly added file — `COMPCLI.ELF`
     /// gaining a `#[path] mod` — was in `SOURCES` at all.
     fn discover_module_tree(entry_rel: &str) -> BTreeSet<String> {
         let mut visited = BTreeSet::new();
@@ -2616,7 +2616,7 @@ mod image_profiles {
     /// `discover_module_tree`), not a hardcoded per-image file list: a
     /// list drifts the moment a binary gains a new module and nobody
     /// remembers to add it here too, which is how a
-    /// `#[path]` module of `BRAINCLI.ELF` once went unnoticed.
+    /// `#[path]` module of `COMPCLI.ELF` once went unnoticed.
     #[test]
     fn every_module_a_binary_declares_is_scanned() {
         for &(image, lang, files) in SOURCES {
@@ -3260,7 +3260,7 @@ mod image_profiles {
     /// in `$AZOS_OUT/build/disk-aarch64.img`'s recipe went unchecked — the exact gap
     /// `image_recipe_copies`'s own doc comment names. `>= 13` rather than
     /// an exact `IMAGE_PROFILES` comparison: the aarch64 recipe ships
-    /// GPIODRV.ELF/UHELLO.ELF/REFLEX.ELF/BRAINCLI.ELF too, which carry no
+    /// GPIODRV.ELF/UHELLO.ELF/REFLEX.ELF/COMPCLI.ELF too, which carry no
     /// seccomp profile of their own (`IMAGE_PROFILES` is a riscv64-side
     /// table this crate owns; nothing analogous exists per-ISA yet), so the
     /// two lists are not expected to be the same LENGTH as `IMAGE_PROFILES`
@@ -3544,7 +3544,7 @@ mod image_profiles {
     /// `crates/core/libsys` as a path dependency outside it, so cargo hashes libsys's
     /// absolute path into `-C metadata`; rustc turns that into the crate
     /// disambiguator, and items are ordered by names that carry it. The same
-    /// brain_client sources built in two directories differed in `.strtab`, and
+    /// companion_client sources built in two directories differed in `.strtab`, and
     /// stripped, in 2975 bytes of `.text` (gate 40 refused one rebuilt in its
     /// snapshot). Through the wrapper the two directories give identical ELFs. A
     /// two-directory build belongs in `tools/gate/repro_check.sh`; this is the check
@@ -3779,7 +3779,7 @@ mod image_profiles {
 /// in for rustc: what the wrapper would hand rustc comes back on stdout.
 ///
 /// The kernel binds each seccomp image profile to the SHA-256 of the ELF the
-/// build ships, and gate 40 refused a brain_client rebuilt in another directory.
+/// build ships, and gate 40 refused a companion_client rebuilt in another directory.
 /// So the metadata rustc sees must name the unit and never the checkout, must
 /// still tell two versions of one crate apart, and must never silently fall back
 /// to cargo's path-derived value.
@@ -4061,7 +4061,7 @@ mod fork_capable_rows {
         for img in ["ABITEST.ELF", "CAPTEST.ELF", "IPCTEST.ELF", "VSBENCH.ELF"] {
             assert!(profile_can_fork(row(img)), "{img} forks (or is audit mode)");
         }
-        for img in ["GPIODRV.ELF", "REFLEX.ELF", "BRAINCLI.ELF", "EPSRV.ELF", "VSSRV.ELF", "UHELLO.ELF"] {
+        for img in ["GPIODRV.ELF", "REFLEX.ELF", "COMPCLI.ELF", "EPSRV.ELF", "VSSRV.ELF", "UHELLO.ELF"] {
             assert!(!profile_can_fork(row(img)), "{img} cannot fork");
         }
         assert!(profile_named(b"NOSUCH.ELF").is_none());

@@ -41,11 +41,11 @@ class ComputeManifestTests(unittest.TestCase):
     """tools/image/gen_board_manifest.py::compute_manifest — the pre-build check."""
 
     def test_every_declared_service_has_a_build_path(self):
-        declared = ["GPIODRV.ELF", "REFLEX.ELF", "BRAINCLI.ELF"]
+        declared = ["GPIODRV.ELF", "REFLEX.ELF", "COMPCLI.ELF"]
         available = {
             "GPIODRV.ELF": "elfs/gpio_drv.elf",
             "REFLEX.ELF": "elfs/reflex.elf",
-            "BRAINCLI.ELF": "elfs/brain_client.elf",
+            "COMPCLI.ELF": "elfs/companion_client.elf",
             # Extra buildable ELFs that are NOT declared (test images) must
             # not leak onto the board manifest just because they exist.
             "ABITEST.ELF": "elfs/abitest.elf",
@@ -57,7 +57,7 @@ class ComputeManifestTests(unittest.TestCase):
             [
                 ("GPIODRV.ELF", "elfs/gpio_drv.elf"),
                 ("REFLEX.ELF", "elfs/reflex.elf"),
-                ("BRAINCLI.ELF", "elfs/brain_client.elf"),
+                ("COMPCLI.ELF", "elfs/companion_client.elf"),
             ],
         )
 
@@ -110,8 +110,8 @@ class CheckBoardDiskTests(unittest.TestCase):
     """tools/image/check_board_disk.py::diff — the post-build anti-drift check."""
 
     def test_disk_matches_declared_manifest(self):
-        disk_names = {"GPIODRV.ELF", "REFLEX.ELF", "BRAINCLI.ELF"}
-        declared_names = {"GPIODRV.ELF", "REFLEX.ELF", "BRAINCLI.ELF"}
+        disk_names = {"GPIODRV.ELF", "REFLEX.ELF", "COMPCLI.ELF"}
+        declared_names = {"GPIODRV.ELF", "REFLEX.ELF", "COMPCLI.ELF"}
         orphan_elfs, orphan_services = check_board_disk.diff(disk_names, declared_names)
         self.assertEqual(orphan_elfs, [])
         self.assertEqual(orphan_services, [])
@@ -119,8 +119,8 @@ class CheckBoardDiskTests(unittest.TestCase):
     def test_orphan_elf_on_disk_with_no_providing_topology_entry(self):
         """RED CASE 2: an ELF is on the image that no topology row declares —
         e.g. a hand-added `mcopy` line the generator did not produce."""
-        disk_names = {"GPIODRV.ELF", "REFLEX.ELF", "BRAINCLI.ELF", "CAPTEST.ELF"}
-        declared_names = {"GPIODRV.ELF", "REFLEX.ELF", "BRAINCLI.ELF"}
+        disk_names = {"GPIODRV.ELF", "REFLEX.ELF", "COMPCLI.ELF", "CAPTEST.ELF"}
+        declared_names = {"GPIODRV.ELF", "REFLEX.ELF", "COMPCLI.ELF"}
         orphan_elfs, orphan_services = check_board_disk.diff(disk_names, declared_names)
         self.assertEqual(orphan_elfs, ["CAPTEST.ELF"])
         self.assertEqual(orphan_services, [])
@@ -130,10 +130,10 @@ class CheckBoardDiskTests(unittest.TestCase):
         built image — the manifest and the actual disk disagree the other
         way."""
         disk_names = {"GPIODRV.ELF", "REFLEX.ELF"}
-        declared_names = {"GPIODRV.ELF", "REFLEX.ELF", "BRAINCLI.ELF"}
+        declared_names = {"GPIODRV.ELF", "REFLEX.ELF", "COMPCLI.ELF"}
         orphan_elfs, orphan_services = check_board_disk.diff(disk_names, declared_names)
         self.assertEqual(orphan_elfs, [])
-        self.assertEqual(orphan_services, ["BRAINCLI.ELF"])
+        self.assertEqual(orphan_services, ["COMPCLI.ELF"])
 
     def test_mdir_output_parses_only_dot_elf_tokens(self):
         # Real `mdir -i disk.img ::` output (verified against a scratch FAT32

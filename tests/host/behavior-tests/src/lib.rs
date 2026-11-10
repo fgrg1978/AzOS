@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Host-side tests for the brain wire protocol.
+//! Host-side tests for the companion wire protocol.
 //!
 //! **WHY this file and not the other 4100 lines of `crates/domains/robot/behavior`.** These
-//! functions parse bytes that arrive over TCP from the brain server, which is
+//! functions parse bytes that arrive over TCP from the companion server, which is
 //! a separate process on another machine — the same class as the DNS and NTP
 //! parsers, and the same consequence: with `panic = "abort"` a reachable panic
 //! here is a board reset an off-path attacker can trigger.
@@ -25,23 +25,23 @@ extern crate beh_test_drivers as azos_drv_sys;
 #[allow(dead_code)]
 // The ring-3 behaviour engine's choice, the real file.
 #[cfg(test)]
-#[path = "../../../../userspace/services/brain_client/src/behave.rs"]
+#[path = "../../../../userspace/services/companion_client/src/behave.rs"]
 mod behave;
-// The camera on its brain link, and the frame around a payload.
+// The camera on its companion link, and the frame around a payload.
 #[allow(dead_code)]
 #[cfg(test)]
-#[path = "../../../../userspace/services/brain_client/src/wire.rs"]
+#[path = "../../../../userspace/services/companion_client/src/wire.rs"]
 mod wire;
 #[allow(dead_code)]
 #[cfg(test)]
-#[path = "../../../../userspace/services/brain_client/src/camera.rs"]
+#[path = "../../../../userspace/services/companion_client/src/camera.rs"]
 mod camera;
 #[cfg(test)]
 mod camera_tests;
 // Its inference client.
 #[allow(dead_code)]
 #[cfg(test)]
-#[path = "../../../../userspace/services/brain_client/src/ml.rs"]
+#[path = "../../../../userspace/services/companion_client/src/ml.rs"]
 mod ml;
 #[cfg(test)]
 mod ml_tests;
@@ -50,15 +50,15 @@ mod behave_tests;
 
 // The whole protocol vocabulary; the suite reads part of it.
 #[allow(dead_code)]
-#[path = "../../../../crates/domains/robot/behavior/src/brain_protocol.rs"]
+#[path = "../../../../crates/domains/robot/behavior/src/companion_protocol.rs"]
 // Named for the file it is, not shortened: `remote.rs` — pulled in below —
-// refers to `crate::brain_protocol`, and a suite that renames a module makes
+// refers to `crate::companion_protocol`, and a suite that renames a module makes
 // the code under test stop resolving against itself.
-mod brain_protocol;
+mod companion_protocol;
 
 #[cfg(test)]
 mod framing {
-    use super::brain_protocol::*;
+    use super::companion_protocol::*;
 
     /// Build a well-formed packet: magic, type, little-endian length, payload,
     /// CRC-8 over header+payload.
@@ -137,7 +137,7 @@ mod framing {
 
 #[cfg(test)]
 mod bridge_estop_frames {
-    use super::brain_protocol::*;
+    use super::companion_protocol::*;
 
     fn frame(kind: u8, payload: &[u8]) -> Vec<u8> {
         let mut out = vec![0u8; FRAME_OVERHEAD + payload.len()];
@@ -175,7 +175,7 @@ mod bridge_estop_frames {
     }
 
     /// **A truncated header never holds an e-stop back.** Bytes lost to an
-    /// overrun leave a header that claims 64 bytes; the brain's e-stop lands
+    /// overrun leave a header that claims 64 bytes; the companion's e-stop lands
     /// inside that span and the line goes quiet. The e-stop counts on that read,
     /// and nothing is kept for the claim. Only the start of an e-stop frame, no
     /// longer than one can be, is kept for the next read.
@@ -207,7 +207,7 @@ mod bridge_estop_frames {
 
 #[cfg(test)]
 mod relax_classification {
-    use super::brain_protocol::*;
+    use super::companion_protocol::*;
 
     /// **Tightening needs no warrant, relaxing does.** Arming degraded mode,
     /// raising the semantic level and a payload or configuration effect on a
@@ -234,7 +234,7 @@ mod relax_classification {
     /// **Contained, only what acts asks for a warrant.** Spray on, a gripper
     /// move, a camera trigger, a buzzer pattern and camera power on need the
     /// operator; spray off, buzzer off and camera power off make the machine
-    /// safer and pass unsigned, so a contained brain can still stop its pump.
+    /// safer and pass unsigned, so a contained companion can still stop its pump.
     /// A frame too short to read asks, as one that acts.
     ///
     /// **Canary.** Count every payload and config frame as acting while
@@ -257,7 +257,7 @@ mod relax_classification {
 
 #[cfg(test)]
 mod actuator {
-    use super::brain_protocol::*;
+    use super::companion_protocol::*;
 
     /// Channels are little-endian i16, and the sign matters: a byte-order or
     /// sign mistake still produces a legal PWM value, so the motor turns the
@@ -334,7 +334,7 @@ mod estop;
 #[path = "../../../../crates/core/actuation/src/providers.rs"]
 mod providers;
 
-// RED/GREEN tests for the e-stop release rule (the brain may REQUEST an
+// RED/GREEN tests for the e-stop release rule (the companion may REQUEST an
 // e-stop release, it may never CLEAR the latch). A separate file, not folded into
 // the `mode_reset` module below. See its module doc for the
 // full RED-to-GREEN account. `cfg(test)`, matching `envelope`/`mode_reset`
@@ -484,14 +484,14 @@ mod envelope {
 }
 
 // ---------------------------------------------------------------------------
-// PKT_MODE e-stop reset gate (`crates/domains/robot/behavior/src/brain_protocol.rs`,
+// PKT_MODE e-stop reset gate (`crates/domains/robot/behavior/src/companion_protocol.rs`,
 // `MODE_ID_ESTOP_RESET` / `mode_estop_record` / `mode_degrade_record`).
 //
 // `PKT_ESTOP` only ever ARMS (grep it), so
 // `PKT_MODE` is the only rearm path in the tree, and until this gate existed
 // `decode_mode_cmd` handed back a byte NOTHING validated — any `mode_id`
 // cleared an armed e-stop. `crates/domains/robot/safety-core/src/frames.rs` has two dispatch sites (the
-// TCP brain link and the `feature = "vf2"` UART bridge, compiled out of every
+// TCP companion link and the `feature = "vf2"` UART bridge, compiled out of every
 // QEMU build) that both now call `mode_estop_record`/`mode_degrade_record`
 // and act on exactly what they return — no `if mode_id == ...` left inline at
 // either call site.
@@ -520,7 +520,7 @@ mod envelope {
 // forged/absent-signature-refused, replay-refused) is pinned in
 // `estop_release_authority.rs`, a NEW file rather than a rewrite of this one.
 //
-// Degraded-mode clearing (brain-triggered degraded mode) goes through `mode_degrade_record`, the
+// Degraded-mode clearing (companion-triggered degraded mode) goes through `mode_degrade_record`, the
 // sibling function gated on the exact same reserved id — see the gate's doc
 // comment in `crates/domains/robot/safety-core/src/frames.rs` for why. The real `degraded_set`/`degraded_active`
 // (`crates/core/ipc::cap`) are not reachable from this host-test crate, which only
@@ -532,7 +532,7 @@ mod envelope {
 
 #[cfg(test)]
 mod mode_reset {
-    use super::brain_protocol::*;
+    use super::companion_protocol::*;
     use super::safety::*;
 
     fn serial() -> std::sync::MutexGuard<'static, ()> {
@@ -540,7 +540,7 @@ mod mode_reset {
     }
 
     /// `0xFF`, not `0`, and not a small value either — see the constant's own
-    /// doc comment in `brain_protocol.rs` for the full reasoning. A zeroed or
+    /// doc comment in `companion_protocol.rs` for the full reasoning. A zeroed or
     /// truncated payload reads as `mode_id == 0` by default, so `0` would let
     /// the single most common malformed-frame case rearm the robot.
     #[test]
@@ -2945,7 +2945,7 @@ mod semantic_level_records {
         assert_eq!(detail, 3, "detail must carry the level it replaced");
     }
 
-    /// The level is sticky by design and the brain may resend a standing level
+    /// The level is sticky by design and the companion may resend a standing level
     /// at any cadence it likes. Recording repeats would fill the medium with
     /// the fact that nothing happened — and the medium is a 100k-file circular
     /// log, so filling it with non-events discards real history.
@@ -2994,14 +2994,14 @@ mod semantic_level_records {
 }
 
 // ---------------------------------------------------------------------------
-// Golden wire vectors, shared with `tools/gate/fake_brain.py`.
+// Golden wire vectors, shared with `tools/gate/fake_companion.py`.
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod wire_golden {
-    use super::brain_protocol::{build_packet, PKT_SEMANTIC_LEVEL, PKT_DEGRADE};
+    use super::companion_protocol::{build_packet, PKT_SEMANTIC_LEVEL, PKT_DEGRADE};
 
-    /// The exact bytes `tools/gate/fake_brain.py` puts on the wire.
+    /// The exact bytes `tools/gate/fake_companion.py` puts on the wire.
     ///
     /// That script transcribes CRC-8/MAXIM into Python so a QEMU scenario can
     /// send a frame this kernel must refuse. A transcription that drifted would
@@ -3015,32 +3015,32 @@ mod wire_golden {
     /// change the framing in Rust and this fails, change it in Python and its
     /// `--selftest` fails against the same vectors.
     #[test]
-    fn the_frames_the_fake_brain_sends_are_these_bytes() {
+    fn the_frames_the_fake_companion_sends_are_these_bytes() {
         let mut out = [0u8; 16];
 
         // Empty payload: the frame the fail-closed branch of the semantic-level
         // handler exists for. Six bytes, length zero, CRC over the header.
         let n = build_packet(PKT_SEMANTIC_LEVEL, &[], &mut out);
-        assert_eq!(&out[..n], &[0x42, 0x52, 0x8B, 0x00, 0x00, 0xC4],
-            "the empty SEMANTIC_LEVEL frame changed; tools/gate/fake_brain.py sends \
+        assert_eq!(&out[..n], &[0x43, 0x4C, 0x8B, 0x00, 0x00, 0x3A],
+            "the empty SEMANTIC_LEVEL frame changed; tools/gate/fake_companion.py sends \
              the old bytes and its frames will now be dropped at the CRC check \
              rather than reaching the dispatch");
 
         // One byte, out of range: exercises a non-zero length field too.
         let n = build_packet(PKT_SEMANTIC_LEVEL, &[200], &mut out);
-        assert_eq!(&out[..n], &[0x42, 0x52, 0x8B, 0x01, 0x00, 200, 0x3B],
+        assert_eq!(&out[..n], &[0x43, 0x4C, 0x8B, 0x01, 0x00, 200, 0xA6],
             "the out-of-range SEMANTIC_LEVEL frame changed");
 
         // The DEGRADE frame whose absent reason byte used to CLEAR containment.
         let n = build_packet(PKT_DEGRADE, &[], &mut out);
-        assert_eq!(&out[..n], &[0x42, 0x52, 0x8A, 0x00, 0x00, 0x82],
+        assert_eq!(&out[..n], &[0x43, 0x4C, 0x8A, 0x00, 0x00, 0x7C],
             "the empty DEGRADE frame changed");
     }
 }
 
 // ── What a remote ActuatorCmd means ─────────────────────────────────────
 //
-// The kernel handles these frames in two places — the TCP brain link and the
+// The kernel handles these frames in two places — the TCP companion link and the
 // UART bridge — and they were COPIES. When the emergency path was found to
 // last exactly one behaviour tick, the fix went into the TCP copy and the UART
 // copy kept the bug. `remote_actuation_from` is that decision extracted so
@@ -3124,7 +3124,7 @@ mod payload_refuses_while_latched {
     //! `payload_exec` had no e-stop
     //! check — a 12 V spray pump kept running through a latched e-stop.
     use super::payload::{payload_exec, payload_spray_active};
-    use super::brain_protocol::{PayloadCmd, PAYLOAD_TYPE_SPRAY, PAYLOAD_OFF};
+    use super::companion_protocol::{PayloadCmd, PAYLOAD_TYPE_SPRAY, PAYLOAD_OFF};
     use super::safety::*;
 
     fn serial() -> std::sync::MutexGuard<'static, ()> {
@@ -3895,19 +3895,19 @@ mod logger_serial_survives_a_reboot {
 }
 
 
-// ── Forward-secret link: a sealed brain-link message is never dropped ────────────────
+// ── Forward-secret link: a sealed companion-link message is never dropped ────────────────
 //
-// Sealing consumes record counters and the brain accepts only the next one, so
+// Sealing consumes record counters and the companion accepts only the next one, so
 // a sealed message the socket takes only part of must be finished, not dropped
-// and not sealed again. Dropped, the next record reached the brain with a
+// and not sealed again. Dropped, the next record reached the companion with a
 // skipped counter and the gate's forward-secret link end-to-end row ended on
-// `record counter out of sequence`. `brain_tx.rs` is the carry the kernel's
+// `record counter out of sequence`. `companion_tx.rs` is the carry the kernel's
 // transmit path uses for that; the socket and the clock are injected.
 
 
 // ── C1: the camera connection's sender policy ─────────────────────────────
 //
-// `camera_tx.rs` decides when the kernel's camera task dials the brain's
+// `camera_tx.rs` decides when the kernel's camera task dials the companion's
 // camera port, sends a frame and closes; the socket, the clock and the capture
 // stay in the kernel. `remote.rs` ends the control session through it, so it
 // sits at the crate root.

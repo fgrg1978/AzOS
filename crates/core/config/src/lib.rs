@@ -313,8 +313,8 @@ pub const MAX_KEY: usize = 24;
 ///
 /// Was 16, which is exactly the length of
 /// `/fat/GPIODRV.ELF` and `/fat/SYSTEST.ELF` — the two autorun paths in use.
-/// They fit by one byte of luck; `/fat/BRAINCLI.ELF` (17) did not, and the
-/// parser silently cut it to `/fat/BRAINCLI.EL`, so the failure surfaced far
+/// They fit by one byte of luck; a 17-byte autorun path did not, and the
+/// parser silently cut its last byte, so the failure surfaced far
 /// from its cause as "[AUTORUN] File not found". 48 leaves real headroom for
 /// paths, and truncation is now counted rather than silent — see
 /// [`cfg_truncated_count`].

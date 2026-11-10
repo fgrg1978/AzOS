@@ -478,7 +478,7 @@ fn a_medium_that_corrupts_the_applied_part_is_caught_by_the_read_back() {
     let new = next_gen(&old);
     let (mut st, meta) = running(&old);
     let delta = py_make(&bundle(&old), &bundle(&new));
-    st.corrupt = Some(b"/fat/PKG/SYS_A/BRAIN.ELF".to_vec());
+    st.corrupt = Some(b"/fat/PKG/SYS_A/COMPCLI.ELF".to_vec());
     assert!(matches!(stage_delta(&mut st, &delta, meta), Err(Fail::Stage(Refusal::PartHash(_)))));
     assert_eq!(do_switch(&mut st, meta).unwrap_err(), SwitchError::Refused(Refusal::NotStaged));
 }

@@ -10,13 +10,13 @@
 //! (bit 1 a service, bit 3 an agent) and a kind has an envelope level.
 //!
 //! The scene of the test names: a planner (a `service` class, envelope
-//! `full`) forwards what the LLM brain (an `agent` class, envelope `slow`)
+//! `full`) forwards what the LLM brain (the companion, an `agent` class, envelope `slow`)
 //! said. The planner is fully rated; the effect it issues is still held to the
-//! brain's slow envelope.
+//! companion's slow envelope.
 //!
 //! **Canary.** Delete the `within` test in `issue`: the refusals below go red.
 //! Make `within` compare against the issuer's own level (`level 0`): the
-//! planner-through-the-brain test goes red while the plain ones stay green.
+//! planner-through-the-companion test goes red while the plain ones stay green.
 
 use crate::effect_gate::{self, Class, Effect, Timing, Why, KIND_CLOCK, KIND_MOTOR};
 use crate::logger::*;
@@ -34,12 +34,12 @@ const SLOW: u8 = 2;
 const WHEEL: u16 = 30;
 const CLOCK: u16 = 31;
 
-/// Tasks of this scene: the planner forwards the brain's data, the plain one
-/// works on its own, the third is a service that only ever saw the brain's
+/// Tasks of this scene: the planner forwards the companion's data, the plain one
+/// works on its own, the third is a service that only ever saw the companion's
 /// word through a channel the test sets.
 const PLANNER: u32 = 0xB4_0001;
 const PLAIN: u32 = 0xB4_0002;
-const BRAIN: u32 = 0xB4_0003;
+const COMPANION: u32 = 0xB4_0003;
 
 /// The model of `endpoint::label::provenance_of`: per task, the label of the
 /// data it works on; per kind, an envelope level (service `full`, agent `slow`).
@@ -47,7 +47,7 @@ fn probe(tid: u32) -> (u32, u8) {
     let label = match tid {
         PLANNER => SERVICE | AGENT,
         PLAIN => SERVICE,
-        BRAIN => AGENT,
+        COMPANION => AGENT,
         _ => 0,
     };
     let level = |bit: u32| if bit & AGENT != 0 { SLOW } else { 0 };
@@ -70,7 +70,7 @@ fn run(e: &Effect, ran: &AtomicU32) -> Result<(), effect_gate::Refusal> {
 /// planner under the ceiling goes through; a task that never saw the agent is
 /// not held to it.
 #[test]
-fn a_fully_rated_planner_is_held_to_the_brains_slow_envelope() {
+fn a_fully_rated_planner_is_held_to_the_companions_slow_envelope() {
     let _g = fresh();
     effect_gate::set_provenance_probe(probe);
     let base = azos_decision::total();
@@ -78,7 +78,7 @@ fn a_fully_rated_planner_is_held_to_the_brains_slow_envelope() {
     let ran = AtomicU32::new(0);
 
     let Err(refusal) = run(&motor(PLANNER, Class::Reversible, 80), &ran) else {
-        panic!("the planner's 80 % passed the slow envelope of the brain's data")
+        panic!("the planner's 80 % passed the slow envelope of the companion's data")
     };
     assert_eq!(refusal.why, Why::Provenance);
     assert_eq!(ran.load(Ordering::SeqCst), 0, "a refused effect reached the device");
@@ -108,8 +108,8 @@ fn the_agent_alone_is_held_to_its_own_envelope() {
     let _g = fresh();
     effect_gate::set_provenance_probe(probe);
     let ran = AtomicU32::new(0);
-    assert!(run(&motor(BRAIN, Class::Reversible, 80), &ran).is_err());
-    run(&motor(BRAIN, Class::Reversible, 20), &ran).expect("20 % fits");
+    assert!(run(&motor(COMPANION, Class::Reversible, 80), &ran).is_err());
+    run(&motor(COMPANION, Class::Reversible, 20), &ran).expect("20 % fits");
 }
 
 /// A stop is never refused by provenance, whatever the label and however hard
@@ -142,7 +142,7 @@ fn a_kind_without_a_duty_passes_slow_and_not_contained() {
     effect_gate::set_provenance_probe(probe);
     let ran = AtomicU32::new(0);
     let clock = |tid| Effect { kind: KIND_CLOCK, class: Class::Reversible, subject: CLOCK, tid, a0: 7, a1: 1_000_000 };
-    run(&clock(BRAIN), &ran).expect("slow has no ceiling for a clock");
+    run(&clock(COMPANION), &ran).expect("slow has no ceiling for a clock");
     effect_gate::set_provenance_probe(contained);
     assert_eq!(run(&clock(0xB4_0010), &ran).err().map(|r| r.why), Some(Why::Provenance));
     // The motor at `contained` takes no duty at all; 0 is a coast, within the 0 ceiling.

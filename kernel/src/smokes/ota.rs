@@ -93,7 +93,7 @@ pub(crate) fn orderly_drain_smoke_task(_: usize) {
 /// must still be unconfirmed. The row then installs an image over OTA.
 #[cfg(feature = "safe-mode-smoke")]
 pub(crate) fn safe_mode_probe_task(_: usize) {
-    use azos_behavior::brain_protocol::{PayloadCmd, PAYLOAD_ON, PAYLOAD_TYPE_SPRAY};
+    use azos_behavior::companion_protocol::{PayloadCmd, PAYLOAD_ON, PAYLOAD_TYPE_SPRAY};
     use azos_drv_sys::timebase::{now, TIMER_FREQ};
     use azos_robot::motor::{motor_set_reporting, motor_state, MotorDir, MOTOR_REFUSED_HALTED};
     fn sleep_ms(ms: u64) {

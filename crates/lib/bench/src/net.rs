@@ -13,7 +13,7 @@ use azos_net::{arp, ip, ethernet};
 // RFC 5737 TEST-NET-1, which exists precisely so documentation and tests can
 // name an address that is guaranteed not to be anybody's. `bench_arp_lookup_miss`
 // below already used it and said why; the other two used `10.0.2.x`, which under
-// SLIRP is the LIVE subnet — `10.0.2.2` is the gateway and the brain server.
+// SLIRP is the LIVE subnet — `10.0.2.2` is the gateway and the companion server.
 const TEST_IP: [u8; 4] = [192, 0, 2, 99];
 const TEST_MAC: [u8; 6] = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
 
@@ -27,7 +27,7 @@ const TEST_MAC: [u8; 6] = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
 // hart.
 //
 // It surfaced three layers away and read as a transport bug: ring 3's
-// `brain_client` connected, its first data segment hit an `arp::lookup` miss,
+// `companion_client` connected, its first data segment hit an `arp::lookup` miss,
 // `ip::send` returned -1, and `tcp::send_data` turns that into a fatal error
 // rather than the "retry later" 0 it uses for its other transients — so a
 // healthy `Established` connection was torn down. (That second half is a

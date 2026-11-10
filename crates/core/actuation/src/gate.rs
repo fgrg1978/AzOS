@@ -160,8 +160,8 @@ pub fn install() {
     // And the emergency stop ring 3 never actually had.
     //
     // `motor.estop` was declared in the ABI, exposed by `libsys` and
-    // swallowed by `dispatch`'s stub range, so the brain's
-    // `FLAG_EMERGENCY` reached the wheels through `brain_client` as an
+    // swallowed by `dispatch`'s stub range, so the companion's
+    // `FLAG_EMERGENCY` reached the wheels through `companion_client` as an
     // ordinary speed-0 command — no latch, no disarm, no record. This body
     // is deliberately the SAME work the two `PKT_ESTOP` handlers do; the
     // only difference is the source code in the record.

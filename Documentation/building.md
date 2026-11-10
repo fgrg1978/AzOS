@@ -53,7 +53,7 @@ installed or already OK. The vendored crates are in the tree and need no network
 | `make fetch` | Everything above. A tree is skipped when its `HEAD` is the pinned gitlink. |
 | `make fetch ADVISORIES=1` | Also rewrites the tracked RustSec snapshot (`third_party/advisory-db`) when it is older than its 45-day limit. Without it `make fetch` changes no tracked file; `fetch-check` shows the snapshot's age. |
 | `make fetch CONFIG=1` | Only the trees the `.config` consumes: `BUSYBOX` gives `busybox`, `RELIBC` gives `relibc`, `X86_BOOT_LIMINE` gives `limine`, `LINUX_DRIVERS` gives `linux`. `u-boot` has no symbol (only the riscv64 netboot gate row builds it) and comes with plain `make fetch`. |
-| `make fetch BRAIN=1` | Also the optional brain peer's venv from its hashed lock files; `BRAIN_OPTIONAL=1` adds matplotlib, Pillow, scipy, opencv-python and astropy. |
+| `make fetch COMPANION=1` | Also the optional companion peer's venv from its hashed lock files; `COMPANION_OPTIONAL=1` adds matplotlib, Pillow, scipy, opencv-python and astropy. |
 | `make fetch-check` | Read-only. For each tree: the pin, the checkout state, the newest stable upstream tag (`git ls-remote --tags`; `OFFLINE=1` skips it), the CVEs of `known_cves.tsv` and whether an update exists; the RustSec result for the lockfiles; every inventory item with its state, where it is used, its pinned version, source and checksum. |
 | `make fetch-update NAME=<tree> [VERSION=<tag>]` | Moves one pin: the `tag` in `.gitmodules`, the gitlink, `third_party/MANIFEST.json`; fetches the tree (which verifies the tag peels to the gitlink); prints what changed and what to rebuild and test. It does not commit. `relibc` is a commit pin: `VERSION` is a full commit id, default the upstream `HEAD`. |
 
@@ -280,11 +280,11 @@ Source: `mk/lints.mk`, `tools/gate/gate_tier.sh`, `tools/gate/ci_check.sh`, `too
 | Tier | Command | What it runs |
 |---|---|---|
 | N0, the edit loop | `make check0` | `make ARCH=<isa> check` for the three ISAs, the lints below, `cargo deny`, and the host suites the diff reaches |
-| N0 without the brain | `make check0-nobrain` | N0 with the optional brain repo hidden (`AZOS_BRAIN_DIR` names a missing path), after `tools/gate/nobrain_check.sh` shows that nothing else asks for it; `tools/lint/brain_dep_lint.py` (in N0) keeps the repo's path out of the tools |
+| N0 without the companion | `make check0-nocompanion` | N0 with the optional companion repo hidden (`AZOS_COMPANION_DIR` names a missing path), after `tools/gate/nocompanion_check.sh` shows that nothing else asks for it; `tools/lint/companion_dep_lint.py` (in N0) keeps the repo's path out of the tools |
 | N1, the change check | `make check1` | N0's suites, then the per-ISA smoke boots and the QEMU gate rows that the diff maps to |
 | Fronts' check | `make check-fast` | Per ISA: one ktest boot, one boot of the same kernel with every composable runtime canary armed, and one userspace boot (the ABI conformance checks) |
 | Full | `make ci` | `tools/gate/ci_check.sh`: every feature combination built with zero warnings, every host suite, every lint, and every QEMU scenario |
-| Full, with the brain | `make ci-full` | The kernel builds, then the optional brain peer's tests and the protocol sync check (`tools/gate/ci_full.sh`). The brain repo is an optional client: those two steps run when it is found (`AZOS_BRAIN_DIR`, else the sibling of the checkout) and print one skip line otherwise; `BRAIN=1` makes its absence a failure, `BRAIN=0` leaves it out. `make ci` skips the rows that boot against a brain peer the same way |
+| Full, with the companion | `make ci-full` | The kernel builds, then the optional companion peer's tests and the protocol sync check (`tools/gate/ci_full.sh`). The companion repo is an optional client: those two steps run when it is found (`AZOS_COMPANION_DIR`, else the sibling of the checkout) and print one skip line otherwise; `COMPANION=1` makes its absence a failure, `COMPANION=0` leaves it out. `make ci` skips the rows that boot against a companion peer the same way |
 | Presets | `make check-presets` | Every preset expands on every ISA ([config.md](config.md)) |
 | Topology rules | `make check-neverallow` | No preset's, defconfig's or the MCU kernel's topology breaks a `neverallow` rule |
 
@@ -361,7 +361,7 @@ N0 runs each lint after its own self-test, so a lint that went blind fails.
 | SPDX headers | `python3 tools/lint/spdx_headers.py --check` | every tracked source file carries its licence header |
 | Conflict markers | `git grep` | no tracked file outside `third_party/` holds a merge-conflict marker line |
 | Config index | `python3 tools/build/gen_config_index.py --check` | `Documentation/config.md`'s option index is what the Kconfig tree declares; `--self-test` runs first |
-| Kernel constants | `python3 tools/build/export_kernel_consts.py --self-test` | every Kconfig symbol the brain's constant mirror exports is declared (`make ci-full` compares the mirror itself) |
+| Kernel constants | `python3 tools/build/export_kernel_consts.py --self-test` | every Kconfig symbol the companion's constant mirror exports is declared (`make ci-full` compares the mirror itself) |
 | Zbc CRC constants | `python3 tools/build/lx_kbuild/zbc_crc_constants.py` | the CRC-32 fold constants `crates/drivers/lx/glue/lxbase.c` carries are the derived ones |
 | OTA sender | `python3 tools/dev/ota_send.py --self-test` | the sender's header and its single and fleet sends, against a localhost receiver |
 | Claims scanner | `bash tools/lint/claims_check.sh --self-test` | the absolute-claim scanner still finds what it looks for; the scan of the tree (a review aid that always passes) is by hand |

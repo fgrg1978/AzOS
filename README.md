@@ -70,10 +70,10 @@ tree also builds desktop and server configurations.
 - **Robot control split.** The enforcer runs in the kernel: it caps every
   motor command and latches the e-stop (UART bridge frames, RC link loss and
   kill switch, geofence breach); a verdict that goes stale is a stop. The behaviour engine and
-  the brain link run in ring 3 (`BRAINCLI.ELF`); the engine asks the ring-3
+  the companion link run in ring 3 (`COMPCLI.ELF`); the engine asks the ring-3
   inference service each cycle for a verdict, and a missing verdict stops the
   robot. Source: `crates/domains/robot/safety-core/src/enforce.rs`,
-  `userspace/services/brain_client`.
+  `userspace/services/companion_client`.
 - **ext4 from ring 3.** A read-only ext4 volume is mounted through `EndpointFs`,
   a file system the kernel forwards to a ring-3 server that parses the
   untrusted image. Source: `userspace/services/ext4d`, `crates/fs/src/endpoint.rs`.

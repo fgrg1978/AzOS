@@ -780,7 +780,7 @@ config SEC_LOG
     help
       The security records (a microphone or camera stream opened or refused,
       a destination a Domain's traffic was let out to or refused, a
-      capability denial, an image load, an update step, a console, brain-link
+      capability denial, an image load, an update step, a console, companion-link
       or SSH login, a USB authorization: the decision records of those rules)
       are also written to a security ring of the record substrate, beside the
       kernel log's (crates/core/seclog). A kernel pass folds every record of

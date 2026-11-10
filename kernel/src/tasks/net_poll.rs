@@ -230,7 +230,7 @@ pub(crate) fn install_net_hooks() {
     azos_net::nic_queue::set_hooks(azos_syscall::nicq::rx_sink, azos_syscall::nicq::rx_end, link_peer);
 }
 
-/// The node's link peer, for `azos_net::nic_queue`: the brain the behaviour
+/// The node's link peer, for `azos_net::nic_queue`: the companion the behaviour
 /// engine dials (CONFIG.INI `behavior_server_ip`/`_port`). The e-stop arrives
 /// on that connection, so the interface its route leaves by is not given to
 /// a ring-3 driver.

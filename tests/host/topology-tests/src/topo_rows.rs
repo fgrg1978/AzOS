@@ -496,25 +496,25 @@ fn a_peer_class_pins_noise_keys_and_a_measurement() {
     assert!(ok(&peer(&format!("noise_pk = [\"{PK1}\", \"{PK2}\"]\n"))).find_peer(b"fleet").unwrap().measurement.is_none());
 }
 
-/// The brain link reads exactly one row: `[peer.brain]`. Its first node's key
+/// The companion link reads exactly one row: `[peer.companion]`. Its first node's key
 /// is the one `Noise_IK` is pinned to; no row, a row of another name, or a row
 /// without keys pins nothing (`Noise_XX`).
 ///
 /// **Canary.** Look the class up under another name, or take the second
 /// node's key: the key read is not the first node's.
 #[test]
-fn the_brain_link_reads_the_first_key_of_peer_brain() {
-    let brain = |extra: &str| format!("[peer.brain]\nnodes = [2, 3]\n{extra}");
-    let t = ok(&brain(&format!("noise_pk = [\"{PK1}\", \"{PK2}\"]\n")));
-    assert_eq!(t.brain_noise_pk(), Some([1u8; 32]));
+fn the_companion_link_reads_the_first_key_of_peer_companion() {
+    let companion = |extra: &str| format!("[peer.companion]\nnodes = [2, 3]\n{extra}");
+    let t = ok(&companion(&format!("noise_pk = [\"{PK1}\", \"{PK2}\"]\n")));
+    assert_eq!(t.companion_noise_pk(), Some([1u8; 32]));
     assert_eq!(round_trip(&t), None);
-    assert_eq!(ok(&brain("")).brain_noise_pk(), None, "a row without keys pins nothing");
+    assert_eq!(ok(&companion("")).companion_noise_pk(), None, "a row without keys pins nothing");
     assert_eq!(
-        ok(&peer(&format!("noise_pk = [\"{PK1}\", \"{PK2}\"]\n"))).brain_noise_pk(),
+        ok(&peer(&format!("noise_pk = [\"{PK1}\", \"{PK2}\"]\n"))).companion_noise_pk(),
         None,
-        "a class of another name is not the brain"
+        "a class of another name is not the companion"
     );
-    assert_eq!(ok("").brain_noise_pk(), None, "no row, no pin");
+    assert_eq!(ok("").companion_noise_pk(), None, "no row, no pin");
 }
 
 #[test]

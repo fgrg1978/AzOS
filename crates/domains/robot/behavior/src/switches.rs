@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The behaviour layers' switches: which of L1 (avoid), L2 (the brain) and L3
+//! The behaviour layers' switches: which of L1 (avoid), L2 (the companion) and L3
 //! (explore) the ring-3 engine may let drive. CONFIG.INI sets them at boot and
 //! the operator's `behavior enable|disable` changes them; the engine reads the
 //! mask through the `Behavior` interface. L0, the safety layer, is the

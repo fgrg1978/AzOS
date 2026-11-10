@@ -21,7 +21,7 @@
 //! doubling up to that period. Between them the task sleeps until the nearer
 //! of that and the lease's next deadline (`dhcp::lease_deadline`), and never
 //! longer than `dhcp::RETRY_MIN_S` while a lease is configured: a lease taken
-//! elsewhere (the brain link's `dhcp_start`) is picked up within it.
+//! elsewhere (the companion link's `dhcp_start`) is picked up within it.
 
 use crate::*;
 use azos_drv_sys::timebase::{now, TIMER_FREQ};

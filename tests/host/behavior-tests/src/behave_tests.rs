@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The ring-3 behaviour engine's arbiter (`userspace/services/brain_client/src/behave.rs`).
+//! The ring-3 behaviour engine's arbiter (`userspace/services/companion_client/src/behave.rs`).
 
 use crate::behave::*;
 
@@ -8,12 +8,12 @@ fn at(now_ms: u64) -> Inputs {
     Inputs { now_ms, ..Inputs::default() }
 }
 
-/// **An obstacle outranks the brain**: a close one stops, a nearer-than-turn
+/// **An obstacle outranks the companion**: a close one stops, a nearer-than-turn
 /// one in front turns away, on either rangefinder for the stop.
 ///
-/// **Canary.** Check the brain before the obstacle: the first case drives.
+/// **Canary.** Check the companion before the obstacle: the first case drives.
 #[test]
-fn an_obstacle_outranks_the_brain() {
+fn an_obstacle_outranks_the_companion() {
     let remote = Some(Remote { left: 80, right: 80, at_ms: 1_000 });
     let mut i = Inputs { front_mm: Some(100), remote, session_up: true, ..at(1_100) };
     assert_eq!(arbitrate(Layers::ALL, &i), Some(((0, 0), Winner::Avoid)));
@@ -26,13 +26,13 @@ fn an_obstacle_outranks_the_brain() {
     assert_eq!(arbitrate(Layers::ALL, &i), Some(((80, 80), Winner::Remote)));
 }
 
-/// **The brain drives while its command is fresh, clamped**; a stale one
+/// **The companion drives while its command is fresh, clamped**; a stale one
 /// falls to exploring, and exploring needs the session.
 ///
 /// **Canary.** Compare the age with `<` against `at_ms` alone: the stale
 /// command still drives.
 #[test]
-fn the_brain_drives_while_fresh_then_explore_needs_the_session() {
+fn the_companion_drives_while_fresh_then_explore_needs_the_session() {
     let remote = Some(Remote { left: 150, right: -150, at_ms: 1_000 });
     let mut i = Inputs { remote, session_up: true, ..at(1_000 + REMOTE_MAX_AGE_MS) };
     assert_eq!(arbitrate(Layers::ALL, &i), Some(((100, -100), Winner::Remote)));
@@ -55,7 +55,7 @@ fn a_disabled_layer_never_wins() {
     assert_eq!(arbitrate(none, &i), None);
 }
 
-/// **An e-stop replaces the brain's standing command**: after it, the remote
+/// **An e-stop replaces the companion's standing command**: after it, the remote
 /// layer asks a stop, never the command that preceded the e-stop, so clearing
 /// the latch does not resume it.
 ///
@@ -71,10 +71,10 @@ fn an_estop_replaces_the_standing_command() {
 }
 
 /// **An engine that cannot read its switches never drives on its own**: with
-/// only the obstacle layer, a clear road and a fresh brain command drive
+/// only the obstacle layer, a clear road and a fresh companion command drive
 /// nothing, and an obstacle still stops.
 ///
-/// **Canary.** Let `AVOID_ONLY` keep the remote layer: the brain drives.
+/// **Canary.** Let `AVOID_ONLY` keep the remote layer: the companion drives.
 #[test]
 fn the_fallback_layers_only_stop_or_turn_away() {
     let remote = Some(Remote { left: 50, right: 50, at_ms: 0 });
@@ -91,7 +91,7 @@ fn predicted(left: i32, right: i32, confidence: u8, at_ms: u64) -> Option<Predic
 /// **A prediction changes L1's choice**: a predicted stop widens the
 /// turn-away distance by [`PREDICT_OBSTACLE_MARGIN_MM`] and a predicted turn
 /// by [`PREDICT_TURN_MARGIN_MM`], so the robot turns away from an obstacle
-/// the rangefinders do not yet call close, and a prediction the brain is not
+/// the rangefinders do not yet call close, and a prediction the companion is not
 /// sure of, or that went stale, changes nothing.
 ///
 /// **Canary.** Ignore the prediction's confidence: the unsure one turns.
@@ -123,7 +123,7 @@ fn a_prediction_biases_l1() {
 /// envelope sit under whatever this publishes either way.)
 ///
 /// **Canary.** Return the hinted wheel as it is from `under`: the turn at 60
-/// replaces a brain command of 30, red.
+/// replaces a companion command of 30, red.
 #[test]
 fn a_prediction_never_raises_speed() {
     let drivers = [
@@ -184,7 +184,7 @@ fn a_prediction_decodes_from_its_payload() {
 }
 
 /// **The model's turn never starts motion or raises a wheel**: with no layer
-/// driving, a `Turn` verdict publishes nothing; with the brain at (20,20) it
+/// driving, a `Turn` verdict publishes nothing; with the companion at (20,20) it
 /// stays at (20,20) or below, wheel by wheel; and over a sweep it never exceeds
 /// what the layers chose without it.
 ///
@@ -195,12 +195,12 @@ fn a_model_turn_only_limits() {
     let silent = Inputs { front_mm: Some(3_000), right_mm: Some(3_000), ml: Ml::Turn, ..at(1_000) };
     assert_eq!(arbitrate(Layers::AVOID_ONLY, &silent), None, "no session and nothing else drives");
     assert_eq!(arbitrate(Layers::ALL, &silent), None);
-    let brain = Some(Remote { left: 20, right: 20, at_ms: 1_000 });
-    let slow = Inputs { remote: brain, session_up: true, ..silent };
+    let companion = Some(Remote { left: 20, right: 20, at_ms: 1_000 });
+    let slow = Inputs { remote: companion, session_up: true, ..silent };
     assert_eq!(arbitrate(Layers::ALL, &slow), Some(((20, 20), Winner::Remote)));
     let fast = Inputs { remote: Some(Remote { left: 80, right: 80, at_ms: 1_000 }), ..slow };
     assert_eq!(arbitrate(Layers::ALL, &fast), Some((TURN, Winner::Avoid)), "it limits a faster command");
-    for remote in [None, brain, Some(Remote { left: -30, right: -30, at_ms: 1_000 }), Some(Remote { left: 100, right: -100, at_ms: 1_000 })] {
+    for remote in [None, companion, Some(Remote { left: -30, right: -30, at_ms: 1_000 }), Some(Remote { left: 100, right: -100, at_ms: 1_000 })] {
         for front in [None, Some(100), Some(300), Some(900)] {
             let off = Inputs { front_mm: front, remote, session_up: remote.is_some(), ml: Ml::Go, ..at(1_000) };
             let on = Inputs { ml: Ml::Turn, ..off };

@@ -35,7 +35,7 @@
 //!   record `CapKind::denial_code()` (the kind's discriminant) plus a raw
 //!   resource id. Neither field is a packed `CapHandle`.
 //! - The robot extension's wire protocol
-//!   (`crates/domains/robot/behavior/src/brain_protocol.rs`) reserves a
+//!   (`crates/domains/robot/behavior/src/companion_protocol.rs`) reserves a
 //!   `PKT_CAPS = 0x06` packet type for a future capability-declaration payload
 //!   that is not sent or handled yet; nothing there encodes
 //!   `kind|perms|gen|slot` today.

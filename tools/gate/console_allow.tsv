@@ -11,7 +11,7 @@
 # one does not get an entry, it is a finding.
 .*	warn	\[TOPO\] WARNING: no signed topology on the volume	a dev image boots a volume without CAPS.TOM/SCHED.TOM signatures and says so
 .*	warn	\[SECURE-BOOT\] WARNING: slot A not verified	a dev image embeds no signing key (secure-boot-enforced is the product build)
-.*	warn	\[SECCHAN\] WARNING: brain link has no key	a dev volume has no provisioned link key
+.*	warn	\[SECCHAN\] WARNING: companion link has no key	a dev volume has no provisioned link key
 .*	*	\[OTA\] WARNING: both BOOTMETA\.A/\.B are missing or failed CRC	a fresh volume has no boot metadata yet; the kernel says it falls back to the legacy file
 (?!preset boot: ).*	not-on-volume	\[DRVLAUNCH\] \S+ is not on this volume	a gate volume carries only the programs its scenario starts
 (?!preset boot: ).*	*	console program /fat/TERMD\.ELF gave up: recovery console \(it is not on this volume\)	a gate kernel has the default console program and a bare volume: the recovery console is the console there

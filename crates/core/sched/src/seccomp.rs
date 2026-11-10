@@ -517,7 +517,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         ops: inv_ops![LOG_CONSOLE_WRITE, DOMAIN_UPTIME],
         ifaces: &[azos_devif::key::MOTOR, azos_devif::key::SENSOR],
     },
-    // brain_client: CONFIG.INI through a Cap<File>, the brain link on a
+    // companion_client: CONFIG.INI through a Cap<File>, the companion link on a
     // Cap<Socket>, sensors, motors, and the ring-3 e-stop (the `motor`
     // endpoints, register form). The sensors are read with one io_ring
     // submit of `OP_CALL` entries and a forward command is also submitted as
@@ -527,14 +527,14 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
     // made of (`SYS_MO_CREATE`, `SYS_MO_MAP`) and the registration entry,
     // which the kernel runs only while the row lists `MEMOBJ_ACQUIRE`.
     ImageProfile {
-        image: "BRAINCLI.ELF",
+        image: "COMPCLI.ELF",
         syscalls: sys_nrs![
             SYS_EXIT, SYS_SLEEP_UNTIL, SYS_INVOKE, SYS_CAP_INFO, SYS_IPC_CALL,
             SYS_CAP_CLOSE,
             SYS_RING_SETUP, SYS_RING_ENTER,
             SYS_MO_CREATE, SYS_MO_MAP,
             // `SYS_IPC_CALL` on two kernel-hosted endpoints: `link_key_init`
-            // reads the brain-link PSK from `linkkey`, and each
+            // reads the companion-link PSK from `linkkey`, and each
             // Handshake draws the randomness for its ephemeral key and
             // record nonce seed from `entropy`. Without it the
             // encrypted link cannot start and the client refuses to run.

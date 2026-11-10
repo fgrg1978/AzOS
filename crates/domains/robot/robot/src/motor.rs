@@ -146,7 +146,7 @@ azos_common::ro_hook! {
     ///
     /// ## Why this exists, and why it is HERE
     ///
-    /// The product thesis says this system is an actuation authority: the brain is
+    /// The product thesis says this system is an actuation authority: the companion is
     /// untrusted and the OS is the thing that refuses. It was not. `motor_envelope`
     /// (speed ceilings, low-confidence cap, graded degrade level) and
     /// `estop_is_active()` were applied by `rt_motor_task` — one caller of
@@ -245,7 +245,7 @@ azos_common::ro_hook! {
     /// it answers true, [`motor_set_reporting`] writes `Brake` and `Coast` as asked
     /// and refuses `Forward` and `Backward` — the rule is "stopping
     /// yes, changing direction no". The kernel installs it answering a latched
-    /// e-stop or brain-loss containment, neither of which this crate can see.
+    /// e-stop or companion-loss containment, neither of which this crate can see.
     ///
     /// `None` until installed, and then nothing is halted: the same rule as the
     /// gate, for the same reason.

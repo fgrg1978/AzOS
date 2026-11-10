@@ -5,7 +5,7 @@
 //! durable record of a refused ring-3 read.
 //!
 //! The pool seeds the network stack and the `entropy` endpoint in every image,
-//! with or without the Robot domain's brain link.
+//! with or without the Robot domain's companion link.
 
 /// Credited bytes that seed the kernel entropy pool, for the kernel's seed
 /// read.

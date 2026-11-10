@@ -213,8 +213,8 @@ pub const LOG_FLAG_HISTORY: u8 = 0x02;
 pub const SAFETY_ENVELOPE_REFUSED: u8 = 0x01;
 
 /// Emergency stop. `action_code` names the source, because they do not mean
-/// the same thing to whoever reads the log afterwards: 0 = brain over TCP,
-/// 1 = brain over UART, 2 = the physical GPIO kill switch, 3 = cleared by an
+/// the same thing to whoever reads the log afterwards: 0 = companion over TCP,
+/// 1 = companion over UART, 2 = the physical GPIO kill switch, 3 = cleared by an
 /// operator MODE command, 4 = a refused MODE clear, the refusal ordinal in
 /// `detail` (and, in records written before 6 existed, a ring-3 stop), 5 =
 /// restored at boot from the previous session's record
@@ -236,7 +236,7 @@ pub const SAFETY_ENVELOPE_REFUSED: u8 = 0x01;
 pub const SAFETY_ESTOP: u8 = 0x02;
 
 /// Degraded mode entered, changed or left. `action_code` is the level that is
-/// now in force (0 = full authority), `detail` the reason the brain gave.
+/// now in force (0 = full authority), `detail` the reason the companion gave.
 pub const SAFETY_DEGRADE: u8 = 0x03;
 
 /// An untyped capability check (`cap_check`) refused an operation.
@@ -256,7 +256,7 @@ pub const SAFETY_CAP_DENIED: u8 = 0x04;
 /// `detail` carries the serial that was reused.
 pub const SAFETY_LOG_WRAPPED: u8 = 0x05;
 
-/// The brain changed the graded degrade level.
+/// The companion changed the graded degrade level.
 ///
 /// `action_code` carries the new level (0 = FULL … 3 = CONTAINED); `detail`
 /// carries the level it replaced, so a reader can see the transition and not
@@ -268,7 +268,7 @@ pub const SAFETY_LOG_WRAPPED: u8 = 0x05;
 /// would have left the same gap the graded levels exist to close, namely why
 /// the robot was moving slowly rather than merely whether it had stopped.
 ///
-/// A change to the SAME level is not recorded. The brain may resend a standing
+/// A change to the SAME level is not recorded. The companion may resend a standing
 /// level at any cadence it likes — the level is sticky by design — and a
 /// recorder that logged every repeat would fill the medium with the fact that
 /// nothing happened.
@@ -277,7 +277,7 @@ pub const SAFETY_SEMANTIC_LEVEL: u8 = 0x06;
 /// A `PKT_SEMANTIC_LEVEL` arrived with no payload byte and was treated as
 /// CONTAINED.
 ///
-/// Separate from `SAFETY_SEMANTIC_LEVEL` on purpose. That code says the brain
+/// Separate from `SAFETY_SEMANTIC_LEVEL` on purpose. That code says the companion
 /// asked for a level; this one says the kernel could not tell what was asked
 /// and stopped the robot. They are different events with different causes — a
 /// truncated packet is a link fault or a hostile sender, not a decision — and
@@ -285,25 +285,25 @@ pub const SAFETY_SEMANTIC_LEVEL: u8 = 0x06;
 /// exactly the moment it mattered.
 pub const SAFETY_SEMANTIC_MALFORMED: u8 = 0x07;
 
-/// A brain packet arrived whose type this build does not act on.
+/// A companion packet arrived whose type this build does not act on.
 ///
 /// `action_code` carries the packet type; `detail` the payload length.
 ///
 /// The dispatch chains for both the network path and the UART bridge end
 /// without an `else`, so an unrecognised type was counted as received and
 /// dropped — no log line, and no counter separating "handled" from "ignored".
-/// A brain that put the robot into `CONTAINED` with `PKT_SEMANTIC_LEVEL`
+/// A companion that put the robot into `CONTAINED` with `PKT_SEMANTIC_LEVEL`
 /// against a kernel built before the graded levels therefore got no error at all, and
-/// the robot kept running at `FULL` while the brain's own record said it was
+/// the robot kept running at `FULL` while the companion's own record said it was
 /// contained. Fail-open by omission, and every future packet type inherits it.
 ///
-/// This is the cheapest half of the brain-link capability handshake and it stands
+/// This is the cheapest half of the companion-link capability handshake and it stands
 /// alone: it does not make
 /// the two sides agree, but it turns a silence into a record. The full
 /// capability handshake is the other half.
 ///
 /// Recorded for a type the kernel PARSES but does not act on as well —
-/// `PKT_WAYPOINT` and the three OTA types are decoded by `brain_protocol.rs`
+/// `PKT_WAYPOINT` and the three OTA types are decoded by `companion_protocol.rs`
 /// and dispatched nowhere — because from the sender's side those are exactly
 /// as ineffective as a type that does not exist.
 pub const SAFETY_UNKNOWN_PKT: u8 = 0x08;
@@ -554,7 +554,7 @@ pub const SAFETY_SENSOR_INCOHERENT: u8 = 0x12;
 /// `PayloadCmd::payload_type` refused; `detail` is unused (0).
 pub const SAFETY_PAYLOAD_REFUSED: u8 = 0x13;
 
-/// A ring-3 entropy read (the brain link's ephemeral key among them) was
+/// A ring-3 entropy read (the companion link's ephemeral key among them) was
 /// REFUSED because the pool was unseeded.
 /// `action_code` is 1 (a ring-3 read),
 /// `detail` the caller's TID.
@@ -628,7 +628,7 @@ pub const SAFETY_ML_ABSENT: u8 = 0x18;
 /// src/rt_motor.rs`): no motor command for 500 ms holds SAFE STOP until one
 /// arrives. `action_code` is one of the `RTWD_ACTION_*` below.
 ///
-/// Transitions, never one record per flap: with no brain sending, the
+/// Transitions, never one record per flap: with no companion sending, the
 /// watchdog flaps every couple of seconds, and a record each time would fill
 /// the medium with the same fact. [`RtWatchdogReports`] decides, for the
 /// console line and this record alike: the first SAFE STOP and the first
@@ -831,7 +831,7 @@ impl RtWatchdogReports {
 ///   Checking "did the level change" first would hide exactly that case.
 ///
 /// And one non-event: a well-formed packet that re-states the level already in
-/// force writes nothing. The level is sticky by design and the brain may
+/// force writes nothing. The level is sticky by design and the companion may
 /// resend it at any cadence, so logging repeats would fill the medium with the
 /// fact that nothing happened.
 pub const fn semantic_level_record(

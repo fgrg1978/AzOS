@@ -39,7 +39,7 @@
 //! `total_cycles`, `repeats=<K>` and a trailing `tail=unmeasured` instead of
 //! `min`/`max`; see [`report`]).
 //!
-//! Brain-side `parse_bench` (in `tools/bench_e2e_collect.py`) ingests
+//! Companion-side `parse_bench` (in `tools/bench_e2e_collect.py`) ingests
 //! these and emits a top-level `bench_synth` dict into the result JSON:
 //!
 //!     {"bench_synth": {"ipc.pipe_write_read": {iters, min_c, max_c,
@@ -273,10 +273,10 @@ pub fn best_of<F: FnMut() -> BenchResult>(mut f: F) -> BenchResult {
     best
 }
 
-/// Print one `[BENCH-RES]` line for the brain collector to ingest.
+/// Print one `[BENCH-RES]` line for the companion collector to ingest.
 ///
 /// `name` should be `<subsystem>.<bench_name>` (e.g. `ipc.pipe_write_read`)
-/// — the dot becomes the JSON nesting key separator on the brain side.
+/// — the dot becomes the JSON nesting key separator on the companion side.
 pub fn report(name: &str, r: &BenchResult) {
     if r.tail_measured {
         azos_drv_sys::kconsoleln!(
@@ -288,7 +288,7 @@ pub fn report(name: &str, r: &BenchResult) {
         // `min == max == avg`, which reads as a measured distribution with
         // zero spread — the strongest claim a real-time bench can make, and
         // the one nothing here established. `tail=unmeasured` is the honest
-        // line; the collector on the brain side counts these lines and does
+        // line; the collector on the companion side counts these lines and does
         // not parse the fields, so nothing downstream breaks.
         //
         // `repeats` says how many independent whole-loop totals `avg_cycles`

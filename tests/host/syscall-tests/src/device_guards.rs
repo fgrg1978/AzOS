@@ -296,7 +296,7 @@ fn a_motor_direction_pin_is_refused_to_a_holder_of_its_endpoint() {
     assert_eq!(other.write(1), Out::ok(()), "a pin no motor claims is not refused");
 }
 
-/// Containment (brain-triggered degraded mode) refuses the acting ops of a holder, leaves the read
+/// Containment (companion-triggered degraded mode) refuses the acting ops of a holder, leaves the read
 /// live, and records nothing: a holder contained is the safety system
 /// working, not a denial.
 ///

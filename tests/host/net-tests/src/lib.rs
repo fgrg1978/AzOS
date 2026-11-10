@@ -2244,7 +2244,7 @@ mod tcp_recv_bound {
 ///
 /// `MAX_SOCKETS` is 16 for the whole robot, not per task. Until the quota
 /// existed, a ring-3 program opening sockets in a loop took all of them, and
-/// the denial landed silently on whoever asked next — including the brain
+/// the denial landed silently on whoever asked next — including the companion
 /// link, whose socket carries the e-stop. A safety failure with a
 /// resource-accounting cause.
 ///
@@ -2291,7 +2291,7 @@ mod socket_quota {
         assert_eq!(
             got, socket::MAX_SOCKETS_PER_TASK,
             "one task obtained {got} of the machine's {} sockets. Everything past \
-             the quota is a socket the brain link cannot have, and the refusal it \
+             the quota is a socket the companion link cannot have, and the refusal it \
              gets is indistinguishable from the link being broken.",
             socket::MAX_SOCKETS,
         );
@@ -2323,7 +2323,7 @@ mod socket_quota {
 /// RFC 793 §3.4 reset generation.
 ///
 /// Silence is not a neutral answer to a segment that belongs to nobody. After
-/// the robot reboots the brain's socket survives: we come up with an empty
+/// the robot reboots the companion's socket survives: we come up with an empty
 /// connection table, its segments match no slot, and saying nothing leaves it
 /// retransmitting into a black hole until its own budget expires — minutes on
 /// Linux defaults — during which the operator believes they are commanding a
@@ -7367,7 +7367,7 @@ mod socket_table {
     /// fill the table from ONE task, which the per-task quota now refuses at
     /// half — that behaviour was the bug, not the property. Filled from the
     /// kernel instead, which is exempt from the quota for the reason given at
-    /// `MAX_SOCKETS_PER_TASK`: charging the brain link's own sockets against a
+    /// `MAX_SOCKETS_PER_TASK`: charging the companion link's own sockets against a
     /// per-task limit would have the kernel competing with userspace for the
     /// channel that carries the e-stop.
     ///
@@ -8740,7 +8740,7 @@ mod net_wait {
         fn drop(&mut self) { wait::clear_hooks(); }
     }
 
-    /// `send_all_until` (the brain link's sender) blocked on a closed window:
+    /// `send_all_until` (the companion link's sender) blocked on a closed window:
     /// every block is ended by the window-opening ACK's wake, and the old
     /// wait (the caller's `wait_fn`, a 1 ms sleep in the kernel) never runs.
     /// Canary: without the notify in `tcp::handle_checked`, WOKEN_IN_BLOCK

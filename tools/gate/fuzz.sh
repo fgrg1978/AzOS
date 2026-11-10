@@ -59,7 +59,7 @@ config:config_ini
 gguf:gguf_parse
 elf:elf_load
 topology:topology_toml
-brain-link:link_frames
+companion-link:link_frames
 fs:fat32_image
 net:eth_frame
 net:dhcp_dns

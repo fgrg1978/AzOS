@@ -104,7 +104,7 @@ enum SockKind {
 }
 
 /// Owner stamp for sockets created from **kernel** context: the boot-time
-/// brain link, the OTA listener, TFTP, and the shell's echo server. No real
+/// companion link, the OTA listener, TFTP, and the shell's echo server. No real
 /// TID can equal this (`NEXT_TID` is a wrapping counter that skips 0 and
 /// would need to reach `u32::MAX` — and even then the value is only ever
 /// *compared*, never used to reach a slot), so a kernel socket is
@@ -140,7 +140,7 @@ struct Socket {
     /// userspace. Every entry point below used to validate only
     /// `fd < MAX_SOCKETS`, so any task could walk fd 0..15 and read another
     /// task's inbound TCP stream, inject bytes into its outbound stream, or
-    /// tear down its connection — the OTA channel and the brain link
+    /// tear down its connection — the OTA channel and the companion link
     /// included. Sixteen guesses covered the whole table.
     ///
     /// The stamp is taken at **create/accept** time, not read from the
@@ -234,7 +234,7 @@ impl SocketTable {
 ///
 /// `MAX_SOCKETS` is 16 for the entire machine, not per task, and until this
 /// existed a single userspace program opening sockets in a loop could take all
-/// of them. The denial is silent and lands on whoever asks next: the brain
+/// of them. The denial is silent and lands on whoever asks next: the companion
 /// link's `socket()` returns -1 to a task that did nothing wrong. On a robot
 /// whose e-stop arrives over TCP, "another program used up the sockets" is a
 /// safety failure with a resource-accounting cause.
@@ -244,7 +244,7 @@ impl SocketTable {
 /// foreclosing it, and it is the one part of that change that is urgent
 /// rather than merely right.
 ///
-/// **Kernel-owned sockets are exempt.** They are created by the brain link,
+/// **Kernel-owned sockets are exempt.** They are created by the companion link,
 /// the OTA listener and the two-node probe, all in-kernel and all bounded by
 /// their own call sites; charging them against a per-task quota would mean
 /// the kernel competing with userspace for its own e-stop channel.
@@ -265,7 +265,7 @@ static SOCKS: SpinLock<SocketTable> = SpinLock::new(SocketTable::new());
 ///
 /// Asked once per connect, and by an unconnected `sendto` once per change of
 /// destination ([`Socket::egress_to`]); never for loopback or the node's own
-/// addresses, nor for a kernel-owned socket (the brain link, OTA, TFTP), which
+/// addresses, nor for a kernel-owned socket (the companion link, OTA, TFTP), which
 /// belongs to no Domain.
 pub type EgressGate = fn(owner: u32, class: DestClass, dest: u32, port: u16) -> bool;
 
@@ -292,7 +292,7 @@ pub const EGRESS_REFUSED: i32 = -13;
 /// next packet to `cache` (the IPv4 destination its answer is remembered for,
 /// `None` for a socket that is asked only once): `None` when nothing has to be
 /// asked. That is so with no gate installed, for a kernel-owned socket (the
-/// brain link, OTA, TFTP belong to no Domain), and for a destination the
+/// companion link, OTA, TFTP belong to no Domain), and for a destination the
 /// socket was already cleared to.
 fn egress_owner(fd: usize, cache: Option<[u8; 4]>) -> Option<u32> {
     // Gate canary (host suites only): no envelope check, every packet goes.
@@ -348,7 +348,7 @@ fn egress_admitted_v6(fd: usize, dst: &SockAddr6) -> bool {
 /// Create a new socket **owned by the kernel**. Returns a
 /// file-descriptor-style index or -1.
 ///
-/// This 3-argument form is the entry point for in-kernel users (the brain
+/// This 3-argument form is the entry point for in-kernel users (the companion
 /// link and the two-node TCP probe in `kernel/src/main.rs`, the OTA listener
 /// and echo server in `crates/core/shell`). Sockets it hands out carry
 /// [`SOCK_OWNER_KERNEL`] and are therefore never reachable through the
@@ -526,7 +526,7 @@ pub fn socket_accept(fd: i32) -> i32 {
 /// connection belongs to whoever accepted it, not to the listener's peer and
 /// not to whichever task happens to be running when a later poll drains it.
 /// Stamping here (rather than letting the new slot inherit whatever the
-/// recycled entry held) is what stops an accepted OTA or brain connection
+/// recycled entry held) is what stops an accepted OTA or companion connection
 /// from landing in a slot another task can already reach.
 ///
 /// Note this stamps only; the *permission* to accept on `fd` is checked by
@@ -666,7 +666,7 @@ pub const CONNECT_HANDSHAKE_SPIN_CAP: u32 = 5_000_000;
 /// ```
 ///
 /// — saw a successful connect followed by an immediate send failure, over and
-/// over. `userspace/services/brain_client` sat in exactly that loop, and the log it
+/// over. `userspace/services/companion_client` sat in exactly that loop, and the log it
 /// produced ("Connected!" then "Send failed") pointed at the transport rather
 /// than at connect's semantics.
 ///
@@ -1376,7 +1376,7 @@ pub fn socket_close(fd: i32) {
 /// also leaks the underlying `tcp`/`udp` slot for the life of the board,
 /// and there are only 16 of them.
 ///
-/// Kernel-owned sockets are never touched: the brain link, the OTA listener
+/// Kernel-owned sockets are never touched: the companion link, the OTA listener
 /// and TFTP all run with [`SOCK_OWNER_KERNEL`], and tearing one down
 /// mid-flight because some unrelated task exited would drop the channel the
 /// robot is being commanded over. `SOCK_OWNER_NONE` (0) is excluded for the

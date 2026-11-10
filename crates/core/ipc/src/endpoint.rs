@@ -2210,7 +2210,7 @@ pub fn __endpoint_set_next_gen_for_tests(i: usize, next_gen: u32) {
 ///   accepts or replies), and a kernel-hosted interface serves a request
 ///   inside the caller's scope ([`scope`]). Everything a task sends carries
 ///   its scope, and the effect gate holds an effect to it, so a planner that
-///   forwards what the brain said cannot drop the label by not copying it.
+///   forwards what the companion said cannot drop the label by not copying it.
 /// * the **envelope** of a kind: the most restrictive `envelope` of any
 ///   class row that declares that principal kind ([`set_envelope`], filled
 ///   from the parsed topology). The effect gate holds an effect to the meet
@@ -3625,7 +3625,7 @@ mod tests {
     const AGENT_KIND: u8 = 3;
 
     /// **A label crosses two hops through the kernel's tables, and a server
-    /// cannot drop it by not copying it.** The brain (an agent) sends; the
+    /// cannot drop it by not copying it.** The companion (an agent) sends; the
     /// planner (a service) accepts, so its scope is the request's label; what
     /// it sends next carries that scope with its own principal; the actuator
     /// that accepts it reads both. The planner never wrote a label word.
@@ -3635,12 +3635,12 @@ mod tests {
     #[test]
     fn a_label_crosses_two_hops_without_the_planner_copying_it() {
         let _g = setup();
-        let (brain, planner, actuator) = (CLIENT, SERVER, THIRD);
-        assert!(label::set_principal(brain, AGENT_KIND));
+        let (companion, planner, actuator) = (CLIENT, SERVER, THIRD);
+        assert!(label::set_principal(companion, AGENT_KIND));
         assert!(label::set_principal(planner, SERVICE_KIND));
         assert!(label::set_principal(actuator, SERVICE_KIND));
 
-        let hop1 = label::outgoing(brain, 0);
+        let hop1 = label::outgoing(companion, 0);
         assert_eq!(hop1, LABEL_AGENT);
         label::enter(planner, hop1); // the planner accepts
         let hop2 = label::outgoing(planner, 0); // and sends with an empty label word
@@ -3656,8 +3656,8 @@ mod tests {
     }
 
     /// An answer a caller reads is part of the data it works on from then on
-    /// (until it next accepts or replies): a planner that asked the brain and
-    /// then drives a motor drives it on the brain's data.
+    /// (until it next accepts or replies): a planner that asked the companion and
+    /// then drives a motor drives it on the companion's data.
     #[test]
     fn a_caller_that_reads_an_answer_works_on_its_data() {
         let _g = setup();
@@ -3715,39 +3715,39 @@ mod tests {
     /// the tasks: `accepted` puts the caller's scope and principal in the
     /// server's scope, `answering` (before the reply is published) puts the
     /// server's in the caller's, and the server then leaves the request. A
-    /// brain -> planner -> actuator chain over `SYS_IPC_FAST_*` reaches the
-    /// actuator carrying the brain's bit, and the brain reads the actuator's.
+    /// companion -> planner -> actuator chain over `SYS_IPC_FAST_*` reaches the
+    /// actuator carrying the companion's bit, and the companion reads the actuator's.
     ///
     /// **Canary.** Make `accepted` read only the caller's principal: the
-    /// second hop loses the agent, red. Make `answering` a no-op: the brain
+    /// second hop loses the agent, red. Make `answering` a no-op: the companion
     /// reads the planner's answer without its label, red.
     #[test]
     fn the_register_path_derives_the_label_from_the_tasks() {
         let _g = setup();
-        let (brain, planner, actuator) = (CLIENT, SERVER, THIRD);
-        assert!(label::set_principal(brain, AGENT_KIND));
+        let (companion, planner, actuator) = (CLIENT, SERVER, THIRD);
+        assert!(label::set_principal(companion, AGENT_KIND));
         assert!(label::set_principal(planner, SERVICE_KIND));
         assert!(label::set_principal(actuator, SERVICE_KIND));
 
-        label::accepted(planner, brain);
+        label::accepted(planner, companion);
         assert_eq!(label::effective(planner), LABEL_AGENT | LABEL_SERVICE);
         label::accepted(actuator, planner);
-        assert_eq!(label::effective(actuator), LABEL_AGENT | LABEL_SERVICE, "the second hop kept the brain");
+        assert_eq!(label::effective(actuator), LABEL_AGENT | LABEL_SERVICE, "the second hop kept the companion");
 
         label::answering(actuator, planner);
         label::enter(actuator, 0);
         assert_eq!(label::effective(actuator), LABEL_SERVICE, "the actuator left the request");
         assert_eq!(label::effective(planner), LABEL_AGENT | LABEL_SERVICE);
-        label::answering(planner, brain);
+        label::answering(planner, companion);
         label::enter(planner, 0);
         assert_eq!(label::effective(planner), LABEL_SERVICE);
-        assert_eq!(label::effective(brain), LABEL_AGENT | LABEL_SERVICE, "the brain read the planner's answer");
+        assert_eq!(label::effective(companion), LABEL_AGENT | LABEL_SERVICE, "the companion read the planner's answer");
 
         // By slot, as the fast path does under the endpoint lock.
-        let i = azos_sched::idx_for_tid(brain).unwrap();
+        let i = azos_sched::idx_for_tid(companion).unwrap();
         label::enter_slot(i, 0);
         label::absorb_slot(i, LABEL_USER);
-        assert_eq!(label::effective(brain), LABEL_AGENT | LABEL_USER);
+        assert_eq!(label::effective(companion), LABEL_AGENT | LABEL_USER);
     }
 
     /// The meet over a label is the most restrictive envelope of any kind in
@@ -3761,12 +3761,12 @@ mod tests {
         let _g = setup();
         label::set_envelope(SYSTEM_KIND, 0);
         label::set_envelope(SERVICE_KIND, 0); // a fully rated planner class
-        label::set_envelope(AGENT_KIND, 2); // the brain's slow envelope
+        label::set_envelope(AGENT_KIND, 2); // the companion's slow envelope
         label::set_envelope(AGENT_KIND, 1); // another agent class, looser: the tightest stays
         assert_eq!(label::envelope_of(0), 0);
         assert_eq!(label::envelope_of(LABEL_SERVICE), 0);
         assert_eq!(label::envelope_of(LABEL_AGENT), 2);
-        assert_eq!(label::envelope_of(LABEL_SERVICE | LABEL_AGENT), 2, "the planner is held to the brain's envelope");
+        assert_eq!(label::envelope_of(LABEL_SERVICE | LABEL_AGENT), 2, "the planner is held to the companion's envelope");
         assert_eq!(label::envelope_of(LABEL_SYSTEM | LABEL_SERVICE), 0);
         label::set_envelope(AGENT_KIND, 200);
         assert_eq!(label::envelope_of(LABEL_AGENT), label::LEVEL_MAX);

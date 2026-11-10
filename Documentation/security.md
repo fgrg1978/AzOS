@@ -592,7 +592,7 @@ present and does not verify on every build, and one with no usable signature
 Kconfig `OTA_SIG_MANDATORY` is on; otherwise it installs it with a warning. The
 boot gate does not read `OTA_SIG_MANDATORY`: the build refuses
 `SECURE_BOOT_ENFORCED=y` with it `n` (`crates/core/limits/build.rs`), so the
-install is never looser than the boot, and it is exported to the brain.
+install is never looser than the boot, and it is exported to the companion.
 
 **Topology.** `CAPS.SIG` is verified before any byte of `CAPS.TOM` is
 interpreted. One signature covers both topology files: the verified
@@ -675,7 +675,7 @@ the kernel's own CPU probes, fails it.
 | `ed25519` | Ed25519 (RFC 8032) via `ed25519-dalek`: strict verification, and signing from a seed (the keystore's `SIGN` keys) |
 | `sig` | The signature algorithms by id and their key and signature sizes, the configured one (`SigAlg::CONFIGURED`), and the signed containers: `RSIG` (image signatures, with the 54-byte manifest message) and `DSIG` (detached signatures) |
 | `noise` | Noise Protocol Framework handshakes `Noise_IK_25519_ChaChaPoly_SHA256` and `Noise_XX_25519_ChaChaPoly_SHA256`; no RNG inside (the caller supplies the ephemeral key); every DH result goes through the checked X25519; an error poisons the handshake state |
-| `secure_channel` | The brain link: the Noise handshake driver (initiator role, `IK` or `XX`), static keys derived from the link key, and the framed Noise transport with rekey |
+| `secure_channel` | The companion link: the Noise handshake driver (initiator role, `IK` or `XX`), static keys derived from the link key, and the framed Noise transport with rekey |
 | `entropy` | HMAC_DRBG over SHA-256 (NIST SP 800-90A), see "Entropy" |
 | `dice` | The node static key, see "Node identity" |
 | `keystore` | The kernel-held keys and their policies, see "Keystore" |
@@ -813,7 +813,7 @@ sink: `logd` writes them as `@security` lines in its `KLOGn.TXT` files):
 | `cap-denial` | `CapDenial`, `Neverallow` |
 | `image-load` | `ExecGrant`, `Livepatch`, `BootChain`, `MeasuredBoot` |
 | `update` | `EnvelopeOta`, `PackageInstall` |
-| `login` | `Login`: the console (method 4), the brain link (5), SSH by key (2: the SSH server reports what it decided through `keys`' `login_report`, and the kernel writes the record) |
+| `login` | `Login`: the console (method 4), the companion link (5), SSH by key (2: the SSH server reports what it decided through `keys`' `login_report`, and the kernel writes the record) |
 | `usb` | `UsbAuthorize` |
 | `limited` | `RefusalLimited` naming one of the rules above |
 
@@ -988,8 +988,8 @@ node_static_key = HKDF-SHA256(salt = measurement, ikm = device seed,
   kernel reads.
 - The kernel-hosted `linkkey` endpoint's `node_key` op derives the key of the
   *caller's own domain* (a `READ` capability on the endpoint is required) and
-  returns it. The raw seed is the endpoint's `read` op, which only `brain_client`
-  can call among the shipped images (only `BRAINCLI.ELF`, `RPCSRV.ELF` and
+  returns it. The raw seed is the endpoint's `read` op, which only `companion_client`
+  can call among the shipped images (only `COMPCLI.ELF`, `RPCSRV.ELF` and
   `MCPD.ELF` list `linkkey` in their image profile, and a grant of an
   interface the profile does not list is withheld): the tasks that face a
   network and take an identity (`RPCSRV.ELF`, `MCPD.ELF`) hold `READ` with an
@@ -1116,12 +1116,12 @@ restarts it).
 
 Source: `crates/core/syscall/src/link_key.rs`,
 `crates/core/crypto/src/secure_channel.rs`,
-`userspace/services/brain_client/src/link.rs`, `userspace/lib/rpc/src/chan.rs`,
+`userspace/services/companion_client/src/link.rs`, `userspace/lib/rpc/src/chan.rs`,
 `config/subsys/Kconfig.topology`.
 
 There are two kinds of authenticated link.
 
-**Brain link** (robot domain). The link lives in the ring-3 behaviour engine (`BRAINCLI.ELF`); the kernel's part is the `linkkey` endpoint and the UART e-stop reader. A 32-byte pre-shared key is provisioned into
+**Companion link** (robot domain). The link lives in the ring-3 behaviour engine (`COMPCLI.ELF`); the kernel's part is the `linkkey` endpoint and the UART e-stop reader. A 32-byte pre-shared key is provisioned into
 reserved tail sector 0 of the boot medium, as a record with a magic, a version
 and an integrity tag (`tools/sign/link_key_provision.py`). That sector is outside
 the FAT volume and the USB mass-storage export never reports it, so a USB host
@@ -1140,15 +1140,15 @@ removable card, so it would be an attacker-writable downgrade). Without the key 
 link does not run. Over a TCP connection:
 
 1. The handshake is Noise (`noise.rs`) in `ChaChaPoly_SHA256`, and the robot is
-   the Noise *initiator* (it dials the brain and speaks first). The static keys
+   the Noise *initiator* (it dials the companion and speaks first). The static keys
    derive from the provisioned key (HKDF-SHA256, one label per side), never the
-   key itself as a curve scalar. When the signed topology's `[peer.brain]` row
-   pins the brain's static public key (`noise_pk`; the `linkkey` endpoint's
-   `brain_pk` op hands it to the ring-3 link client) the pattern is `IK`: the
-   brain proves it holds the private half, and a leaked link key alone cannot
+   key itself as a curve scalar. When the signed topology's `[peer.companion]` row
+   pins the companion's static public key (`noise_pk`; the `linkkey` endpoint's
+   `companion_pk` op hands it to the ring-3 link client) the pattern is `IK`: the
+   companion proves it holds the private half, and a leaked link key alone cannot
    impersonate it.
    Otherwise it is `XX` with the derived statics, and the robot compares the
-   brain's static with the derived one before it sends its own, so `XX` is
+   companion's static with the derived one before it sends its own, so `XX` is
    authenticated by the link key and is not trust-on-first-use. One pattern
    byte precedes the first message and is part of the prologue. A failed
    handshake ends the connection; there is no `REJECT` frame. The handshake
@@ -1161,7 +1161,7 @@ link does not run. Over a TCP connection:
    signal: both sides replace that direction's key with Noise `REKEY`. The
    sender rekeys at 2^20 messages, 1 GiB, a wall-clock interval of at most an
    hour, or on request; the receiver enforces the same limits.
-3. The ring-3 engine seals one brain-protocol packet per transport message (it
+3. The ring-3 engine seals one companion-protocol packet per transport message (it
    reads a run of packets out of one). There is no second MAC
    or replay floor inside it: replay is refused by the transport's message
    counter within a session, and a frame recorded in an earlier session fails

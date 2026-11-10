@@ -12,7 +12,7 @@
 //!   `RC_FAILSAFE_ESTOP` is n, the drone default, whose flight controller
 //!   returns to launch instead) and write a durable record.
 //! * [`RcVerdict::Kill`] — latch the e-stop on every robot type.
-//! * [`RcVerdict::Manual`] — the sticks replace the brain's command for that
+//! * [`RcVerdict::Manual`] — the sticks replace the companion's command for that
 //!   tick, so they reach the motors only through L0 and the motor envelope.
 //!
 //! **Nothing acts before the first frame.** A link that never existed cannot
@@ -75,7 +75,7 @@ pub enum RcVerdict {
     LinkLoss { age_ms: Option<u32> },
     /// The kill switch is on; `pulse_us` is its channel's pulse width.
     Kill { pulse_us: u16 },
-    /// Link fresh, mode switch off: the brain drives.
+    /// Link fresh, mode switch off: the companion drives.
     Passive,
     /// Link fresh, mode switch on: the sticks ask for `(left, right)` percent.
     Manual { left: i32, right: i32 },

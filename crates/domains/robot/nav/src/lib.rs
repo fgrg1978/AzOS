@@ -826,16 +826,16 @@ fn reconstruct_path(nodes: &[AstarNode; ASTAR_MAX_OPEN], goal_idx: usize) -> Ast
 // R02: Speculative Waypoint Cache (SPO-inspired)
 // ===========================================================================
 //
-// The brain sends waypoints one at a time over the network.  Transmission
+// The companion sends waypoints one at a time over the network.  Transmission
 // latency (10-50 ms) means the robot can stand still waiting for the next
 // command even when the next destination is predictable.
 //
 // The speculative cache pre-computes the `N` most likely next waypoints from
 // the current mission plan.  When the robot completes a waypoint, it
 // immediately starts executing the top speculative candidate instead of
-// waiting for brain confirmation.
+// waiting for companion confirmation.
 //
-// If the brain then sends a different waypoint (speculation miss), the robot
+// If the companion then sends a different waypoint (speculation miss), the robot
 // corrects course.  The cost of a miss is one heading change; the benefit of
 // a hit is eliminating the full round-trip latency.
 //
@@ -899,7 +899,7 @@ static SPEC_CACHE: SpinLock<SpecCache> = SpinLock::new(SpecCache::new());
 /// Fill the speculative cache from the next `n` waypoints in the current mission.
 ///
 /// Called after the robot confirms arrival at a waypoint, so the cache is
-/// ready before the brain's reply arrives.
+/// ready before the companion's reply arrives.
 pub fn spec_wp_prefill(mission: &Mission) {
     let mut cache = SPEC_CACHE.lock();
     cache.count = 0;
@@ -948,12 +948,12 @@ pub fn spec_wp_top() -> Option<Waypoint> {
     }
 }
 
-/// Confirm that the speculative waypoint matched (brain sent the same one).
+/// Confirm that the speculative waypoint matched (companion sent the same one).
 pub fn spec_wp_hit() {
     SPEC_CACHE.lock().hits += 1;
 }
 
-/// Report a speculation miss (brain sent a different waypoint).
+/// Report a speculation miss (companion sent a different waypoint).
 /// Clears the cache so stale predictions are not re-used.
 pub fn spec_wp_miss() {
     let mut cache = SPEC_CACHE.lock();

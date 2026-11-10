@@ -56,7 +56,7 @@ pub(crate) fn parts(epoch: u32, fw: u32, key: &SigningKey) -> Parts {
         (3, "CAPS.SIG".into(), data(epoch + 2, 64)),
         (3, "SCHED.TOM".into(), data(epoch + 3, 500)),
         (4, "CONFIG.INI".into(), data(epoch + 4, 200)),
-        (5, "BRAIN.ELF".into(), data(epoch + 5, 9000)),
+        (5, "COMPCLI.ELF".into(), data(epoch + 5, 9000)),
     ]
 }
 

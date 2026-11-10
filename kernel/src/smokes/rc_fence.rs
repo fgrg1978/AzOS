@@ -110,7 +110,7 @@ pub(crate) fn rc_failsafe_smoke_task(_arg: usize) {
         return;
     }
     kprintln!("[RCSMOKE] link up: {} frames applied, e-stop clear", good);
-    // The latch must run the actuator domain's stop hooks too, as the brain's
+    // The latch must run the actuator domain's stop hooks too, as the companion's
     // e-stop does: only they disarm the ESC armed here (the motors' gated
     // writes drop to 0 on the latch alone, so they cannot tell).
     azos_robot_drivers::esc::esc_arm();

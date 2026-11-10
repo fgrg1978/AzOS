@@ -64,7 +64,7 @@ REPO_ROOT="$(cd "$CI_CHECK_DIR/.." && pwd)"
 QEMU_A64="$CI_CHECK_DIR/gate/qemu_a64.py"
 AZOS_HVF_OK="$(sh "$CI_CHECK_DIR/dev/qemu_hvf.sh" && echo 1 || echo 0)"
 export QEMU_A64 AZOS_HVF_OK
-. "$REPO_ROOT/tools/lib/brain_dir.sh"
+. "$REPO_ROOT/tools/lib/companion_dir.sh"
 . "$REPO_ROOT/tools/lib/volume_stale.sh"
 # The recovery console's prompt is `<preset>> ` (azos_limits::PRESET_PROMPT), and
 # the cell a row boots decides the preset: any preset's prompt matches.
@@ -577,7 +577,7 @@ EMBEDDED_BUILT=0
 # with no signed topology on QEMU, which an enforced build halts on ("no trusted
 # signing key embedded", "TOPOLOGY_SOURCE_SIGNED_REQUIRED"). The
 # enforced path has its own rows (secure boot ..., aarch64 secboot ...), and the
-# board rows (vf2) keep the profile default. The same holds for the brain
+# board rows (vf2) keep the profile default. The same holds for the companion
 # link (LINK_PROVISIONING_ENFORCED, `default y if !BUILD_TYPE_DEV`): on QEMU
 # these profiles bind no disk (HWBUS_AUTOBIND_TOPOLOGY, no `qemu-devices`
 # rows), so no link key can reach them and an enforced build halts at the key
@@ -1004,7 +1004,7 @@ fresh_disk() {
 
 # ── A host port of the row's own, for a row with a host-side peer ───────────
 #
-# Every image `make` builds dials its brain at 10.0.2.2:9000, and QEMU's SLIRP
+# Every image `make` builds dials its companion at 10.0.2.2:9000, and QEMU's SLIRP
 # turns that into a connect to 127.0.0.1:9000 on the HOST. So a peer bound to
 # 9000 is reachable by EVERY disk+NIC guest on the machine — another job of
 # this gate, another worktree's gate, a hand run — and all of them reach it
@@ -1012,9 +1012,9 @@ fresh_disk() {
 # first takes the peer's one `accept()`; on a standard image (no link key, so
 # the kernel's link closes at once) the peer's next write dies on a broken pipe,
 # its listener goes with it, and the guest under test is refused on every
-# redial: `[BRAIN] handshake stalled (state=0)` (Closed: an RST, not a lost
+# redial: `[COMPANION] handshake stalled (state=0)` (Closed: an RST, not a lost
 # SYN, which would leave SynSent) over and over, never `connected`. That is the
-# `the brain lies` red of gate 150, reproduced with a stand-in stranger. One
+# `the companion lies` red of gate 150, reproduced with a stand-in stranger. One
 # arriving later waits in `link_peer.py`'s backlog and is accepted as session
 # 2 at phase 5 (the camera row's phase-5 red of 24-09).
 #
@@ -1022,7 +1022,7 @@ fresh_disk() {
 # OS gave it back from the peer's `listening on` line, and only then points
 # the image at it and boots: no window in which another process can take it.
 #
-# peer_port_image <img> <port> [extra-line]: this image's brain link dials
+# peer_port_image <img> <port> [extra-line]: this image's companion link dials
 # <port> instead of 9000 (and gets [extra-line] appended), CONFIG.SIG re-signed
 # for it. REWRITTEN, not appended: `cfg_get` answers the FIRST line with a key.
 peer_port_image() {
@@ -1733,18 +1733,18 @@ CI_TIMING="$CI_LOG_DIR/timing.tsv"
 # start of the row's job) and run_s the rest of the row's wall time: its boots.
 CI_LOG_ABS="$(cd "$CI_LOG_DIR" && pwd)"
 CI_ROWS_TSV="$CI_LOG_ABS/rows.tsv"
-# The brain peers (tools/gate/fake_brain.py, tools/gate/link_peer.py) import the
-# crypto of the optional AzOSRobotBrain repo. tools/lib/brain_dir.sh finds it
-# (AZOS_BRAIN_DIR, the sibling of the checkout, the sibling of the main checkout
+# The companion peers (tools/gate/fake_companion.py, tools/gate/link_peer.py) import the
+# crypto of the optional AzOSRobotBrain repo. tools/lib/companion_dir.sh finds it
+# (AZOS_COMPANION_DIR, the sibling of the checkout, the sibling of the main checkout
 # for a worktree); the rows that need a peer skip when it is absent
-# (`brain_peer_required`), and BRAIN=1 makes its absence a failure.
-brain_resolve "$REPO_ROOT" || { echo "  FATAL: cannot resolve the brain repo"; exit 1; }
-if [ "$BRAIN_STATE" = required ]; then
-    echo "  FATAL: BRAIN=1 but no AzOSRobotBrain at ${BRAIN_PATH:-the sibling of the checkout} (set AZOS_BRAIN_DIR)"
+# (`companion_peer_required`), and COMPANION=1 makes its absence a failure.
+companion_resolve "$REPO_ROOT" || { echo "  FATAL: cannot resolve the companion repo"; exit 1; }
+if [ "$COMPANION_STATE" = required ]; then
+    echo "  FATAL: COMPANION=1 but no AzOSRobotBrain at ${COMPANION_PATH:-the sibling of the checkout} (set AZOS_COMPANION_DIR)"
     exit 1
 fi
-if [ "$BRAIN_STATE" != found ]; then
-    echo "  brain rows skipped: $(brain_skip_reason)"
+if [ "$COMPANION_STATE" != found ]; then
+    echo "  companion rows skipped: $(companion_skip_reason)"
 fi
 builtin printf 'row\tstage\tbuild_s\trun_s\tverdict\tprep_s\n' >"$CI_ROWS_TSV"
 export CI_BUILD_ACC="$CI_LOG_ABS/build-acc.main"
@@ -1803,7 +1803,7 @@ fi
 # `-a` keeps the row in every tier; `-h` marks a host-only job (no QEMU, so
 # only CI_JOBS bounds it); `-n N` is a row that starts N QEMUs at once (it
 # waits for N free slots host-wide; default 1). `-s` runs the row in this shell after every job has finished: rows that bind
-# a fixed host port (the brain/link peers on 9000, OTA, gdb), boot two QEMUs
+# a fixed host port (the companion/link peers on 9000, OTA, gdb), boot two QEMUs
 # at once, or judge wall-clock time. `-w` runs it as a job that never reaches
 # `par_ready`: the gate waits for all of it, as it would serially, while the
 # jobs before it finish their boots. For a group whose boots reuse build/
@@ -2079,13 +2079,13 @@ ci_tier_skips() {
     builtin printf "  %-26s%s\n" "${1}..." "skipped (CI_TIER=rows)"
     return 0
 }
-# brain_peer_required: a row that boots against a brain peer needs the brain
-# repo's crypto (tools/lib/brain_dir.sh). Absent, it prints its skip line and
+# companion_peer_required: a row that boots against a companion peer needs the companion
+# repo's crypto (tools/lib/companion_dir.sh). Absent, it prints its skip line and
 # the caller returns; nothing else about the gate depends on that repo.
-brain_peer_required() {
-    [ "$BRAIN_STATE" = found ] && return 0
+companion_peer_required() {
+    [ "$COMPANION_STATE" = found ] && return 0
     SKIP=$((SKIP + 1))
-    builtin printf "  %-26s%s\n" "${PAR_KEY}..." "skipped ($(brain_skip_reason))"
+    builtin printf "  %-26s%s\n" "${PAR_KEY}..." "skipped ($(companion_skip_reason))"
     return 1
 }
 PAR_SEEN="${PAR_SEEN:-}"   # keys of `par` calls and labels of printed rows
@@ -2374,7 +2374,7 @@ userspace: reflex reacts
 safety: envelope refuses
 config: replay refused, lost sig latches
 aarch64 config: replay refused, lost sig latches
-safety: brain e-stop (tcp)
+safety: companion e-stop (tcp)
 link: encrypted end to end
 storage: mmc flush (sdhci)
 seccomp: replaced image is refused
@@ -3138,7 +3138,7 @@ build       "mem-admission-canary" --release --select mem-admission-canary
 build       "disk-part-row"     --release --select disk-part-row
 build       "deadline-hart-canary" --release --select deadline-hart-canary
 build       "dma-contig-canary"   --release --select dma-contig-canary
-build       "brain-lies-smoke"    --release --select brain-lies-smoke
+build       "companion-lies-smoke"    --release --select companion-lies-smoke
 build       "actuation-smoke"     --release --select actuation-smoke
 build       "reflex+actuation"    --release --select reflex-smoke,actuation-smoke
 # Shootdown probe and its canary (see the "tlb: stale access" rows).
@@ -4770,7 +4770,7 @@ par "aarch64 network: TX batch canary" net_tx_batch_row "aarch64 network: TX bat
 # aarch64 called none of it, so "was the e-stop latched when we last shut
 # down?" silently answered "not latched" on every boot there, regardless of
 # what was on disk. riscv64 has a gate row for this property (`safety: latch
-# survives reboot`, driven by a real brain-link peer + kill-switch GPIO); this
+# survives reboot`, driven by a real companion-link peer + kill-switch GPIO); this
 # is its aarch64 twin, using `estop-latch-smoke`'s direct durable-write call
 # (`crates/domains/robot/behavior::logger::log_safety_violation_durable`) instead of that
 # whole apparatus — same on-disk record, same replay code, same ISA-neutral
@@ -5144,7 +5144,7 @@ otae2e_stop() { sleep 1; kill -9 "$OTAE2E_PID" 2>/dev/null; wait "$OTAE2E_PID" 2
 # otae2e_field <disk> <key>: a field of the plain BOOTMETA the volume holds
 # (the mirror of the dual record, read from the host: the guest is stopped).
 otae2e_field() { mtype -i "$1" ::BOOTMETA 2>/dev/null | tr -d '\r' | sed -n "s/^$2=//p" | sed -n 1p; }
-# otae2e_listen <disk>: the OTA listener on, no brain link (host port 9000
+# otae2e_listen <disk>: the OTA listener on, no companion link (host port 9000
 # belongs to the network rows), CONFIG.SIG signed again for this disk.
 # `cfg_get` answers the FIRST line with a key, so the listener's key goes first.
 otae2e_listen() {
@@ -5782,7 +5782,7 @@ otabun_qemu() {
 }
 # otabun_volume <isa> <disk> <work> <mode>: the volume and the bundle of a row,
 # before the row lets the gate run on: the topology bound to the volume's
-# device, the configuration without the brain link (host port 9000 belongs to
+# device, the configuration without the companion link (host port 9000 belongs to
 # the network rows) signed again for the volume, the source rows, and the
 # bundle in the TFTP directory.
 otabun_volume() {
@@ -8983,7 +8983,7 @@ a64_kbuild "qemu" >/dev/null 2>&1 || true
 # more (`RtWatchdogReports`, crates/core/actuation/src/logger.rs).
 # `rtwd-window-smoke` withholds the behavior task's motor command 0.8 s of
 # every 2 s, so the watchdog flaps on a schedule (the
-# brainless boot's 2 s dial stalls in the behavior loop did that), and
+# companionless boot's 2 s dial stalls in the behavior loop did that), and
 # closes a window every 5 s instead of 60. Once the console shows a window's
 # count the boot stops and the recorder file is read off the volume with
 # mtools, from the host:
@@ -10229,13 +10229,13 @@ fi
 
 # BEHAVIOR'S NETWORK WAITS SLEEP.
 #
-# `behavior` (priority 14) resolved the brain's MAC by YIELD-polling the ARP
+# `behavior` (priority 14) resolved the companion's MAC by YIELD-polling the ARP
 # cache for up to CONNECT_ARP_BUDGET_US (500 ms) per dial. A yield hands the
 # hart only to tasks at priority 14 or above, so every lower task on its hart
 # got nothing for the whole budget (`aarch64 preemption (qemu)`
 # failed behind it). It now sleeps NET_WAIT_POLL_MS (1 ms) between polls,
-# and so do its DHCP, encrypted-link handshake and brain-send waits. The
-# dialer is now the ring-3 behaviour engine (BRAINCLI.ELF, the image's
+# and so do its DHCP, encrypted-link handshake and companion-send waits. The
+# dialer is now the ring-3 behaviour engine (COMPCLI.ELF, the image's
 # autorun), whose connect waits in the kernel's stack the same way; not re-run
 # since the move.
 #
@@ -10806,7 +10806,7 @@ safe_mode_row() {
     rm -f $AZOS_OUT/build/disk.img
     make_disk $AZOS_OUT/build/disk.img
     cp $AZOS_OUT/build/disk.img "$disk"
-    # This copy only: the OTA listener on, and no brain link (host port 9000
+    # This copy only: the OTA listener on, and no companion link (host port 9000
     # belongs to the network rows). `cfg_get` answers the FIRST line with a
     # key, so the port is rewritten, and the listener's key goes first.
     if ! mcopy -n -i "$disk" ::CONFIG.INI "$ini.in" 2>/dev/null \
@@ -10856,7 +10856,7 @@ safe_mode_row() {
         "[OTA] Boot loop detected (max=3) with nothing to roll back to: slot A IS last_good. Count kept at 4" \
         "[RECOVERY] armed: BootLoop { crashes: 3 } (Exhausted, slot A boot_count=4) -- SAFE MODE" \
         "[SAFE-MODE] boot-good mark withheld" \
-        "[AUTORUN] REFUSED: safe mode -- /fat/BRAINCLI.ELF not started" \
+        "[AUTORUN] REFUSED: safe mode -- /fat/COMPCLI.ELF not started" \
         "[SAFE-MODE] probe: motor 0 forward 60% refused (rc=-2, applied 0%), spray refused" \
         "[SAFE-MODE] PASS probe: actuators held; 35 s up and BOOTMETA boot_count still 4"; do
         grep -aqF "$want" "$log" || missing="$missing
@@ -12020,7 +12020,7 @@ else
     bad; echo "      could not expand config/defconfigs/robot-embedded-riscv64+board-generic.config with python3 -m olddefconfig"
 fi
 
-# The brain link fails CLOSED outside BUILD_TYPE_DEV. Its
+# The companion link fails CLOSED outside BUILD_TYPE_DEV. Its
 # rows boot a kernel of the QEMU board built as a release image: the gate's
 # primary config with BUILD_TYPE_RELEASE, so LINK_PROVISIONING_ENFORCED comes
 # from the Kconfig default alone (no cargo feature names it; the symbol is
@@ -12367,7 +12367,7 @@ host_job host_canary_row "sensor: vdso bind canary" syscall-tests virtio-snd,lin
 # The native basic utilities (userspace/lib/coreutils): each canary puts one bug back, and the
 # named test of coreutils-tests must be the one that goes red.
 host_job host_canary_row "coreutils: the tool image holds no write tree canary" topology-tests toolbox-write-canary toolbox_holds_no_write_tree
-# The behaviour engine's inference client and L1 (userspace/services/brain_client):
+# The behaviour engine's inference client and L1 (userspace/services/companion_client):
 # a refusal passes as a class; the answering model is not compared; a timeout
 # passes as a class; a grant the task does not hold counts as none; a missing
 # distance turns the model off; a failed range read counts as a reading.
@@ -15057,7 +15057,7 @@ else
     # half. One image per boot: the boot writes the counter floor and the
     # flight recorder.
     #
-    # A release robot kernel enforces the brain link (Kconfig
+    # A release robot kernel enforces the companion link (Kconfig
     # LINK_PROVISIONING_ENFORCED, on outside BUILD_TYPE_DEV):
     # it halts without a link key. So the volume gets a throwaway one in the
     # reserved tail (tools/sign/link_key_provision.py, a fresh random key per image,
@@ -15130,7 +15130,7 @@ else
         for row in "embedded: boots in 64 MiB" "embedded: boots in 16 MiB" "embedded: census and task view"; do
             printf "  %-26s" "${row}..."; bad; echo "      embedded build row did not pass, or its gate-key topology volume was not built; not booted"; done
     fi
-    # The brain link fails CLOSED outside BUILD_TYPE_DEV, BOTH halves, on the
+    # The companion link fails CLOSED outside BUILD_TYPE_DEV, BOTH halves, on the
     # release build of the QEMU board (`linkrel_config`). Without a link key it
     # must halt at the key gate, and the refusal must be a decision record: the
     # FATAL line names a receipt (`decision N`, N >= 1; a refusal stored
@@ -15146,7 +15146,7 @@ else
        && product_gatekey_disk "$LINKREL_CONFIG" $AZOS_OUT/build/disk-linkrel-keyless.img keyless \
        && product_gatekey_disk "$LINKREL_CONFIG" $AZOS_OUT/build/disk-linkrel-keyed.img; then
         KERNEL="$LINKREL_KERNEL" par_row qemu_run "link: release build refuses a keyless boot" \
-            "SECCHAN] FATAL: brain link has no key .* refusing to boot (decision [1-9]" 120 -smp 4 \
+            "SECCHAN] FATAL: companion link has no key .* refusing to boot (decision [1-9]" 120 -smp 4 \
             -global virtio-mmio.force-legacy=false -drive file=$AZOS_OUT/build/disk-linkrel-keyless.img,if=none,format=raw,id=hd0 \
             -device virtio-blk-device,drive=hd0
         KERNEL="$LINKREL_KERNEL" par_row qemu_run "link: release build boots with a key" \
@@ -15282,7 +15282,7 @@ else
     #     accumulating samples), so it blocks somewhere between the IPv6 line
     #     and its verdict, and only sometimes. CAUSE NOT IDENTIFIED.
     #
-    #     Scoped, not assumed: with a disk AND a NIC — the `brain lies`
+    #     Scoped, not assumed: with a disk AND a NIC — the `companion lies`
     #     configuration — the verdict prints immediately (checked standalone).
     #     So the three re-enabled wire sends are not what stalls,
     #     and the four networked scenarios this gate does run are not sitting
@@ -20650,8 +20650,8 @@ CPU 5 lacks hwcap bits"
     kbuild "qemu"
 
     # THE RING-3 BEHAVIOUR ENGINE CHOOSES, THE KERNEL APPLIES (robot preset, no
-    # brain). BRAINCLI.ELF, the robot disk image's autorun, runs its layers
-    # without a brain link; a kernel task (runtime `canary=behave-smoke`) moves the simulated
+    # companion). COMPCLI.ELF, the robot disk image's autorun, runs its layers
+    # without a companion link; a kernel task (runtime `canary=behave-smoke`) moves the simulated
     # front rangefinder to 300 mm, then 100 mm, and reads the drivetrain's
     # command channel: the engine's L1 must publish its turn, then its stop.
     # Runtime canary `behave-switch`: the kernel's L1 switch is off, so the
@@ -20667,9 +20667,9 @@ CPU 5 lacks hwcap bits"
         if [ "$isa" = arm ]; then
             a64_kbuild "$feats" || { bad; echo "      aarch64 kernel build with $feats failed"; return; }
             disk="$CI_LOG_DIR/${slug}-disk.img"; kimg="$CI_LOG_DIR/${slug}-kernel.img"
-            rm -f $AZOS_OUT/build/disk-aarch64-braincli.img
-            make_disk $AZOS_OUT/build/disk-aarch64-braincli.img || return
-            cp $AZOS_OUT/build/disk-aarch64-braincli.img "$disk"; cp "$A64_IMG" "$kimg"
+            rm -f $AZOS_OUT/build/disk-aarch64-compcli.img
+            make_disk $AZOS_OUT/build/disk-aarch64-compcli.img || return
+            cp $AZOS_OUT/build/disk-aarch64-compcli.img "$disk"; cp "$A64_IMG" "$kimg"
             "$QEMU_A64" -M virt,gic-version=3 -cpu max,pauth=on -smp 2 -nographic \
                 -kernel "$kimg" -append "canary=$can" -global virtio-mmio.force-legacy=false \
                 -drive file="$disk",if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 \
@@ -20692,7 +20692,7 @@ CPU 5 lacks hwcap bits"
             i=$((i + 1)); sleep 0.5
         done
         kill "$qpid" 2>/dev/null; wait "$qpid" 2>/dev/null
-        if ! grep -aq "\[behave\]\|brain_client\] Starting" "$log" 2>/dev/null; then
+        if ! grep -aq "\[behave\]\|companion_client\] Starting" "$log" 2>/dev/null; then
             bad; echo "      the behaviour engine never started (log kept: $log)"; return
         fi
         if grep -aq "\[BEHAVESMOKE\] $want" "$log" 2>/dev/null; then
@@ -21731,7 +21731,7 @@ PY
         -drive file=$AZOS_OUT/build/disk-envelope.img,if=none,format=raw,id=hd0 \
         -device virtio-blk-device,drive=hd0
 
-    # ── The brain lies (scenario 2) ────────────────────
+    # ── The companion lies (scenario 2) ────────────────────
     #
     # A host-side peer sends frames that are structurally valid — right magic,
     # right length field, correct CRC — and semantically wrong. That is the
@@ -21747,9 +21747,9 @@ PY
     # string is ABSENT. Proving the kernel clamped to CONTAINED says nothing
     # about the sibling handler that used to do the opposite on the same input.
     #
-    # The peer is `tools/gate/fake_brain.py` on the host; QEMU's SLIRP maps
+    # The peer is `tools/gate/fake_companion.py` on the host; QEMU's SLIRP maps
     # 10.0.2.2 to it, and the image's CONFIG.INI dials 10.0.2.2 on the port
-    # the peer was given (`run_brain_peer_boot`; 9000 is every other guest's). Its
+    # the peer was given (`run_companion_peer_boot`; 9000 is every other guest's). Its
     # framing is pinned against the kernel's by the golden vectors in
     # `tests/host/behavior-tests` — without those, a drifted CRC would make every
     # frame get dropped at the parser and the log would look exactly like a
@@ -21761,7 +21761,7 @@ PY
     # (no CONFIG.INI, so no autorun) and every disk-backed scenario booted
     # without a NIC. Writing it found that a ring-3 autorun created inside the real-time
     # band starved `net-poll` on its hart so completely that the RX ring was
-    # never drained — no ARP reply learned, no SYN ever sent, brain link
+    # never drained — no ARP reply learned, no SYN ever sent, companion link
     # permanently down. Hence the `[NET-POLL]` assertion below: it is cheap and
     # it fails first, before the frame assertions, if that returns.
     #
@@ -21775,26 +21775,26 @@ PY
     # scenario below does not become a second copy of the boot sequence — the
     # part with the race in it, which is the part worth having once.
     #
-    #   run_brain_peer_boot <kernel-log> <peer-log> <image> <settle-s> [peer-args...]
+    #   run_companion_peer_boot <kernel-log> <peer-log> <image> <settle-s> [peer-args...]
     #
     # The peer's arguments are the last parameter because the two callers need
     # different peers: the lying script sends four refusable frames and leaves,
     # while `--serve` reads SensorPackets and answers with ActuatorCmd frames.
     # Same boot sequence, same race, one copy.
-    run_brain_peer_boot() {
+    run_companion_peer_boot() {
         local log="$1" blog="$2" image="$3" settle="$4"; shift 4
         local peer_args="${*:---wait 90}"
-        # The kernel's brain link is always a Noise session, so every peer but
-        # `--reconnect` (which only resets connections) runs the brain side of
-        # it with AzOSRobotBrain's secure_channel (see tools/lib/brain_dir.sh)
+        # The kernel's companion link is always a Noise session, so every peer but
+        # `--reconnect` (which only resets connections) runs the companion side of
+        # it with AzOSRobotBrain's secure_channel (see tools/lib/companion_dir.sh)
         # and needs the link key the image carries. Without the sibling repo
         # the peer exits at import after it has already printed its port, so
         # the boot would run against nobody: fail here, by name.
         case " $peer_args " in *" --reconnect "*) ;; *)
-            local brain_dir="${AZOS_BRAIN_DIR:-${BRAIN_PATH:-none}}"
-            if [ ! -f "$brain_dir/secure_channel.py" ]; then
-                echo "[fake-brain] FAIL no-robot — AzOSRobotBrain not found at $brain_dir (set AZOS_BRAIN_DIR)" >>"$blog"
-                echo "      AzOSRobotBrain not found at $brain_dir: the peer cannot start (set AZOS_BRAIN_DIR)"
+            local companion_dir="${AZOS_COMPANION_DIR:-${COMPANION_PATH:-none}}"
+            if [ ! -f "$companion_dir/secure_channel.py" ]; then
+                echo "[fake-companion] FAIL no-robot — AzOSRobotBrain not found at $companion_dir (set AZOS_COMPANION_DIR)" >>"$blog"
+                echo "      AzOSRobotBrain not found at $companion_dir: the peer cannot start (set AZOS_COMPANION_DIR)"
                 return 1
             fi
             case " $peer_args " in *" --link-key "*) ;; *) peer_args="$peer_args --image $image" ;; esac ;;
@@ -21805,18 +21805,18 @@ PY
         # is rewritten with the peer already up, which is safe: every peer
         # mode reads its key files before it binds.
         # shellcheck disable=SC2086
-        python3 tools/gate/fake_brain.py $peer_args --port 0 >"$blog" 2>&1 &
+        python3 tools/gate/fake_companion.py $peer_args --port 0 >"$blog" 2>&1 &
         local bpid=$!
         local k=0 port=""
         while [ "$k" -lt 60 ]; do
-            port=$(sed -n 's/^\[fake-brain\] listening on [0-9.]*:\([0-9][0-9]*\)$/\1/p' "$blog" 2>/dev/null | sed -n 1p)
+            port=$(sed -n 's/^\[fake-companion\] listening on [0-9.]*:\([0-9][0-9]*\)$/\1/p' "$blog" 2>/dev/null | sed -n 1p)
             [ -n "$port" ] && break
             kill -0 "$bpid" 2>/dev/null || break
             k=$((k + 1)); sleep 0.25
         done
         if [ -z "$port" ] || ! peer_port_image "$image" "$port"; then
             # Every caller checks this line first and fails naming it.
-            echo "[fake-brain] FAIL no-robot — the row could not point $image at the peer's port (${port:-none})" >>"$blog"
+            echo "[fake-companion] FAIL no-robot — the row could not point $image at the peer's port (${port:-none})" >>"$blog"
             kill "$bpid" 2>/dev/null; wait "$bpid" 2>/dev/null
             return 1
         fi
@@ -21847,7 +21847,7 @@ PY
             # verdict is the kernel's: the smoke task says when it is done.
             grep -aq "ESTOPGPIO] DONE" "$log" 2>/dev/null && break
             # A ring-3 client that refused to run has nothing more to say.
-            grep -aq "brain_client\] FATAL" "$log" 2>/dev/null && break
+            grep -aq "companion_client\] FATAL" "$log" 2>/dev/null && break
             grep -aqiE "panic|\[FATAL\]" "$log" 2>/dev/null && break
             kill -0 "$qpid" 2>/dev/null || break
             i=$((i + 1)); sleep 0.5
@@ -21865,7 +21865,7 @@ PY
                 break
             fi
             # The same, for a verdict only the PEER can print (the
-            # brain opening a record the client sealed after its own REKEY).
+            # companion opening a record the client sealed after its own REKEY).
             if [ -n "${PEER_BOOT_PEER_DONE_RE:-}" ] \
                 && grep -aqE "$PEER_BOOT_PEER_DONE_RE" "$blog" 2>/dev/null; then
                 break
@@ -21877,13 +21877,13 @@ PY
         kill "$bpid" 2>/dev/null; wait "$bpid" 2>/dev/null
     }
 
-    brain_lies_scenario() {
-        brain_peer_required || return 0
-        local label="userspace: the brain lies"
+    companion_lies_scenario() {
+        companion_peer_required || return 0
+        local label="userspace: the companion lies"
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
-        local log="$CI_LOG_DIR/brain-lies.log"
-        local blog="$CI_LOG_DIR/brain-lies-peer.log"
+        local log="$CI_LOG_DIR/companion-lies.log"
+        local blog="$CI_LOG_DIR/companion-lies-peer.log"
         rm -f "$log" "$blog"
 
         # Build the PLAIN kernel. Without this the scenario inherits whatever
@@ -21893,11 +21893,11 @@ PY
         # its hart). Proving that for a build nobody ships is proving the wrong
         # thing, and the inheritance is invisible: the scenario passes either
         # way, so nothing would ever tell you.
-        kbuild "qemu,use-robot"   # the brain link is the robot's: the robot cell
+        kbuild "qemu,use-robot"   # the companion link is the robot's: the robot cell
 
-        if ! python3 tools/gate/fake_brain.py --selftest >/dev/null 2>&1; then
-            bad; echo "      tools/gate/fake_brain.py selftest failed — its framing no"
-            echo "      longer matches brain_protocol.rs, so every frame it sends"
+        if ! python3 tools/gate/fake_companion.py --selftest >/dev/null 2>&1; then
+            bad; echo "      tools/gate/fake_companion.py selftest failed — its framing no"
+            echo "      longer matches companion_protocol.rs, so every frame it sends"
             echo "      would be dropped at the CRC check and this scenario would"
             echo "      fail for the wrong reason."
             return
@@ -21907,10 +21907,10 @@ PY
         # long-lived autorun is what exposed the starvation), but with a link key. With no key the
         # kernel connects and closes at once (the link is always a Noise
         # session) — correct, and it would stop every frame here from reaching
-        # the dispatch. The peer runs the brain side of that session with the
+        # the dispatch. The peer runs the companion side of that session with the
         # key it reads out of this image.
-        rm -f $AZOS_OUT/build/disk-brainlies.img
-        make_disk $AZOS_OUT/build/disk-brainlies.img
+        rm -f $AZOS_OUT/build/disk-companionlies.img
+        make_disk $AZOS_OUT/build/disk-companionlies.img
 
         # The peer is done after frame 4 is WRITTEN; the kernel dispatches at
         # 10 Hz from its own loop and, on a loaded host, had handled only
@@ -21919,7 +21919,7 @@ PY
         # 20 s ceiling ending at the kernel's verdict on the DEGRADE frame,
         # armed OR cleared, so the negative check below still sees a clear.
         PEER_BOOT_DONE_RE='degraded mode (armed|cleared)' \
-            run_brain_peer_boot "$log" "$blog" $AZOS_OUT/build/disk-brainlies.img 20
+            run_companion_peer_boot "$log" "$blog" $AZOS_OUT/build/disk-companionlies.img 20
 
         if grep -aq "FAIL no-robot" "$blog" 2>/dev/null; then
             bad; echo "      the robot never connected — no SYN reached the peer."
@@ -21963,7 +21963,7 @@ PY
         fi
         ok; mv -f "$log" "$log.green"; mv -f "$blog" "$blog.green"   # the last green pair, to diff a red one against
     }
-    par -s "userspace: the brain lies" brain_lies_scenario   # the brain peer on a host port of its own
+    par -s "userspace: the companion lies" companion_lies_scenario   # the companion peer on a host port of its own
 
     # The record half of the same frame, which the scenario above states it
     # does not cover: `log_safety_violation` writes the flight recorder, not
@@ -21976,27 +21976,27 @@ PY
     # kernel: adding a task changes the thing being measured. So the probe
     # lives behind its own feature and gets its own boot.
     #
-    # `brain_lies_smoke_task` polls: flush, scan the log, block on the timer for
+    # `companion_lies_smoke_task` polls: flush, scan the log, block on the timer for
     # half a second, repeat, for 60 s. The peer is done in ~4 s, well before the
     # record is on disk, so the settle waits for the probe's own verdict line
     # and 70 s is only the ceiling.
-    brain_lies_record_scenario() {
-        brain_peer_required || return 0
+    companion_lies_record_scenario() {
+        companion_peer_required || return 0
         local label="userspace: unknown packet RECORDED"
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
-        local log="$CI_LOG_DIR/brain-record.log"
-        local blog="$CI_LOG_DIR/brain-record-peer.log"
+        local log="$CI_LOG_DIR/companion-record.log"
+        local blog="$CI_LOG_DIR/companion-record-peer.log"
         rm -f "$log" "$blog"
 
-        kbuild "qemu,brain-lies-smoke"
+        kbuild "qemu,companion-lies-smoke"
         # Fresh image: the probe reads LOG00000.BIN back, and a reused image
         # would let it pass on a previous run's record instead of this boot's.
-        rm -f $AZOS_OUT/build/disk-brainrec.img
-        make_disk $AZOS_OUT/build/disk-brainrec.img
+        rm -f $AZOS_OUT/build/disk-companionrec.img
+        make_disk $AZOS_OUT/build/disk-companionrec.img
 
-        PEER_BOOT_DONE_RE='BRAINSMOKE\] (NOT )?RECORDED' \
-            run_brain_peer_boot "$log" "$blog" $AZOS_OUT/build/disk-brainrec.img 70
+        PEER_BOOT_DONE_RE='COMPSMOKE\] (NOT )?RECORDED' \
+            run_companion_peer_boot "$log" "$blog" $AZOS_OUT/build/disk-companionrec.img 70
 
         if grep -aq "FAIL no-robot" "$blog" 2>/dev/null; then
             bad; echo "      the robot never connected — no frame was ever sent,"
@@ -22007,12 +22007,12 @@ PY
             bad; echo "      kernel panic or fatal exception:"; grep -aiE -m3 "panic|\[FATAL\]|\[PAGE FAULT\]" "$log" | sed "s|^|      |"
             echo "      logs kept: $log $blog"; return
         fi
-        if grep -aq "BRAINSMOKE] NOT RECORDED" "$log" 2>/dev/null; then
+        if grep -aq "COMPSMOKE] NOT RECORDED" "$log" 2>/dev/null; then
             bad; echo "      the frame arrived and the record did not reach the disk:"
-            grep -a -m1 "BRAINSMOKE] NOT RECORDED" "$log" | sed "s|^|      |"
+            grep -a -m1 "COMPSMOKE] NOT RECORDED" "$log" | sed "s|^|      |"
             echo "      logs kept: $log $blog"; return
         fi
-        if ! grep -aq "BRAINSMOKE] RECORDED" "$log" 2>/dev/null; then
+        if ! grep -aq "COMPSMOKE] RECORDED" "$log" 2>/dev/null; then
             bad; echo "      the probe never reached a verdict — it ran out of"
             echo "      attempts, or the task never started."
             echo "      peer said: $(tail -2 "$blog" 2>/dev/null | tr "\n" " ")"
@@ -22020,12 +22020,12 @@ PY
         fi
         ok; rm -f "$log" "$blog"
     }
-    par -s "userspace: unknown packet RECORDED" brain_lies_record_scenario   # the brain peer on a host port of its own
+    par -s "userspace: unknown packet RECORDED" companion_lies_record_scenario   # the companion peer on a host port of its own
 
     # THE RING-3 PRODUCT PATH, END TO END. Sensors up, ActuatorCmd down,
     # motors driven — from a userspace ELF, through typed capabilities.
     #
-    # `userspace/services/brain_client` is the only program in the tree that does the
+    # `userspace/services/companion_client` is the only program in the tree that does the
     # whole loop, and before this scenario NOTHING booted its image: it was built
     # on every run and started by no scenario. Booting it by hand
     # immediately found a live defect (the ARP microbenchmarks were writing the
@@ -22033,17 +22033,17 @@ PY
     # scenario existing at all.
     #
     # THE ASSERTION IS THE PAIR `ask=60 duty=60`, NOT THE MARKER'S PRESENCE.
-    # The ring-3 behaviour engine drives through the gate: the brain's 60 %
-    # (`fake_brain.py --serve`'s first command) is chosen by the engine's
+    # The ring-3 behaviour engine drives through the gate: the companion's 60 %
+    # (`fake_companion.py --serve`'s first command) is chosen by the engine's
     # remote layer (`[behave] remote drives (60,60)`) and published with
     # `Motor::command`, and the kernel's drivetrain loop writes both wheels
     # (`[ACTSMOKE] kernel motor id=N duty=60`, printed by rt-motor on each
     # transition, out of the write itself). The kernel marker is the stronger
     # one: it proves the effect loop applied the command, not that a handler ran.
     # Rewritten for the ring-3 engine, with the model's verdict ahead of the
-    # brain's command.
+    # companion's command.
     ring3_actuation_scenario() {
-        brain_peer_required || return 0
+        companion_peer_required || return 0
         local label="userspace: ring-3 drives motors"
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
@@ -22052,19 +22052,19 @@ PY
         rm -f "$log" "$blog"
 
         kbuild "qemu,actuation-smoke"
-        rm -f $AZOS_OUT/build/disk-braincli.img $AZOS_OUT/build/disk-braincli-linkkey.img $AZOS_OUT/build/braincli_linkkey.bin
-        make_disk $AZOS_OUT/build/disk-braincli-linkkey.img
+        rm -f $AZOS_OUT/build/disk-compcli.img $AZOS_OUT/build/disk-compcli-linkkey.img $AZOS_OUT/build/compcli_linkkey.bin
+        make_disk $AZOS_OUT/build/disk-compcli-linkkey.img
 
-        # Brain_client runs the encrypted link, whose
+        # Companion_client runs the encrypted link, whose
         # ephemeral keys come from the entropy pool — so virtio-rng — and the
-        # peer runs the brain side of it (`--link-key`, AzOSRobotBrain's
-        # secure_channel; AZOS_BRAIN_DIR as for `tools/gate/link_peer.py`). The
-        # kernel's own brain link dials the same port with the same key; the
-        # peer tells it from brain_client by its first message and never
+        # peer runs the companion side of it (`--link-key`, AzOSRobotBrain's
+        # secure_channel; AZOS_COMPANION_DIR as for `tools/gate/link_peer.py`). The
+        # kernel's own companion link dials the same port with the same key; the
+        # peer tells it from companion_client by its first message and never
         # answers it.
         PEER_BOOT_QEMU_EXTRA="-device virtio-rng-device" \
-        run_brain_peer_boot "$log" "$blog" $AZOS_OUT/build/disk-braincli-linkkey.img 8 \
-            --serve --duration 40 --link-key $AZOS_OUT/build/braincli_linkkey.bin
+        run_companion_peer_boot "$log" "$blog" $AZOS_OUT/build/disk-compcli-linkkey.img 8 \
+            --serve --duration 40 --link-key $AZOS_OUT/build/compcli_linkkey.bin
 
         if grep -aq "FAIL no-robot" "$blog" 2>/dev/null; then
             bad; echo "      the robot never connected, so no command was ever"
@@ -22077,27 +22077,27 @@ PY
             echo "      logs kept: $log $blog"; return
         fi
         if ! grep -aq "\[behave\] remote drives (60,60)" "$log" 2>/dev/null; then
-            bad; echo "      the behaviour engine never let the brain's 60 % drive: the"
+            bad; echo "      the behaviour engine never let the companion's 60 % drive: the"
             echo "      ActuatorCmd did not arrive, or no layer chose it."
             grep -a -m4 "\[behave\]" "$log" | sed "s|^|      |"
             echo "      peer said: $(tail -2 "$blog" 2>/dev/null | tr "\n" " ")"
             echo "      logs kept: $log $blog"; return
         fi
         # L1 asks the inference service (MLSRV.ELF, started by its row) and holds
-        # a stop until it answers: the brain's 60 % drives only after the first
+        # a stop until it answers: the companion's 60 % drives only after the first
         # verdict, and the verdict is a class (go forward on the clear road).
         local v_line d_line
-        v_line=$(grep -an "\[brain_client\] ML: verdict, class 0" "$log" 2>/dev/null | sed -n 1p | cut -d: -f1)
+        v_line=$(grep -an "\[companion_client\] ML: verdict, class 0" "$log" 2>/dev/null | sed -n 1p | cut -d: -f1)
         d_line=$(grep -an "\[behave\] remote drives (60,60)" "$log" 2>/dev/null | sed -n 1p | cut -d: -f1)
         if [ -z "$v_line" ] || [ -z "$d_line" ] || [ "$v_line" -gt "$d_line" ]; then
-            bad; echo "      the brain's command drove before the inference service gave L1 a"
+            bad; echo "      the companion's command drove before the inference service gave L1 a"
             echo "      verdict (or it never did): ML must be asked every cycle and a missing"
             echo "      verdict holds a stop."
-            grep -a -m4 "brain_client\] ML\|\[infsrv\]" "$log" | sed "s|^|      |"
+            grep -a -m4 "companion_client\] ML\|\[infsrv\]" "$log" | sed "s|^|      |"
             echo "      logs kept: $log $blog"; return
         fi
         # Both wheels carry a non-zero duty the kernel recorded after the engine chose
-        # the brain's command (the command goes through `Motor::command` to the effect
+        # the companion's command (the command goes through `Motor::command` to the effect
         # loop, which writes them). The duty's value is the loop's (the PID output),
         # not the command's percent, so the record is read for "moving", not for 60.
         local m=0
@@ -22113,25 +22113,25 @@ PY
         fi
         ok; rm -f "$log" "$blog"
     }
-    par -s "userspace: ring-3 drives motors" ring3_actuation_scenario   # the brain peer on a host port of its own
+    par -s "userspace: ring-3 drives motors" ring3_actuation_scenario   # the companion peer on a host port of its own
 
     # THE ENGINE NEVER DRIVES ON A MISSING VERDICT (
     # fail closed). The same boot as above with BEHAVIOR.MBL's bytes changed on
     # the disk: the service refuses the bundle (bad signature), has no model to
     # run, and every Infer call is NO_RESOURCE. L1 then holds a stop, so the
-    # brain's 60 % command is never chosen and the wheels never move.
+    # companion's 60 % command is never chosen and the wheels never move.
     ring3_ml_fail_closed_scenario() {
-        brain_peer_required || return 0
+        companion_peer_required || return 0
         local label="userspace: ring-3 holds stop w/o ML"
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
         local log="$CI_LOG_DIR/ring3-ml-closed.log"
         local blog="$CI_LOG_DIR/ring3-ml-closed-peer.log"
-        local img=$AZOS_OUT/build/disk-braincli-linkkey.img tmp
+        local img=$AZOS_OUT/build/disk-compcli-linkkey.img tmp
         rm -f "$log" "$blog"
 
         kbuild "qemu,actuation-smoke"
-        rm -f $AZOS_OUT/build/disk-braincli.img $img $AZOS_OUT/build/braincli_linkkey.bin
+        rm -f $AZOS_OUT/build/disk-compcli.img $img $AZOS_OUT/build/compcli_linkkey.bin
         make_disk $img
         tmp=$(mktemp)
         if ! mcopy -n -i "$img" "::BEHAVIOR.MBL" "$tmp" 2>/dev/null \
@@ -22141,18 +22141,18 @@ PY
         fi
         rm -f "$tmp"
         PEER_BOOT_QEMU_EXTRA="-device virtio-rng-device" \
-        run_brain_peer_boot "$log" "$blog" $img 8 \
-            --serve --duration 40 --link-key $AZOS_OUT/build/braincli_linkkey.bin
+        run_companion_peer_boot "$log" "$blog" $img 8 \
+            --serve --duration 40 --link-key $AZOS_OUT/build/compcli_linkkey.bin
 
         if grep -aqiE "panic|\[FATAL\]" "$log" 2>/dev/null; then
             bad; echo "      kernel panic or fatal exception:"; grep -aiE -m3 "panic|\[FATAL\]|\[PAGE FAULT\]" "$log" | sed "s|^|      |"
             echo "      logs kept: $log $blog"; return
         fi
         if ! grep -aqE "\[infsrv\] BEHAVIOR.MBL REFUSED: bad signature" "$log" 2>/dev/null \
-           || ! grep -aq "\[brain_client\] ML: no verdict" "$log" 2>/dev/null \
+           || ! grep -aq "\[companion_client\] ML: no verdict" "$log" 2>/dev/null \
            || ! grep -aq "\[behave\] avoid drives (0,0)" "$log" 2>/dev/null; then
             bad; echo "      with an unsigned model the engine did not hold a stop through L1:"
-            grep -a -m5 "infsrv\] BEHAVIOR\|brain_client\] ML\|\[behave\]" "$log" | sed "s|^|      |"
+            grep -a -m5 "infsrv\] BEHAVIOR\|companion_client\] ML\|\[behave\]" "$log" | sed "s|^|      |"
             echo "      logs kept: $log $blog"; return
         fi
         if grep -aq "\[behave\] remote drives\|\[behave\] explore drives" "$log" 2>/dev/null \
@@ -22164,11 +22164,11 @@ PY
         fi
         ok; rm -f "$log" "$blog"
     }
-    par -s "userspace: ring-3 holds stop w/o ML" ring3_ml_fail_closed_scenario   # the brain peer on a host port of its own
+    par -s "userspace: ring-3 holds stop w/o ML" ring3_ml_fail_closed_scenario   # the companion peer on a host port of its own
 
     # A RING-3 CLIENT THAT RECONNECTS MUST GIVE ITS SOCKET BACK EVERY TIME.
     #
-    # `brain_client` reconnects forever by design. A client that ends a
+    # `companion_client` reconnects forever by design. A client that ends a
     # connection without releasing its socket keeps working for exactly
     # `MAX_SOCKETS_PER_TASK` dials (8 with the tree's `.config`, MAX_SOCKETS=16)
     # and then can never create another — "Connection failed, retrying..." for
@@ -22177,7 +22177,7 @@ PY
     # first bytes, and the client has to dial again about every two seconds.
     #
     # The count comes from the kernel log, not from the peer: the kernel's own
-    # brain link dials the same port and SLIRP hides which dialer is which. Ten
+    # companion link dials the same port and SLIRP hides which dialer is which. Ten
     # is past the quota with room for a slow first connect.
     ring3_reconnect_scenario() {
         local label="userspace: ring-3 reconnects"
@@ -22188,23 +22188,23 @@ PY
         rm -f "$log" "$blog"
 
         kbuild "qemu,actuation-smoke"
-        rm -f $AZOS_OUT/build/disk-braincli.img $AZOS_OUT/build/disk-braincli-linkkey.img $AZOS_OUT/build/braincli_linkkey.bin $AZOS_OUT/build/brain_client.elf
-        make_disk $AZOS_OUT/build/disk-braincli-linkkey.img
+        rm -f $AZOS_OUT/build/disk-compcli.img $AZOS_OUT/build/disk-compcli-linkkey.img $AZOS_OUT/build/compcli_linkkey.bin $AZOS_OUT/build/companion_client.elf
+        make_disk $AZOS_OUT/build/disk-compcli-linkkey.img
         # The rebuilt ELF must be the bytes the kernel's seccomp table lists, or
         # autorun refuses it and the scenario reads like a kernel fault. Userspace
         # builds do not depend on the checkout path (Makefile, USPACE_BUILD), so a
         # mismatch here is a source change since `make build/image_hashes.rs`.
         if ! python3 userspace/image_hashes.py --check $AZOS_OUT/build/image_hashes.rs \
-                BRAINCLI.ELF=$AZOS_OUT/build/brain_client.elf; then
-            bad; echo "      the rebuilt BRAINCLI.ELF is not the image this kernel was built for:"
+                COMPCLI.ELF=$AZOS_OUT/build/companion_client.elf; then
+            bad; echo "      the rebuilt COMPCLI.ELF is not the image this kernel was built for:"
             echo "      run make $AZOS_OUT/build/image_hashes.rs, then rebuild the kernel."; return
         fi
 
         # The peer opens every connection with the encrypted-link HELLO (the
         # client sends nothing before one) and resets it after the reply.
         PEER_BOOT_QEMU_EXTRA="-device virtio-rng-device" \
-        run_brain_peer_boot "$log" "$blog" $AZOS_OUT/build/disk-braincli-linkkey.img 1 \
-            --reconnect --duration 80 --link-key $AZOS_OUT/build/braincli_linkkey.bin
+        run_companion_peer_boot "$log" "$blog" $AZOS_OUT/build/disk-compcli-linkkey.img 1 \
+            --reconnect --duration 80 --link-key $AZOS_OUT/build/compcli_linkkey.bin
 
         if grep -aq "FAIL no-robot" "$blog" 2>/dev/null; then
             bad; echo "      nothing ever connected, so nothing was reset."
@@ -22216,23 +22216,23 @@ PY
             echo "      logs kept: $log $blog"; return
         fi
         local dials
-        dials=$(grep -ac "\[brain_client\] Connected!" "$log" 2>/dev/null)
+        dials=$(grep -ac "\[companion_client\] Connected!" "$log" 2>/dev/null)
         if [ "${dials:-0}" -lt 10 ]; then
-            bad; echo "      brain_client connected ${dials:-0} time(s) in 80 s; a client"
+            bad; echo "      companion_client connected ${dials:-0} time(s) in 80 s; a client"
             echo "      that stops at 8 is not releasing its socket."
-            grep -a -m3 "brain_client\] Connection failed" "$log" | sed "s|^|      |"
+            grep -a -m3 "companion_client\] Connection failed" "$log" | sed "s|^|      |"
             echo "      logs kept: $log $blog"; return
         fi
         ok; rm -f "$log" "$blog"
     }
-    par -s "userspace: ring-3 reconnects" ring3_reconnect_scenario   # the brain peer on a host port of its own
+    par -s "userspace: ring-3 reconnects" ring3_reconnect_scenario   # the companion peer on a host port of its own
 
     # THE EMERGENCY STOP, FROM RING 3, END TO END — and it is asserted on the
     # LATCH, not on the stop.
     #
     # the `motor.estop` op was declared in the ABI, exposed by `libsys` and
-    # swallowed by `dispatch`'s stub range, so `brain_client` mapped the
-    # brain's `FLAG_EMERGENCY` onto two ordinary `motor_speed_typed(cap, 0)`
+    # swallowed by `dispatch`'s stub range, so `companion_client` mapped the
+    # companion's `FLAG_EMERGENCY` onto two ordinary `motor_speed_typed(cap, 0)`
     # calls. Measured before the fix, with the peer driving again afterwards:
     # the robot kept going at 60% for 101 more commands, and the boot log held
     # no e-stop record of any kind.
@@ -22253,7 +22253,7 @@ PY
     # The durability of that mechanism is pinned by the `[ENVSMOKE] ESTOP
     # DURABLE` self-check; this scenario pins the wiring to it.
     ring3_estop_scenario() {
-        brain_peer_required || return 0
+        companion_peer_required || return 0
         local label="userspace: ring-3 e-stop"
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
@@ -22263,21 +22263,21 @@ PY
 
         kbuild "qemu,actuation-smoke"
         # The ring-3 ELF carries half of this path, so it must be rebuilt too —
-        # a stale `brain_client.elf` would test yesterday's userspace against
+        # a stale `companion_client.elf` would test yesterday's userspace against
         # today's kernel and pass either way.
-        rm -f $AZOS_OUT/build/disk-braincli.img $AZOS_OUT/build/disk-braincli-linkkey.img $AZOS_OUT/build/braincli_linkkey.bin $AZOS_OUT/build/brain_client.elf
-        make_disk $AZOS_OUT/build/disk-braincli-linkkey.img
+        rm -f $AZOS_OUT/build/disk-compcli.img $AZOS_OUT/build/disk-compcli-linkkey.img $AZOS_OUT/build/compcli_linkkey.bin $AZOS_OUT/build/companion_client.elf
+        make_disk $AZOS_OUT/build/disk-compcli-linkkey.img
         # As in `userspace: ring-3 reconnects`: the rebuilt ELF must be the bytes
         # the kernel's seccomp table lists, or autorun refuses it.
         if ! python3 userspace/image_hashes.py --check $AZOS_OUT/build/image_hashes.rs \
-                BRAINCLI.ELF=$AZOS_OUT/build/brain_client.elf; then
-            bad; echo "      the rebuilt BRAINCLI.ELF is not the image this kernel was built for:"
+                COMPCLI.ELF=$AZOS_OUT/build/companion_client.elf; then
+            bad; echo "      the rebuilt COMPCLI.ELF is not the image this kernel was built for:"
             echo "      run make $AZOS_OUT/build/image_hashes.rs, then rebuild the kernel."; return
         fi
 
         PEER_BOOT_QEMU_EXTRA="-device virtio-rng-device" \
-        run_brain_peer_boot "$log" "$blog" $AZOS_OUT/build/disk-braincli-linkkey.img 20 \
-            --serve --emergency --duration 40 --link-key $AZOS_OUT/build/braincli_linkkey.bin
+        run_companion_peer_boot "$log" "$blog" $AZOS_OUT/build/disk-compcli-linkkey.img 20 \
+            --serve --emergency --duration 40 --link-key $AZOS_OUT/build/compcli_linkkey.bin
 
         if grep -aq "FAIL no-robot" "$blog" 2>/dev/null; then
             bad; echo "      the robot never connected, so no emergency was"
@@ -22299,7 +22299,7 @@ PY
         fi
 
         # It has to have been DRIVING first, or "stopped" means nothing: the
-        # drivetrain loop applied the brain's 60 % on both wheels.
+        # drivetrain loop applied the companion's 60 % on both wheels.
         local drove_before drove_after
         drove_before=$(grep -an "ACTSMOKE] kernel motor id=[01] duty=60" "$log" 2>/dev/null \
                        | awk -F: -v n="$estop_line" '$1 < n' | grep -c .)
@@ -22319,23 +22319,23 @@ PY
         fi
 
         # THE SAME LATCH THROUGH THE io_ring: the engine
-        # submits the brain's command as one `Motor::command` OP_CALL entry and
+        # submits the companion's command as one `Motor::command` OP_CALL entry and
         # prints each completion as `ioring command status=<s> outcome=<o>
         # flags=<f>`. Served OK before the e-stop, never OK after it, and
         # answered REFUSED (outcome 8) after it.
-        if grep -aq "\[brain_client\] FAILED: io_ring" "$log" 2>/dev/null; then
-            bad; echo "      brain_client could not create its motor ring:"
-            grep -a -m2 "\[brain_client\] FAILED: io_ring" "$log" | sed "s|^|      |"
+        if grep -aq "\[companion_client\] FAILED: io_ring" "$log" 2>/dev/null; then
+            bad; echo "      companion_client could not create its motor ring:"
+            grep -a -m2 "\[companion_client\] FAILED: io_ring" "$log" | sed "s|^|      |"
             echo "      logs kept: $log $blog"; return
         fi
         local ring_before ring_after ring_refused ring_sensors
-        ring_before=$(grep -an "\[brain_client\] ioring command status=0 outcome=0 flags=0" "$log" 2>/dev/null \
+        ring_before=$(grep -an "\[companion_client\] ioring command status=0 outcome=0 flags=0" "$log" 2>/dev/null \
                       | awk -F: -v n="$estop_line" '$1 < n' | grep -c .)
-        ring_after=$(grep -an "\[brain_client\] ioring command status=0 outcome=0 " "$log" 2>/dev/null \
+        ring_after=$(grep -an "\[companion_client\] ioring command status=0 outcome=0 " "$log" 2>/dev/null \
                      | awk -F: -v n="$estop_line" '$1 > n' | grep -c .)
-        ring_refused=$(grep -an "\[brain_client\] ioring command status=0 outcome=8 flags=0" "$log" 2>/dev/null \
+        ring_refused=$(grep -an "\[companion_client\] ioring command status=0 outcome=8 flags=0" "$log" 2>/dev/null \
                        | awk -F: -v n="$estop_line" '$1 > n' | grep -c .)
-        ring_sensors=$(grep -a "\[brain_client\] ioring sensors asked=" "$log" 2>/dev/null \
+        ring_sensors=$(grep -a "\[companion_client\] ioring sensors asked=" "$log" 2>/dev/null \
                        | awk '{ for (i = 1; i <= NF; i++) { if ($i ~ /^asked=/) a = substr($i, 7) + 0; if ($i ~ /^served=/) s = substr($i, 8) + 0 }
                                 if (a > 0 && a == s) n++ } END { print n + 0 }')
         if [ "$ring_before" -lt 1 ]; then
@@ -22355,30 +22355,30 @@ PY
             echo "      logs kept: $log $blog"; return
         fi
         if [ "$ring_sensors" -lt 1 ]; then
-            bad; echo "      brain_client's sensor reads through the io_ring were not all served:"
+            bad; echo "      companion_client's sensor reads through the io_ring were not all served:"
             grep -a -m2 "ioring sensors" "$log" | sed "s|^|      |"
             echo "      logs kept: $log $blog"; return
         fi
         ok; rm -f "$log" "$blog"
     }
-    par -s "userspace: ring-3 e-stop" ring3_estop_scenario   # the brain peer on a host port of its own
+    par -s "userspace: ring-3 e-stop" ring3_estop_scenario   # the companion peer on a host port of its own
 
-    # RING 3's BRAIN LINK IS THE ENCRYPTED ONE.
+    # RING 3's COMPANION LINK IS THE ENCRYPTED ONE.
     #
-    # brain_client used to verify the HMAC envelope directly under the PSK,
+    # companion_client used to verify the HMAC envelope directly under the PSK,
     # with its replay floor only in RAM, per connection. It now runs the same
     # handshake and record layer as the kernel's own link, with its
     # ephemeral key from the kernel-hosted `entropy` endpoint. The rows above prove the
     # commands still arrive; this one proves the MODE, each claim anchored on
     # a line only the encrypted path prints:
-    #   * `[brain_client] link: Noise_<pattern> session established` — printed after
-    #     `handle_initiator_confirm` accepted the brain's PSK proof, nowhere else;
+    #   * `[companion_client] link: Noise_<pattern> session established` — printed after
+    #     `handle_initiator_confirm` accepted the companion's PSK proof, nowhere else;
     #   * the peer OPENED a sealed SensorPacket from the client — its record
     #     layer and its envelope check both passed on bytes the client sealed;
-    #   * the brain's REKEY was followed (`peer REKEY, rx generation 1`) and a
+    #   * the companion's REKEY was followed (`peer REKEY, rx generation 1`) and a
     #     ring-3 motor command landed AFTER it — so records under the ratcheted
     #     key opened;
-    #   * the client's own wall-clock REKEY (`brain_client_rekey_secs=10` on
+    #   * the client's own wall-clock REKEY (`companion_client_rekey_secs=10` on
     #     this image) COMPLETED: `client REKEY #1 completed` is printed by the
     #     peer only when a SensorPacket sealed AFTER the client's REKEY record
     #     opened and its envelope verified — the REKEY record opening alone
@@ -22390,11 +22390,11 @@ PY
     # Canary: `link::handshake` short-circuited to return
     # `true` without a handshake and `seal_frame` sending the bare frame
     # (the pre-wave HMAC-only client, since deleted). See the ENT report for what printed.
-    # Canary: `brain_client_rekey_secs=10` dropped
-    # from the image's CONFIG.INI (default hour): RED, "brain_client's own
+    # Canary: `companion_client_rekey_secs=10` dropped
+    # from the image's CONFIG.INI (default hour): RED, "companion_client's own
     # REKEY did not complete", no REKEY line on either side.
     ring3_encrypted_link_scenario() {
-        brain_peer_required || return 0
+        companion_peer_required || return 0
         local label="userspace: ring-3 link encrypted"
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
@@ -22403,77 +22403,77 @@ PY
         rm -f "$log" "$blog"
 
         kbuild "qemu,actuation-smoke"
-        rm -f $AZOS_OUT/build/disk-braincli.img $AZOS_OUT/build/disk-braincli-linkkey.img $AZOS_OUT/build/braincli_linkkey.bin $AZOS_OUT/build/brain_client.elf
-        make_disk $AZOS_OUT/build/disk-braincli-linkkey.img
+        rm -f $AZOS_OUT/build/disk-compcli.img $AZOS_OUT/build/disk-compcli-linkkey.img $AZOS_OUT/build/compcli_linkkey.bin $AZOS_OUT/build/companion_client.elf
+        make_disk $AZOS_OUT/build/disk-compcli-linkkey.img
         if ! python3 userspace/image_hashes.py --check $AZOS_OUT/build/image_hashes.rs \
-                BRAINCLI.ELF=$AZOS_OUT/build/brain_client.elf; then
-            bad; echo "      the rebuilt BRAINCLI.ELF is not the image this kernel was built for:"
+                COMPCLI.ELF=$AZOS_OUT/build/companion_client.elf; then
+            bad; echo "      the rebuilt COMPCLI.ELF is not the image this kernel was built for:"
             echo "      run make $AZOS_OUT/build/image_hashes.rs, then rebuild the kernel."; return
         fi
 
-        # Ends at the brain completing the client's REKEY, with a 30 s
+        # Ends at the companion completing the client's REKEY, with a 30 s
         # ceiling. On the PEER's line, not the client's `REKEY sent`: that
         # prints before the record reaches the host, and ending there killed
         # the peer first.
         PEER_BOOT_QEMU_EXTRA="-device virtio-rng-device" \
         PEER_BOOT_PEER_DONE_RE="client REKEY #1 completed" \
-        run_brain_peer_boot "$log" "$blog" $AZOS_OUT/build/disk-braincli-linkkey.img 30 \
-            --serve --duration 60 --link-key $AZOS_OUT/build/braincli_linkkey.bin
+        run_companion_peer_boot "$log" "$blog" $AZOS_OUT/build/disk-compcli-linkkey.img 30 \
+            --serve --duration 60 --link-key $AZOS_OUT/build/compcli_linkkey.bin
         sleep 1
 
         if grep -aqiE "panic|\[FATAL\]" "$log" 2>/dev/null; then
             bad; echo "      kernel panic or fatal exception:"; grep -aiE -m3 "panic|\[FATAL\]|\[PAGE FAULT\]" "$log" | sed "s|^|      |"
             echo "      logs kept: $log $blog"; return
         fi
-        if ! grep -aq "\[brain_client\] link: Noise_.* session established" "$log" 2>/dev/null; then
-            bad; echo "      brain_client never established an encrypted-link session:"
-            grep -a -m4 "brain_client\]" "$log" | sed "s|^|      |"
+        if ! grep -aq "\[companion_client\] link: Noise_.* session established" "$log" 2>/dev/null; then
+            bad; echo "      companion_client never established an encrypted-link session:"
+            grep -a -m4 "companion_client\]" "$log" | sed "s|^|      |"
             echo "      peer said: $(grep -a -m3 "encrypted\|FAIL\|refused" "$blog" | tr "\n" " ")"
             echo "      logs kept: $log $blog"; return
         fi
         if ! grep -aq "opened a sealed SensorPacket from the client" "$blog" 2>/dev/null; then
-            bad; echo "      the brain never opened a sealed SensorPacket from brain_client"
+            bad; echo "      the companion never opened a sealed SensorPacket from companion_client"
             echo "      logs kept: $log $blog"; return
         fi
         local rk_line after
-        rk_line=$(grep -an "\[brain_client\] link: peer REKEY, rx generation 1" "$log" 2>/dev/null \
+        rk_line=$(grep -an "\[companion_client\] link: peer REKEY, rx generation 1" "$log" 2>/dev/null \
                   | sed -n "1p" | cut -d: -f1)
         if [ -z "$rk_line" ]; then
-            bad; echo "      brain_client never followed the brain's REKEY"
+            bad; echo "      companion_client never followed the companion's REKEY"
             echo "      logs kept: $log $blog"; return
         fi
         after=$(grep -an "ACTSMOKE] ring3 motor id=[01] " "$log" 2>/dev/null \
                 | awk -F: -v n="$rk_line" '$1 > n' | grep -c .)
         if [ "$after" -lt 2 ]; then
-            bad; echo "      no ring-3 motor command landed after the brain's REKEY ($after),"
+            bad; echo "      no ring-3 motor command landed after the companion's REKEY ($after),"
             echo "      so records under the ratcheted key were not shown to open."
             echo "      logs kept: $log $blog"; return
         fi
-        if ! grep -aq "\[brain_client\] link: REKEY sent, tx generation 1" "$log" 2>/dev/null \
+        if ! grep -aq "\[companion_client\] link: REKEY sent, tx generation 1" "$log" 2>/dev/null \
            || ! grep -aq "client REKEY #1 completed" "$blog" 2>/dev/null; then
-            bad; echo "      brain_client's own REKEY did not complete (sent, then a record"
-            echo "      under the new key opened by the brain):"
+            bad; echo "      companion_client's own REKEY did not complete (sent, then a record"
+            echo "      under the new key opened by the companion):"
             grep -a -m3 "REKEY" "$log" "$blog" | sed "s|^|      |"
             echo "      logs kept: $log $blog"; return
         fi
         ok; rm -f "$log" "$blog"
     }
-    par -s "userspace: ring-3 link encrypted" ring3_encrypted_link_scenario   # the brain peer on a host port of its own
+    par -s "userspace: ring-3 link encrypted" ring3_encrypted_link_scenario   # the companion peer on a host port of its own
 
     # NO FRESH KEYS, NO LINK.
     #
     # The same image booted WITHOUT virtio-rng: the pool stays unseeded, so
-    # the kernel-hosted `entropy` endpoint answers NOT_READY (outcome 3) and brain_client, which
+    # the kernel-hosted `entropy` endpoint answers NOT_READY (outcome 3) and companion_client, which
     # draws every handshake's ephemeral key from it, refuses to run the link.
     # Anchored on the two lines only the refusal prints — the kernel's
     # one-per-boot `[ENTROPY] REFUSED: ring-3 read` (it also writes the
-    # durable SAFETY_ENTROPY_UNSEEDED_REFUSED record) and brain_client's FATAL
+    # durable SAFETY_ENTROPY_UNSEEDED_REFUSED record) and companion_client's FATAL
     # with the kernel's answer in it — then on the session line's absence.
     #
     # Canary: the handler's `!got` branch disabled, so an
     # unseeded pool hands out its zero buffer as "entropy". See the ENT report.
     ring3_entropy_refused_scenario() {
-        brain_peer_required || return 0
+        companion_peer_required || return 0
         local label="userspace: ring-3 entropy refused"
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
@@ -22482,16 +22482,16 @@ PY
         rm -f "$log" "$blog"
 
         kbuild "qemu,actuation-smoke"
-        rm -f $AZOS_OUT/build/disk-braincli.img $AZOS_OUT/build/disk-braincli-linkkey.img $AZOS_OUT/build/braincli_linkkey.bin $AZOS_OUT/build/brain_client.elf
-        make_disk $AZOS_OUT/build/disk-braincli-linkkey.img
+        rm -f $AZOS_OUT/build/disk-compcli.img $AZOS_OUT/build/disk-compcli-linkkey.img $AZOS_OUT/build/compcli_linkkey.bin $AZOS_OUT/build/companion_client.elf
+        make_disk $AZOS_OUT/build/disk-compcli-linkkey.img
         if ! python3 userspace/image_hashes.py --check $AZOS_OUT/build/image_hashes.rs \
-                BRAINCLI.ELF=$AZOS_OUT/build/brain_client.elf; then
-            bad; echo "      the rebuilt BRAINCLI.ELF is not the image this kernel was built for:"
+                COMPCLI.ELF=$AZOS_OUT/build/companion_client.elf; then
+            bad; echo "      the rebuilt COMPCLI.ELF is not the image this kernel was built for:"
             echo "      run make $AZOS_OUT/build/image_hashes.rs, then rebuild the kernel."; return
         fi
 
-        run_brain_peer_boot "$log" "$blog" $AZOS_OUT/build/disk-braincli-linkkey.img 2 \
-            --serve --duration 30 --link-key $AZOS_OUT/build/braincli_linkkey.bin
+        run_companion_peer_boot "$log" "$blog" $AZOS_OUT/build/disk-compcli-linkkey.img 2 \
+            --serve --duration 30 --link-key $AZOS_OUT/build/compcli_linkkey.bin
 
         if grep -aqiE "panic|\[FATAL\]" "$log" 2>/dev/null; then
             bad; echo "      kernel panic or fatal exception:"; grep -aiE -m3 "panic|\[FATAL\]|\[PAGE FAULT\]" "$log" | sed "s|^|      |"
@@ -22503,34 +22503,34 @@ PY
         fi
         if ! grep -aq "\[ENTROPY\] REFUSED: ring-3 read tid=" "$log" 2>/dev/null; then
             bad; echo "      the kernel never refused a ring-3 entropy read on an unseeded pool"
-            grep -a -m3 "brain_client\]" "$log" | sed "s|^|      |"
+            grep -a -m3 "companion_client\]" "$log" | sed "s|^|      |"
             echo "      logs kept: $log $blog"; return
         fi
-        if ! grep -aq "\[brain_client\] FATAL entropy refused outcome=3 " "$log" 2>/dev/null; then
-            bad; echo "      brain_client did not refuse to run the link on NOT_READY (outcome 3):"
-            grep -a -m4 "brain_client\]" "$log" | sed "s|^|      |"
+        if ! grep -aq "\[companion_client\] FATAL entropy refused outcome=3 " "$log" 2>/dev/null; then
+            bad; echo "      companion_client did not refuse to run the link on NOT_READY (outcome 3):"
+            grep -a -m4 "companion_client\]" "$log" | sed "s|^|      |"
             echo "      logs kept: $log $blog"; return
         fi
-        if grep -aq "\[brain_client\] link: Noise_.* session established" "$log" 2>/dev/null; then
+        if grep -aq "\[companion_client\] link: Noise_.* session established" "$log" 2>/dev/null; then
             bad; echo "      a session was established with no entropy behind it"
             echo "      logs kept: $log $blog"; return
         fi
         ok; rm -f "$log" "$blog"
     }
-    par -s "userspace: ring-3 entropy refused" ring3_entropy_refused_scenario   # the brain peer on a host port of its own
+    par -s "userspace: ring-3 entropy refused" ring3_entropy_refused_scenario   # the companion peer on a host port of its own
 
-    # THE BRAIN'S E-STOP OVER TCP — the second of the four sources, and the
+    # THE COMPANION'S E-STOP OVER TCP — the second of the four sources, and the
     # first scenario in this gate where the KERNEL's own actuation path moves a
     # wheel.
     #
     # A different image from the ring-3 one, and not for convenience:
     # `PKT_ESTOP` over TCP is handled in `behavior_task` on the kernel's own
-    # link, whose peer here is the brain itself (the Noise session keyed from
+    # link, whose peer here is the companion itself (the Noise session keyed from
     # the key this image carries), while the ring-3 image's autorun is
-    # BRAINCLI and its peer answers brain_client.
+    # COMPCLI and its peer answers companion_client.
     #
     # WHAT IT TOOK TO MAKE THIS ASSERTABLE AT ALL. The first attempt found the
-    # wheels at duty 0 for the whole run with the brain commanding 60%. The
+    # wheels at duty 0 for the whole run with the companion commanding 60%. The
     # command was arriving (`remote_action` held it); the arbiter was returning
     # L0 every tick with `violation=LowBattery`, because the sensor task
     # fabricated 3700 mV when there is no ADS1115 and every pack threshold in
@@ -22541,27 +22541,27 @@ PY
     # writes. `[ACTSMOKE] kernel motor` reports what `motor_set_reporting`
     # applied, from inside the write. A non-zero duty must appear BEFORE the
     # e-stop and none after it, while the peer keeps commanding 60% for the
-    # rest of the run. Asserting on `[BRAIN] ESTOP received` would be a false
+    # rest of the run. Asserting on `[COMPANION] ESTOP received` would be a false
     # green: measured on the ring-3 path, a handler that skipped the latch
     # still printed "envelope latched" and the robot drove 20 more times.
-    brain_estop_tcp_scenario() {
-        brain_peer_required || return 0
-        local label="safety: brain e-stop (tcp)"
+    companion_estop_tcp_scenario() {
+        companion_peer_required || return 0
+        local label="safety: companion e-stop (tcp)"
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
-        local log="$CI_LOG_DIR/brain-estop-tcp.log"
-        local blog="$CI_LOG_DIR/brain-estop-tcp-peer.log"
+        local log="$CI_LOG_DIR/companion-estop-tcp.log"
+        local blog="$CI_LOG_DIR/companion-estop-tcp-peer.log"
         rm -f "$log" "$blog"
 
         kbuild "qemu,actuation-smoke"
-        rm -f $AZOS_OUT/build/disk-brainestop.img
-        make_disk $AZOS_OUT/build/disk-brainestop.img
+        rm -f $AZOS_OUT/build/disk-companionestop.img
+        make_disk $AZOS_OUT/build/disk-companionestop.img
 
-        run_brain_peer_boot "$log" "$blog" $AZOS_OUT/build/disk-brainestop.img 4 \
+        run_companion_peer_boot "$log" "$blog" $AZOS_OUT/build/disk-companionestop.img 4 \
             --kernel-estop --duration 45 --gap 0.25
 
         if grep -aq "FAIL no-robot" "$blog" 2>/dev/null; then
-            bad; echo "      the kernel's brain link never connected — check"
+            bad; echo "      the kernel's companion link never connected — check"
             echo "      the link key in this image before suspecting the stack."
             echo "      logs kept: $log $blog"; return
         fi
@@ -22577,7 +22577,7 @@ PY
         fi
 
         local estop_line
-        estop_line=$(grep -an "\[BRAIN\] ESTOP received" "$log" 2>/dev/null \
+        estop_line=$(grep -an "\[COMPANION\] ESTOP received" "$log" 2>/dev/null \
                      | sed -n "1p" | cut -d: -f1)
         if [ -z "$estop_line" ]; then
             bad; echo "      PKT_ESTOP never reached the TCP handler."
@@ -22611,7 +22611,7 @@ PY
         #
         # **Why the reference point is the last non-zero duty and not the
         # console line.** This asked that the final `duty=0` come AFTER
-        # "[BRAIN] ESTOP received", which assumes the wheels cannot stop before
+        # "[COMPANION] ESTOP received", which assumes the wheels cannot stop before
         # the handler announces itself. They can, and they
         # started to: `estop_activate()` now installs the stop as the standing
         # action, so the control loop on another hart applies 0 inside the
@@ -22645,14 +22645,14 @@ PY
         done
         ok; rm -f "$log" "$blog"
     }
-    par -s "safety: brain e-stop (tcp)" brain_estop_tcp_scenario   # the brain peer on a host port of its own
+    par -s "safety: companion e-stop (tcp)" companion_estop_tcp_scenario   # the companion peer on a host port of its own
 
     # ── e-stop release needs operator authority ──
-    # Gate rows for the rule: "the brain may REQUEST an
+    # Gate rows for the rule: "the companion may REQUEST an
     # e-stop release; it may never CLEAR the latch." Delivered as TEXT, to be
     # spliced into tools/gate/ci_check.sh by the owner/coordinator (I do not own that
     # file). Written in its own style, using its EXISTING helpers verbatim:
-    # `kbuild`, `make_disk`, `run_brain_peer_boot`, `ok`/`bad`, `$QEMU`/`$KERNEL`,
+    # `kbuild`, `make_disk`, `run_companion_peer_boot`, `ok`/`bad`, `$QEMU`/`$KERNEL`,
     # `$CI_LOG_DIR`. Two new scenario functions plus one static (no-QEMU) canary.
     #
     # Provisioning note: these rows need a 32-byte Ed25519 OPERATOR key pair, the
@@ -22666,23 +22666,23 @@ PY
     # target instead (`build/disk-estopauth.img`, mirroring `disk-linkkey.img`),
     # swap the setup block below for one; nothing else here depends on how the
     # image was built, only on what is IN it (the link key, as in
-    # `disk-brainestop.img`, and a fresh OPERATOR.PUB).
+    # `disk-companionestop.img`, and a fresh OPERATOR.PUB).
 
     # ── Setup: a disk image + a fresh operator keypair for this run ─────────────
     operator_key_scenario_setup() {
         # $1 = image to build (e.g. build/disk-estopauth.img), by copying the
-        # existing `disk-brainestop.img` recipe's output (REFLEX autorun, the
+        # existing `disk-companionestop.img` recipe's output (REFLEX autorun, the
         # link key; the enforced-link build boots the same image in the
         # SEPARATE row below).
         local img="$1" keydir="$2"
-        # rm first: `safety: brain e-stop (tcp)` boots build/disk-brainestop.img
+        # rm first: `safety: companion e-stop (tcp)` boots build/disk-companionestop.img
         # DIRECTLY and leaves its flight recorder ending LATCHED; `make` then
         # sees an up-to-date target and hands that dirty image over, the boot
         # restores the latch, and PKT_ESTOP becomes a no-op ("already latched
         # is already done"). Fresh image, every time.
-        rm -f $AZOS_OUT/build/disk-brainestop.img
-        make_disk $AZOS_OUT/build/disk-brainestop.img
-        cp $AZOS_OUT/build/disk-brainestop.img "$img"
+        rm -f $AZOS_OUT/build/disk-companionestop.img
+        make_disk $AZOS_OUT/build/disk-companionestop.img
+        cp $AZOS_OUT/build/disk-companionestop.img "$img"
         mkdir -p "$keydir"
         python3 - "$keydir" <<'PYEOF'
 import sys
@@ -22707,19 +22707,19 @@ PYEOF
         mcopy -o -i "$img" "$keydir/operator_pub.bin" ::OPERATOR.PUB
     }
 
-    # ── Row 1: request does not clear, signed release does (QEMU, brain link) ──
+    # ── Row 1: request does not clear, signed release does (QEMU, companion link) ──
     #
-    # Reuses `run_brain_peer_boot`'s boot sequence with `tools/gate/fake_brain.py
+    # Reuses `run_companion_peer_boot`'s boot sequence with `tools/gate/fake_companion.py
     # --kernel-estop-release` as the peer (the ONE new message this change adds
     # to that file — see its own doc for the six phases). Same image shape as
-    # `brain_estop_tcp_scenario` (link key, REFLEX autorun), plus
+    # `companion_estop_tcp_scenario` (link key, REFLEX autorun), plus
     # `/fat/OPERATOR.PUB`.
     #
     # THE ASSERTION IS THE PAIR, on the kernel's OWN console lines, which are
     # printed by the exact branch that does or does not call `safety::
     # estop_release` — not a re-derivation of the gate. (A stricter version would
     # additionally read `[ACTSMOKE] kernel motor duty=` back, the way
-    # `brain_estop_tcp_scenario` does, for the wheel-level evidence; that
+    # `companion_estop_tcp_scenario` does, for the wheel-level evidence; that
     # assertion is straightforward to add the same way but is NOT included below
     # — see the agent report for why the run that produced these lines did not
     # also capture clean ACTSMOKE output.)
@@ -22730,7 +22730,7 @@ PYEOF
     # needs the image's key, and must change nothing about the release
     # authority.
     estop_release_authority_run() {
-        brain_peer_required || return 0
+        companion_peer_required || return 0
         local label="$1" features="$2" tag="$3"
         # The link's handshake needs a seeded entropy pool (the `entropy`
         # endpoint refuses an unseeded one), and QEMU's pool is seeded by
@@ -22747,16 +22747,16 @@ PYEOF
         kbuild "$features"
         operator_key_scenario_setup "$img" "$keydir"
 
-        # settle 20, not 4: `run_brain_peer_boot` stops waiting at the peer's
+        # settle 20, not 4: `run_companion_peer_boot` stops waiting at the peer's
         # "phase 3 done"; the signed release and the 12 s drive-again window
         # (`n_each * gap`) come AFTER that line, and the PASS marker after
         # those. With 4 the boot was killed mid-phase-5 (gate 182e).
-        run_brain_peer_boot "$log" "$blog" "$img" 20 \
+        run_companion_peer_boot "$log" "$blog" "$img" 20 \
             --kernel-estop-release --operator-priv "$keydir/operator_priv.bin" \
             --duration 60 --gap 0.25
 
         if grep -aq "FAIL no-robot" "$blog" 2>/dev/null; then
-            bad; echo "      the kernel's brain link never connected."
+            bad; echo "      the kernel's companion link never connected."
             echo "      logs kept: $log $blog"; return
         fi
         if grep -aqiE "panic|\[FATAL\]" "$log" 2>/dev/null; then
@@ -22766,7 +22766,7 @@ PYEOF
         fi
         if ! grep -aq "SECCHAN\] link key loaded" "$log" 2>/dev/null; then
             bad; echo "      the kernel did not load the image's link key, so its"
-            echo "      brain link could not run."
+            echo "      companion link could not run."
             echo "      logs kept: $log $blog"; return
         fi
         if ! grep -aq "PASS kernel-estop-release" "$blog" 2>/dev/null; then
@@ -22776,7 +22776,7 @@ PYEOF
         fi
 
         # THE ESTOP MUST HAVE LATCHED.
-        if ! grep -aq "BRAIN\] ESTOP received" "$log" 2>/dev/null; then
+        if ! grep -aq "COMPANION\] ESTOP received" "$log" 2>/dev/null; then
             bad; echo "      PKT_ESTOP never reached the TCP handler."
             echo "      logs kept: $log $blog"; return
         fi
@@ -22786,7 +22786,7 @@ PYEOF
         # MODE command" here instead, which this positive check would simply not
         # find, so a regression reads as this assertion failing, not as a
         # different string appearing.
-        if ! grep -aq "BRAIN\] ESTOP_RESET recorded as a REQUEST" "$log" 2>/dev/null; then
+        if ! grep -aq "COMPANION\] ESTOP_RESET recorded as a REQUEST" "$log" 2>/dev/null; then
             bad; echo "      the bare ESTOP_RESET request was not recorded as a"
             echo "      request (either it was silently ignored, or — check the"
             echo "      next line below — it cleared the latch on its own, which"
@@ -22799,9 +22799,9 @@ PYEOF
         # a stray "recorded as a REQUEST" afterwards would still pass a
         # presence-only check.
         local refuse_line clear_line
-        refuse_line=$(grep -an "BRAIN\] ESTOP_RESET recorded as a REQUEST" "$log" \
+        refuse_line=$(grep -an "COMPANION\] ESTOP_RESET recorded as a REQUEST" "$log" \
                       | sed -n "1p" | cut -d: -f1)
-        clear_line=$(grep -an "BRAIN\] ESTOP cleared by verified operator authority" "$log" \
+        clear_line=$(grep -an "COMPANION\] ESTOP cleared by verified operator authority" "$log" \
                      | sed -n "1p" | cut -d: -f1)
         if [ -z "$clear_line" ]; then
             bad; echo "      the signed release was never accepted — no"
@@ -22820,13 +22820,13 @@ PYEOF
         estop_release_authority_run "safety: e-stop release requires operator authority" \
             "qemu,actuation-smoke" estop-authority
     }
-    par -s "safety: e-stop release requires operator authority" estop_release_authority_scenario   # the brain peer on a host port of its own
+    par -s "safety: e-stop release requires operator authority" estop_release_authority_scenario   # the companion peer on a host port of its own
 
     # ── Row 2: the enforced-link build, booted — the audit's named measurement ─
     #
     # `link-provisioning-enforced` is compile-time only: no runtime flag relaxes it.
     # It halts the boot without a link key, refuses a handshake without seeded
-    # entropy and holds the UART bridge down; the brain link itself is the
+    # entropy and holds the UART bridge down; the companion link itself is the
     # same Noise session in every build. So this row is row 1 on that build:
     # it must BOOT (the image carries the key), bring the link up, and leave
     # the release authority exactly as row 1 proves it. Named in the owner's
@@ -22836,7 +22836,7 @@ PYEOF
         estop_release_authority_run "safety: e-stop authority under link-provisioning-enforced" \
             "qemu,actuation-smoke,link-provisioning-enforced" estop-authority-enforced
     }
-    par -s "safety: e-stop authority under link-provisioning-enforced" estop_release_authority_enforced_link_boot   # the brain peer on a host port of its own
+    par -s "safety: e-stop authority under link-provisioning-enforced" estop_release_authority_enforced_link_boot   # the companion peer on a host port of its own
 
     # ── Row 3 (static, no QEMU): the test-only proof constructor never ships ───
     #
@@ -22903,7 +22903,7 @@ PYEOF
     #     the lowest in the system bar idle — under strict priority with no
     #     aging. Measured with a probe verified present in the binary: it
     #     entered and iterated on an idle boot and did not execute one
-    #     instruction in 50 s with the brain link, a disk and a NIC attached.
+    #     instruction in 50 s with the companion link, a disk and a NIC attached.
     #     Six mechanisms died with it: stack canaries, timer liveness, this
     #     poll, the flight-recorder flush, driver health and the OTA boot-good
     #     mark. It is now priority 11, pinned to hart 2, and sleeps on a timer
@@ -22918,7 +22918,7 @@ PYEOF
     # the released switch, which on a board is a pull-up — and only then arms
     # the config. See `estop_gpio_smoke_task`.
     killswitch_gpio_scenario() {
-        brain_peer_required || return 0
+        companion_peer_required || return 0
         local label="safety: kill switch (gpio)"
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
@@ -22940,11 +22940,11 @@ PYEOF
         # 792e33af killed this boot 4 s after DONE with the record still in
         # RAM, and the latch row after it booted released.
         PEER_BOOT_DONE_RE='SAFETY\] ESTOP record durable' \
-        run_brain_peer_boot "$log" "$blog" $AZOS_OUT/build/disk-estopgpio.img 30 \
+        run_companion_peer_boot "$log" "$blog" $AZOS_OUT/build/disk-estopgpio.img 30 \
             --kernel-drive --duration 50 --gap 0.25
 
         if grep -aq "FAIL no-robot" "$blog" 2>/dev/null; then
-            bad; echo "      the kernel's brain link never connected, so the"
+            bad; echo "      the kernel's companion link never connected, so the"
             echo "      wheels were never turning. logs kept: $log $blog"; return
         fi
         if grep -aqiE "panic|\[FATAL\]" "$log" 2>/dev/null; then
@@ -23033,7 +23033,7 @@ PYEOF
         asks_after=$(grep -an "TCP-RX" "$log" 2>/dev/null \
                      | awk -F: -v n="$wdt_line" '$1 > n' | grep -c .)
         if [ "$asks_after" -lt 5 ]; then
-            bad; echo "      the brain stopped talking after the switch was pressed"
+            bad; echo "      the companion stopped talking after the switch was pressed"
             echo "      ($asks_after frames), so the latch was never tested."
             echo "      logs kept: $log $blog"; return
         fi
@@ -23074,7 +23074,7 @@ PYEOF
         # what THIS boot did with the record. That row removes it on ok.
         ok; rm -f "$blog"
     }
-    par -s "safety: kill switch (gpio)" killswitch_gpio_scenario   # the brain peer on a host port of its own
+    par -s "safety: kill switch (gpio)" killswitch_gpio_scenario   # the companion peer on a host port of its own
 
     # The latch survives a reset. Boot reads the
     # last `SAFETY_ESTOP` in the flight recorder and starts latched if the last
@@ -23091,7 +23091,7 @@ PYEOF
     # ran, no duty it applied was ever positive, the last one is 0, and the peer
     # kept asking the whole time.
     latch_survives_reboot_scenario() {
-        brain_peer_required || return 0
+        companion_peer_required || return 0
         local label="safety: latch survives reboot"
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
@@ -23115,11 +23115,11 @@ PYEOF
             echo "      log kept: $klog"; return
         fi
 
-        run_brain_peer_boot "$log" "$blog" $AZOS_OUT/build/disk-estopgpio.img 4 \
+        run_companion_peer_boot "$log" "$blog" $AZOS_OUT/build/disk-estopgpio.img 4 \
             --kernel-drive --duration 40 --gap 0.25
 
         if grep -aq "FAIL no-robot" "$blog" 2>/dev/null; then
-            bad; echo "      the kernel's brain link never connected, so nothing"
+            bad; echo "      the kernel's companion link never connected, so nothing"
             echo "      asked the wheels to move. logs kept: $log $blog $klog"; return
         fi
         if grep -aqiE "panic|\[FATAL\]" "$log" 2>/dev/null; then
@@ -23154,7 +23154,7 @@ PYEOF
         fi
         ok; rm -f "$log" "$blog" "$klog"
     }
-    par -s "safety: latch survives reboot" latch_survives_reboot_scenario   # the brain peer on a host port of its own
+    par -s "safety: latch survives reboot" latch_survives_reboot_scenario   # the companion peer on a host port of its own
 
     # The latch record reaches the MEDIUM, not only the device's write cache.
     #
@@ -23748,7 +23748,7 @@ PYEOF
     par "usb: second timeout latches (riscv64)" usb_reset_row riscv64 twice
     kbuild "qemu"
 
-    # Brain-link key gate (`link-provisioning-enforced`), BOTH directions. build/disk.img
+    # Companion-link key gate (`link-provisioning-enforced`), BOTH directions. build/disk.img
     # carries no link key, so the enforced kernel must refuse; build/disk-linkkey.img
     # carries one, so the same kernel must boot past the gate. Testing only the
     # refusal would pass just as happily on a gate wired to always refuse.
@@ -23758,36 +23758,36 @@ PYEOF
         -device virtio-blk-device,drive=hd0
     rm -f $AZOS_OUT/build/disk-linkkey.img
     make_disk $AZOS_OUT/build/disk-linkkey.img
-    par_row qemu_run "link auth accepts valid key" "brain link authenticated" 120 \
+    par_row qemu_run "link auth accepts valid key" "companion link authenticated" 120 \
         -smp 4 -global virtio-mmio.force-legacy=false \
         -drive file=$AZOS_OUT/build/disk-linkkey.img,if=none,format=raw,id=hd0 \
         -device virtio-blk-device,drive=hd0
 
-    # THE ENCRYPTED BRAIN LINK, END TO END. The scenario above shows
+    # THE ENCRYPTED COMPANION LINK, END TO END. The scenario above shows
     # the key loads; this one runs the link the key protects: a handshake,
     # sealed frames both ways, a REKEY in each direction, a tampered frame the
     # kernel closes on, and a second handshake. The peer is `tools/gate/link_peer.py`, which imports
-    # AzOSRobotBrain's `secure_channel.py` — the brain's implementation, not a
+    # AzOSRobotBrain's `secure_channel.py` — the companion's implementation, not a
     # copy — and reads the PSK out of the image this kernel boots.
     #
     # Two smoke features. `actuation-smoke`, because the PKT_ESTOP the peer
-    # seals right after its REKEY is asserted the way `safety: brain e-stop
+    # seals right after its REKEY is asserted the way `safety: companion e-stop
     # (tcp)` asserts it: on the wheels, never on the console line — see that
     # scenario for why a handler that prints and does not latch must read red.
     # `link-rekey-smoke`, because the kernel's own rekey interval is an hour;
     # under the feature it is 5 s, so its REKEY records reach the peer.
     #
-    # Its own boot sequence, not `run_brain_peer_boot`, which starts
-    # `tools/gate/fake_brain.py`. The race that helper documents is handled the same
+    # Its own boot sequence, not `run_companion_peer_boot`, which starts
+    # `tools/gate/fake_companion.py`. The race that helper documents is handled the same
     # way — wait on the peer's verdict, never on a kernel line — with one
     # addition: QEMU starts only once the peer says `listening`, because the
     # peer reads LINK.KEY out of the image with mtools and QEMU locks it.
     #
     # The engine also sends its camera frames on this connection (`PKT_CAMERA`,
-    # paced by BRAIN_CAMERA_PERIOD_MS, from the frame class's reader); the peer
+    # paced by COMPANION_CAMERA_PERIOD_MS, from the frame class's reader); the peer
     # waits for one in phase 4 and this row asserts it.
     link_peer_scenario() {
-        brain_peer_required || return 0
+        companion_peer_required || return 0
         local label="$1" tag="link-peer"
         printf "  %-26s" "${label}..."
         mkdir -p "$CI_LOG_DIR"
@@ -23827,8 +23827,8 @@ PYEOF
             i=$((i + 1)); sleep 0.5
         done
         # The behaviour engine's wall-clock rekey, shortened so one boot sees
-        # the client REKEY (`brain_client_rekey_secs` may only shorten it).
-        local port extra="brain_client_rekey_secs=5"
+        # the client REKEY (`companion_client_rekey_secs` may only shorten it).
+        local port extra="companion_client_rekey_secs=5"
         port=$(sed -n 's/^\[link-peer\] listening on [0-9.]*:\([0-9][0-9]*\) .*/\1/p' "$blog" | sed -n 1p)
         if [ -z "$port" ] || ! peer_port_image "$img" "$port" "$extra"; then
             kill "$bpid" 2>/dev/null; wait "$bpid" 2>/dev/null
@@ -23858,7 +23858,7 @@ PYEOF
         kill "$bpid" 2>/dev/null; wait "$bpid" 2>/dev/null
 
         if grep -aq "FAIL no-robot" "$blog" 2>/dev/null; then
-            bad; echo "      the behaviour engine's brain link never connected to the peer."
+            bad; echo "      the behaviour engine's companion link never connected to the peer."
             echo "      logs kept: $log $blog"; return
         fi
         if grep -aqiE "panic|\[FATAL\]" "$log" 2>/dev/null; then
@@ -23871,11 +23871,11 @@ PYEOF
         if [ -z "$sid1" ]; then
             bad; echo "      no encrypted-link handshake completed between the engine and the peer:"
             grep -a "\[link-peer\] FAIL" "$blog" 2>/dev/null | sed "s|^|      |"
-            grep -a "\[BRAIN\] hs:\|encrypted.link" "$log" 2>/dev/null | sed -n "1,3p" | sed "s|^|      |"
+            grep -a "\[COMPANION\] hs:\|encrypted.link" "$log" 2>/dev/null | sed -n "1,3p" | sed "s|^|      |"
             echo "      logs kept: $log $blog"; return
         fi
         # Phases 1-3: a SensorPacket opened, drive frames sealed, then the
-        # brain's REKEY + PKT_ESTOP and more drive frames under the new keys.
+        # companion's REKEY + PKT_ESTOP and more drive frames under the new keys.
         # A kernel that refuses records after a REKEY stops the peer here.
         if ! grep -aq "\[link-peer\] phase 3 done" "$blog" 2>/dev/null; then
             bad; echo "      the peer did not get through its REKEY + PKT_ESTOP phase:"
@@ -23884,15 +23884,15 @@ PYEOF
             echo "      logs kept: $log $blog"; return
         fi
 
-        # The e-stop sealed after the brain's REKEY must have LATCHED. Same
-        # evidence as `safety: brain e-stop (tcp)`: both wheels drove before
+        # The e-stop sealed after the companion's REKEY must have LATCHED. Same
+        # evidence as `safety: companion e-stop (tcp)`: both wheels drove before
         # it, and each wheel's last applied duty is 0 with its last non-zero
         # duty before the latch, while the peer kept commanding 60 %.
         local estop_line
-        estop_line=$(grep -an "\[BRAIN\] ESTOP received" "$log" 2>/dev/null \
+        estop_line=$(grep -an "\[COMPANION\] ESTOP received" "$log" 2>/dev/null \
                      | sed -n "1p" | cut -d: -f1)
         if [ -z "$estop_line" ]; then
-            bad; echo "      THE E-STOP SEALED AFTER THE BRAIN'S REKEY NEVER REACHED THE"
+            bad; echo "      THE E-STOP SEALED AFTER THE COMPANION'S REKEY NEVER REACHED THE"
             echo "      TCP HANDLER: the peer sent it and kept driving, and the kernel"
             echo "      neither latched nor refused the session."
             echo "      logs kept: $log $blog"; return
@@ -23921,7 +23921,7 @@ PYEOF
             rec=${w%:*}; nz=${w##*:}; val=${rec##*duty=}
             if [ -z "$rec" ] || [ "$val" != "0" ] || [ -z "$nz" ] \
                || [ "$nz" -gt "$estop_line" ]; then
-                bad; echo "      THE E-STOP SEALED AFTER THE BRAIN'S REKEY DID NOT HOLD. Each"
+                bad; echo "      THE E-STOP SEALED AFTER THE COMPANION'S REKEY DID NOT HOLD. Each"
                 echo "      wheel's last applied duty must be 0, and its last NON-ZERO duty"
                 echo "      must fall before the latch; got:"
                 echo "        left : ${last_l:-<none>}   (last non-zero at line ${nz_l:-<none>})"
@@ -23931,7 +23931,7 @@ PYEOF
             fi
         done
 
-        # Phase 4: kernel records kept opening after the brain's REKEY, and at
+        # Phase 4: kernel records kept opening after the companion's REKEY, and at
         # least one kernel REKEY record arrived with records opened after it.
         local p4 krekeys
         p4=$(grep -a "\[link-peer\] phase 4 done" "$blog" 2>/dev/null | sed -n '1p')
@@ -23946,11 +23946,11 @@ PYEOF
         # The engine's camera frames travel on the control connection: the peer
         # opened at least one, and the engine said it sent the first.
         if ! grep -aq "\[link-peer\] camera frames on the control connection: [1-9]" "$blog" 2>/dev/null \
-           || ! grep -aq "\[brain_client\] camera: first frame sent on the brain link" "$log" 2>/dev/null; then
+           || ! grep -aq "\[companion_client\] camera: first frame sent on the companion link" "$log" 2>/dev/null; then
             bad; echo "      no camera frame from the engine reached the peer on the control"
-            echo "      connection (the frame class's reader, BRAIN_CAMERA_PERIOD_MS):"
+            echo "      connection (the frame class's reader, COMPANION_CAMERA_PERIOD_MS):"
             grep -a "\[link-peer\] FAIL" "$blog" 2>/dev/null | sed "s|^|      |"
-            grep -a -m3 "brain_client\] camera" "$log" | sed "s|^|      |"
+            grep -a -m3 "companion_client\] camera" "$log" | sed "s|^|      |"
             echo "      logs kept: $log $blog"; return
         fi
 
@@ -23968,11 +23968,11 @@ PYEOF
             grep -a "encrypted-link record layer" "$log" 2>/dev/null | sed -n "1,2p" | sed "s|^|      |"
             # The kernel closes first here and redials at once; a refused
             # connect or handshake reads as a TCP-layer fault, not a link one.
-            grep -a "connect failed rc\|handshake stalled\|\[BRAIN\] hs:" "$log" 2>/dev/null \
+            grep -a "connect failed rc\|handshake stalled\|\[COMPANION\] hs:" "$log" 2>/dev/null \
                 | sed -n "1,3p" | sed "s|^|      |"
             echo "      logs kept: $log $blog"; return
         fi
-        est=$(grep -ac "\[brain_client\] link: Noise_. session established" "$log" 2>/dev/null)
+        est=$(grep -ac "\[companion_client\] link: Noise_. session established" "$log" 2>/dev/null)
         if [ "${est:-0}" -lt 2 ]; then
             bad; echo "      the peer saw two sessions but the engine logged ${est:-0}"
             echo "      established links, want >= 2."
@@ -23995,8 +23995,8 @@ PYEOF
     #
     #   * `hello` is hand-written assembly (hello.S), covered by the ELF loader
     #     path the other scenarios already exercise, and stays out.
-    #   * `brain_client` needed a live brain server on the host. It is booted
-    #     now, against `tools/gate/fake_brain.py`, by `userspace: ring-3 drives
+    #   * `companion_client` needed a live companion server on the host. It is booted
+    #     now, against `tools/gate/fake_companion.py`, by `userspace: ring-3 drives
     #     motors`, `userspace: ring-3 reconnects` and `userspace: ring-3 e-stop`.
     kbuild "qemu,use-robot"   # the bench (robot domain) boots the robot cell
 
@@ -24028,7 +24028,7 @@ PYEOF
     #
     # `crates/lib/bench` (9 subsystems: ipc, mm, sched, net, fs, crypto, cap, ota, asyncrt)
     # runs on every boot and emits 37 `[BENCH-RES]` lines, and the robot extension's
-    # `crates/domains/robot/bench` the 4 of the brain protocol. The gate looked at none of them. A subsystem
+    # `crates/domains/robot/bench` the 4 of the companion protocol. The gate looked at none of them. A subsystem
     # whose benchmark stopped emitting -- because it panicked, was cfg'd out,
     # or was quietly deleted -- would take its measurement with it and the gate
     # would stay green.
@@ -24046,11 +24046,11 @@ PYEOF
     # each with the code it measured: ipc.signal_send/_pending (ipc::signal and
     # its retired syscalls deleted), ipc.channel_send_recv/_full_send/
     # _create_destroy (the v1 message channel deleted), ipc.lease_active_count
-    # (the IPC lease table deleted), auth.envelope_wrap/_unwrap (the brain
+    # (the IPC lease table deleted), auth.envelope_wrap/_unwrap (the companion
     # link's HMAC envelope deleted: Noise only).
     #
     # Not covered: the throughput and latency scenarios end to end, which need
-    # a live brain server on the host (their console harness had no
+    # a live companion server on the host (their console harness had no
     # caller and was deleted).
     fresh_disk $AZOS_OUT/build/disk-uhello.img
     par_row qemu_run "bench: all 41 measurements" "robot run_all done emitted=41 " 180 \

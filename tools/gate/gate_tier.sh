@@ -153,12 +153,12 @@ if [ "$lints" = 1 ]; then
     fi
 fi
 
-# The OS does not depend on the brain repo (tools/lint/brain_dep_lint.py): its canary first, then the tree.
-# `make check0-nobrain` runs this whole tier with the repo hidden.
+# The OS does not depend on the companion repo (tools/lint/companion_dep_lint.py): its canary first, then the tree.
+# `make check0-nocompanion` runs this whole tier with the repo hidden.
 if [ "$lints" = 1 ]; then
-    printf "  %-26s" "brain dependency lint..."
-    if out="$(python3 tools/lint/brain_dep_lint.py --self-test 2>&1)" \
-       && out="$(python3 tools/lint/brain_dep_lint.py 2>&1)"; then
+    printf "  %-26s" "companion dependency lint..."
+    if out="$(python3 tools/lint/companion_dep_lint.py --self-test 2>&1)" \
+       && out="$(python3 tools/lint/companion_dep_lint.py 2>&1)"; then
         echo ok
     else
         echo FAIL; fail=1
@@ -281,7 +281,7 @@ fi
 # (tools/build/lx_kbuild/zbc_crc_constants.py), and the absolute-claim scanner (tools/lint/claims_check.sh,
 # a review aid: its self-test only, the scan of the tree is by hand).
 [ "$lints" = 1 ] && { printf "  %-26s" "config index..."; if out="$(python3 tools/build/gen_config_index.py --self-test 2>&1 && python3 tools/build/gen_config_index.py --check 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'; fi; }
-# The brain's constant mirror (tools/build/export_kernel_consts.py): every symbol it exports is still declared.
+# The companion's constant mirror (tools/build/export_kernel_consts.py): every symbol it exports is still declared.
 [ "$lints" = 1 ] && { printf "  %-26s" "kernel consts export..."; if out="$(python3 tools/build/export_kernel_consts.py --self-test 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'; fi; }
 [ "$lints" = 1 ] && { printf "  %-26s" "zbc crc constants..."; if out="$(python3 tools/build/lx_kbuild/zbc_crc_constants.py --self-test 2>&1 && python3 tools/build/lx_kbuild/zbc_crc_constants.py 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | grep -v '^ZBC_' | sed -n 1,5p | sed 's/^/      /'; fi; }
 [ "$lints" = 1 ] && { printf "  %-26s" "claims scanner..."; if out="$(bash tools/lint/claims_check.sh --self-test 2>&1)"; then echo ok; else echo FAIL; fail=1; printf '%s\n' "$out" | sed -n 1,5p | sed 's/^/      /'; fi; }

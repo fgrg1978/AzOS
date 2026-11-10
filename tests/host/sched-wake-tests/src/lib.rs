@@ -2312,7 +2312,7 @@ mod elf_bounds_tests {
 
     #[test]
     fn a_segment_starting_exactly_at_the_previous_end_is_allowed() {
-        // Not hypothetical: brain_client, gpio_drv, ipctest, reflex and
+        // Not hypothetical: companion_client, gpio_drv, ipctest, reflex and
         // uhello all have .rodata starting at exactly .text's end byte.
         // A `>` here instead of `>=` would reject 5 of the 12 real images.
         let c = check_pt_load(0x1c72, 0x1_0c72, 0x1b3, 0x1b3, 0x10_0000, 0x1_0c72, LIM);
@@ -2396,7 +2396,7 @@ mod elf_bounds_tests {
     /// Grouped per image so the ordering check sees the real sequence.
     const REAL_IMAGES: &[(&str, &[(usize, usize, usize, usize)])] = &[
         ("abitest",      &[(0x1000, 0x10000, 0xb44, 0xb44), (0x1b48, 0x10b48, 0x849, 0x849), (0x3000, 0x12000, 0x0, 0x8)]),
-        ("brain_client", &[(0x1000, 0x10000, 0xc72, 0xc72), (0x1c72, 0x10c72, 0x1b3, 0x1b3)]),
+        ("companion_client", &[(0x1000, 0x10000, 0xc72, 0xc72), (0x1c72, 0x10c72, 0x1b3, 0x1b3)]),
         ("captest",      &[(0x1000, 0x10000, 0x3dc, 0x3dc), (0x13e0, 0x103e0, 0x1a5, 0x1a5), (0x2000, 0x11000, 0x0, 0x4)]),
         ("gpio_drv",     &[(0x1000, 0x10000, 0x15a, 0x15a), (0x115a, 0x1015a, 0x46, 0x46)]),
         ("hello",        &[(0x1000, 0x10000, 0x35, 0x35)]),

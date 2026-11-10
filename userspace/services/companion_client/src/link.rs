@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The brain link, client side (Noise since owner
+//! The companion link, client side (Noise since owner
 //! decision D9).
 //!
 //! Every connection runs the Noise handshake and transport of
 //! `crates/core/crypto/src/secure_channel.rs`:
 //!
 //!   * this client is the TCP client and the Noise INITIATOR: it speaks
-//!     first. `Noise_IK` toward the brain's static key pinned in the signed
-//!     topology (`[peer.brain]`, read through the `linkkey` endpoint),
+//!     first. `Noise_IK` toward the companion's static key pinned in the signed
+//!     topology (`[peer.companion]`, read through the `linkkey` endpoint),
 //!     `Noise_XX` with keys derived from the link key otherwise;
 //!   * the ephemeral X25519 key is fresh bytes from the kernel entropy pool
 //!     (the kernel-hosted `entropy` endpoint), drawn per connection; with no
@@ -18,10 +18,10 @@
 //!     session fails the AEAD of the next one, and inside a session the
 //!     transport's message counter refuses a replay: there is no second
 //!     replay floor and no second MAC;
-//!   * a message is one brain-protocol frame, in both directions;
+//!   * a message is one companion-protocol frame, in both directions;
 //!   * rekey: the module's per-generation limits, plus a wall-clock trigger
 //!     (`REKEY_INTERVAL_SECS`, or shorter from CONFIG.INI — see
-//!     `rekey_interval_from_config` in `main.rs`); a rekey from the brain is
+//!     `rekey_interval_from_config` in `main.rs`); a rekey from the companion is
 //!     followed on receive.
 //!
 //! There is no plaintext or MAC-only fallback and no runtime switch: a file on
@@ -30,7 +30,7 @@
 use azos_crypto::secure_channel as sc;
 use azos_libsys as sys;
 
-/// Largest message this client accepts from the brain.
+/// Largest message this client accepts from the companion.
 /// Commands are a few dozen bytes; a larger frame is a violation here,
 /// refused before any of it is read.
 const RX_MSG_MAX: usize = 2048;
@@ -49,7 +49,7 @@ const HS_POLLS: u32 = 500;
 const HS_POLL_MS: u64 = 10;
 
 /// Session ids seen by this process; a repeated one is refused, as the
-/// kernel's `BRAIN_SESSION_ID_CACHE` does.
+/// kernel's `COMPANION_SESSION_ID_CACHE` does.
 const SESSION_IDS: usize = 8;
 
 /// Why a session ended; printed by the caller.
@@ -163,8 +163,8 @@ fn say_num(prefix: &[u8], v: i64) {
 /// Run the initiator handshake on a freshly connected socket. On `true` the
 /// session is established and [`seal_frame`]/[`feed`] may be used.
 ///
-/// `entropy_cap` is the entropy endpoint's handle; `psk` the brain-link key;
-/// `pinned` the brain's static key from the signed topology (`None`:
+/// `entropy_cap` is the entropy endpoint's handle; `psk` the companion-link key;
+/// `pinned` the companion's static key from the signed topology (`None`:
 /// `Noise_XX`). Every failure returns `false` and the caller closes the
 /// socket: there is no REJECT frame, the connection just ends.
 pub fn handshake(sock: u32, entropy_cap: u32, psk: &[u8; sc::PSK_BYTES],
@@ -175,7 +175,7 @@ pub fn handshake(sock: u32, entropy_cap: u32, psk: &[u8; sc::PSK_BYTES],
 
     let mut eph = [0u8; 32];
     if let Err(outcome) = sys::dev::entropy_read(entropy_cap, &mut eph) {
-        say_num(b"[brain_client] link: entropy read refused outcome=", outcome as i64);
+        say_num(b"[companion_client] link: entropy read refused outcome=", outcome as i64);
         return false;
     }
     let ini = sc::Initiator::new(psk, pinned);
@@ -183,7 +183,7 @@ pub fn handshake(sock: u32, entropy_cap: u32, psk: &[u8; sc::PSK_BYTES],
         Ok(i) => i,
         Err(_) => {
             wipe(&mut eph);
-            say(b"[brain_client] link: cannot start the handshake");
+            say(b"[companion_client] link: cannot start the handshake");
             return false;
         }
     };
@@ -196,30 +196,34 @@ pub fn handshake(sock: u32, entropy_cap: u32, psk: &[u8; sc::PSK_BYTES],
         let n = match step {
             Ok(n) => n,
             Err(_) => {
-                say(b"[brain_client] link: handshake refused");
+                let mut line = crate::Line::new();
+                line.push(b"[companion_client] link: handshake refused (link v");
+                line.push_i64(sc::LINK_VERSION as i64);
+                line.push(b" expected)\n");
+                sys::print(line.bytes());
                 break;
             }
         };
         if n > 0 && !send_all(sock, &out[..n]) {
-            say(b"[brain_client] link: handshake message not sent");
+            say(b"[companion_client] link: handshake message not sent");
             break;
         }
         if ini.is_done() {
             ok = true;
             break;
         }
-        // The brain's frame: the length prefix, then the body.
+        // The companion's frame: the length prefix, then the body.
         let total = if recv_exact(sock, &mut inb[..sc::FRAME_HEAD]) {
             sc::frame_len(&inb[..sc::FRAME_HEAD], sc::HANDSHAKE_MSG_MAX).ok()
         } else {
             None
         };
         let Some(total) = total else {
-            say(b"[brain_client] link: no answer from the brain");
+            say(b"[companion_client] link: no answer from the companion");
             break;
         };
         if !recv_exact(sock, &mut inb[sc::FRAME_HEAD..total]) {
-            say(b"[brain_client] link: no answer from the brain");
+            say(b"[companion_client] link: no answer from the companion");
             break;
         }
         step = ini.step(Some(&inb[..total]), &eph, &mut out);
@@ -233,7 +237,7 @@ pub fn handshake(sock: u32, entropy_cap: u32, psk: &[u8; sc::PSK_BYTES],
     let sid = link.session_id();
     // SAFETY: single-threaded; see `session()`.
     if !unsafe { (*core::ptr::addr_of_mut!(SESSION_ID_CACHE)).insert_if_new(&sid) } {
-        say(b"[brain_client] link: session id repeated - refused");
+        say(b"[companion_client] link: session id repeated - refused");
         return false;
     }
     s.link = Some(link);
@@ -242,7 +246,7 @@ pub fn handshake(sock: u32, entropy_cap: u32, psk: &[u8; sc::PSK_BYTES],
     s.rekey_at_ns = if now == 0 { 0 } else { now.saturating_add(rekey_interval_ns) };
 
     let mut line = crate::Line::new();
-    line.push(b"[brain_client] link: Noise_");
+    line.push(b"[companion_client] link: Noise_");
     line.push(&[pattern]);
     line.push(b" session established sid=");
     for b in &sid[..4] {
@@ -267,7 +271,7 @@ fn seal(frame: &[u8]) -> Option<usize> {
     let l = link.as_mut()?;
 
     // Wall-clock rekey: the module has no clock; this is the caller's half, as
-    // `BRAIN_LINK_REKEY_SECS` is on the kernel's link.
+    // `COMPANION_LINK_REKEY_SECS` is on the kernel's link.
     if *rekey_at_ns != 0 {
         let now = sys::vdso_now_ns();
         if now >= *rekey_at_ns {
@@ -279,7 +283,7 @@ fn seal(frame: &[u8]) -> Option<usize> {
     let gen = l.tx_generation();
     let w = l.seal_message(frame, wire).ok()?;
     if l.tx_generation() != gen {
-        say_num(b"[brain_client] link: REKEY sent, tx generation ", l.tx_generation() as i64);
+        say_num(b"[companion_client] link: REKEY sent, tx generation ", l.tx_generation() as i64);
     }
     Some(w)
 }
@@ -347,7 +351,7 @@ pub fn pump(sock: u32, now_ms: u64) -> Pump {
 }
 
 /// Feed received wire bytes: open every whole frame in place and hand each
-/// message (one brain-protocol frame) to `on_frame`. `Err` is a terminal
+/// message (one companion-protocol frame) to `on_frame`. `Err` is a terminal
 /// transport event: the caller ends the session ([`end`]) and closes.
 pub fn feed(input: &[u8], mut on_frame: impl FnMut(&[u8])) -> Result<(), LinkEnd> {
     let s = session();
@@ -366,7 +370,7 @@ pub fn feed(input: &[u8], mut on_frame: impl FnMut(&[u8])) -> Result<(), LinkEnd
         match l.open_frame(&mut carry[off..*carry_len], RX_BODY_MAX) {
             Ok(sc::Opened { kind: sc::RecordKind::Rekey, consumed }) => {
                 off += consumed;
-                say_num(b"[brain_client] link: peer REKEY, rx generation ", l.rx_generation() as i64);
+                say_num(b"[companion_client] link: peer REKEY, rx generation ", l.rx_generation() as i64);
             }
             Ok(sc::Opened { kind: sc::RecordKind::Data { len }, consumed }) => {
                 let msg = &carry[off + sc::FRAME_HEAD..off + sc::FRAME_HEAD + len];

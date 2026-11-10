@@ -169,8 +169,8 @@ pub(crate) mod tests {
         let _g = fresh();
         // Boundary that bit us for real: /fat/GPIODRV.ELF and
         // /fat/SYSTEST.ELF are exactly 16 bytes and fit under the old
-        // MAX_VAL by a single byte, while /fat/BRAINCLI.ELF (17) did not and
-        // was silently cut to /fat/BRAINCLI.EL. A value of exactly MAX_VAL
+        // MAX_VAL by a single byte, while a 17-byte autorun path did not and
+        // was silently cut to 16. A value of exactly MAX_VAL
         // must round-trip whole and must NOT be reported as truncated.
         let mut line = b"k=".to_vec();
         for _ in 0..MAX_VAL { line.push(b'V'); }

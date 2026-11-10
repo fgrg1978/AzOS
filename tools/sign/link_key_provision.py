@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-"""link_key_provision.py — write the brain-link key record on a disk image.
+"""link_key_provision.py — write the companion-link key record on a disk image.
 
-The kernel reads the brain-link key, which is also the board's device seed, from
+The kernel reads the companion-link key, which is also the board's device seed, from
 a reserved sector past the end of the FAT32 volume (`kernel/src/reserved_tail.rs`:
 the last TAIL_SECTORS = 8 sectors of the medium, or the AzOS records partition
 of a GPT medium, `tools/image/azos_records.py`; `LINK_KEY` = 0 is the sector this
@@ -12,7 +12,7 @@ tool touches), which the USB mass-storage export cannot address:
     tools/sign/link_key_provision.py $AZOS_OUT/build/disk.img KEYFILE
 
 KEYFILE holds the 32 raw key bytes. The peers that need the key itself
-(`tools/gate/link_peer.py`, `tools/gate/fake_brain.py`, `login_enroll --seed`) keep
+(`tools/gate/link_peer.py`, `tools/gate/fake_companion.py`, `login_enroll --seed`) keep
 reading the raw bytes from their own copy; only the sector carries the record.
 
 Record format (one sector; see `crates/core/crypto/src/secure_channel.rs`

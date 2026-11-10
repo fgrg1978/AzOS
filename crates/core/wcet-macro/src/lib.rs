@@ -151,7 +151,7 @@ pub fn wcet(attr: TokenStream, item: TokenStream) -> TokenStream {
     //
     // Instrumentation is gated `cfg(target_os = "none")` so the macro can
     // safely annotate functions that also get host-compiled (e.g.
-    // `brain_protocol::parse_packet`, pulled into `regression-tests` via
+    // `companion_protocol::parse_packet`, pulled into `regression-tests` via
     // `#[path = ...]` for property-based testing).  Host targets are macos
     // / linux; kernel targets are baremetal (`target_os = "none"`), so the
     // gate cleanly partitions the two cases.  On host the closure body

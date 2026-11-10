@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Brain Client — userspace ELF that bridges sensor data to the brain server.
+//! Companion Client — userspace ELF that bridges sensor data to the companion server.
 //!
 //! Runs as a user-mode process on the VF2. Reads sensors via syscalls,
-//! builds brain protocol packets, sends over TCP to the macOS brain server,
+//! builds companion protocol packets, sends over TCP to the macOS companion server,
 //! receives ActuatorCmd packets, and applies motor commands.
 //!
 //! Flow:
@@ -23,7 +23,7 @@
 //!    11. yield / sleep
 //!   }
 //!
-//! Every connection starts with the encrypted-link handshake (`link.rs`): the brain
+//! Every connection starts with the encrypted-link handshake (`link.rs`): the companion
 //! speaks first, this client answers as the responder, with a fresh
 //! ephemeral key from the kernel entropy pool. No handshake, no link.
 
@@ -33,14 +33,14 @@
 use azos_libsys as sys;
 use sys::dev::{BehaviorCall, MotorCall, MotorClient, MotorIdl, Regs, Sample, SensorIdl};
 
-// The brain link, client side: the same Noise session as the kernel's own link
+// The companion link, client side: the same Noise session as the kernel's own link
 // (Noise since D9). Every frame this client sends
 // or receives is a message of that session, so there is no second MAC.
 mod link;
-// The brain protocol's frame around a payload (pure, host-tested).
+// The companion protocol's frame around a payload (pure, host-tested).
 mod wire;
 use wire::{build_frame, crc8, put_u16_le, FRAME_OVERHEAD, MAGIC};
-// The camera on the brain link: pacing and framing (pure, host-tested).
+// The camera on the companion link: pacing and framing (pure, host-tested).
 mod camera;
 // The behaviour engine's choice of layer and speed (pure, host-tested).
 mod behave;
@@ -49,7 +49,7 @@ mod behave;
 mod ml;
 mod mlcall;
 
-// ── Protocol constants (must match brain_protocol.rs + protocol.py) ──────────
+// ── Protocol constants (must match companion_protocol.rs + protocol.py) ──────────
 const PKT_SENSOR: u8 = 0x01;
 const PKT_ACTUATOR: u8 = 0x80;
 const PKT_STATUS: u8 = 0x03;
@@ -86,7 +86,7 @@ const CONNECT_RETRY_MS: u64 = 2000;     // retry connection every 2s
 /// by `link::feed`, so this bounds a read, not a frame.
 const RECV_RAW_SIZE: usize = 512;
 // Wall-clock rekey interval: one hour, the kernel link's default.
-// CONFIG.INI may only SHORTEN it (`brain_client_rekey_secs`); the clamp is
+// CONFIG.INI may only SHORTEN it (`companion_client_rekey_secs`); the clamp is
 // `azos_crypto::secure_channel::rekey_interval_secs`, host-tested there.
 
 // Motor IDs
@@ -98,7 +98,7 @@ const MOTOR_RIGHT: u64 = 1;
 /// The two `motor` endpoint handles, looked up once at startup.
 ///
 /// Looked up once rather than per command: `cap_lookup` is a syscall, and the
-/// actuation path runs at the 20 Hz sensor rate with a brain round trip inside
+/// actuation path runs at the 20 Hz sensor rate with a companion round trip inside
 /// it. A handle does not go stale while its holder lives - the generation
 /// field exists so that a handle to a REVOKED slot is detected, and nothing
 /// revokes these.
@@ -106,7 +106,7 @@ const MOTOR_RIGHT: u64 = 1;
 /// The caps come from the topology's `autorun` task
 /// (`crates/core/topology/src/builder.rs:45-46`, `motor.0` / `motor.1`), minted
 /// into this task's table by the boot seed at `kernel/src/tasks/loader.rs`.
-/// brain_client is the autorun ELF of `$AZOS_OUT/build/disk-braincli.img`
+/// companion_client is the autorun ELF of `$AZOS_OUT/build/disk-compcli.img`
 /// (`Makefile:331`), so the seed runs for this process.
 static mut CAP_LEFT: u32 = 0;
 static mut CAP_RIGHT: u32 = 0;
@@ -151,7 +151,7 @@ fn motor_command(left: i32, right: i32) {
 
 // ── The kernel's authority ──────────────────────────────────────────────────
 
-/// The `authority` endpoint: the brain frames that ask for the kernel's
+/// The `authority` endpoint: the companion frames that ask for the kernel's
 /// authority (e-stop, degraded mode, the operator's release, payload and
 /// configuration effects) are handed there, and the kernel decides. 0: the
 /// topology granted none.
@@ -165,7 +165,7 @@ fn authority_init() {
     match sys::dev::lookup(sys::dev::key::AUTHORITY, 0) {
         // SAFETY: single-threaded; written once before the engine loop.
         Some(c) => unsafe { CAP_AUTHORITY = c },
-        None => sys::println(b"[brain_client] FAILED: no authority endpoint - the brain's authority frames are refused"),
+        None => sys::println(b"[companion_client] FAILED: no authority endpoint - the companion's authority frames are refused"),
     }
 }
 
@@ -185,7 +185,7 @@ fn authority_submit(kind: u8, payload: &[u8]) -> bool {
             if !unsafe { AUTHORITY_REFUSED_SAID } {
                 unsafe { AUTHORITY_REFUSED_SAID = true };
                 let mut line = Line::new();
-                line.push(b"[brain_client] authority frame refused, outcome ");
+                line.push(b"[companion_client] authority frame refused, outcome ");
                 line.push_i64(code as i64);
                 line.push(b"\n");
                 sys::print(line.bytes());
@@ -275,7 +275,7 @@ impl Readings {
         if ok && unsafe { !SENSORS_REPORTED } {
             unsafe { SENSORS_REPORTED = true };
             let mut line = Line::new();
-            line.push(b"[brain_client] ioring sensors asked=");
+            line.push(b"[companion_client] ioring sensors asked=");
             line.push_i64(asked);
             line.push(b" served=");
             line.push_i64(served);
@@ -356,7 +356,7 @@ fn motor_ring_init() {
     let cap = sys::ioring_create_typed(&mut addr);
     let mut line = Line::new();
     if cap <= 0 {
-        line.push(b"[brain_client] FAILED: io_ring create -> rc=");
+        line.push(b"[companion_client] FAILED: io_ring create -> rc=");
         line.push_i64(cap as i64);
     } else {
         match sys::ioring::Ring::open(cap as u32, addr) {
@@ -370,7 +370,7 @@ fn motor_ring_init() {
                 return;
             }
             Err(_) => {
-                line.push(b"[brain_client] FAILED: io_ring create wrote no page address, va=");
+                line.push(b"[companion_client] FAILED: io_ring create wrote no page address, va=");
                 line.push_i64(u64::from_le_bytes(addr) as i64);
             }
         }
@@ -402,7 +402,7 @@ fn ring_drain(ring: &sys::ioring::Ring, mut each: impl FnMut(sys::ioring::Cqe)) 
     let rc = sys::ioring_submit_typed(ring.cap);
     if rc < 0 {
         let mut line = Line::new();
-        line.push(b"[brain_client] ioring submit rc=");
+        line.push(b"[companion_client] ioring submit rc=");
         line.push_i64(rc as i64);
         line.push(b"\n");
         sys::print(line.bytes());
@@ -414,9 +414,9 @@ fn ring_drain(ring: &sys::ioring::Ring, mut each: impl FnMut(sys::ioring::Cqe)) 
     true
 }
 
-/// Submit the brain's command as one `Motor::command` `OP_CALL` entry on the
+/// Submit the companion's command as one `Motor::command` `OP_CALL` entry on the
 /// left wheel's endpoint and print its completion, when it differs from the
-/// last one, as `[brain_client] ioring command status=<s> outcome=<o> flags=<f>`.
+/// last one, as `[companion_client] ioring command status=<s> outcome=<o> flags=<f>`.
 ///
 /// The kernel decides the entry the way it decides the typed call: this
 /// image's row must list the `motor` interface, the table must carry WRITE on
@@ -429,7 +429,7 @@ fn command_ring_submit(left: i32, right: i32) -> bool {
     let ep = unsafe { CAP_LEFT };
     let hdr = sys::dev::header(MotorIdl::ID, MotorIdl::LEVEL, MotorIdl::OP_COMMAND);
     if !ring.push_call(ep, motor_window(0), &[hdr, left as i64 as u64, right as i64 as u64], TAG_MOTOR) {
-        sys::print(b"[brain_client] FAILED: ioring command: push refused\n");
+        sys::print(b"[companion_client] FAILED: ioring command: push refused\n");
         return false;
     }
     ring_drain(&ring, |(tag, result, flags)| {
@@ -448,7 +448,7 @@ fn command_ring_submit(left: i32, right: i32) -> bool {
             return;
         }
         let mut line = Line::new();
-        line.push(b"[brain_client] ioring command status=");
+        line.push(b"[companion_client] ioring command status=");
         line.push_i64(result as i64);
         line.push(b" outcome=");
         line.push_i64(outcome);
@@ -479,7 +479,7 @@ fn recv_buf_init() {
     let mut line = Line::new();
     let shm = sys::shm_create_typed(1, sys::SHM_RW);
     if shm <= 0 {
-        line.push(b"[brain_client] FAILED: receive buffer create -> rc=");
+        line.push(b"[companion_client] FAILED: receive buffer create -> rc=");
         line.push_i64(shm as i64);
         line.push(b"\n");
         sys::print(line.bytes());
@@ -487,7 +487,7 @@ fn recv_buf_init() {
     }
     let va = sys::shm_map_typed(shm as u32);
     if va <= 0 {
-        line.push(b"[brain_client] FAILED: receive buffer map -> rc=");
+        line.push(b"[companion_client] FAILED: receive buffer map -> rc=");
         line.push_i64(va as i64);
         line.push(b"\n");
         sys::print(line.bytes());
@@ -503,7 +503,7 @@ fn recv_buf_init() {
             unsafe { RECV_VA = va as usize };
         }
         other => {
-            line.push(b"[brain_client] FAILED: receive buffer register -> ");
+            line.push(b"[companion_client] FAILED: receive buffer register -> ");
             match other {
                 Some((_, result, flags)) => {
                     line.push(b"result=");
@@ -519,7 +519,7 @@ fn recv_buf_init() {
     }
 }
 
-/// Poll the brain link without waiting: one `OP_NET_RECV` entry into the
+/// Poll the companion link without waiting: one `OP_NET_RECV` entry into the
 /// registered buffer. `Some(n)`: `n` bytes are in [`recv_bytes`], or `n <= 0`
 /// as `sys::recv_typed` answers (nothing queued, or a link that ended); `None`
 /// when there is no registered buffer and the caller polls with the typed call.
@@ -744,7 +744,7 @@ impl SensorData {
 
 // ── Packet building ─────────────────────────────────────────────────────────
 
-/// Build SensorPacket payload (64 bytes, matches brain_protocol.rs).
+/// Build SensorPacket payload (64 bytes, matches companion_protocol.rs).
 fn build_sensor_payload(buf: &mut [u8; SENSOR_PAYLOAD_SIZE], sensors: &SensorData) {
     let ts_ms = sys::uptime() as u64;
 
@@ -805,7 +805,7 @@ fn apply_actuator_cmd(payload: &[u8], now_ms: u64) -> Option<behave::Remote> {
     if flags & FLAG_EMERGENCY != 0 {
         // **An emergency, told to the kernel AS an emergency**: `estop`
         // latches, stops the drivetrain, disarms and records. An ordinary
-        // zero does not latch, and leaves no record of the brain's call.
+        // zero does not latch, and leaves no record of the companion's call.
         // SAFETY: written once by `motor_caps_init`; read by value.
         let cap_l = unsafe { CAP_LEFT };
         let _ = MotorClient::new(Regs(cap_l)).estop();
@@ -825,14 +825,14 @@ fn apply_actuator_cmd(payload: &[u8], now_ms: u64) -> Option<behave::Remote> {
 
 // ── Main loop ───────────────────────────────────────────────────────────────
 
-/// Open the brain link as a `Cap<Socket>` and return the raw handle, or -1.
+/// Open the companion link as a `Cap<Socket>` and return the raw handle, or -1.
 ///
 /// A handle rather than a socket index: every call below takes it, the kernel
 /// refuses an untyped shutdown of the socket behind it, and closing the same
 /// handle twice is refused as stale instead of closing whatever socket took
 /// the number next. This client reconnects forever, which is exactly the
 /// program that used to leak a socket per reconnect.
-fn connect_to_brain(ip: [u8; 4], port: u16) -> isize {
+fn connect_to_companion(ip: [u8; 4], port: u16) -> isize {
     let cap = sys::socket_typed(AF_INET, SOCK_STREAM, 0);
     if cap < 0 {
         return -1;
@@ -850,7 +850,7 @@ fn connect_to_brain(ip: [u8; 4], port: u16) -> isize {
     cap
 }
 
-/// One exchange with the brain: the sensor frame out, every frame in. A drive
+/// One exchange with the companion: the sensor frame out, every frame in. A drive
 /// command updates `remote`; a frame asking for authority goes to the kernel;
 /// the predictive channel updates `predict`. `false` when the session ended.
 fn exchange(sock: u32, sensors: &SensorData, remote: &mut Option<behave::Remote>,
@@ -863,7 +863,7 @@ fn exchange(sock: u32, sensors: &SensorData, remote: &mut Option<behave::Remote>
     // cycle's sensor frame is then dropped and counted, not queued behind it.
     // What the engine reads below is never held back by a send.
     if link::queue_frame(&frame[..frame_len], now_ms).is_err() || link::pump(sock, now_ms) == link::Pump::Failed {
-        sys::print(b"[brain_client] Send failed or stalled, disconnecting\n");
+        sys::print(b"[companion_client] Send failed or stalled, disconnecting\n");
         return false;
     }
     // Frames are opened in `link::feed` BEFORE this client's own
@@ -877,7 +877,7 @@ fn exchange(sock: u32, sensors: &SensorData, remote: &mut Option<behave::Remote>
         }
     };
     if n < 0 {
-        sys::print(b"[brain_client] Recv error, disconnecting\n");
+        sys::print(b"[companion_client] Recv error, disconnecting\n");
         return false;
     }
     if n == 0 {
@@ -894,7 +894,7 @@ fn exchange(sock: u32, sensors: &SensorData, remote: &mut Option<behave::Remote>
             }
             PKT_PREDICT => *predict = behave::Predict::decode(body, now_ms),
             PKT_ESTOP => {
-                // The brain's standing command and prediction do not survive
+                // The companion's standing command and prediction do not survive
                 // its e-stop.
                 *remote = Some(behave::Remote::stop(now_ms));
                 *predict = None;
@@ -911,7 +911,7 @@ fn exchange(sock: u32, sensors: &SensorData, remote: &mut Option<behave::Remote>
     });
     if let Err(e) = fed {
         let mut line = Line::new();
-        line.push(b"[brain_client] link: transport ");
+        line.push(b"[companion_client] link: transport ");
         line.push(link::end_name(e));
         line.push(b" - closing\n");
         sys::print(line.bytes());
@@ -920,17 +920,17 @@ fn exchange(sock: u32, sensors: &SensorData, remote: &mut Option<behave::Remote>
     true
 }
 
-/// Dial the brain, run the encrypted handshake and send the status frame.
+/// Dial the companion, run the encrypted handshake and send the status frame.
 fn dial(ip: [u8; 4], port: u16, rekey_secs: u64, now_ms: u64) -> Option<u32> {
-    sys::print(b"[brain_client] Connecting to brain server...\n");
-    let sock = connect_to_brain(ip, port);
+    sys::print(b"[companion_client] Connecting to companion server...\n");
+    let sock = connect_to_companion(ip, port);
     if sock < 0 {
-        sys::print(b"[brain_client] Connection failed, retrying...\n");
+        sys::print(b"[companion_client] Connection failed, retrying...\n");
         return None;
     }
-    sys::println(b"[brain_client] Connected!");
+    sys::println(b"[companion_client] Connected!");
     // SAFETY: written once before the engine loop; read by value.
-    let (key, pinned) = unsafe { (LINK_KEY, BRAIN_PK) };
+    let (key, pinned) = unsafe { (LINK_KEY, COMPANION_PK) };
     let Some(key) = key else { sys::exit(1) };
     if !link::handshake(sock as u32, unsafe { ENTROPY_CAP }, &key, pinned.as_ref(),
                         rekey_secs.saturating_mul(1_000_000_000)) {
@@ -971,7 +971,7 @@ fn layers_now(last: behave::Layers) -> behave::Layers {
 /// The `behavior` endpoint, 0 for none.
 static mut CAP_BEHAVIOR: u32 = 0;
 
-// ── The camera on the brain link ────────────────────────────────────────────
+// ── The camera on the companion link ────────────────────────────────────────────
 
 /// The camera message in progress, sealed from here into the link's transmit
 /// buffer. In .bss, not on the 16 KiB user stack.
@@ -995,14 +995,14 @@ impl Camera {
         let ep = sys::dev::lookup(sys::dev::key::FRAME, 0)?;
         let bytes = sys::dev::frame_buffer_bytes(ep).ok()? as usize;
         let Ok(buf) = sys::dev::frame_buffer(bytes) else {
-            sys::println(b"[brain_client] camera: no buffer for a frame");
+            sys::println(b"[companion_client] camera: no buffer for a frame");
             return None;
         };
-        sys::println(b"[brain_client] camera: reading frames while a session is up");
+        sys::println(b"[companion_client] camera: reading frames while a session is up");
         Some(Camera {
             ep,
             buf,
-            pacer: camera::Pacer::new(azos_limits::BRAIN_CAMERA_PERIOD_MS as u64),
+            pacer: camera::Pacer::new(azos_limits::COMPANION_CAMERA_PERIOD_MS as u64),
             first_said: false,
             skipped_said: false,
             refused_said: false,
@@ -1015,7 +1015,7 @@ impl Camera {
     /// ends the session.
     fn step(&mut self, sock: u32, now_ms: u64) -> bool {
         if link::pump(sock, now_ms) == link::Pump::Failed {
-            sys::println(b"[brain_client] camera: the socket took nothing, ending the session");
+            sys::println(b"[companion_client] camera: the socket took nothing, ending the session");
             return false;
         }
         if link::tx_pending() || !self.pacer.due(now_ms) {
@@ -1026,7 +1026,7 @@ impl Camera {
             Err(sys::dev::outcome::NOT_READY) => {
                 self.waited += 1;
                 if self.waited == 40 {
-                    sys::println(b"[brain_client] camera: no frame after 40 cycles");
+                    sys::println(b"[companion_client] camera: no frame after 40 cycles");
                 }
                 return true;
             }
@@ -1034,7 +1034,7 @@ impl Camera {
                 if !self.refused_said {
                     self.refused_said = true;
                     let mut line = Line::new();
-                    line.push(b"[brain_client] camera: frame refused, outcome ");
+                    line.push(b"[companion_client] camera: frame refused, outcome ");
                     line.push_i64(code as i64);
                     line.push(b"\n");
                     sys::print(line.bytes());
@@ -1050,7 +1050,7 @@ impl Camera {
         let Some(n) = n else {
             if !self.skipped_said {
                 self.skipped_said = true;
-                sys::println(b"[brain_client] camera: a frame is not a JPEG that fits one message, skipped");
+                sys::println(b"[companion_client] camera: a frame is not a JPEG that fits one message, skipped");
             }
             return true;
         };
@@ -1060,7 +1060,7 @@ impl Camera {
         self.pacer.sent(now_ms);
         if !self.first_said {
             self.first_said = true;
-            sys::println(b"[brain_client] camera: first frame sent on the brain link");
+            sys::println(b"[companion_client] camera: first frame sent on the companion link");
         }
         link::pump(sock, now_ms) != link::Pump::Failed
     }
@@ -1079,12 +1079,12 @@ fn report_ml(o: Option<ml::MlOutcome>) {
     let mut line = Line::new();
     match o {
         ml::MlOutcome::Verdict(c) => {
-            line.push(b"[brain_client] ML: verdict, class ");
+            line.push(b"[companion_client] ML: verdict, class ");
             line.push_i64(c as i64);
         }
-        ml::MlOutcome::Late => line.push(b"[brain_client] ML: no verdict in time (late or refused): L1 holds stop"),
-        ml::MlOutcome::Unavailable => line.push(b"[brain_client] ML: no verdict (service or model unavailable): L1 holds stop"),
-        ml::MlOutcome::Malformed => line.push(b"[brain_client] ML: no verdict (reply is not a class): L1 holds stop"),
+        ml::MlOutcome::Late => line.push(b"[companion_client] ML: no verdict in time (late or refused): L1 holds stop"),
+        ml::MlOutcome::Unavailable => line.push(b"[companion_client] ML: no verdict (service or model unavailable): L1 holds stop"),
+        ml::MlOutcome::Malformed => line.push(b"[companion_client] ML: no verdict (reply is not a class): L1 holds stop"),
     }
     line.push(b"\n");
     sys::print(line.bytes());
@@ -1098,13 +1098,13 @@ fn layer_name(w: behave::Winner) -> &'static [u8] {
     }
 }
 
-/// The engine: every period read the sensors, exchange with the brain while
+/// The engine: every period read the sensors, exchange with the companion while
 /// a session is up (dialling again every `CONNECT_RETRY_MS` while none is and
-/// the link has its keys, `brain`),
+/// the link has its keys, `companion`),
 /// choose a layer and publish its command to the drivetrain's effect loop.
-/// The brain's command goes through the io_ring when there is one. A
+/// The companion's command goes through the io_ring when there is one. A
 /// change of winner prints `[behave] <layer> drives (l,r)`.
-fn engine(brain: Option<([u8; 4], u16)>, rekey_secs: u64) -> ! {
+fn engine(companion: Option<([u8; 4], u16)>, rekey_secs: u64) -> ! {
     let mut sensors = SensorData::new();
     let mut recv_raw = [0u8; RECV_RAW_SIZE];
     let mut sock: Option<u32> = None;
@@ -1112,8 +1112,8 @@ fn engine(brain: Option<([u8; 4], u16)>, rekey_secs: u64) -> ! {
     let mut predict: Option<behave::Predict> = None;
     let ml_link = mlcall::start();
     match ml_link {
-        mlcall::Link::Off => sys::println(b"[brain_client] ML: no inference endpoint granted, L1 runs on the rangefinders"),
-        mlcall::Link::Down => sys::println(b"[brain_client] ML: FAILED to set up the inference client, L1 holds stop"),
+        mlcall::Link::Off => sys::println(b"[companion_client] ML: no inference endpoint granted, L1 runs on the rangefinders"),
+        mlcall::Link::Down => sys::println(b"[companion_client] ML: FAILED to set up the inference client, L1 holds stop"),
         mlcall::Link::Up => {}
     }
     let mut camera = Camera::open();
@@ -1129,7 +1129,7 @@ fn engine(brain: Option<([u8; 4], u16)>, rekey_secs: u64) -> ! {
             next_layers = now + LAYERS_POLL_MS;
         }
         sensors.read_all();
-        if let (None, Some((ip, port)), true) = (sock, brain, now >= next_dial) {
+        if let (None, Some((ip, port)), true) = (sock, companion, now >= next_dial) {
             sock = dial(ip, port, rekey_secs, now);
             next_dial = now + CONNECT_RETRY_MS;
         }
@@ -1141,7 +1141,7 @@ fn engine(brain: Option<([u8; 4], u16)>, rekey_secs: u64) -> ! {
             if !up {
                 if link::tx_dropped() > 0 {
                     let mut line = Line::new();
-                    line.push(b"[brain_client] link busy: frames dropped ");
+                    line.push(b"[companion_client] link busy: frames dropped ");
                     line.push_i64(link::tx_dropped() as i64);
                     line.push(b"\n");
                     sys::print(line.bytes());
@@ -1155,7 +1155,7 @@ fn engine(brain: Option<([u8; 4], u16)>, rekey_secs: u64) -> ! {
                 remote = None;
                 predict = None;
                 next_dial = now + CONNECT_RETRY_MS;
-                sys::print(b"[brain_client] Disconnected, reconnecting...\n");
+                sys::print(b"[companion_client] Disconnected, reconnecting...\n");
             }
         }
         let (front_mm, right_mm) = (
@@ -1209,7 +1209,7 @@ fn engine(brain: Option<([u8; 4], u16)>, rekey_secs: u64) -> ! {
 /// Parse `behavior_server_ip` / `behavior_server_port` out of
 /// `/fat/CONFIG.INI`. Returns `None` if the file cannot be read or the keys
 /// are absent, so the caller can keep its compiled-in default.
-/// Format `[brain_client] Brain server A.B.C.D:PORT (CONFIG.INI|default)\n`
+/// Format `[companion_client] Companion server A.B.C.D:PORT (CONFIG.INI|default)\n`
 /// into `out`, returning the byte count. Built as one buffer so it can go out
 /// in a single `write()` and cannot be interleaved mid-line.
 fn fmt_addr_line(out: &mut [u8; 96], ip: [u8; 4], port: u16, from_cfg: bool) -> usize {
@@ -1217,7 +1217,7 @@ fn fmt_addr_line(out: &mut [u8; 96], ip: [u8; 4], port: u16, from_cfg: bool) -> 
     let push = |b: u8, n: &mut usize, out: &mut [u8; 96]| {
         if *n < out.len() { out[*n] = b; *n += 1; }
     };
-    for &b in b"[brain_client] Brain server " { push(b, &mut n, out); }
+    for &b in b"[companion_client] Companion server " { push(b, &mut n, out); }
     for (i, o) in ip.iter().enumerate() {
         if i > 0 { push(b'.', &mut n, out); }
         let mut v = *o as u32;
@@ -1275,13 +1275,13 @@ fn entropy_init() -> Result<(), u32> {
 /// call site.
 static mut LINK_KEY: Option<[u8; 32]> = None;
 
-/// The brain's pinned static Noise key from the signed topology's
-/// `[peer.brain]` row, loaded with the link key. `None`: nothing pinned, the
+/// The companion's pinned static Noise key from the signed topology's
+/// `[peer.companion]` row, loaded with the link key. `None`: nothing pinned, the
 /// link is `Noise_XX`.
-static mut BRAIN_PK: Option<[u8; 32]> = None;
+static mut COMPANION_PK: Option<[u8; 32]> = None;
 
-/// Load the 32 raw bytes of the brain-link PSK, the SAME reserved sector the
-/// kernel's own link reads (`kernel/src/main.rs`), and the brain's pinned
+/// Load the 32 raw bytes of the companion-link PSK, the SAME reserved sector the
+/// kernel's own link reads (`kernel/src/main.rs`), and the companion's pinned
 /// static key from the same endpoint.
 ///
 /// this used to open `/fat/LINK.KEY` directly — the
@@ -1304,17 +1304,17 @@ fn link_key_init() -> bool {
     if sys::dev::link_key_read(ep, &mut buf).is_err() { return false; }
     if buf.iter().all(|&b| b == 0) { return false; }
     // A failed call is not "nothing pinned": it would downgrade `IK` to `XX`.
-    let Ok(pinned) = sys::dev::brain_pk_read(ep) else { return false };
+    let Ok(pinned) = sys::dev::companion_pk_read(ep) else { return false };
     // SAFETY: single-threaded process; written once here, before
-    // `brain_client_loop` (the only reader) can run.
+    // `companion_client_loop` (the only reader) can run.
     unsafe {
         LINK_KEY = Some(buf);
-        BRAIN_PK = pinned;
+        COMPANION_PK = pinned;
     }
     true
 }
 
-fn read_brain_addr() -> Option<([u8; 4], u16)> {
+fn read_companion_addr() -> Option<([u8; 4], u16)> {
     // The trailing NUL is load-bearing: the kernel reads this path with
     // copy_cstr_from_user, i.e. it scans for a terminator rather than using
     // the slice length. Without one the kernel walks past the literal into
@@ -1326,7 +1326,7 @@ fn read_brain_addr() -> Option<([u8; 4], u16)> {
     //
     // `open_at` hands back a `Cap<File>` with READ (flags 0), and `read` and
     // `close` take that handle: NODE_OPENAT, NODE_READ and
-    // SYS_CAP_CLOSE, so this file and the brain-link socket cannot be
+    // SYS_CAP_CLOSE, so this file and the companion-link socket cannot be
     // mistaken for each other by number.
     let file = sys::open_root(sys::cstr!(b"/fat/CONFIG.INI"), 0);
     if file < 0 { return None; }
@@ -1344,7 +1344,7 @@ fn read_brain_addr() -> Option<([u8; 4], u16)> {
     Some((ip, port))
 }
 
-/// `brain_client_rekey_secs` from `/fat/CONFIG.INI`, through
+/// `companion_client_rekey_secs` from `/fat/CONFIG.INI`, through
 /// `azos_crypto::secure_channel::rekey_interval_secs`: the one-hour default when the
 /// key is absent or unreadable, never longer, never under its 5 s floor.
 fn rekey_interval_from_config() -> u64 {
@@ -1355,7 +1355,7 @@ fn rekey_interval_from_config() -> u64 {
     let n = sys::read(file as u64, &mut buf);
     sys::close(file as u64);
     if n <= 0 { return rekey_interval_secs(None); }
-    let requested = find_value(&buf[..n as usize], b"brain_client_rekey_secs")
+    let requested = find_value(&buf[..n as usize], b"companion_client_rekey_secs")
         .and_then(parse_u16)
         .map(|v| v as u64);
     rekey_interval_secs(requested)
@@ -1426,7 +1426,7 @@ fn parse_u16(v: &[u8]) -> Option<u16> {
 
 
 fn run() {
-    sys::println(b"[brain_client] Starting the behaviour engine and brain protocol client");
+    sys::println(b"[companion_client] Starting the behaviour engine and companion protocol client");
 
     // Before the network, before anything: every motor write below - the
     // emergency stop, the disconnect stop, the panic-handler stop - now goes
@@ -1436,7 +1436,7 @@ fn run() {
     // start is the only honest outcome.
     sensor_caps_init();
     if !motor_caps_init() {
-        sys::println(b"[brain_client] FATAL no motor capabilities - refusing to run");
+        sys::println(b"[companion_client] FATAL no motor capabilities - refusing to run");
         sys::exit(1);
     }
     // After the motor capabilities: every entry on the ring is checked
@@ -1444,17 +1444,17 @@ fn run() {
     motor_ring_init();
     recv_buf_init();
 
-    // refuse to start without the link key (or without the brain's
+    // refuse to start without the link key (or without the companion's
     // pinned key, when the topology pins one). The link is only ever a Noise
     // session keyed from it; without it there is nothing to run, and this is
     // the gate's autorun and the one ring-3 network client that drives the
     // motors, so "refuse to start" is the honest outcome here, same
     // reasoning as the motor capability check two lines up.
-    // No key, no entropy: no brain link (never in plaintext), but the engine
-    // still chooses for the layers that need no brain.
-    let mut brain = link_key_init();
-    if !brain {
-        sys::println(b"[brain_client] link key (or the brain key) unavailable - the brain link stays down");
+    // No key, no entropy: no companion link (never in plaintext), but the engine
+    // still chooses for the layers that need no companion.
+    let mut companion = link_key_init();
+    if !companion {
+        sys::println(b"[companion_client] link key (or the companion key) unavailable - the companion link stays down");
     }
 
     // Every connection runs the Noise handshake with an
@@ -1464,15 +1464,15 @@ fn run() {
     // rule the kernel's own handshake applies on an enforced build.
     if let Err(rc) = entropy_init() {
         let mut line = Line::new();
-        line.push(b"[brain_client] entropy refused outcome=");
+        line.push(b"[companion_client] entropy refused outcome=");
         line.push_i64(rc as i64);
-        line.push(b" - no fresh keys, the brain link stays down\n");
+        line.push(b" - no fresh keys, the companion link stays down\n");
         sys::print(line.bytes());
-        brain = false;
+        companion = false;
     }
     let rekey_secs = rekey_interval_from_config();
 
-    // Brain server address, read from /fat/CONFIG.INI.
+    // Companion server address, read from /fat/CONFIG.INI.
     //
     // This used to be a hardcoded 192.168.1.2 with a "TODO: read from
     // CONFIG.INI" beside it, which meant the client could never reach
@@ -1485,20 +1485,20 @@ fn run() {
     // Falls back to the old literal if the file is missing or unparseable,
     // so a deployment that relied on the compiled-in default still behaves
     // as before.
-    let from_cfg = read_brain_addr();
-    let (brain_ip, brain_port) = from_cfg.unwrap_or(([192, 168, 1, 2], 9000));
+    let from_cfg = read_companion_addr();
+    let (companion_ip, companion_port) = from_cfg.unwrap_or(([192, 168, 1, 2], 9000));
     // One write() for the whole line. The UART guard the kernel takes covers
     // a single write; a line assembled from several print calls can still be
     // sliced by another hart's kprintln between them, which is exactly how
-    // this line first came out as "Brain server [IPC] service_heartbeat = 0".
+    // this line first came out as "Companion server [IPC] service_heartbeat = 0".
     {
         let mut line = [0u8; 96];
-        let n = fmt_addr_line(&mut line, brain_ip, brain_port, from_cfg.is_some());
+        let n = fmt_addr_line(&mut line, companion_ip, companion_port, from_cfg.is_some());
         sys::print(&line[..n]);
     }
 
     authority_init();
-    engine(brain.then_some((brain_ip, brain_port)), rekey_secs);
+    engine(companion.then_some((companion_ip, companion_port)), rekey_secs);
 }
 
 
@@ -1510,7 +1510,7 @@ pub extern "C" fn _start() -> ! {
 
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
-    sys::print(b"[brain_client] PANIC!\n");
+    sys::print(b"[companion_client] PANIC!\n");
     motor_stop();
     sys::exit(1);
 }

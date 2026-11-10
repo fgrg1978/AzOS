@@ -790,7 +790,7 @@ config FRAME_POOL_SLOTS
       The frame class (crates/drivers/cam-ring, azos_syscall::frame_host): the
       capture task (or a USB camera's class driver) captures and encodes each
       camera frame once into one of these buffers; every ring-3 reader of the
-      Frame interface (the behaviour engine sends the frame on the brain
+      Frame interface (the behaviour engine sends the frame on the companion
       link) takes a reference on the same buffer. The JPEG is
       encoded once per frame, however many readers there are.
 
@@ -863,16 +863,16 @@ endchoice
 
 endmenu # Frame class
 
-config BRAIN_CAMERA_PERIOD_MS
+config COMPANION_CAMERA_PERIOD_MS
     int "Frame class: capture period while a reader is attached (ms)"
     default 250
     range 10 1000
     help
       The period of the camera frames the behaviour engine
-      (userspace/services/brain_client) sends the brain, and the capture
+      (userspace/services/companion_client) sends the companion, and the capture
       period of the frame pool while the engine is attached as a reader
       (with no reader attached nothing is captured). The engine takes the
-      newest frame at most once per period and sends it on the brain link;
+      newest frame at most once per period and sends it on the companion link;
       the frame it sends is no older than this. Cost: one capture + JPEG
       encode and one frame of link bandwidth per period. Raise it to save
       CPU and bandwidth. The same on every profile and ISA today. With no

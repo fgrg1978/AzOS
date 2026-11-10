@@ -421,7 +421,7 @@ fn send_flags(
     //
     // **there was no route beyond the local segment.** Every
     // destination was ARPed directly regardless of subnet, and an off-link
-    // host (`dns.rs`'s `8.8.8.8` default, a brain or OTA host on another
+    // host (`dns.rs`'s `8.8.8.8` default, a companion or OTA host on another
     // network) drew a broadcast ARP request nobody on the link could answer.
     // Then there was one gateway and no table. Now [`route`] picks the link
     // and the next hop, by longest prefix, across every interface; the IP

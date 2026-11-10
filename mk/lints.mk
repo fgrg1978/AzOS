@@ -85,10 +85,10 @@ ci:
 check0:
 	@env -u CARGO_TARGET_DIR bash tools/gate/gate_tier.sh n0
 
-# N0 with the brain repo hidden (AZOS_BRAIN_DIR names a path that does not exist),
-# after the checks that nothing else asks for it (tools/gate/nobrain_check.sh).
-check0-nobrain:
-	@bash tools/gate/nobrain_check.sh --n0
+# N0 with the companion repo hidden (AZOS_COMPANION_DIR names a path that does not exist),
+# after the checks that nothing else asks for it (tools/gate/nocompanion_check.sh).
+check0-nocompanion:
+	@bash tools/gate/nocompanion_check.sh --n0
 
 # The fastest check of a front: `cargo check` (no codegen, `validate` profile) of the
 # kernel cells the diff reaches (ISAs and presets from the paths,
@@ -226,7 +226,7 @@ advisories-update:
 check-fast:
 	@env -u CARGO_TARGET_DIR bash tools/gate/check_fast.sh
 
-# Full CI: azos builds, then the optional brain repo's tests and protocol sync (skipped when it is absent).
+# Full CI: azos builds, then the optional companion repo's tests and protocol sync (skipped when it is absent).
 ci-full:
 	@bash tools/gate/ci_full.sh
 

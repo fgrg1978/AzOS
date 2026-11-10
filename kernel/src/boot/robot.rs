@@ -208,7 +208,7 @@ pub(crate) fn bring_up_robot() {
     #[cfg(feature = "use-robot")]
     camera_capture_init();
 
-    // The behaviour engine is ring 3's (BRAINCLI.ELF): it chooses, the kernel
+    // The behaviour engine is ring 3's (COMPCLI.ELF): it chooses, the kernel
     // enforces (the robot enforcer, the effect loops, the gate).
     #[cfg(feature = "use-robot")]
     kprintln!("[BEHAVIOR] engine in ring 3; L0 (safety) enforced in the kernel");

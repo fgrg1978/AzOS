@@ -20,7 +20,7 @@ publish = false
 default = []
 # The Robot application domain (DOMAIN; config/axes/Kconfig.use
 # USE_ROBOT). Links the robot crates under crates/domains/robot/ — behavior and
-# the brain link, the motor/sensor/flight stack, the robot safety layer
+# the companion link, the motor/sensor/flight stack, the robot safety layer
 # (safety-core), the robot shell commands, the in-kernel benches — and the
 # kernel tasks and call sites that use them (`#[cfg(feature =
 # "use-robot")]` in kernel/src). Without it the image is a general-purpose
@@ -80,8 +80,8 @@ virtio-input-canary = ["virtio-input", "azos_drv_virtio/input-rx-canary"]
 # tools/build/kconfig_to_cargo.py drops it when the symbol is n, and Kconfig keeps
 # the symbol n off x86_64.
 ps2 = []
-# Board builds REQUIRE the authenticated brain link.
-# Without `link-provisioning-enforced` a keyless boot goes on with the brain
+# Board builds REQUIRE the authenticated companion link.
+# Without `link-provisioning-enforced` a keyless boot goes on with the companion
 # link down. Enforced: no link key means no boot. Provision the key per robot. The board
 # features do not turn it on: Kconfig LINK_PROVISIONING_ENFORCED does, on every
 # build but BUILD_TYPE_DEV, through
@@ -643,7 +643,7 @@ boot-slots = ["azos_ota/boot-slots", "azos_recovery/boot-slots"]
 # Kconfig PKG_BOOT_APPLY: the boot-time apply of staged packages
 # (`kernel/src/boot/pkg_boot.rs`, `pkg_apply.rs`).
 pkg-boot-apply = []
-# Brain-link provisioning hardening: refuse to boot without a link key,
+# Companion-link provisioning hardening: refuse to boot without a link key,
 # refuse a handshake without seeded entropy, hold the UART bridge down (a
 # keyless robot can never talk -- fail at provisioning time, loudly, not in the
 # field). The TCP link itself is always a Noise session, in every build.
@@ -846,12 +846,12 @@ sensor-ts-freeze = ["sensor-ts-smoke", "azos_imu/freeze-acq-stamp"]
 # Canary of the sensor class's stream row (ktest `sensors_virtual_imu_stream_loses_no_sample`):
 # a producer drops every 10th sample.
 sensor-drop-canary = ["azos_drv_base/sensor-drop-canary"]
-# Reads SAFETY_UNKNOWN_PKT back off the flight recorder after `fake_brain.py`
+# Reads SAFETY_UNKNOWN_PKT back off the flight recorder after `fake_companion.py`
 # sends a packet type this build does not act on. Its own feature, not folded
-# into the plain brain-lies scenario: that one exists to prove a SCHEDULING
+# into the plain companion-lies scenario: that one exists to prove a SCHEDULING
 # property (that `net-poll` gets to run on its hart), and adding a task to it
 # would measure a build nobody ships.
-brain-lies-smoke = ["qemu", "use-robot"]
+companion-lies-smoke = ["qemu", "use-robot"]
 # Reads captest's forged-handle refusal (`SAFETY_CAP_DENIED_TYPED`, GPIO) back
 # off the flight recorder. Its own feature for the same reason as the probe
 # above: a task added to the plain capabilities boot would verify a build

@@ -5,7 +5,7 @@
 #
 # Generates a Software Bill of Materials for the AzOS Rust workspace
 # (every workspace member plus every resolved third-party crate) and,
-# when the optional brain repo is found (tools/lib/brain_dir.sh) and BRAIN is
+# when the optional companion repo is found (tools/lib/companion_dir.sh) and COMPANION is
 # not 0, for its Python dependencies too. Without it the document is the OS's alone. Fully offline: `cargo metadata --offline --locked`
 # reads Cargo.lock without touching the network, and no crate is built.
 #
@@ -27,14 +27,14 @@ set -euo pipefail
 AZOS_OUT="${AZOS_OUT:-$(python3 "$(dirname "$0")/../lib/out_dir.py")}"; export AZOS_OUT
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-. "$REPO_ROOT/tools/lib/brain_dir.sh"
-brain_resolve "$REPO_ROOT" || exit 1
-if [ "$BRAIN_STATE" = required ]; then
-    echo "[sbom] ERROR: BRAIN=1 but no AzOSRobotBrain at ${BRAIN_PATH:-the sibling of the checkout}" >&2
+. "$REPO_ROOT/tools/lib/companion_dir.sh"
+companion_resolve "$REPO_ROOT" || exit 1
+if [ "$COMPANION_STATE" = required ]; then
+    echo "[sbom] ERROR: COMPANION=1 but no AzOSRobotBrain at ${COMPANION_PATH:-the sibling of the checkout}" >&2
     exit 1
 fi
-BRAIN_DIR=""
-[ "$BRAIN_STATE" = found ] && BRAIN_DIR="$BRAIN_PATH"
+COMPANION_DIR=""
+[ "$COMPANION_STATE" = found ] && COMPANION_DIR="$COMPANION_PATH"
 OUT_PATH="${1:-$AZOS_OUT/build/sbom.cdx.json}"
 
 # Resolve OUT_PATH relative to the repo root when it isn't absolute, so
@@ -63,14 +63,14 @@ if ! "$CARGO" metadata --offline --locked --format-version 1 > "$METADATA_JSON" 
 fi
 
 echo "[sbom] building CycloneDX document ..."
-python3 - "$METADATA_JSON" "$BRAIN_DIR" "$OUT_PATH" "$REPO_ROOT" <<'PYEOF'
+python3 - "$METADATA_JSON" "$COMPANION_DIR" "$OUT_PATH" "$REPO_ROOT" <<'PYEOF'
 import json
 import re
 import sys
 import uuid
 from datetime import datetime, timezone
 
-metadata_path, brain_dir, out_path, repo_root = sys.argv[1:5]
+metadata_path, companion_dir, out_path, repo_root = sys.argv[1:5]
 
 with open(metadata_path, "r", encoding="utf-8") as f:
     meta = json.load(f)
@@ -142,11 +142,11 @@ LOCKFILE_CANDIDATES = [
     "uv.lock",
 ]
 
-brain_lockfile = None
-for candidate in (LOCKFILE_CANDIDATES if brain_dir else []):
-    candidate_path = os.path.join(brain_dir, candidate)
+companion_lockfile = None
+for candidate in (LOCKFILE_CANDIDATES if companion_dir else []):
+    candidate_path = os.path.join(companion_dir, candidate)
     if os.path.isfile(candidate_path):
-        brain_lockfile = candidate_path
+        companion_lockfile = candidate_path
         break
 
 NAME_VERSION_RE = re.compile(
@@ -154,11 +154,11 @@ NAME_VERSION_RE = re.compile(
 )
 REQ_NAME_RE = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)")
 
-if brain_lockfile is not None:
+if companion_lockfile is not None:
     # Pinned lockfile present: parse "name==version" pairs (requirements.lock
     # style; poetry.lock/Pipfile.lock/uv.lock are TOML/JSON and would need a
     # format-specific parse not exercised in this repo state).
-    with open(brain_lockfile, "r", encoding="utf-8") as f:
+    with open(companion_lockfile, "r", encoding="utf-8") as f:
         for line in f:
             line = line.split("#", 1)[0].strip()
             if not line:
@@ -175,10 +175,10 @@ if brain_lockfile is not None:
                 purl,
                 None,
                 "library",
-                description=f"AzOSRobotBrain dependency, pinned in {os.path.basename(brain_lockfile)}",
+                description=f"AzOSRobotBrain dependency, pinned in {os.path.basename(companion_lockfile)}",
             )
-elif brain_dir and os.path.isfile(os.path.join(brain_dir, "requirements.txt")):
-    req_path = os.path.join(brain_dir, "requirements.txt")
+elif companion_dir and os.path.isfile(os.path.join(companion_dir, "requirements.txt")):
+    req_path = os.path.join(companion_dir, "requirements.txt")
     with open(req_path, "r", encoding="utf-8") as f:
         for line in f:
             line = line.split("#", 1)[0].strip()

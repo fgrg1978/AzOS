@@ -40,7 +40,7 @@ pub const MAX_TASK_PRIORITY: u32 = azos_sched::IDLE_PRIORITY - 1;
 /// `RT_PRIORITY_THRESHOLD`, 12. Below it the timer tick
 /// never preempts a task, so a ring-3 loop there would starve `net-poll` (12)
 /// and `sys-wdt` (11) on its hart — the starvation that already failed the
-/// `userspace: the brain lies` row once. A row asking for less is raised to
+/// `userspace: the companion lies` row once. A row asking for less is raised to
 /// this and the raise is recorded; kernel daemons can always preempt ring 3.
 pub const MIN_TASK_PRIORITY: u32 = azos_sched::RT_PRIORITY_THRESHOLD;
 

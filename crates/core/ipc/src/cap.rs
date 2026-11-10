@@ -67,7 +67,7 @@ use wcet_macro::wcet;
 // ──────────────────────────────────────────────────────────────────────────
 //
 // Generalises the binary armed/cleared flag into an ordered level
-// so the brain can select a graded restriction. Higher = more restrictive.
+// so the companion can select a graded restriction. Higher = more restrictive.
 //
 // The level taxonomy is defined here, in the crate that holds the level state
 // and enforces containment at `CapTable::get`. The level -> speed-ceiling
@@ -86,7 +86,7 @@ use wcet_macro::wcet;
 // Tightening is anyone's who holds the authority interface (a raise of the
 // level, arming containment); relaxing (a lower level, clearing degraded mode)
 // takes the operator's signed warrant, which the kernel verifies
-// (`azos_safety_core::frames`, `estop::verify_operator_relax`): a brain, or a
+// (`azos_safety_core::frames`, `estop::verify_operator_relax`): a companion, or a
 // compromised parser in front of it, can at worst over-contain (fail-safe). It
 // is a global (set at packet ingest, read at each chokepoint); coarse but
 // correct and conservative.

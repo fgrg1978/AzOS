@@ -72,9 +72,9 @@
 //!   and passes.
 //! * `Contained` (3): no reversible effect at all.
 //!
-//! So a value the LLM brain touched is held to the brain's slow envelope even
+//! So a value the LLM brain (the companion) touched is held to the companion's slow envelope even
 //! when a fully rated planner (an envelope `full` class) issues the effect: the
-//! planner's label carries the brain's kind. A refusal is
+//! planner's label carries the companion's kind. A refusal is
 //! `Rule::ProvenanceMeet` (numbers `[contributors, label, meet]`) with a
 //! receipt, and a stop is never refused. Without a probe, or with an empty
 //! label, nothing changes.

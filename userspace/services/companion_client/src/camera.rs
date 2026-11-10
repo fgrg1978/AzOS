@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The camera on the brain link: when a frame is due and how it is framed.
+//! The camera on the companion link: when a frame is due and how it is framed.
 //! Pure, so the host suite includes it by path.
 //!
 //! The engine reads the camera's newest frame through the `Frame` interface
 //! and sends it as a `PKT_CAMERA` message on the control session, at most once
-//! per `BRAIN_CAMERA_PERIOD_MS`, which is also the period the kernel captures
+//! per `COMPANION_CAMERA_PERIOD_MS`, which is also the period the kernel captures
 //! at while this reader is attached. A frame that does not fit one message is
 //! skipped, never split.
 //!

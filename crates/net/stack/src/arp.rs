@@ -106,7 +106,7 @@ impl ArpEntry {
 /// The entry is not thrown away at this age — a NIC does not usually change
 /// mid-flow — it is used (Linux's STALE state: still reachable-looking) and
 /// re-verified in the background at the same time, on the theory that most
-/// robots reuse the same brain/gateway for a session far longer than this.
+/// robots reuse the same companion/gateway for a session far longer than this.
 const ARP_REACHABLE_TICKS: u64 = 30 * azos_drv_sys::timebase::TIMER_FREQ;
 
 /// The ARP cache as a data structure, independent of the machine's live one.
@@ -120,7 +120,7 @@ const ARP_REACHABLE_TICKS: u64 = 30 * azos_drv_sys::timebase::TIMER_FREQ;
 /// `net-poll` was live on another hart.
 ///
 /// The visible consequence was three layers away and looked like a transport
-/// bug: ring 3's `brain_client` connected, its first data segment hit
+/// bug: ring 3's `companion_client` connected, its first data segment hit
 /// `ip::send` -> `arp::lookup` miss -> `-1`, and `tcp::send_data` reports that
 /// as a fatal error, so a healthy `Established` connection was torn down.
 ///

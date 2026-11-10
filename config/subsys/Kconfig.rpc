@@ -49,7 +49,7 @@ config RPC_PEER_NOISE_PK
       ignores this.
 
       The node's own key is derived from the board's link key (the kernel's
-      `linkkey` endpoint, provisioned like the brain-link PSK):
+      `linkkey` endpoint, provisioned like the companion-link PSK):
       `azos_rpc::chan::derive_static_key`. The public half of the other node
       is what this is set to.
       No effect when RPC_PEER_NODE is 0. No RAM cost.

@@ -179,32 +179,32 @@ fn node_key_needs_a_measured_domain_and_a_seed() {
     azos_sched::shim_unbind_domains();
 }
 
-// ── The brain's pinned key: `Server::brain_pk` ──────────────────────────────
+// ── The companion's pinned key: `Server::companion_pk` ──────────────────────────────
 
 /// A caller without `READ` is refused before the topology is consulted.
 ///
-/// **Canary.** Skip the `allows` check in `Server::brain_pk`: this reads
+/// **Canary.** Skip the `allows` check in `Server::companion_pk`: this reads
 /// `NO_RESOURCE` (or a key), not `DENIED`.
 #[test]
-fn brain_pk_without_read_is_refused() {
+fn companion_pk_without_read_is_refused() {
     let _g = serial();
     for rights in [CapPerms::NONE, CapPerms::WRITE, CapPerms::EXEC] {
-        assert_eq!(server(rights).brain_pk(), Out::err(outcome::DENIED), "{rights:?}");
+        assert_eq!(server(rights).companion_pk(), Out::err(outcome::DENIED), "{rights:?}");
     }
 }
 
-/// With `READ` and no `[peer.brain]` row (no topology at all, or one without
+/// With `READ` and no `[peer.companion]` row (no topology at all, or one without
 /// the row: this crate's tests install none that has it) nothing is pinned:
 /// `NO_RESOURCE`, which the client reads as `Noise_XX`, never as a failure.
-/// The row itself is read by `Topology::brain_noise_pk`, pinned in
+/// The row itself is read by `Topology::companion_noise_pk`, pinned in
 /// `tests/host/topology-tests`.
 ///
 /// **Canary.** Answer `NOT_READY`: the client would treat "nothing pinned" as
 /// a failed call and never run the link.
 #[test]
-fn brain_pk_with_no_brain_row_is_no_resource() {
+fn companion_pk_with_no_companion_row_is_no_resource() {
     let _g = serial();
-    assert_eq!(server(CapPerms::READ).brain_pk(), Out::err(outcome::NO_RESOURCE));
+    assert_eq!(server(CapPerms::READ).companion_pk(), Out::err(outcome::NO_RESOURCE));
 }
 
 // ── The op mask: `READ` that reaches `node_key` and nothing else ───────────
@@ -282,7 +282,7 @@ impl Transport for &Holder {
 /// **The mask of the identity rows reaches `node_key` and no other op.** The
 /// capability is `READ` with an `OP_MASK` of `NODE_KEY_OPS`: `node_key` is
 /// served (the caller's own key, never the seed); `read` (the raw seed) and
-/// `brain_pk` are refused by the call before the interface runs, the sector is
+/// `companion_pk` are refused by the call before the interface runs, the sector is
 /// never read for them, and each refusal is recorded as a capability denial.
 ///
 /// **Canary.** Skip the mask in `khost::admit`: `read` returns the seed (the
@@ -301,14 +301,14 @@ fn a_read_masked_to_node_key_reaches_node_key_and_not_the_seed() {
     assert!(denials().is_empty());
 
     assert!(h.client().read().is_err(), "the raw seed crossed a masked capability");
-    assert!(h.client().brain_pk().is_err(), "an op outside the mask was served");
+    assert!(h.client().companion_pk().is_err(), "an op outside the mask was served");
     assert_eq!(HOOK_CALLS.load(Ordering::SeqCst), 1, "a refused op reached the sector");
     assert_eq!(denials(), vec![(ENDPOINT_CODE, MISSING_PERMS); 2], "each refusal is recorded");
 }
 
 /// **The same right without the mask calls every op** (the positive control of
-/// the test above, and what `brain_client` holds): `read` returns the seed,
-/// `node_key` the identity, `brain_pk` answers.
+/// the test above, and what `companion_client` holds): `read` returns the seed,
+/// `node_key` the identity, `companion_pk` answers.
 ///
 /// **Canary.** Treat a capability with no mask as one with an empty mask: the
 /// first assertion is red.
@@ -319,7 +319,7 @@ fn a_read_without_a_mask_calls_every_op() {
     let h = Holder::new(CapPerms::READ, 0);
     assert_eq!(h.client().read().unwrap(), Out::ok(words(&TEST_KEY)));
     assert!(h.client().node_key().unwrap().is_ok());
-    assert_eq!(h.client().brain_pk().unwrap(), Out::err(outcome::NO_RESOURCE));
+    assert_eq!(h.client().companion_pk().unwrap(), Out::err(outcome::NO_RESOURCE));
     assert!(denials().is_empty());
 }
 
@@ -343,7 +343,7 @@ fn containment_does_not_block_node_key() {
 }
 
 /// **The mask is held to the interface's op table.** `NODE_KEY_OPS` is the
-/// bit of the op named `node_key`, and neither `read` nor `brain_pk` shares it;
+/// bit of the op named `node_key`, and neither `read` nor `companion_pk` shares it;
 /// an op past bit 63 and op 0 are in no mask.
 ///
 /// **Canary.** Move `node_key` in the trait without moving the constant: red.
@@ -351,7 +351,7 @@ fn containment_does_not_block_node_key() {
 fn node_key_ops_name_node_key() {
     let bit = |name: &str| LinkKeyIdl::OPS.iter().find(|o| o.name == name).map(|o| 1u64 << o.op).expect("an op of that name");
     assert_eq!(NODE_KEY_OPS, bit("node_key"));
-    assert_eq!(NODE_KEY_OPS & (bit("read") | bit("brain_pk")), 0);
+    assert_eq!(NODE_KEY_OPS & (bit("read") | bit("companion_pk")), 0);
     assert_eq!(NODE_KEY_OPS.count_ones(), 1);
 }
 

@@ -25,7 +25,7 @@
 //!   refused outright: it is the one every kernel service runs on (TCP's and
 //!   IPv6's address, DHCP, DNS, SNTP, the default route). So is the interface
 //!   the route to the link peer leaves by ([`set_hooks`]' `link_peer`, the
-//!   brain the behavior task dials): the e-stop arrives on that connection.
+//!   companion the behavior task dials): the e-stop arrives on that connection.
 //!   A refusal is a decision record (`Rule::NicQueue`).
 //!
 //! The capability that names the queue is the topology's choice (a row's

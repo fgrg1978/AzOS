@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
-description = "Host-side tests for the brain wire protocol in crates/domains/robot/behavior/src/brain_protocol.rs. Excluded from workspace."
+description = "Host-side tests for the companion wire protocol in crates/domains/robot/behavior/src/companion_protocol.rs. Excluded from workspace."
 
 # Run with:  cd tests/host/behavior-tests && cargo test --release
 
@@ -48,7 +48,7 @@ durable-full-mask-canary = []
 telemetry-ring-canary = []
 # estop.rs's unrecorded-release gate canary: a known value, never enabled by default.
 estop-unrecorded-canary = []
-# The behaviour engine's inference client (userspace/services/brain_client/src/ml.rs):
+# The behaviour engine's inference client (userspace/services/companion_client/src/ml.rs):
 # a refused call passes as a class, the model that answered is not compared
 # with the one asked for, a call that timed out passes as a class. Known
 # values, never enabled by default (the canary rows are in this suite).

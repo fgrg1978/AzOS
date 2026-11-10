@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! Cryptography subsystem microbenchmarks.
 //!
-//! SHA-256, X25519 scalarmult, AES-128-CTR, the brain link's Noise handshake
+//! SHA-256, X25519 scalarmult, AES-128-CTR, the companion link's Noise handshake
 //! and transport.  All pure compute, no I/O —
 //! good signal under TCG since rdcycle inflation is amortised over the
 //! hot loop.
@@ -99,32 +99,32 @@ pub fn bench_aes128_key_schedule(iters: u64) -> BenchResult {
     BenchResult::from_total(start, end, iters)
 }
 
-/// The link key and the brain's static key of the benched handshake pair.
+/// The link key and the companion's static key of the benched handshake pair.
 /// Not secrets -- bench scaffolding only.
 const SC_PSK: [u8; 32] = [0x11; 32];
-const SC_BRAIN_SK: [u8; 32] = [0x22; 32];
+const SC_COMPANION_SK: [u8; 32] = [0x22; 32];
 /// Fixed ephemerals of the two sides.
 const SC_E_ROBOT: [u8; 32] = [0x33; 32];
-const SC_E_BRAIN: [u8; 32] = [0x44; 32];
+const SC_E_COMPANION: [u8; 32] = [0x44; 32];
 
-/// The brain's half of an IK handshake against the robot's first message,
-/// computed once: the reply frame and the brain's transport send cipher.
-struct BrainSide {
+/// The companion's half of an IK handshake against the robot's first message,
+/// computed once: the reply frame and the companion's transport send cipher.
+struct CompanionSide {
     reply: [u8; 2 + 48],
     send: Option<CipherState>,
 }
 
-fn brain_side(first: &[u8]) -> Option<BrainSide> {
-    let mut hs = HandshakeState::responder(Pattern::Ik, &SC_BRAIN_SK, &prologue_ik()).ok()?;
+fn companion_side(first: &[u8]) -> Option<CompanionSide> {
+    let mut hs = HandshakeState::responder(Pattern::Ik, &SC_COMPANION_SK, &prologue_ik()).ok()?;
     hs.read_message(&first[1 + FRAME_HEAD..], &mut []).ok()?;
     let mut msg = [0u8; 48];
-    let n = hs.write_message(&SC_E_BRAIN, &[], &mut msg).ok()?;
+    let n = hs.write_message(&SC_E_COMPANION, &[], &mut msg).ok()?;
     let mut reply = [0u8; 2 + 48];
     reply[..2].copy_from_slice(&(n as u16).to_be_bytes());
     reply[2..2 + n].copy_from_slice(&msg[..n]);
     let mut t = hs.finish().ok()?;
     let send = core::mem::replace(&mut t.send, CipherState::empty());
-    Some(BrainSide { reply, send: Some(send) })
+    Some(CompanionSide { reply, send: Some(send) })
 }
 
 fn prologue_ik() -> [u8; PROLOGUE_LABEL.len() + 1] {
@@ -135,9 +135,9 @@ fn prologue_ik() -> [u8; PROLOGUE_LABEL.len() + 1] {
 }
 
 /// The robot's half of an IK handshake: its first message and, once the
-/// brain's reply is fed, the established link.
+/// companion's reply is fed, the established link.
 fn robot_handshake(reply: Option<&[u8]>, first_out: &mut [u8; HANDSHAKE_OUT_MAX]) -> Option<Link> {
-    let pinned = x25519::x25519_pubkey(&SC_BRAIN_SK);
+    let pinned = x25519::x25519_pubkey(&SC_COMPANION_SK);
     let mut ini = Initiator::new(&SC_PSK, Some(&pinned)).ok()?;
     ini.step(None, &SC_E_ROBOT, first_out).ok()?;
     let mut scratch = [0u8; HANDSHAKE_OUT_MAX];
@@ -145,18 +145,18 @@ fn robot_handshake(reply: Option<&[u8]>, first_out: &mut [u8; HANDSHAKE_OUT_MAX]
     ini.finish().ok()
 }
 
-/// A robot link and the brain's send cipher for the per-packet benches.
+/// A robot link and the companion's send cipher for the per-packet benches.
 fn established_pair() -> Option<(Link, CipherState)> {
     let mut first = [0u8; HANDSHAKE_OUT_MAX];
-    // Pass 1 learns the first message, pass 2 feeds the brain's reply to a
+    // Pass 1 learns the first message, pass 2 feeds the companion's reply to a
     // fresh initiator that sends the very same bytes (fixed ephemeral).
-    let pinned = x25519::x25519_pubkey(&SC_BRAIN_SK);
+    let pinned = x25519::x25519_pubkey(&SC_COMPANION_SK);
     let mut ini = Initiator::new(&SC_PSK, Some(&pinned)).ok()?;
     let n = ini.step(None, &SC_E_ROBOT, &mut first).ok()?;
-    let mut brain = brain_side(&first[..n])?;
+    let mut companion = companion_side(&first[..n])?;
     let mut scratch = [0u8; HANDSHAKE_OUT_MAX];
-    ini.step(Some(&brain.reply), &SC_E_ROBOT, &mut scratch).ok()?;
-    Some((ini.finish().ok()?, brain.send.take()?))
+    ini.step(Some(&companion.reply), &SC_E_ROBOT, &mut scratch).ok()?;
+    Some((ini.finish().ok()?, companion.send.take()?))
 }
 
 /// The robot's side of one IK handshake: initiator setup (static key
@@ -166,20 +166,20 @@ fn established_pair() -> Option<(Link, CipherState)> {
 /// X25519 but measured end-to-end.
 pub fn bench_sc_handshake(iters: u64) -> BenchResult {
     let mut first = [0u8; HANDSHAKE_OUT_MAX];
-    let pinned = x25519::x25519_pubkey(&SC_BRAIN_SK);
+    let pinned = x25519::x25519_pubkey(&SC_COMPANION_SK);
     let Some(mut probe) = Initiator::new(&SC_PSK, Some(&pinned)).ok() else {
         return BenchResult::from_total(0, 0, 0);
     };
     let Some(n) = probe.step(None, &SC_E_ROBOT, &mut first).ok() else {
         return BenchResult::from_total(0, 0, 0);
     };
-    let Some(brain) = brain_side(&first[..n]) else {
+    let Some(companion) = companion_side(&first[..n]) else {
         return BenchResult::from_total(0, 0, 0);
     };
 
     let start = read_cycles();
     for _ in 0..iters {
-        let l = robot_handshake(Some(&brain.reply), &mut first);
+        let l = robot_handshake(Some(&companion.reply), &mut first);
         let _ = core::hint::black_box(&l);
     }
     let end = read_cycles();
@@ -217,7 +217,7 @@ pub fn bench_sc_decrypt_64B(iters: u64) -> BenchResult {
     let mut total = 0u64;
     let mut done = 0u64;
     while done < iters {
-        let Some((mut a, mut brain)) = established_pair() else {
+        let Some((mut a, mut companion)) = established_pair() else {
             return BenchResult::from_total(0, 0, 0);
         };
         let mut frames = [[0u8; FRAME]; SC_RX_ROUND];
@@ -225,7 +225,7 @@ pub fn bench_sc_decrypt_64B(iters: u64) -> BenchResult {
             let head = ((64 + 16) as u16).to_be_bytes();
             f[..2].copy_from_slice(&head);
             f[2..66].copy_from_slice(&plaintext);
-            match brain.encrypt(&head, &mut f[2..66]) {
+            match companion.encrypt(&head, &mut f[2..66]) {
                 Ok(tag) => f[66..].copy_from_slice(&tag),
                 Err(_) => return BenchResult::from_total(0, 0, 0),
             }

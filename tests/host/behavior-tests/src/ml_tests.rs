@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! The behaviour engine's call of the `Infer` interface
-//! (`userspace/services/brain_client/src/ml.rs`, pulled in with `#[path]`, so
+//! (`userspace/services/companion_client/src/ml.rs`, pulled in with `#[path]`, so
 //! the code under test is the code that ships), against a stand-in service
 //! that answers what the real one can: a class, every refusal code, a reply of
 //! another model, nothing written, logits that are not numbers, and no reply
@@ -9,7 +9,7 @@
 //!
 //! The property: **every way a call can end that is not a class is a missing
 //! verdict, and a missing verdict stops the robot** (`behave::arbitrate`
-//! publishes `(0, 0)` through L1, over the brain and over exploring).
+//! publishes `(0, 0)` through L1, over the companion and over exploring).
 //! Canaries (cargo features of this crate, known values in the engine's):
 //!
 //! * `infer-refusal-canary`: a refused call passes as `Verdict(0)`, go forward.
@@ -154,7 +154,7 @@ impl Rig {
     }
 }
 
-/// The command the engine publishes for `o` with the brain driving, a clear
+/// The command the engine publishes for `o` with the companion driving, a clear
 /// road and the session up: the missing verdict wins and it is a stop.
 fn drives_for(o: MlOutcome) -> Option<((i32, i32), Winner)> {
     let remote = Some(crate::behave::Remote { left: 80, right: 80, at_ms: 1_000 });
@@ -435,7 +435,7 @@ const BUDGET_NS: u64 = 10_000_000;
 
 /// **An ML reply inside the budget is used**: each class reaches L1 and moves
 /// the command, on a road the rangefinders call clear: go forward lets the
-/// brain drive, turn turns away, stop stops.
+/// companion drive, turn turns away, stop stops.
 ///
 /// **Canary.** `infer-refusal-canary` is not this one's: map every class to
 /// `Ml::Go` in `verdict_of` and the turn and the stop below drive.
@@ -455,11 +455,11 @@ fn a_reply_inside_the_budget_is_used() {
     }
 }
 
-/// **No reply in the budget stops the robot**, with the brain driving and the
+/// **No reply in the budget stops the robot**, with the companion driving and the
 /// road clear; and a call that is still out blocks a second one, which is a
 /// stop too.
 ///
-/// **Canary `ml-timeout-canary`**: the timeout passes as go forward, the brain
+/// **Canary `ml-timeout-canary`**: the timeout passes as go forward, the companion
 /// drives, red.
 #[test]
 fn a_reply_that_does_not_come_stops_the_robot() {
@@ -541,7 +541,7 @@ fn a_grant_the_task_does_not_hold_is_not_off() {
 }
 
 /// **A cycle without two distances stops**: the model cannot be asked, and
-/// that is a missing verdict on every board, with the brain driving and the
+/// that is a missing verdict on every board, with the companion driving and the
 /// session up. With L1 off nothing is asked.
 ///
 /// **Canary `ml-unaskable-canary`**: a missing distance turns the model off, red.

@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The `LinkKey` interface the kernel hosts: the ring-3 door onto the brain-link
+//! The `LinkKey` interface the kernel hosts: the ring-3 door onto the companion-link
 //! PSK (an endpoint op since D6 part A).
 //!
 //! ## The gap this closes
 //!
-//! The kernel stopped reading the brain-link PSK from `/fat/LINK.KEY`
+//! The kernel stopped reading the companion-link PSK from `/fat/LINK.KEY`
 //! (`kernel/src/reserved_tail.rs`'s `LINK_KEY`): the key now
 //! lives, as a validated record, in a reserved tail sector past the
 //! filesystem that a USB mass-storage export never reports as present.
-//! `brain_client` reads it through [`Server`], on the kernel-hosted `linkkey`
+//! `companion_client` reads it through [`Server`], on the kernel-hosted `linkkey`
 //! endpoint: refused unless the caller holds an endpoint capability with
 //! `READ` that the signed topology granted it.
 //!
@@ -25,10 +25,10 @@
 //!
 //! ## Capability shape
 //!
-//! One brain-link key per board, so the endpoint carries no resource. All three
+//! One companion-link key per board, so the endpoint carries no resource. All three
 //! ops need `READ`; what tells the holders apart is the capability's `OP_MASK`
 //! (`azos_ipc::cap::caveat::OP_MASK`, the IDL ops the holder may call, held by
-//! `khost::admit` before this server runs). `brain_client` holds `READ`
+//! `khost::admit` before this server runs). `companion_client` holds `READ`
 //! unmasked, so it calls [`Server::read`], the raw key, which is also the device
 //! seed of the DICE derivation. `RPCSRV.ELF` and `MCPD.ELF` hold
 //! `READ` masked to [`azos_devif::linkkey::NODE_KEY_OPS`]: they can call
@@ -38,7 +38,7 @@
 //! that every node key derives from. `node_key` is `READ` and not `WRITE`, so
 //! containment does not stop it.
 //! There is no write path -- the key is provisioned at image-build time
-//! (`Makefile`'s `disk-braincli-linkkey.img` recipe), never by a running task.
+//! (`Makefile`'s `disk-compcli-linkkey.img` recipe), never by a running task.
 //!
 //! ## The node identity (DICE-ID)
 //!
@@ -57,7 +57,7 @@ use azos_sync::SpinLock;
 
 use crate::khost::Caller;
 
-/// Length of the brain-link PSK. Mirrors
+/// Length of the companion-link PSK. Mirrors
 /// `azos_crypto::secure_channel::PSK_BYTES` (32) and
 /// the reserved-sector record's key, restated here because this crate
 /// cannot depend on `azos_behavior` (this crate is core; `behavior` sits
@@ -79,7 +79,7 @@ pub const LINK_KEY_BYTES: usize = 32;
 /// the one reader both use) — a caller cannot
 /// distinguish "no hook installed" from "no key provisioned on this image"
 /// and must not be able to: both mean "the wire will be plaintext, act
-/// accordingly", which is exactly what `brain_client`'s FATAL-and-refuse-to-run
+/// accordingly", which is exactly what `companion_client`'s FATAL-and-refuse-to-run
 /// already does on any `false` here.
 static LINK_KEY_READ_HOOK: SpinLock<Option<fn(&mut [u8; LINK_KEY_BYTES]) -> bool>> =
     SpinLock::new(None);
@@ -177,16 +177,16 @@ impl azos_devif::LinkKey for Server {
     }
 
     /// In order: the right (`READ`, as for [`Server::read`]); then the key the
-    /// signed topology's `[peer.brain]` row pins (`Topology::brain_noise_pk`).
+    /// signed topology's `[peer.companion]` row pins (`Topology::companion_noise_pk`).
     /// No topology, no such row, or a row without a key is `NO_RESOURCE`:
     /// nothing is pinned and the link runs `Noise_XX`. A public key, so there
     /// is nothing to wipe.
-    fn brain_pk(&mut self) -> Out<[u64; KEY_WORDS]> {
+    fn companion_pk(&mut self) -> Out<[u64; KEY_WORDS]> {
         if !self.0.allows(CapPerms::READ) {
             self.0.deny(CapPerms::READ);
             return Out::err(outcome::DENIED);
         }
-        match azos_topology::get().and_then(|t| t.brain_noise_pk()) {
+        match azos_topology::get().and_then(|t| t.companion_noise_pk()) {
             Some(pk) => Out::ok(words(&pk)),
             None => Out::err(outcome::NO_RESOURCE),
         }

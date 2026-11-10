@@ -47,7 +47,7 @@ const _: () = assert!(
 );
 
 const TASK_SUPERVISOR: &[u8] = b"supervisor";
-const TASK_BRAIN_LINK: &[u8] = b"brain_link";
+const TASK_COMPANION_LINK: &[u8] = b"companion_link";
 // Migration phase P1: the autorun ELF (`kernel/src/tasks/loader.rs`'s
 // `autorun_task`) is not spawned from a topology `TaskSpec` today — no
 // name→spawn wiring exists yet, that's a separate piece of work — but its
@@ -108,7 +108,7 @@ const TASK_UHELLO_IMAGE: &[u8] = b"UHELLO.ELF";
 // `kernel/src/tasks/loader.rs`), which is capability-migration debt (phase P1) this crate
 // cannot close alone (that lookup is kernel code, out of this task's file
 // ownership). So the actual grant a running `GPIODRV.ELF`/`REFLEX.ELF`/
-// `BRAINCLI.ELF` gets still comes from `autorun`'s cap list above, no matter
+// `COMPCLI.ELF` gets still comes from `autorun`'s cap list above, no matter
 // which of the three is configured. Putting a copy of those same grants here
 // too would be the exact "a copied list drifts" failure this registry exists
 // to end — two places asserting the same authority, one of them unread by
@@ -121,13 +121,13 @@ const TASK_UHELLO_IMAGE: &[u8] = b"UHELLO.ELF";
 // declares. Capabilities still come from `autorun` alone, as above.
 const TASK_GPIODRV_IMAGE: &[u8] = b"GPIODRV.ELF";
 const TASK_REFLEX_IMAGE: &[u8] = b"REFLEX.ELF";
-const TASK_BRAINCLI_IMAGE: &[u8] = b"BRAINCLI.ELF";
+const TASK_COMPCLI_IMAGE: &[u8] = b"COMPCLI.ELF";
 
 /// The ring-3 inference service. Unlike the three rows above it is NOT an
 /// `autorun` choice: the supervisor starts it on every boot of a build that
 /// has it (`USERSPACE_MLSRV`), through the same path as `SYS_SPAWN_EX`, so its
 /// capabilities come from THIS row, by image name. The behaviour engine
-/// (BRAINCLI.ELF, the autorun row) is its client: it calls the `Infer`
+/// (COMPCLI.ELF, the autorun row) is its client: it calls the `Infer`
 /// interface on `endpoint.infer` with the badged calling grant of the autorun
 /// row ([`INFER_CALL_CAP`]).
 const TASK_MLSRV_IMAGE: &[u8] = b"MLSRV.ELF";
@@ -140,11 +140,11 @@ const TASK_MLSRV_IMAGE: &[u8] = b"MLSRV.ELF";
 // IMAGE. `start` is set only under `ring3-driver-start`
 // (QEMU; see `crates/core/topology/Cargo.toml`). Each holds exactly what its
 // device needs: the one PWM channel or I2C slave behind it.
-/// Does the topology declare the brain link's row? Only the robot extension has the link.
-pub const BRAIN_LINK_ROW: bool = azos_limits::USE_ROBOT;
-/// Does the topology declare the brain client's row? Whenever the volume carries
-/// `BRAINCLI.ELF` (Kconfig `USERSPACE_BRAINCLI`, on with the robot extension).
-pub const BRAINCLI_ROW: bool = azos_limits::USERSPACE_BRAINCLI;
+/// Does the topology declare the companion link's row? Only the robot extension has the link.
+pub const COMPANION_LINK_ROW: bool = azos_limits::USE_ROBOT;
+/// Does the topology declare the companion client's row? Whenever the volume carries
+/// `COMPCLI.ELF` (Kconfig `USERSPACE_COMPCLI`, on with the robot extension).
+pub const COMPCLI_ROW: bool = azos_limits::USERSPACE_COMPCLI;
 /// The buzzer ring-3 host's image, the name of its row.
 pub const TASK_BUZZDRV_IMAGE: &[u8] = b"BUZZDRV.ELF";
 /// Does this topology declare the buzzer's ring-3 host? Whenever the volume
@@ -370,7 +370,7 @@ const BEHAVIOR_SWITCHES_CAP: CapSpec<'static> = CapSpec {
     target: MaybeStr::from_bytes(b"behavior"), transfer: false, ops: 0,
 };
 /// The `Authority` interface's calling grant: the behaviour engine submits
-/// the brain frames that ask for the kernel's authority there.
+/// the companion frames that ask for the kernel's authority there.
 const AUTHORITY_CAP: CapSpec<'static> = CapSpec {
     kind: CapKind::Endpoint,
     perms: CapPerms::WRITE,
@@ -402,7 +402,7 @@ const RESOURCE_GPIO_FREE:  &[u8] = b"gpio.20";
 // Granted READ only — see the CapSpec below for why write access to this one
 // address is a safety matter and not a convenience.
 const RESOURCE_I2C_IMU:    &[u8] = b"i2c.0.0x68";
-// the brain-link PSK, one per board, the kernel-hosted
+// the companion-link PSK, one per board, the kernel-hosted
 // `linkkey` interface (`azos_devif`): the bare interface name, no resource --
 // `"linkkey.0"` names nothing and is refused rather than minting the
 // singleton under a name that looks like it selected something.
@@ -416,7 +416,7 @@ pub const LINK_KEY_NODE_KEY_OPS: u64 = 1 << 2;
 /// `RPCSRV.ELF`, `MCPD.ELF`): `READ` on `linkkey` with an op mask
 /// that lists `node_key` and nothing else. `READ` unmasked also calls
 /// `LinkKey::read`, the raw reserved-sector key, which is the device seed every
-/// node key derives from; only `brain_client` (the link itself) holds it that
+/// node key derives from; only `companion_client` (the link itself) holds it that
 /// way. A compromised network-facing task with this grant can ask for its own
 /// image's key and cannot read the seed: the kernel holds every call through
 /// the capability to the mask before the interface runs.
@@ -657,7 +657,7 @@ idle = [ { name = "wfi", exit_latency_us = 1, target_residency_us = 1 },
 /// Build the default minimal topology.
 ///
 /// Five budget classes + two seed tasks (`supervisor`,
-/// `brain_link`). Budgets sum to **100 %** so admission_check passes.
+/// `companion_link`). Budgets sum to **100 %** so admission_check passes.
 ///
 /// All borrowed strings are `'static` literals declared above; the
 /// returned `Topology<'static>` can be parked in a static slot.
@@ -808,10 +808,10 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
 
     // The privacy effects are default-deny: a class has `cam` or `mic` only
     // where a row says so. `cam` is the autorun class's (the images that read
-    // the camera are CAPTEST.ELF and BRAINCLI.ELF; the seccomp row and the
+    // the camera are CAPTEST.ELF and COMPCLI.ELF; the seccomp row and the
     // `frame.0` grant narrow it to them); `mic` is the best-effort class's (the toolbox's
-    // `beep`, and the audio server's clients). The brain link's own camera
-    // sender is BRAINCLI.ELF, an autorun image.
+    // `beep`, and the audio server's clients). The companion link's own camera
+    // sender is COMPCLI.ELF, an autorun image.
     for (name, kind, class) in [
         (&b"dev_cam_soft_rt"[..], crate::types::EffectKind::Cam, NAME_SOFT_RT),
         (&b"dev_mic_best_effort"[..], crate::types::EffectKind::Mic, NAME_BEST_EFFORT),
@@ -825,7 +825,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
         .expect("default_minimal_topology: privacy envelope push failed");
     }
 
-    // Tasks. Two seed tasks: a safety supervisor + the brain-link.
+    // Tasks. Two seed tasks: a safety supervisor + the companion-link.
     topo.push_task(
         MaybeStr::from_bytes(TASK_SUPERVISOR),
         MaybeStr::from_bytes(NAME_SAFETY),
@@ -836,15 +836,15 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
 
     // A kernel task's row (read for admission, never applied); its number is
     // still one its class has, so no row of this topology relies on the clamp.
-    // Only the robot extension has the brain link.
-    if BRAIN_LINK_ROW {
+    // Only the robot extension has the companion link.
+    if COMPANION_LINK_ROW {
         topo.push_task(
-            MaybeStr::from_bytes(TASK_BRAIN_LINK),
+            MaybeStr::from_bytes(TASK_COMPANION_LINK),
             MaybeStr::from_bytes(NAME_BEST_EFFORT),
             SERVICE_PRIORITY,
             &[],
         )
-        .expect("default_minimal_topology: brain_link push failed");
+        .expect("default_minimal_topology: companion_link push failed");
     }
 
     // P1 migration seed for the autorun task: Motor(0)/Motor(1) RW, the free
@@ -861,7 +861,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     // preempts (`RT_PRIORITY_THRESHOLD` = 12) and above `net-poll` (12) and
     // `sys-wdt` (11). That is the configuration `kernel/src/main.rs` records
     // (above `AUTORUN_PRIORITY`) as having starved `net-poll` off hart 3 and
-    // killed the brain link — the `userspace: the brain lies` row fails if it
+    // killed the companion link — the `userspace: the companion lies` row fails if it
     // comes back. Every image without a row of its own (VSBENCH, ABITEST,
     // CAPTEST, IPCTEST, UHELLO…) runs under this one, so it states what they
     // have always run at: 16, the scheduler's default.
@@ -1016,7 +1016,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
                 target: MaybeStr::from_bytes(RESOURCE_FRAME), transfer: false, ops: 0,
         },
             // the ring-3 door onto the reserved-sector
-            // brain-link PSK (the kernel-hosted `linkkey` endpoint). `brain_client` is
+            // companion-link PSK (the kernel-hosted `linkkey` endpoint). `companion_client` is
             // the one holder that reads it; every other autorun program
             // (`GPIODRV.ELF`/`REFLEX.ELF`) simply never calls the syscall
             // this grants no more authority to use than
@@ -1030,7 +1030,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
         },
             // An endpoint op: the kernel-hosted
             // `entropy` interface (`azos_devif::Entropy`), the source of
-            // `brain_client`'s ephemeral handshake keys. READ only (the op
+            // `companion_client`'s ephemeral handshake keys. READ only (the op
             // class that draws), never transferable.
             CapSpec {
                 kind: CapKind::Endpoint,
@@ -1129,7 +1129,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
             n += 1;
         }
     }
-    // The drivetrain's commander is the behaviour engine: it hands the brain's
+    // The drivetrain's commander is the behaviour engine: it hands the companion's
     // authority frames to the kernel (`endpoint.authority`, `WRITE`), reads
     // the layer switches (`endpoint.behavior`, `READ`) and asks the inference
     // service for L1's verdict (`endpoint.infer`, `WRITE`). Last, so no earlier
@@ -1441,9 +1441,9 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
         topo.push_task(MaybeStr::from_bytes(TASK_REFLEX_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), SERVICE_PRIORITY, &[])
             .expect("default_minimal_topology: REFLEX.ELF push failed");
     }
-    if BRAINCLI_ROW {
-        topo.push_task(MaybeStr::from_bytes(TASK_BRAINCLI_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), SERVICE_PRIORITY, &[ROOT_RO])
-            .expect("default_minimal_topology: BRAINCLI.ELF push failed");
+    if COMPCLI_ROW {
+        topo.push_task(MaybeStr::from_bytes(TASK_COMPCLI_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), SERVICE_PRIORITY, &[ROOT_RO])
+            .expect("default_minimal_topology: COMPCLI.ELF push failed");
     }
 
     // The ML service (see `TASK_MLSRV_IMAGE`). Pushed after the board rows so
@@ -4196,12 +4196,12 @@ mod tests {
     fn default_minimal_is_well_formed() {
         let topo = default_minimal();
         assert_eq!(topo.classes_len(), 6);
-        // supervisor, brain_link, autorun (P1 migration seed), the three
+        // supervisor, companion_link, autorun (P1 migration seed), the three
         // unconditional board service rows (GPIODRV.ELF/REFLEX.ELF/
-        // BRAINCLI.ELF — see the block comment above `TASK_GPIODRV_IMAGE`),
+        // COMPCLI.ELF — see the block comment above `TASK_GPIODRV_IMAGE`),
         // the ML service (MLSRV.ELF) and the two ring-3 driver rows
         // (BUZZDRV.ELF/INADRV.ELF).
-        assert_eq!(topo.tasks_len(), 9 - !BRAIN_LINK_ROW as usize - !BRAINCLI_ROW as usize);
+        assert_eq!(topo.tasks_len(), 9 - !COMPANION_LINK_ROW as usize - !COMPCLI_ROW as usize);
         assert!(topo.admission_check().is_ok());
 
         // Budgets sum to exactly 100.

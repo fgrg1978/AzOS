@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Safety smokes: reflex, envelope, geofence, brain-lies, capability denial
+//! Safety smokes: reflex, envelope, geofence, companion-lies, capability denial
 //! (with its exec-refusal read-back and seccomp audit task), and the shared
 //! on-disk safety-record lookups.
 
@@ -111,7 +111,7 @@ pub(crate) fn reflex_smoke_task(_arg: usize) {
 }
 
 /// envelope-smoke: prove the motor envelope actually refuses a command
-/// the brain had no right to issue, at the real MotorCmd -> PWM chokepoint.
+/// the companion had no right to issue, at the real MotorCmd -> PWM chokepoint.
 ///
 /// Sequence, all observed on the console:
 ///   1. publish (100,-100) on `CH_MOTOR_CMD` — above the wheeled cap of 80
@@ -152,7 +152,7 @@ pub(crate) fn reflex_smoke_task(_arg: usize) {
 /// Opens `LOG00000.BIN` specifically. Every smoke scenario boots a freshly
 /// made image, so serial 0 is the only file that exists; a probe that ran long
 /// enough to rotate would need `make_log_path`, and none does.
-#[cfg(any(feature = "envelope-smoke", feature = "brain-lies-smoke", feature = "cap-deny-smoke",
+#[cfg(any(feature = "envelope-smoke", feature = "companion-lies-smoke", feature = "cap-deny-smoke",
           feature = "fence-refuse-smoke"))]
 pub(crate) fn find_safety_record_on_disk(code: u8, action: u8) -> (bool, u32) {
     find_safety_record_detail_on_disk(code, action, None)
@@ -162,7 +162,7 @@ pub(crate) fn find_safety_record_on_disk(code: u8, action: u8) -> (bool, u32) {
 /// detail word equals it counts: for a probe that knows which event it waits
 /// for, not only which kind (the seccomp audit record of syscall 116, the exec
 /// refusal of one digest).
-#[cfg(any(feature = "envelope-smoke", feature = "brain-lies-smoke", feature = "cap-deny-smoke",
+#[cfg(any(feature = "envelope-smoke", feature = "companion-lies-smoke", feature = "cap-deny-smoke",
           feature = "disk-part-row", feature = "rc-failsafe-smoke",
           feature = "fence-refuse-smoke"))]
 pub(crate) fn find_safety_record_detail_on_disk(code: u8, action: u8, detail: Option<u32>) -> (bool, u32) {
@@ -280,9 +280,9 @@ pub(crate) fn envelope_smoke_task(_arg: usize) {
     // prints "envelope latched", measured:
     //
     //   ring 3 via motor.estop  — `userspace: ring-3 e-stop`
-    //   brain over TCP  (PKT_ESTOP) — `safety: brain e-stop (tcp)`
+    //   companion over TCP  (PKT_ESTOP) — `safety: companion e-stop (tcp)`
     //   the physical GPIO switch    — `safety: kill switch (gpio)`
-    //   brain over UART (PKT_ESTOP) — NOT COVERABLE HERE, see below
+    //   companion over UART (PKT_ESTOP) — NOT COVERABLE HERE, see below
     //
     // The UART one is not a gap waiting to be filled: the bridge is
     // `cfg(feature = "vf2")`, `bridge_is_ready()` is a literal `false` in every
@@ -484,7 +484,7 @@ pub(crate) fn geofence_smoke_task(_arg: usize) {
                 // `safety::ReleaseAuthority`'s module note) — the old comment
                 // here ("released only because THIS probe latched it") was
                 // exactly the self-release shape the decision closes, just with
-                // a kernel-internal caller instead of the brain. `estop_deactivate`
+                // a kernel-internal caller instead of the companion. `estop_deactivate`
                 // is gone (private, `estop_deactivate_unchecked`); the probe has
                 // no proof to construct one, and does not get a bypass. The gate
                 // row only reads the `[GEOFENCE] latched: true` line above, which
@@ -541,7 +541,7 @@ azos_ktest::ktest_late! {
 
 /// Read `SAFETY_UNKNOWN_PKT` back off the flight recorder.
 ///
-/// **What was missing.** `fake_brain.py` sends a fourth frame carrying a
+/// **What was missing.** `fake_companion.py` sends a fourth frame carrying a
 /// packet type this build does not act on, and the dispatch's `else` arm
 /// records `SAFETY_UNKNOWN_PKT` instead of dropping it in silence. The gate
 /// exercised that arm — the frame is sent on every run — but asserted nothing
@@ -558,11 +558,11 @@ azos_ktest::ktest_late! {
 ///
 /// The action byte is matched too, not just the violation code: the record
 /// carries the packet type there (`0x7F`, `PKT_UNKNOWN_PROBE` in
-/// `tools/gate/fake_brain.py`), so a match on the code alone would pass on a
+/// `tools/gate/fake_companion.py`), so a match on the code alone would pass on a
 /// record about some other frame.
-#[cfg(feature = "brain-lies-smoke")]
-pub(crate) fn brain_lies_smoke_task(_arg: usize) {
-    /// `PKT_UNKNOWN_PROBE` in `tools/gate/fake_brain.py`. Deliberately not a type
+#[cfg(feature = "companion-lies-smoke")]
+pub(crate) fn companion_lies_smoke_task(_arg: usize) {
+    /// `PKT_UNKNOWN_PROBE` in `tools/gate/fake_companion.py`. Deliberately not a type
     /// the kernel handles — if a future build starts acting on 0x7F this
     /// scenario must fail rather than quietly test nothing, and it will,
     /// because the record would stop being written.
@@ -584,7 +584,7 @@ pub(crate) fn brain_lies_smoke_task(_arg: usize) {
         let (found, records) = find_safety_record_on_disk(
             azos_behavior::logger::SAFETY_UNKNOWN_PKT, UNKNOWN_PKT_TYPE);
         if found {
-            kprintln!("[BRAINSMOKE] RECORDED: unknown packet type {:#04x} is in \
+            kprintln!("[COMPSMOKE] RECORDED: unknown packet type {:#04x} is in \
                        the persistent log after {} attempt(s), {} records",
                       UNKNOWN_PKT_TYPE, attempt + 1, records);
             return;
@@ -593,7 +593,7 @@ pub(crate) fn brain_lies_smoke_task(_arg: usize) {
 
     let (_, records) = find_safety_record_on_disk(
         azos_behavior::logger::SAFETY_UNKNOWN_PKT, UNKNOWN_PKT_TYPE);
-    kprintln!("[BRAINSMOKE] NOT RECORDED: {} records on disk, none is an \
+    kprintln!("[COMPSMOKE] NOT RECORDED: {} records on disk, none is an \
                unknown-packet event for type {:#04x}", records, UNKNOWN_PKT_TYPE);
 }
 

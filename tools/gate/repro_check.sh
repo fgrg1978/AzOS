@@ -13,7 +13,7 @@
 # the target directory. A result that depends on where the tree is checked out
 # is a DIFFER here. (Both runs used to build from this checkout, and
 # the script could not see that class: userspace ELF bytes depended on the
-# checkout path, and gate 40 refused a brain_client rebuilt in its snapshot.)
+# checkout path, and gate 40 refused a companion_client rebuilt in its snapshot.)
 #
 # The full gate runs it, last and alone (tools/gate/ci_check.sh, "supply
 # chain: reproducible build"); by hand it needs nothing else. Two clean
@@ -192,7 +192,7 @@ ARTIFACTS=(
     "kernel|cargo|.|.cargo/config.toml|${TARGET_TRIPLE}/release/kernel|${KERNEL_ARGS}|0"
     "uhello|cargo|userspace/tests/uhello|-|${USER_TRIPLE}/release/uhello||1"
     "reflex|cargo|userspace/services/reflex|-|${USER_TRIPLE}/release/reflex||1"
-    "brain_client|cargo|userspace/services/brain_client|-|${USER_TRIPLE}/release/brain_client||1"
+    "companion_client|cargo|userspace/services/companion_client|-|${USER_TRIPLE}/release/companion_client||1"
     "captest|cargo|userspace/tests/captest|-|${USER_TRIPLE}/release/captest||1"
     "latbench|cargo|userspace/bench/latbench|-|${USER_TRIPLE}/release/latbench||1"
     "abitest|cargo|userspace/tests/abitest|-|${USER_TRIPLE}/release/abitest||1"

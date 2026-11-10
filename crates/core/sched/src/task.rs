@@ -66,7 +66,7 @@ pub const NET_POLL_PRIORITY: u32 = azos_limits::TASK_NET_POLL_PRIORITY as u32;
 ///
 /// **Was 20, and at 20 with default placement the task never ran under load.**
 /// Measured, probe verified present in the binary: on an idle boot
-/// `sys-wdt` entered and iterated; with the brain link, a disk and a NIC
+/// `sys-wdt` entered and iterated; with the companion link, a disk and a NIC
 /// attached it did not execute one instruction in 50 s. The six things it
 /// carries — stack canaries, timer liveness, the physical kill-switch poll,
 /// the flight-recorder flush, driver health and the OTA boot-good mark — were

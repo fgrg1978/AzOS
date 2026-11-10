@@ -501,9 +501,9 @@ mod tests {
 
     #[test]
     fn test_parse_string_unquoted() {
-        let cfg = parse_str("CONFIG_BRAIN_SERVER_IP_DEFAULT=\"10.0.2.2\"\n");
+        let cfg = parse_str("CONFIG_COMPANION_SERVER_IP_DEFAULT=\"10.0.2.2\"\n");
         // Quotes must be stripped
-        assert_eq!(cfg["BRAIN_SERVER_IP_DEFAULT"], "10.0.2.2");
+        assert_eq!(cfg["COMPANION_SERVER_IP_DEFAULT"], "10.0.2.2");
     }
 
     #[test]
@@ -545,10 +545,10 @@ mod tests {
     #[test]
     fn test_emit_string() {
         let mut cfg = ConfigMap::new();
-        cfg.insert("BRAIN_SERVER_IP_DEFAULT".to_string(), "10.0.2.2".to_string());
+        cfg.insert("COMPANION_SERVER_IP_DEFAULT".to_string(), "10.0.2.2".to_string());
         let mut out = String::new();
         emit_rust(&cfg, &mut out, "000000000000");
-        assert!(out.contains(r#"pub const BRAIN_SERVER_IP_DEFAULT: &str = "10.0.2.2";"#));
+        assert!(out.contains(r#"pub const COMPANION_SERVER_IP_DEFAULT: &str = "10.0.2.2";"#));
     }
 
     #[test]
@@ -661,7 +661,7 @@ mod tests {
         // A top-level switch is always written: never filled in.
         assert!(!hidden.iter().any(|n| n == "CONTROL_TXN_TICKS"));
         assert!(!hidden.iter().any(|n| n == "USE_GENERIC"));
-        // The brain-link enforcement switch exists only in
+        // The companion-link enforcement switch exists only in
         // the Robot domain, so a Generic .config leaves it out and limits
         // must fill it as n; the domain choice itself is always written
         // (kernel/src/main.rs reads USE_ROBOT in its build guard).

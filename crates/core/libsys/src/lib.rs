@@ -923,7 +923,7 @@ pub const E_PIPE: isize = -32;
 /// writing `sys::open_at(dir, b"CONFIG.INI", 0)` therefore hands the kernel a
 /// pointer into `.rodata` and lets it walk past the literal into whatever the
 /// linker placed next. That is exactly the bug that was found in
-/// `userspace/services/brain_client`.
+/// `userspace/services/companion_client`.
 ///
 /// `cstr!` removes the possibility instead of documenting it:
 ///

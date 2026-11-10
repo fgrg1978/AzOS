@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
-description = "The robot extension's microbenchmarks: the brain protocol's wire primitives, run beside azos_bench's suites."
+description = "The robot extension's microbenchmarks: the companion protocol's wire primitives, run beside azos_bench's suites."
 
 [dependencies]
 azos_drv_sys  = { workspace = true }

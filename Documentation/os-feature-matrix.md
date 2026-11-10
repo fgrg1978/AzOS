@@ -82,7 +82,7 @@ Options and choices: 888. Defconfigs: 27.
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | `USERSPACE_AUDIOD` | AUDIOD.ELF (userspace/services/audiod) | n | n | y | y | y | y | y | y | y | y | y | y | n | n | n | n | n | y | n | n | n | y | n | y | n | n | n |
 | `USERSPACE_BEHAVIOR` | BEHAVIOR.ELF (userspace/services/famtools) | n | n | y | y | y | y | y | y | y | y | y | y | y | y | y | n | y | y | y | y | y | y | y | y | y | y | y |
-| `USERSPACE_BRAINCLI` | BRAINCLI.ELF (userspace/services/brain_client) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | y | y | y | y | y | y | y | y | y | y | y |
+| `USERSPACE_COMPCLI` | COMPCLI.ELF (userspace/services/companion_client) | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | y | y | y | y | y | y | y | y | y | y | y |
 | `USERSPACE_COMPMGR` | COMPMGR.ELF (userspace/services/compmgr) | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y | y |
 | `USERSPACE_COMPSRV` | COMPSRV.ELF (userspace/services/compositor) | n | n | n | n | n | n | y | n | n | n | n | n | n | n | n | n | n | n | n | n | n | y | n | n | n | n | n |
 | `USERSPACE_CONFIG` | CONFIG.ELF (userspace/services/famtools) | n | n | y | y | y | y | y | y | y | y | y | y | y | y | y | n | y | y | y | y | y | y | y | y | y | y | y |
@@ -1271,7 +1271,7 @@ Options and choices: 888. Defconfigs: 27.
 
 | Symbol | Prompt | generic-embedded-riscv64+board-generic | generic-embedded-riscv64-dev+board-generic+micro | generic-sbc-aarch64-dev+qemu+hv-guest | generic-sbc-aarch64-dev+qemu+linux+gui | generic-sbc-aarch64-dev+qemu+reclaim | generic-sbc-riscv64-dev+qemu+hv-guest | generic-sbc-riscv64-dev+qemu+linux+gui | generic-sbc-riscv64-dev+qemu+reclaim | generic-sbc-riscv64-dev | generic-sbc-x86_64-dev+qemu+linux+gui | generic-sbc-x86_64-dev+qemu+reclaim | generic-server-riscv64+board-generic | microvm-sbc-aarch64-dev+qemu | microvm-sbc-riscv64-dev+qemu | microvm-sbc-x86_64-dev+qemu | robot-embedded-riscv64+board-generic | robot-sbc-aarch64+rpi5 | robot-sbc-aarch64-dev+qemu+linux+gui | robot-sbc-aarch64-dev+qemu+linux+hv-host+hv-example-guest | robot-sbc-riscv64+k1 | robot-sbc-riscv64+vf2 | robot-sbc-riscv64-dev+qemu+linux+gui | robot-sbc-riscv64-dev+qemu+linux+hv-host+hv-example-guest | robot-sbc-x86_64-dev+qemu+linux+gui | robot-sbc-x86_64-dev+qemu+linux+limine | robot-sbc-x86_64-dev+qemu+linux+pci | robot-server-riscv64+board-generic |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| `LINK_PROVISIONING_ENFORCED` | Brain link provisioning: no boot without a link key | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | y | y | n | n | y | y | n | n | n | n | n | y |
+| `LINK_PROVISIONING_ENFORCED` | Companion link provisioning: no boot without a link key | n | n | n | n | n | n | n | n | n | n | n | n | n | n | n | y | y | n | n | y | y | n | n | n | n | n | y |
 | `SECURE_BOOT_ENFORCED` | Enforce Ed25519 signature verification at boot | y | n | n | n | n | n | n | n | n | n | n | y | n | n | n | y | y | n | n | y | y | n | n | n | n | n | y |
 
 ## config/subsys/Kconfig.storage

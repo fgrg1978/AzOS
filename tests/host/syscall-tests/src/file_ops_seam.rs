@@ -7,8 +7,8 @@
 // failure paths — one rejected inside libsys for an unterminated string, one
 // that reaches the kernel and fails there. Its `close` calls are all on
 // sockets, which never go near the descriptor table. The one program that
-// opens a real file and reads it, `brain_client`, is deliberately outside the
-// gate because it needs a live brain server on the host. And on the host side,
+// opens a real file and reads it, `companion_client`, is deliberately outside the
+// gate because it needs a live companion server on the host. And on the host side,
 // `shims/fs` made every filesystem function `todo!()`, so nothing could be
 // driven through them there either.
 //

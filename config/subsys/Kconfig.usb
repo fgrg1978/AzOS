@@ -376,7 +376,7 @@ config USB_UVC
       test pattern (which stops while a camera is plugged in). The driver
       reads the camera's descriptors, picks Motion-JPEG (else YUY2) at the
       frame size and rate closest to the CSI path's (160x120, the capture
-      period of BRAIN_CAMERA_PERIOD_MS; a larger Motion-JPEG frame only
+      period of COMPANION_CAMERA_PERIOD_MS; a larger Motion-JPEG frame only
       if the camera bounds it under what one camera packet carries, a JPEG
       over that is dropped and counted as too big), negotiates it with
       PROBE/COMMIT, and streams only while the pool has a reader: it

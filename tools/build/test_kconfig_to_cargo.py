@@ -7,7 +7,7 @@ Verifies that tools/build/kconfig_to_cargo.py:
   1. Emits a valid --target triple for every defconfig.
   2. Emits ONLY cargo features that exist in kernel/Cargo.toml [features] OR
      in a named sub-crate as a "crate/feat" token.
-  3. Does NOT emit phantom features (brain-l1, brain-l2, brain-l3, etc.).
+  3. Does NOT emit phantom features (companion-l1, companion-l2, companion-l3, etc.).
   4. Emits the correct target triple per architecture.
 
 Run with:
@@ -90,9 +90,9 @@ VALID_TARGETS: frozenset[str] = frozenset({
 # ---------------------------------------------------------------------------
 
 PHANTOM_FEATURES: frozenset[str] = frozenset({
-    "brain-l1",
-    "brain-l2",
-    "brain-l3",
+    "companion-l1",
+    "companion-l2",
+    "companion-l3",
     "auto-reconnect",
 })
 
@@ -218,7 +218,7 @@ def test_kernel_features_parseable() -> None:
 
 
 def test_no_phantom_features() -> None:
-    """Phantom features (brain-l1/l2/l3) must never appear in any output."""
+    """Phantom features (companion-l1/l2/l3) must never appear in any output."""
     KERNEL_FEATURES = parse_kernel_features(KERNEL_CARGO_TOML)
 
     for defconfig_name, _expected_target, _must_include, _must_exclude in DEFCONFIG_EXPECTATIONS:
@@ -617,10 +617,10 @@ def test_threat_profile_implies_never_forces() -> None:
         assert "CONFIG_CONSOLE_LOCKDOWN=y" not in conf, "a refused posture implied the lockdown"
         hard = _expand(["CONFIG_PRESET_ROBOT=y", "CONFIG_SECURITY_HARDENED=y"], t, "h.config")
         assert "# CONFIG_CONSOLE_LOCKDOWN is not set" in hard, "hardened implied the physical-access set"
-        # The brain-link switch exists only in the Robot domain.
+        # The companion-link switch exists only in the Robot domain.
         gen = _expand(["CONFIG_SECURITY_SEPARATION_STATIC=y"], t, "g.config")
         assert not any(l.startswith("CONFIG_LINK_PROVISIONING_ENFORCED") for l in gen), (
-            "LINK_PROVISIONING_ENFORCED reached a Generic image, which has no brain link"
+            "LINK_PROVISIONING_ENFORCED reached a Generic image, which has no companion link"
         )
         off = _expand(["CONFIG_SECURITY_SEPARATION_STATIC=y",
                        "# CONFIG_CONSOLE_LOCKDOWN is not set"], t, "c.config")
@@ -629,8 +629,8 @@ def test_threat_profile_implies_never_forces() -> None:
         )
 
 
-def test_brain_link_fails_closed_outside_dev() -> None:
-    """The brain link fails closed. Every shipped
+def test_companion_link_fails_closed_outside_dev() -> None:
+    """The companion link fails closed. Every shipped
     robot defconfig that is not BUILD_TYPE_DEV builds `link-provisioning-
     enforced` (no boot without a link key, the UART bridge down), every
     BUILD_TYPE_DEV one does not, CERTIFIABLE cannot turn it off, and Kconfig
@@ -662,7 +662,7 @@ def test_brain_link_fails_closed_outside_dev() -> None:
             else:
                 release.append(d.stem)
                 assert "CONFIG_LINK_PROVISIONING_ENFORCED=y" in lines, \
-                    f"{d.name} (not BUILD_TYPE_DEV) leaves the brain link fail-open"
+                    f"{d.name} (not BUILD_TYPE_DEV) leaves the companion link fail-open"
                 assert feat in feats, f"{d.name}: no {feat} in {feats}"
         # The generated cell names (F4): robot-<form>-<arch>[-dev][+<axis>...].
         for want in ("+vf2", "+k1", "+rpi5", "robot-embedded-", "robot-server-"):
@@ -672,12 +672,12 @@ def test_brain_link_fails_closed_outside_dev() -> None:
         # The Kconfig default with nothing else set is a release robot build.
         r = _expand(["CONFIG_PRESET_ROBOT=y"], t, "r.config")
         assert "CONFIG_BUILD_TYPE_RELEASE=y" in r and "CONFIG_LINK_PROVISIONING_ENFORCED=y" in r, \
-            "the default robot build does not enforce the brain link"
+            "the default robot build does not enforce the companion link"
         # Certifiable: on, and a hand-set n does not take it off.
         c = _expand(["CONFIG_PRESET_ROBOT=y", "CONFIG_BOARD_VF2=y", "CONFIG_BUILD_TYPE_CERTIFIABLE=y",
                      "# CONFIG_LINK_PROVISIONING_ENFORCED is not set"], t, "c.config")
         assert "CONFIG_BUILD_TYPE_CERTIFIABLE=y" in c and "CONFIG_LINK_PROVISIONING_ENFORCED=y" in c, \
-            "CERTIFIABLE let the brain link fail open"
+            "CERTIFIABLE let the companion link fail open"
         # A development build may still turn it on by hand (the gate's rows do).
         h = _expand(["CONFIG_PRESET_ROBOT=y", "CONFIG_BUILD_TYPE_DEV=y",
                      "CONFIG_LINK_PROVISIONING_ENFORCED=y"], t, "h.config")
@@ -1612,7 +1612,7 @@ def _run_all_tests() -> int:
         test_default_target_is_riscv64,
         test_domain_defaults_to_generic_and_robot_type_is_wired,
         test_threat_profile_implies_never_forces,
-        test_brain_link_fails_closed_outside_dev,
+        test_companion_link_fails_closed_outside_dev,
         test_driver_switches_follow_their_board,
         test_no_defconfig_enables_unimplemented_options,
         test_page_size_reaches_the_build,

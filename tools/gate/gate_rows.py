@@ -90,7 +90,7 @@ STD_DEPS = "crates/core/stdrt/** sdk/std/** tools/build/sdk_std.py third_party/p
 # Subsystem -> (key/function/feature regex, path globs). A row depends on the
 # paths of every subsystem its key, function or features name.
 SUBSYS = [
-    ("net", r"network|dhcp|tcp|udp|\barp\b|link|nic\b|\bnet\b|net-|slirp|brain|tftp",
+    ("net", r"network|dhcp|tcp|udp|\barp\b|link|nic\b|\bnet\b|net-|slirp|companion|tftp",
      "crates/net/** crates/drivers/net/** crates/drivers/virtio/**"),
     ("fs", r"\bfs\b|fat|crash log|pstore|boot count|storage|mmc|disk|volume|journal|seed",
      "crates/fs/** crates/drivers/block/** kernel/src/pstore.rs"),
@@ -128,7 +128,7 @@ ARCH_DEPS = {
 }
 # Classes that keep a row out of a shared boot, and the evidence for each.
 HAZARDS = [
-    ("peer", r"fake_brain|hostfwd|guestfwd|9000|peer|socket,|-s\b|gdb|ota_server|serve"),
+    ("peer", r"fake_companion|hostfwd|guestfwd|9000|peer|socket,|-s\b|gdb|ota_server|serve"),
     # A stock image (file=build/<x>.img, a private copy per boot) is part of
     # the group key, not a hazard; an image the row makes or edits is.
     ("disk", r"fresh_disk|make_disk|mcopy|mtools|dd if=|truncate|mkfs"),
@@ -1485,7 +1485,7 @@ def self_test():
     fixture = "tests/host/dtb-tests/fixtures/qemu-raspi3b.dtb"
     cases = [
         ("fixture", dict(syn, body='dtb="${REPO_ROOT}/%s"' % fixture), fixture),
-        ("script", dict(syn, body="python3 tools/gate/fake_brain.py --serve"), "tools/gate/fake_brain.py"),
+        ("script", dict(syn, body="python3 tools/gate/fake_companion.py --serve"), "tools/gate/fake_companion.py"),
         ("suite", dict(syn, fn="host_canary_row", args=["syn", "tls-tests", "canary-no-pin", "t"]),
          "tests/host/tls-tests/**"),
         ("suite closure", dict(syn, fn="host_canary_row", args=["syn", "tls-tests", "canary-no-pin", "t"]),
@@ -1510,7 +1510,7 @@ def self_test():
         expect("canary: the prefix of a shell expansion is a dep: %r" % sorted(required_deps(prefix)),
                not required_deps(prefix))
         expect("canary: a commented path is a dep",
-               not required_deps(dict(syn, body="  # python3 tools/gate/fake_brain.py\n  true # tools/gate/fake_brain.py")))
+               not required_deps(dict(syn, body="  # python3 tools/gate/fake_companion.py\n  true # tools/gate/fake_companion.py")))
     x86 = dict(syn, key="soak (x86)", fn="soak_row", args=[], flags="", body="", call="")
     expect("an x86 row does not need arch/x86_64", "arch/x86_64/**" in required_deps(x86))
     expect("canary: a riscv64 row needs arch/x86_64",

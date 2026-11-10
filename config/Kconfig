@@ -5,7 +5,7 @@
 # One topic per file under config/axes (the profile axes), config/arch (ISA,
 # platform), config/kernel (core kernel), config/subsys (subsystems and
 # drivers, and the application domains, shown only for their USE: robot,
-# brain) and config/limits (the resource cap table). The menus are declared here;
+# companion) and config/limits (the resource cap table). The menus are declared here;
 # a topic file holds only its symbols (and its own sub-menus).
 
 # The preset and the profile axes come first: PRESET is the one choice a
@@ -22,15 +22,15 @@ endmenu # Preset and profile axes
 
 # The application domain (the USE axis, derived from the preset, never asked)
 # comes next: it decides which domain menus are shown (the Robot menu, with
-# the brain link inside it, is visible only for USE_ROBOT).
+# the companion link inside it, is visible only for USE_ROBOT).
 source "config/axes/Kconfig.use"
 source "config/extensions/Kconfig"
 
 menu "Robot"
     visible if USE_ROBOT
 source "config/subsys/Kconfig.robot"
-menu "Brain Server Link"
-endmenu # Brain Server Link
+menu "Companion Link"
+endmenu # Companion Link
 
 endmenu # Robot
 

@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! CONFIG.INI under its signed authority, at boot (Phase G2).
 //!
-//! `CONFIG.INI` decides whether the kill switch is armed, whether the brain
+//! `CONFIG.INI` decides whether the kill switch is armed, whether the companion
 //! link is encrypted, whether an OTA listener spawns, whether the board halts
 //! into `bench_boot`, and which ELF `autorun` hands the drivetrain to — on a
 //! USB-exposed FAT volume. It is loaded only if `CONFIG.SIG` (format v2,

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The kernel's answer to the brain-protocol frames that ask for authority:
+//! The kernel's answer to the companion-protocol frames that ask for authority:
 //! an e-stop, degraded mode and the semantic level, a mode change (the
 //! operator's signed e-stop release and device-hold release), a payload or
 //! configuration effect, and the low-confidence flag of an actuator command.
@@ -14,13 +14,13 @@
 //! mode (which also lifts the low-confidence cap), lowering the level, and,
 //! while contained, a payload or configuration frame that turns something on
 //! or moves it (spray, buzzer and camera power off stay unsigned) need the operator's
-//! warrant in the frame (`brain_protocol::relax_body_len`: the body, a nonce,
+//! warrant in the frame (`companion_protocol::relax_body_len`: the body, a nonce,
 //! the signature), verified like an e-stop release
 //! (`estop::verify_operator_relax`); without one the frame is refused with a
 //! decision record. A frame of a type the protocol does not define is
 //! recorded.
 
-use azos_behavior::brain_protocol::*;
+use azos_behavior::companion_protocol::*;
 use azos_behavior::logger;
 use azos_behavior::safety;
 use azos_drv_sys::kprintln;
@@ -61,14 +61,14 @@ pub fn authority_frame(kind: u8, payload: &[u8]) {
             Some(body) => body,
             None => {
                 safety::record_unsigned_relax(kind, payload.first().copied().unwrap_or(0));
-                azos_drv_sys::kwarn!("[BRAIN] frame 0x{:02x} refused: relaxing needs the operator's warrant", kind);
+                azos_drv_sys::kwarn!("[COMPANION] frame 0x{:02x} refused: relaxing needs the operator's warrant", kind);
                 return;
             }
         },
     };
     match kind {
         PKT_ACTUATOR => {
-            // The brain's own doubt only ever tightens: it sets the cap, and
+            // The companion's own doubt only ever tightens: it sets the cap, and
             // only the operator's degrade clear lifts it.
             if decode_actuator_cmd(body).is_some_and(|c| c.is_low_confidence()) {
                 safety::cmd_set_low_confidence(true);
@@ -87,7 +87,7 @@ pub fn authority_frame(kind: u8, payload: &[u8]) {
         PKT_ESTOP => {
             if !safety::estop_is_active() {
                 crate::actuation::latch_and_stop();
-                azos_drv_sys::kwarn!("[BRAIN] ESTOP received — motors stopped");
+                azos_drv_sys::kwarn!("[COMPANION] ESTOP received — motors stopped");
                 let _ = logger::log_safety_violation_durable(logger::SAFETY_ESTOP, 0, 0);
             }
         }
@@ -98,7 +98,7 @@ pub fn authority_frame(kind: u8, payload: &[u8]) {
             let previous = azos_ipc::cap::degrade_level();
             azos_ipc::cap::degrade_level_set(level);
             let effective = azos_ipc::cap::degrade_level();
-            kprintln!("[BRAIN] semantic level set to {}", effective);
+            kprintln!("[COMPANION] semantic level set to {}", effective);
             if let Some((v, a, d)) = logger::semantic_level_record(malformed, effective, previous) {
                 logger::log_safety_violation(v, a, d);
             }
@@ -161,14 +161,14 @@ fn degrade(body: &[u8]) {
     if reason == DEGRADE_CLEAR {
         azos_ipc::cap::degraded_set(false);
         safety::cmd_set_low_confidence(false);
-        azos_drv_sys::kwarn!("[BRAIN] degraded mode cleared by verified operator authority");
+        azos_drv_sys::kwarn!("[COMPANION] degraded mode cleared by verified operator authority");
         logger::log_safety_violation(logger::SAFETY_DEGRADE, 0, 0);
     } else {
         azos_ipc::cap::degraded_set(true);
         if malformed {
-            azos_drv_sys::kwarn!("[BRAIN] degraded mode armed — reason byte missing");
+            azos_drv_sys::kwarn!("[COMPANION] degraded mode armed — reason byte missing");
         } else {
-            azos_drv_sys::kwarn!("[BRAIN] degraded mode armed — reason {}", reason);
+            azos_drv_sys::kwarn!("[COMPANION] degraded mode armed — reason {}", reason);
         }
         logger::log_safety_violation(logger::SAFETY_DEGRADE, 1, reason as u32);
     }
@@ -191,16 +191,16 @@ fn mode(m: ModeCmd, payload: &[u8]) {
             };
             if let Some(proof) = proof {
                 safety::estop_release(proof);
-                azos_drv_sys::kwarn!("[BRAIN] ESTOP cleared by verified operator authority");
+                azos_drv_sys::kwarn!("[COMPANION] ESTOP cleared by verified operator authority");
                 let _ = logger::log_safety_violation_durable(logger::SAFETY_ESTOP, action_code, m.mode_id as u32);
             } else if let Some(n) = safety::note_refused_estop_clear() {
-                azos_drv_sys::kwarn!("[BRAIN] ESTOP_RESET recorded as a REQUEST — no verified operator authority, \
+                azos_drv_sys::kwarn!("[COMPANION] ESTOP_RESET recorded as a REQUEST — no verified operator authority, \
                     ESTOP stays armed (refusal #{})", n);
                 let _ = logger::log_safety_violation_durable(
                     logger::SAFETY_ESTOP, safety::ESTOP_ACTION_REFUSED_MIRROR, (n << 8) | m.mode_id as u32);
             }
         } else if let Some(n) = safety::note_refused_estop_clear() {
-            azos_drv_sys::kwarn!("[BRAIN] MODE mode_id={} is not the reset id — ESTOP stays armed (refusal #{})",
+            azos_drv_sys::kwarn!("[COMPANION] MODE mode_id={} is not the reset id — ESTOP stays armed (refusal #{})",
                 m.mode_id, n);
             let _ = logger::log_safety_violation_durable(logger::SAFETY_ESTOP, action_code, (n << 8) | m.mode_id as u32);
         }
@@ -208,7 +208,7 @@ fn mode(m: ModeCmd, payload: &[u8]) {
     if let Some((should_clear, action_code, detail)) = mode_degrade_record(m.mode_id, azos_ipc::cap::degraded_active()) {
         if should_clear {
             safety::record_unsigned_relax(PKT_MODE, m.mode_id);
-            azos_drv_sys::kwarn!("[BRAIN] MODE does not clear degraded mode: the operator's signed degrade clear does");
+            azos_drv_sys::kwarn!("[COMPANION] MODE does not clear degraded mode: the operator's signed degrade clear does");
         } else {
             logger::log_safety_violation(logger::SAFETY_DEGRADE, action_code, detail);
         }
@@ -231,7 +231,7 @@ fn hold_release_frame(payload: &[u8]) -> bool {
     match azos_actuation::safe_state::release_from_frame(body) {
         None => false,
         Some(Ok(())) => {
-            azos_drv_sys::kwarn!("[BRAIN] device hold released by verified operator authority");
+            azos_drv_sys::kwarn!("[COMPANION] device hold released by verified operator authority");
             true
         }
         Some(Err(e)) => {
@@ -241,7 +241,7 @@ fn hold_release_frame(payload: &[u8]) -> bool {
                     ReleaseError::TooEarly { .. } => "inside the minimum hold",
                     ReleaseError::NoWarrant(_) => "no valid warrant",
                 };
-                azos_drv_sys::kwarn!("[BRAIN] device hold release refused: {} (refusal #{})", why, n);
+                azos_drv_sys::kwarn!("[COMPANION] device hold release refused: {} (refusal #{})", why, n);
             }
             true
         }

@@ -7,13 +7,13 @@
 
 mod protocol;
 
-/// `azos_bench::run_all` and the brain protocol's benches: the one entry the
+/// `azos_bench::run_all` and the companion protocol's benches: the one entry the
 /// robot image's shell and boot bench call.
 pub fn run_all(iters: u64) -> u32 {
     finish(azos_bench::run_all(iters), iters)
 }
 
-/// `azos_bench::run_all_quiescent` and the brain protocol's benches.
+/// `azos_bench::run_all_quiescent` and the companion protocol's benches.
 pub fn run_all_quiescent(iters: u64) -> u32 {
     finish(azos_bench::run_all_quiescent(iters), iters)
 }

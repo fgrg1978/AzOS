@@ -38,7 +38,7 @@ endif
 
 include mk/vars.mk
 
-.PHONY: check0 check0-nobrain check1 check-compile check-presets check-neverallow check-fast prune all build build-rvv build-fleet clean qemu qemu-smp qemu-full-smp qemu-net-pair \
+.PHONY: check0 check0-nocompanion check1 check-compile check-presets check-neverallow check-fast prune all build build-rvv build-fleet clean qemu qemu-smp qemu-full-smp qemu-net-pair \
         qemu-rvv qemu-full-smp-rvv qemu-systest qemu-dhcp-smoke userspace userspace-aarch64 syscall-test make-gguf \
         vf2 vf2-ktest vf2-pstore flash-vf2 k1 flash-k1 k1-console ci
 

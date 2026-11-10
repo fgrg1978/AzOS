@@ -32,17 +32,17 @@
 /// No extra restriction — normal operation. Speed cap: per-type maximum.
 pub const DEGRADE_LEVEL_FULL: u8 = 0;
 
-/// Cautious operation — brain perceived a mild situational risk.
+/// Cautious operation — companion perceived a mild situational risk.
 /// Speed ceiling: 70 % of per-type maximum.
 pub const DEGRADE_LEVEL_CAUTIOUS: u8 = 1;
 
-/// Slow operation — brain perceived a significant situational risk.
+/// Slow operation — companion perceived a significant situational risk.
 /// Speed ceiling: 30 % of per-type maximum.
 pub const DEGRADE_LEVEL_SLOW: u8 = 2;
 
-/// Full containment — brain perceived a critical hazard or went blind.
+/// Full containment — companion perceived a critical hazard or went blind.
 /// Speed ceiling: 0 % (stop). Additionally, every user-task write/actuation
-/// capability is denied at the `CapTable::get` chokepoint (brain-loss containment semantics).
+/// capability is denied at the `CapTable::get` chokepoint (companion-loss containment semantics).
 pub const DEGRADE_LEVEL_CONTAINED: u8 = 3;
 
 /// Maximum valid level index (= `DEGRADE_LEVEL_CONTAINED`). Any out-of-range
@@ -58,7 +58,7 @@ pub const DEGRADE_LEVEL_MAX: u8 = DEGRADE_LEVEL_CONTAINED;
 // `DEGRADE_SPEED_CAP_CAUTIOUS_PCT` (70) and `DEGRADE_SPEED_CAP_SLOW_PCT` (30)
 // were CHOSEN, not derived. No stopping-distance model and no measurement of
 // any kind supports either number, and none was ever attempted. They are
-// plausible-looking and consistent between this kernel and the brain
+// plausible-looking and consistent between this kernel and the companion
 // (`../AzOSRobotBrain/protocol.py`), which is not the same thing as being safe.
 //
 // A robot's real safe speed under degradation is a function of its mass,

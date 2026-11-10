@@ -3,7 +3,7 @@
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 """Everything the build needs from outside the checkout: fetch it, check it, move a pin.
 
-    fetch.py fetch [--config-only [--config FILE]] [--brain]  (BRAIN_OPTIONAL=1 in the environment adds the optional brain packages) [--dry-run]
+    fetch.py fetch [--config-only [--config FILE]] [--companion]  (COMPANION_OPTIONAL=1 in the environment adds the optional companion packages) [--dry-run]
     fetch.py check [--offline]
     fetch.py update <tree> [<tag-or-commit>]
     fetch.py self-test
@@ -35,7 +35,7 @@ HOME = os.path.expanduser("~")
 sys.path.insert(0, os.path.join(ROOT, "tools/lint"))
 sys.path.insert(0, os.path.join(ROOT, "tools/lib"))
 import third_party_versions as tpv  # noqa: E402  (the pin/CVE parsing is its own)
-import azos_tools  # noqa: E402  (the one brain-repo resolver)
+import azos_tools  # noqa: E402  (the one companion-repo resolver)
 
 # ── trees: the .config symbol that makes a tree needed, and where the build reads it ──
 # u-boot has no symbol: only the netboot gate row (tools/gate/netboot/uboot_build.sh) builds it.
@@ -121,10 +121,10 @@ INVENTORY = [
     dict(id="advisory-db", cat="gate", kind="advisory", provides=[],
          used="tools/lint/advisories.sh check (offline, against third_party/advisory-db); `make fetch ADVISORIES=1` refreshes the tracked snapshot when it is older than its 45-day limit",
          pinned="@third_party/advisory-db/SNAPSHOT", source="https://github.com/RustSec/advisory-db", sum="@third_party/advisory-db/SNAPSHOT"),
-    dict(id="brain-python", cat="optional", kind="pip", venv="brain", requirements="requirements.lock",
+    dict(id="companion-python", cat="optional", kind="pip", venv="companion", requirements="requirements.lock",
          optional_requirements="requirements-optional.lock", provides=[],
-         used="the AzOSRobotBrain tests and protocol sync (make ci-full); only `make fetch BRAIN=1`; a venv under $AZOS_OUT, never the system pip; "
-              "BRAIN_OPTIONAL=1 adds matplotlib, Pillow, scipy, opencv-python, astropy",
+         used="the AzOSRobotBrain tests and protocol sync (make ci-full); only `make fetch COMPANION=1`; a venv under $AZOS_OUT, never the system pip; "
+              "COMPANION_OPTIONAL=1 adds matplotlib, Pillow, scipy, opencv-python, astropy",
          pinned="the exact versions of AzOSRobotBrain/requirements.lock", source="https://pypi.org (hashes in the lock files)", sum="sha256 per file in the lock files"),
     dict(id="pyserial", cat="dev", kind="pip", venv="build", packages=["pyserial"], provides=[],
          used="the serial console tool of tools/dev (a board's UART)", pinned="latest (unpinned)", source="https://pypi.org", sum="-"),
@@ -378,15 +378,15 @@ def build_python_ok():
     return None
 
 
-def brain_locks(root, it, with_optional):
-    """The brain's lock files, inside the repo the shared resolver finds (none: no brain)."""
+def companion_locks(root, it, with_optional):
+    """The companion's lock files, inside the repo the shared resolver finds (none: no companion)."""
     keys = ["requirements"] + (["optional_requirements"] if with_optional else [])
-    _state, brain = azos_tools.brain_state()
-    base = brain or os.path.join(os.path.dirname(root), azos_tools.BRAIN_REPO_NAME)
+    _state, companion = azos_tools.companion_state()
+    base = companion or os.path.join(os.path.dirname(root), azos_tools.COMPANION_REPO_NAME)
     return [os.path.join(base, it[k]) for k in keys]
 
 
-def brain_stamp(locks):
+def companion_stamp(locks):
     return "".join(f"== {os.path.basename(p)}\n{open(p).read()}" for p in locks)
 
 
@@ -418,11 +418,11 @@ def status(root, it):
         return "ok"
     if k == "pip":
         if "requirements" in it:
-            locks = brain_locks(root, it, os.environ.get("BRAIN_OPTIONAL") == "1")
+            locks = companion_locks(root, it, os.environ.get("COMPANION_OPTIONAL") == "1")
             if not all(os.path.exists(p) for p in locks):
                 return "absent (no sibling AzOSRobotBrain checkout with its lock files)"
             stamp = os.path.join(venv_dir(it), ".requirements")
-            return "ok" if os.path.exists(stamp) and open(stamp).read() == brain_stamp(locks) else "missing"
+            return "ok" if os.path.exists(stamp) and open(stamp).read() == companion_stamp(locks) else "missing"
         if it["venv"] == "build" and it["id"] == "python-build":
             return "ok" if build_python_ok() else "missing"
         py = os.path.join(venv_dir(it), "bin", "python")
@@ -486,7 +486,7 @@ def pkg_manager_line(missing_items):
 
 
 # ── fetch ────────────────────────────────────────────────────────────────────────────
-def cmd_fetch(root, config_only, config_file, dry, brain=False):
+def cmd_fetch(root, config_only, config_file, dry, companion=False):
     rows = []  # (item, result)
 
     def note(name, res):
@@ -512,12 +512,12 @@ def cmd_fetch(root, config_only, config_file, dry, brain=False):
     if not config_only:
         todo_pkg = []
         for it in INVENTORY:
-            if it["cat"] == "optional" and brain:
+            if it["cat"] == "optional" and companion:
                 note(it["id"], install(root, it, dry) if status(root, it) != "ok" else "already OK")
                 continue
             if it["cat"] in ("dev", "optional") and it["kind"] != "manual":
                 st = status(root, it)
-                note(f"{it['id']} ({it['cat']})", "already OK" if st == "ok" else f"{st}; optional, not installed" + (" (make fetch BRAIN=1)" if it["cat"] == "optional" else ""))
+                note(f"{it['id']} ({it['cat']})", "already OK" if st == "ok" else f"{st}; optional, not installed" + (" (make fetch COMPANION=1)" if it["cat"] == "optional" else ""))
                 continue
             st = status(root, it)
             if it["kind"] == "manual":
@@ -589,7 +589,7 @@ def install(root, it, dry):
 def install_pip(root, it, dry):
     v = venv_dir(it)
     if "requirements" in it:
-        locks = brain_locks(root, it, os.environ.get("BRAIN_OPTIONAL") == "1")
+        locks = companion_locks(root, it, os.environ.get("COMPANION_OPTIONAL") == "1")
         gone = [p for p in locks if not os.path.exists(p)]
         if gone:
             print(f"  {gone[0]} is absent (the sibling AzOSRobotBrain checkout and its lock files): skipped")
@@ -602,7 +602,7 @@ def install_pip(root, it, dry):
         return 1
     rc = run([os.path.join(v, "bin", "python"), "-m", "pip", "install", *pkgs], dry)
     if rc == 0 and not dry and "requirements" in it:
-        open(os.path.join(v, ".requirements"), "w").write(brain_stamp(brain_locks(root, it, os.environ.get("BRAIN_OPTIONAL") == "1")))
+        open(os.path.join(v, ".requirements"), "w").write(companion_stamp(companion_locks(root, it, os.environ.get("COMPANION_OPTIONAL") == "1")))
     if rc == 0 and it["id"] == "python-build":
         print(f"  make finds {v}/bin/python by itself (mk/kernel.mk), or pass PYTHON=<it>")
     return rc
@@ -825,7 +825,7 @@ def main(argv):
         return self_test()
     if cmd == "fetch":
         cfg = rest[rest.index("--config") + 1] if "--config" in rest else ".config"
-        return cmd_fetch(ROOT, "--config-only" in rest, cfg, "--dry-run" in rest, "--brain" in rest)
+        return cmd_fetch(ROOT, "--config-only" in rest, cfg, "--dry-run" in rest, "--companion" in rest)
     if cmd == "check":
         return cmd_check(ROOT, "--offline" in rest)
     if cmd == "update":

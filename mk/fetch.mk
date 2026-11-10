@@ -5,14 +5,14 @@
 #   make fetch                  every pinned tree, toolchain, host tool and package the build needs; skips what is present
 #   make fetch CONFIG=1         only the third-party trees the .config consumes
 #   make fetch ADVISORIES=1     also rewrite the tracked RustSec snapshot when it is stale (default: no tracked file changes)
-#   make fetch BRAIN=1          also the AzOSRobotBrain venv (BRAIN_OPTIONAL=1 adds its optional packages)
+#   make fetch COMPANION=1          also the AzOSRobotBrain venv (COMPANION_OPTIONAL=1 adds its optional packages)
 #   make fetch-check            offline-first report of each pin, its upstream, CVEs and the inventory; changes nothing
 #   make fetch-update NAME=<tree> [VERSION=<tag>]   move one pin and fetch it; leaves the change uncommitted
 FETCH_PY = $(PYTHON) tools/build/fetch.py
 
 .PHONY: fetch fetch-check fetch-update
 fetch:
-	@ADVISORIES='$(ADVISORIES)' BRAIN_OPTIONAL='$(BRAIN_OPTIONAL)' $(FETCH_PY) fetch $(if $(CONFIG),--config-only --config '$(KCONFIG_CONFIG)') $(if $(BRAIN),--brain)
+	@ADVISORIES='$(ADVISORIES)' COMPANION_OPTIONAL='$(COMPANION_OPTIONAL)' $(FETCH_PY) fetch $(if $(CONFIG),--config-only --config '$(KCONFIG_CONFIG)') $(if $(COMPANION),--companion)
 
 fetch-check:
 	@$(FETCH_PY) check $(if $(OFFLINE),--offline)

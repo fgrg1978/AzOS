@@ -191,7 +191,7 @@ fn fence_tick(state: &SensorState) {
 /// e-stop frames between two reads, and each read drains it.
 fn bridge_estop() {
     use azos_drv_bus::uart_bridge as bridge;
-    use azos_behavior::brain_protocol::take_estop_frames;
+    use azos_behavior::companion_protocol::take_estop_frames;
     static LINE: azos_sync::SpinLock<([u8; 256], usize)> = azos_sync::SpinLock::new(([0; 256], 0));
     if !bridge::bridge_is_ready() {
         return;
@@ -215,6 +215,6 @@ fn bridge_estop() {
         estops
     };
     if estops > 0 {
-        crate::frames::authority_frame(azos_behavior::brain_protocol::PKT_ESTOP, &[]);
+        crate::frames::authority_frame(azos_behavior::companion_protocol::PKT_ESTOP, &[]);
     }
 }

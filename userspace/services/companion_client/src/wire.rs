@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The brain protocol's frame around a payload: MAGIC(2) + TYPE(1) + LEN(2 LE)
+//! The companion protocol's frame around a payload: MAGIC(2) + TYPE(1) + LEN(2 LE)
 //! + PAYLOAD + CRC8(1). Pure, so the host suite includes it by path.
 
-pub const MAGIC: [u8; 2] = *b"BR";
+pub const MAGIC: [u8; 2] = *b"CL";
 /// MAGIC(2) + TYPE(1) + LEN(2) + CRC(1).
 pub const FRAME_OVERHEAD: usize = 6;
 /// Where a payload starts in a frame.

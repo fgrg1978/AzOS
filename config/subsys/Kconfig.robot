@@ -28,7 +28,7 @@ choice
       option every image ran the wheeled checks, and the drone and
       humanoid checks were reachable only from host tests.
 
-      The brain-link status packet reports this type
+      The companion-link status packet reports this type
       (`safety_robot_type()`, kernel/src/tasks/behavior.rs).
 
     config ROBOT_NONE
@@ -76,7 +76,7 @@ config ROBOT_TYPE_ID
     default 0
     help
       The robot type as the safety layer numbers it (ROBOT_TYPE_* in
-      crates/domains/robot/behavior/src/safety.rs and brain_protocol.rs):
+      crates/domains/robot/behavior/src/safety.rs and companion_protocol.rs):
       0 wheeled, 1 drone, 2 humanoid, 3 ackermann. No prompt: derived from
       the choice above, and 0 in every other domain, so a non-robot image
       keeps the starting type every image had before.
@@ -106,7 +106,7 @@ config SAFETY_DRONE_COMMS_TIMEOUT_S
     help
       crates/domains/robot/behavior/src/safety.rs,
       SAFETY_DRONE_COMMS_TIMEOUT_TICKS = TIMER_FREQ x this. `check_drone`
-      returns ReturnToLaunch (CommsTimeout) when the last brain command is
+      returns ReturnToLaunch (CommsTimeout) when the last companion command is
       older than this.
 
 config PID_DT_MS
@@ -126,7 +126,7 @@ config ML_REPLY_TIMEOUT_US
     range 2000 40000
     default 10000
     help
-      userspace/services/brain_client/src/mlcall.rs: how long one engine
+      userspace/services/companion_client/src/mlcall.rs: how long one engine
       cycle waits for the ring-3 inference service's verdict before it
       counts as missing for that cycle, and L1 holds a stop (a missing
       verdict never lets the robot drive). It is also the deadline the
@@ -287,7 +287,7 @@ config RC_INPUT
       silent for RC_LINK_TIMEOUT_MS latches the e-stop (when
       RC_FAILSAFE_ESTOP), the kill switch latches it on every robot type,
       and with the mode switch high the sticks drive: the arbiter ranks them
-      below L0 and L1's stop and above the brain and autonomy, and they
+      below L0 and L1's stop and above the companion and autonomy, and they
       reach the motors only through the motor envelope and the actuation
       gate. Each latch writes a durable SAFETY_ESTOP record (action 12 link
       loss, 13 kill switch).
@@ -334,7 +334,7 @@ config RC_MODE_CHANNEL
     default 5
     help
       With this channel above RC_SWITCH_HIGH_US the sticks drive (manual
-      override of the brain); below it the brain drives. 0 disables manual
+      override of the companion); below it the companion drives. 0 disables manual
       control: the receiver is then only a failsafe and a kill switch.
       Channel 5 is the conventional mode switch.
 

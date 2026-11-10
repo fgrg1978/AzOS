@@ -326,7 +326,7 @@ save_csrs:
     #
     # WHY.  An interrupt is taken on whatever stack was running, so the cost
     # of the handler lands on top of the deepest syscall chain in the tree.
-    # That is exactly how every brain-peer boot died: a timer
+    # That is exactly how every companion-peer boot died: a timer
     # taken during the receive path put its frame past the end of a 16 KiB
     # task stack.  Raising the task stack paid for that once; a dedicated
     # stack per hart stops the task stack having to budget for it at all.

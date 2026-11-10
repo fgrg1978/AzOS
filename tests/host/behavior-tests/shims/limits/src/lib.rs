@@ -44,8 +44,8 @@ pub const EFFECT_WATCH_SLOTS: usize = 8;
 /// Kconfig `B2_HOLD_MIN_MS` (B2), at its default.
 pub const B2_HOLD_MIN_MS: usize = 500;
 
-/// Kconfig `BRAIN_TX_STALL_MS`, at its default.
-pub const BRAIN_TX_STALL_MS: u64 = 2_000;
+/// Kconfig `COMPANION_TX_STALL_MS`, at its default.
+pub const COMPANION_TX_STALL_MS: u64 = 2_000;
 /// Kconfig `BUILD_TYPE_DEV`: the host suites stand for the QEMU development
 /// build. `estop.rs`'s release-without-a-recorder tests state the other build
 /// type through `verify_operator_release_for`.

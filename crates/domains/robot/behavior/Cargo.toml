@@ -30,7 +30,7 @@ azos_degrade_policy = { workspace = true }
 # envelope starts with (safety.rs, ROBOT_TYPE).
 azos_limits       = { workspace = true }
 azos_actuation    = { workspace = true }
-# The brain's pinned Noise key is the signed topology's `[peer.brain]` row.
+# The companion's pinned Noise key is the signed topology's `[peer.companion]` row.
 azos_topology     = { workspace = true }
 # #[wcet(N_us)] proc-macro for per-function WCET budget annotations.
 # Host-built proc-macro; Cargo resolves it correctly for cross-compilation

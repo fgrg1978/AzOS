@@ -18,7 +18,7 @@
 #
 # What each domain does:
 #   Only the robot extension (EXT_ROBOT, config/extensions/Kconfig) links the
-#   robot crates under crates/domains/robot/ (behavior and the brain link,
+#   robot crates under crates/domains/robot/ (behavior and the companion link,
 #   safety-core, flight, the ESC and RC receiver drivers) plus the IMU /
 #   barometer / GPS drivers; USE_ROBOT follows it. Every domain links the shared actuation
 #   authority (crates/core/actuation: e-stop latch, signed release, flight
@@ -41,10 +41,10 @@ config USE_ROBOT
       The robot extension is on (EXT_ROBOT, config/extensions/Kconfig, which
       the robot preset picks by default and which owns the kernel feature
       `use-robot`). Links the robot crates:
-      behavior and the brain link, the motor control loop and the
+      behavior and the companion link, the motor control loop and the
       per-robot-type safety envelope (safety-core), IMU / barometer /
       GPS / AHRS, flight, navigation, telemetry, the in-kernel benches, and starts their tasks.
-      Shows the "Robot" menu: robot type, brain link, the
+      Shows the "Robot" menu: robot type, companion link, the
       safety-layer timers and the motor control loop.
 
 config USE_IOT_HMI

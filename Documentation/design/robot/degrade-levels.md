@@ -1,11 +1,11 @@
 # Graded degrade levels
 
-The robot profile lets the brain (the untrusted, AI-driven planner on the other
+The robot profile lets the companion (the untrusted, AI-driven planner on the other
 end of the link) restrict what the machine may do without stopping it
-outright. The brain selects one of four ordered levels. Each level caps motor
+outright. The companion selects one of four ordered levels. Each level caps motor
 speed, and the most restrictive one also denies write and actuation
 capabilities to user tasks. The kernel decides what each level means; the
-brain can raise or lower the level on the wire, but a level can only deny or
+companion can raise or lower the level on the wire, but a level can only deny or
 slow and never grants anything, and an unrecognised or malformed input resolves
 to the most restrictive level.
 
@@ -26,9 +26,9 @@ FULL (0)  <  CAUTIOUS (1)  <  SLOW (2)  <  CONTAINED (3)
 | Level | Index | Speed ceiling | Meaning |
 |---|---:|---:|---|
 | `DEGRADE_LEVEL_FULL` | 0 | 100 % | No extra restriction. |
-| `DEGRADE_LEVEL_CAUTIOUS` | 1 | 70 % | The brain perceived a mild situational risk. |
-| `DEGRADE_LEVEL_SLOW` | 2 | 30 % | The brain perceived a significant situational risk. |
-| `DEGRADE_LEVEL_CONTAINED` | 3 | 0 % | Critical hazard, or the brain lost its perception. Stop, plus capability denial. |
+| `DEGRADE_LEVEL_CAUTIOUS` | 1 | 70 % | The companion perceived a mild situational risk. |
+| `DEGRADE_LEVEL_SLOW` | 2 | 30 % | The companion perceived a significant situational risk. |
+| `DEGRADE_LEVEL_CONTAINED` | 3 | 0 % | Critical hazard, or the companion lost its perception. Stop, plus capability denial. |
 
 Higher is more restrictive. The ceiling is a percentage of the per-robot-type
 maximum, not of an absolute speed, so a level never widens a limit that was
@@ -64,15 +64,15 @@ mis-mapped speed cap.
 
 `level_cap_pct` is a pure `const fn`. Its last match arm maps any level that is
 not FULL, CAUTIOUS or SLOW to `DEGRADE_SPEED_CAP_CONTAINED_PCT` (0). The
-catch-all arm is the fail-closed property: a brain running newer software than
+catch-all arm is the fail-closed property: a companion running newer software than
 the kernel cannot unlock speed by sending a level the kernel does not know.
 
 ## Wire protocol
 
-Source: `crates/domains/robot/behavior/src/brain_protocol.rs`, `crates/domains/robot/safety-core/src/frames.rs`
+Source: `crates/domains/robot/behavior/src/companion_protocol.rs`, `crates/domains/robot/safety-core/src/frames.rs`
 
 Two packet types set the level. The behaviour engine (ring 3) receives them on
-the brain link, a Noise session, and hands them to the kernel through the
+the companion link, a Noise session, and hands them to the kernel through the
 `Authority` interface, whose handler (`frames.rs`) sets the level and records it.
 
 **`PKT_SEMANTIC_LEVEL` (0x8B)** carries one byte, the level index.
@@ -99,9 +99,9 @@ clears an emergency stop (`mode_clears_containment`). Any other mode id leaves
 the level as it was and, while containment is active, is recorded as a refusal
 (`mode_degrade_record`). Unlike the e-stop, whose clear needs the operator's
 signed release proof in the same frame, containment is cleared by the bare
-reset id: the level is the brain's to set, not the operator's.
+reset id: the level is the companion's to set, not the operator's.
 
-**Sticky.** A level holds until the brain sends another. There is no timeout on
+**Sticky.** A level holds until the companion sends another. There is no timeout on
 the level: it is a standing constraint, not a heartbeat. Loss of the link is a
 separate failure, handled by the 500 ms motor-command watchdog in
 `crates/domains/robot/safety-core/src/rt_motor.rs`, which safe-stops at any level.
@@ -178,12 +178,12 @@ because the other covers it is wrong.
 
 Source: `crates/core/ipc/src/cap.rs`
 
-A level can only deny or slow. It grants nothing. A brain that is wrong,
+A level can only deny or slow. It grants nothing. A companion that is wrong,
 compromised or hallucinating can over-contain, or can return the level to FULL,
 which is the unrestricted baseline; it cannot widen access beyond that baseline
 through this path. The emergency stop and
 the in-kernel envelope remain the authority on physical motion regardless of
-the brain.
+the companion.
 
 ## Flight recorder
 
@@ -201,7 +201,7 @@ Level changes are safety events and are recorded.
   purpose: it says the kernel could not tell what was asked, which is a link
   fault or a hostile sender and not a decision.
 * `SAFETY_UNKNOWN_PKT` records a packet type the build does not act on, so a
-  brain that sends a level to a kernel without this support does not fail open
+  companion that sends a level to a kernel without this support does not fail open
   in silence.
 
 The decision of what to record is `semantic_level_record` in
@@ -212,7 +212,7 @@ The decision of what to record is `semantic_level_record` in
 Source: `crates/core/topology/src/types.rs`, `crates/core/actuation/src/effect_gate.rs`, `crates/core/ipc/src/endpoint.rs`, `crates/core/energy/src/thermal.rs`
 
 The four levels are also the vocabulary of other restrictions. These are
-separate from the brain-set global level above: they do not write
+separate from the companion-set global level above: they do not write
 `degrade_level_set`, and the global level does not read them.
 
 **Class envelope and provenance meet.** A scheduling class in the signed
@@ -238,9 +238,9 @@ level. The effect gate is installed when the build enables write-ahead receipts
 (Kconfig `EFFECT_WRITE_AHEAD`); the provenance meet additionally needs IPC
 labels (Kconfig `IPC_LABELS`), and without them no effect is held to a label.
 
-The effect: data the brain touched is held to the brain's envelope even when a
+The effect: data the companion touched is held to the companion's envelope even when a
 more trusted planner issues the effect, because the planner's label carries
-the brain's kind.
+the companion's kind.
 
 **Thermal and battery.** The thermal policy maps its situations to levels
 (`LEVEL_CAUTIOUS`, `LEVEL_SLOW`, `LEVEL_CONTAINED` in

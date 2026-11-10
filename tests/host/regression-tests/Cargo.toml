@@ -24,7 +24,7 @@ azos_limits = { path = "../../../crates/core/limits" }
 # TS01 — property-based tests. Generates random inputs to check invariants.
 proptest = "1"
 
-# WCET budget annotations — needed because `brain_protocol.rs` (pulled in via `#[path]`)
+# WCET budget annotations — needed because `companion_protocol.rs` (pulled in via `#[path]`)
 # carries `#[wcet(...)]` annotations.  The macro emits cfg-gated calls that
 # resolve to no-ops on the host (target_os = "macos"/"linux"), but the
 # `use wcet_macro::wcet` import still has to satisfy the compiler.

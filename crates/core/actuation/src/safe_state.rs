@@ -29,7 +29,7 @@
 //! nonce strictly newer than the last accepted one, persisted). A release
 //! that arrives inside the minimum hold, or with a warrant that does not
 //! verify, is refused, and every refusal and every release is one
-//! `Rule::SafeState` record. The operator reaches [`release`] on the brain
+//! `Rule::SafeState` record. The operator reaches [`release`] on the companion
 //! link and the UART bridge, as a `PKT_MODE` reset frame that names the
 //! device ([`release_from_frame`]). The hold is volatile (it does not survive a
 //! reboot, which re-initialises the device); the records are in the flight
