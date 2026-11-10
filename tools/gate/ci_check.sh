@@ -12494,6 +12494,7 @@ host_job host_canary_row "records: replay renumber canary" rings-tests canary-re
 host_job host_canary_row "seclog: dropped record canary" seclog-tests canary-no-gap-check a_dropped_record_is_an_undeclared_gap
 host_job host_canary_row "seclog: rewritten record canary" seclog-tests canary-no-chain-check a_rewritten_record_breaks_the_next_seal
 host_job host_canary_row "seclog: tpm latch canary" seclog-tests canary-hw-latch pass_a_transient_tpm_refusal_is_retried_and_a_persistent_one_goes_advisory
+host_job host_canary_row "seclog: sink claim canary" seclog-tests canary-sink-claim-unmarked pass_a_sink_loss_says_whether_the_sink_was_running
 host_job host_canary_row "seclog: reordered pair canary" seclog-tests canary-no-order-check a_reordered_pair_is_reported
 host_job host_canary_row "seclog: forged head canary" seclog-tests canary-no-anchor-check a_forged_head_breaks_the_link_to_the_next_boot
 host_job host_canary_row "seclog: live anchor canary" seclog-tests canary-no-external-check tool_a_forgery_consistent_with_itself_is_refuted_by_the_live_tpm

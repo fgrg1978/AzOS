@@ -48,8 +48,9 @@ pub struct SealNumbers {
 }
 
 /// The running digest of a boot's sink-loss declarations after `prev` and the
-/// one of `count` records from `first`, by class `by_class`.
-pub fn declaration(prev: &Hash, first: u64, count: u64, by_class: &[u32; CLASSES]) -> Hash {
+/// one of `count` records from `first`, by class `by_class`, declared with the
+/// sink running or not.
+pub fn declaration(prev: &Hash, first: u64, count: u64, by_class: &[u32; CLASSES], sink_alive: bool) -> Hash {
     let mut h = Sha256::new();
     h.update(&[TAG_DECLARATION]);
     h.update(prev);
@@ -58,6 +59,7 @@ pub fn declaration(prev: &Hash, first: u64, count: u64, by_class: &[u32; CLASSES
     for c in by_class {
         h.update(&c.to_le_bytes());
     }
+    h.update(&[sink_alive as u8]);
     h.finalize()
 }
 
@@ -196,9 +198,9 @@ impl Sealer {
     /// The kernel declared that the sink lost `count` records from `first`:
     /// the next seals say so. A loss from where the sink's start left off
     /// moves the start.
-    pub fn sink_lost(&mut self, first: u64, count: u64, by_class: &[u32; CLASSES]) {
+    pub fn sink_lost(&mut self, first: u64, count: u64, by_class: &[u32; CLASSES], sink_alive: bool) {
         self.sink_lost += count;
-        self.sink_digest = declaration(&self.sink_digest, first, count, by_class);
+        self.sink_digest = declaration(&self.sink_digest, first, count, by_class, sink_alive);
         if first <= self.sink_start {
             self.sink_start = self.sink_start.max(first + count);
         }

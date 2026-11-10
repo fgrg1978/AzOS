@@ -237,6 +237,50 @@ fn pass_a_claim_of_records_still_in_the_ring_waits_for_the_ring() {
     assert_eq!(s.sink_lost, 1, "the seal counts it");
 }
 
+/// A declared sink loss says whether the sink was running: the claim of a
+/// logd whose heartbeat moves rests on its word alone and is marked so, one
+/// of a logd that had stopped is not; the seal commits the mark, and the
+/// verifier reports it.
+///
+/// **Canary.** `canary-sink-claim-unmarked`: a declaration is never marked.
+#[test]
+fn pass_a_sink_loss_says_whether_the_sink_was_running() {
+    let run = |beating: bool| {
+        let rig = Rig::new();
+        let mut host = FakeHost::new(&rig);
+        let mut tpm = FakeTpm { anchor: [0; 32], counter: 0, refuse: false, foreign: false };
+        let page: Page = unsafe { core::mem::zeroed() };
+        let mut p = new_boot(&rig, &mut host, &tpm);
+        let lost = host.event(Class::Camera, 9);
+        pass(&mut p, &rig, &mut host, Some(&mut tpm), Some(&page));
+        page.claim(lost, 1);
+        for i in 0..(ENTRIES + 8) {
+            host.event(Class::CapDenial, 200 + i);
+            if i % 8 == 0 {
+                host.now += 3000;
+                if beating {
+                    page.beat.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                }
+                pass(&mut p, &rig, &mut host, Some(&mut tpm), Some(&page));
+            }
+        }
+        host.now += 6000;
+        if beating {
+            page.beat.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        }
+        pass(&mut p, &rig, &mut host, Some(&mut tpm), Some(&page));
+        let recs = rig.records();
+        let sl = kinds(&recs, kind::SINK_LOSS);
+        assert_eq!(sl.len(), 1, "declared once");
+        let found = verify(&recs);
+        assert!(found.iter().all(|f| !f.is_evidence()), "{found:?}");
+        let marked = found.iter().any(|f| matches!(f, Finding::ClassLost { sink: true, claimed: true, .. }));
+        (Loss::decode(&sl[0].1).unwrap().sink_alive, marked)
+    };
+    assert_eq!(run(true), (true, true), "a running sink's claim is marked");
+    assert_eq!(run(false), (false, false), "a stopped sink's is not");
+}
+
 /// A sink page whose claim count is far ahead (logd's word): the kernel
 /// reads at most a page's worth and says it lapped.
 #[test]

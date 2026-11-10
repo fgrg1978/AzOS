@@ -240,12 +240,16 @@ fn describe(f: &Finding) -> String {
         Finding::Downgrade { boot, reason } => {
             format!("boot {boot}: it seals forward-only after a boot the TPM sealed ({})", reason.name())
         }
-        Finding::ClassLost { boot, class, count, sink: false } => {
+        Finding::ClassLost { boot, class, count, sink: false, .. } => {
             format!("boot {boot}: {count} {} records lost before they were sealed (the kernel declared it)", class_name(class))
         }
-        Finding::ClassLost { boot, class, count, sink: true } => {
-            format!("boot {boot}: {count} {} records sealed and not written by logd (the kernel declared it)", class_name(class))
+        Finding::ClassLost { boot, class, count, sink: true, claimed: false } => {
+            format!("boot {boot}: {count} {} records sealed and not written by logd, which had stopped (the kernel declared it)", class_name(class))
         }
+        Finding::ClassLost { boot, class, count, sink: true, claimed: true } => format!(
+            "boot {boot}: {count} {} records sealed and not written by logd, on logd's claim: it was running when the kernel declared it",
+            class_name(class)
+        ),
         Finding::Held { boot, class, count } => format!("boot {boot}: the rate cap held back {count} {} records", class_name(class)),
         Finding::Malformed { boot, seq } => format!("boot {boot}: record {seq} does not decode as its kind, or has a shape the kernel never writes"),
         Finding::DeclarationMismatch { boot, seq } => format!(
@@ -279,19 +283,24 @@ pub fn render(r: &Report) -> String {
     }
     // The declared losses of the classes whose loss hides what spyware does,
     // by class: not evidence (the kernel declared them), never to be missed.
-    let mut hv: Vec<(u8, bool, u64)> = Vec::new();
+    let mut hv: Vec<(u8, bool, bool, u64)> = Vec::new();
     for f in &r.findings {
-        if let (true, Finding::ClassLost { class, count, sink, .. }) = (f.high_value_loss(), f) {
-            match hv.iter_mut().find(|x| x.0 == *class && x.1 == *sink) {
-                Some(x) => x.2 += *count as u64,
-                None => hv.push((*class, *sink, *count as u64)),
+        if let (true, Finding::ClassLost { class, count, sink, claimed, .. }) = (f.high_value_loss(), f) {
+            match hv.iter_mut().find(|x| x.0 == *class && x.1 == *sink && x.2 == *claimed) {
+                Some(x) => x.3 += *count as u64,
+                None => hv.push((*class, *sink, *claimed, *count as u64)),
             }
         }
     }
     if !hv.is_empty() {
         let _ = writeln!(o, "high-value records declared lost:");
-        for (class, sink, n) in &hv {
-            let _ = writeln!(o, "  {} {}{}", class_name(*class), n, if *sink { " (logd did not write them)" } else { " (never sealed)" });
+        for (class, sink, claimed, n) in &hv {
+            let how = match (*sink, *claimed) {
+                (false, _) => " (never sealed)",
+                (true, false) => " (logd did not write them; it had stopped)",
+                (true, true) => " (logd says it did not write them; it was running)",
+            };
+            let _ = writeln!(o, "  {} {}{}", class_name(*class), n, how);
         }
     }
     let s = &r.summary;

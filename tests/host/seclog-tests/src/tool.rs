@@ -185,7 +185,7 @@ fn tool_lists_high_value_losses_by_class() {
     let mut by_class = [0u32; azos_seclog::CLASSES];
     by_class[Class::Microphone as usize] = 2;
     let mut extra = lines.clone();
-    let loss = azos_seclog::Loss { first: 99, count: 2, by_class };
+    let loss = azos_seclog::Loss { first: 99, count: 2, by_class, sink_alive: false };
     let mut p = [0u8; azos_seclog::PAYLOAD];
     p[..azos_seclog::Loss::LEN].copy_from_slice(&loss.encode());
     let env = azos_seclog::Envelope { seq: lines.len() as u64, ts: 1, clock: 0, source: 4, kind: kind::LOSS, len: azos_seclog::Loss::LEN as u16, cpu: 0, flags: 0 };

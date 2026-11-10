@@ -176,7 +176,7 @@ impl<const LOG: usize> Pass<LOG> {
     ) -> Option<u64> {
         let now = host.now();
         let mut declared = self.drain(ring, host, now);
-        declared |= self.declare(ring, sink, host, now);
+        declared |= self.declare(ring, sink, host, now, cfg.urgent_s.saturating_mul(cfg.hz));
         if declared {
             // What it just declared is folded now, so this seal covers it.
             self.drain(ring, host, now);
@@ -298,12 +298,13 @@ impl<const LOG: usize> Pass<LOG> {
             by_class[c] = copied[c].saturating_sub(self.folded[c]).saturating_sub(self.declared[c]);
             self.declared[c] += by_class[c];
         }
-        host.publish(kind::LOSS, &Loss { first, count, by_class }.encode());
+        host.publish(kind::LOSS, &Loss { first, count, by_class, sink_alive: false }.encode());
     }
 
     /// Declare the pass's loss, what the cap held back and what the sink
-    /// claims: whether a loss was declared.
-    fn declare(&mut self, ring: &Ring, sink: Option<&Page>, host: &mut dyn Host, now: u64) -> bool {
+    /// claims: whether a loss was declared. A sink loss says whether the sink's
+    /// heartbeat had moved within `stall` ticks.
+    fn declare(&mut self, ring: &Ring, sink: Option<&Page>, host: &mut dyn Host, now: u64, stall: u64) -> bool {
         let mut declared = self.loss.is_some();
         self.flush_loss(host);
         let (_, held, subjects) = host.tally();
@@ -320,6 +321,7 @@ impl<const LOG: usize> Pass<LOG> {
         if b != self.beat {
             (self.beat, self.beat_at) = (b, now);
         }
+        let alive = !cfg!(feature = "canary-sink-claim-unmarked") && now.wrapping_sub(self.beat_at) < stall;
         let (oldest, head, next) = (ring.oldest(), ring.head(), self.s.next());
         let mut lapped = false;
         let mut fresh = [(0u64, 0u64); CLAIMS];
@@ -353,7 +355,7 @@ impl<const LOG: usize> Pass<LOG> {
             let (first, end) = self.claims[i];
             let upto = end.min(oldest).min(next);
             if upto > first {
-                self.publish_sink_loss(first, upto - first, host);
+                self.publish_sink_loss(first, upto - first, alive, host);
                 declared = true;
             }
             if upto >= end {
@@ -367,7 +369,7 @@ impl<const LOG: usize> Pass<LOG> {
         declared
     }
 
-    fn publish_sink_loss(&mut self, first: u64, count: u64, host: &mut dyn Host) {
+    fn publish_sink_loss(&mut self, first: u64, count: u64, sink_alive: bool, host: &mut dyn Host) {
         let next = self.s.next();
         let end = first + count;
         // The classes the log still has; the rest (index 0) not known.
@@ -380,8 +382,8 @@ impl<const LOG: usize> Pass<LOG> {
             known += 1;
         }
         by_class[0] = by_class[0].saturating_add((count - known).min(u32::MAX as u64) as u32);
-        self.s.sink_lost(first, count, &by_class);
-        host.publish(kind::SINK_LOSS, &Loss { first, count, by_class }.encode());
+        self.s.sink_lost(first, count, &by_class, sink_alive);
+        host.publish(kind::SINK_LOSS, &Loss { first, count, by_class, sink_alive }.encode());
     }
 
     /// Take a seal: its record's sequence number, or `None` when the

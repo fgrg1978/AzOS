@@ -89,8 +89,10 @@ pub enum Finding {
     /// `count` records of class `class` (0: not known) were lost before
     /// they were sealed (`sink`: false) or written (`sink`: true). Declared
     /// by the kernel, so not evidence; [`Finding::high_value_loss`] says
-    /// whether it hides what spyware does.
-    ClassLost { boot: u32, class: u8, count: u32, sink: bool },
+    /// whether it hides what spyware does. `claimed`: a sink loss declared
+    /// while the sink's heartbeat was moving, which rests on the sink's word
+    /// that it did not write the records.
+    ClassLost { boot: u32, class: u8, count: u32, sink: bool, claimed: bool },
     /// The rate cap held back `count` records of class `class`.
     Held { boot: u32, class: u8, count: u32 },
     /// A record whose payload does not decode as its kind, or a seal or
@@ -311,9 +313,10 @@ struct Declared {
     first: u64,
     count: u64,
     by_class: [u32; CLASSES],
+    sink_alive: bool,
 }
 
-const NO_DECLARED: Declared = Declared { seq: 0, first: 0, count: 0, by_class: [0; CLASSES] };
+const NO_DECLARED: Declared = Declared { seq: 0, first: 0, count: 0, by_class: [0; CLASSES], sink_alive: false };
 
 /// Seals pending a decision, and sink-loss declarations pending a seal.
 const UNVERIFIED: usize = 16;
@@ -793,7 +796,7 @@ impl Verifier {
         for d in &covered[..self.b.npending] {
             if d.seq < s.through {
                 sum += d.count;
-                digest = declaration(&digest, d.first, d.count, &d.by_class);
+                digest = declaration(&digest, d.first, d.count, &d.by_class, d.sink_alive);
                 i += 1;
             } else {
                 kept[nkept] = *d;
@@ -976,7 +979,8 @@ impl Verifier {
                         if self.b.npending == UNVERIFIED {
                             self.b.pending_over = true;
                         } else {
-                            self.b.pending[self.b.npending] = Declared { seq, first: l.first, count: l.count, by_class: l.by_class };
+                            self.b.pending[self.b.npending] =
+                                Declared { seq, first: l.first, count: l.count, by_class: l.by_class, sink_alive: l.sink_alive };
                             self.b.npending += 1;
                         }
                     } else {
@@ -989,7 +993,7 @@ impl Verifier {
                         }
                     }
                     let boot = self.boot;
-                    self.classes(&l.by_class, |class, count| Finding::ClassLost { boot, class, count, sink }, out);
+                    self.classes(&l.by_class, |class, count| Finding::ClassLost { boot, class, count, sink, claimed: sink && l.sink_alive }, out);
                     false
                 }
                 None => true,

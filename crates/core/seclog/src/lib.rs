@@ -442,27 +442,36 @@ impl Seal {
 /// `count` records from `first` that did not reach where they were going:
 /// the sealer never folded them ([`kind::LOSS`]), or the sink never wrote
 /// them ([`kind::SINK_LOSS`]); `by_class` counts them by class where the
-/// kernel knows it (index 0: class unknown).
+/// kernel knows it (index 0: class unknown). `sink_alive`, of a sink loss:
+/// the sink's heartbeat had moved within the kernel's stall window when it
+/// declared the loss, so the loss rests on the sink's claim alone.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Loss {
     pub first: u64,
     pub count: u64,
     pub by_class: [u32; CLASSES],
+    pub sink_alive: bool,
 }
 
 impl Loss {
-    pub const LEN: usize = 16 + 4 * CLASSES;
+    pub const LEN: usize = 16 + 4 * CLASSES + 1;
 
     pub fn encode(&self) -> [u8; Self::LEN] {
         let mut p = [0u8; Self::LEN];
         p[0..8].copy_from_slice(&self.first.to_le_bytes());
         p[8..16].copy_from_slice(&self.count.to_le_bytes());
         put_classes(&mut p, 16, &self.by_class);
+        p[16 + 4 * CLASSES] = self.sink_alive as u8;
         p
     }
 
     pub fn decode(p: &[u8]) -> Option<Loss> {
-        (p.len() >= Self::LEN).then(|| Loss { first: le64(p, 0), count: le64(p, 8), by_class: classes_at(p, 16) })
+        (p.len() >= Self::LEN).then(|| Loss {
+            first: le64(p, 0),
+            count: le64(p, 8),
+            by_class: classes_at(p, 16),
+            sink_alive: p[16 + 4 * CLASSES] != 0,
+        })
     }
 }
 

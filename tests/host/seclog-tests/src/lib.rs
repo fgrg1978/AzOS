@@ -148,24 +148,29 @@ impl Boot {
         assert_eq!((f, count), (first, n as u64));
         let mut by_class = [0u32; CLASSES];
         by_class[Class::Egress as usize] = n as u32;
-        self.publish(kind::LOSS, &Loss { first, count, by_class }.encode());
+        self.publish(kind::LOSS, &Loss { first, count, by_class, sink_alive: false }.encode());
         (first, n as u64)
     }
 
     /// The kernel declares that the sink lost `count` records from `first`:
     /// the record, and the count the next seals carry.
     fn sink_loss(&mut self, first: u64, count: u64) {
-        self.forged_sink_loss(first, count);
+        self.sink_loss_of(first, count, 0, false);
+    }
+
+    /// The same of records of class number `class` (0: not known), declared with the sink running or not.
+    fn sink_loss_of(&mut self, first: u64, count: u64, class: usize, sink_alive: bool) {
         let mut by_class = [0u32; CLASSES];
-        by_class[0] = count as u32;
-        self.sealer.sink_lost(first, count, &by_class);
+        by_class[class] = count as u32;
+        self.publish(kind::SINK_LOSS, &Loss { first, count, by_class, sink_alive }.encode());
+        self.sealer.sink_lost(first, count, &by_class, sink_alive);
     }
 
     /// A `sink-loss` record only: what whoever writes the volume can add.
     fn forged_sink_loss(&mut self, first: u64, count: u64) {
         let mut by_class = [0u32; CLASSES];
         by_class[0] = count as u32;
-        self.publish(kind::SINK_LOSS, &Loss { first, count, by_class }.encode());
+        self.publish(kind::SINK_LOSS, &Loss { first, count, by_class, sink_alive: false }.encode());
     }
 
     /// Something else extends the TPM's index.
@@ -339,7 +344,7 @@ fn a_loss_the_kernel_declares_is_not_evidence() {
     assert_eq!(
         found,
         vec![
-            Finding::ClassLost { boot: 1, class: Class::Egress as u8, count: n as u32, sink: false },
+            Finding::ClassLost { boot: 1, class: Class::Egress as u8, count: n as u32, sink: false, claimed: false },
             Finding::Gap { boot: 1, first, count: n, by: By::Sealer }
         ]
     );
@@ -687,7 +692,7 @@ fn format_v4_is_frozen() {
     assert_eq!(seal.encode().to_vec(), unhex("0201000003000000090000000000000008000000000000009900000000000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd0b000000000000000400000000000000eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"));
     let mut by_class = [0u32; CLASSES];
     by_class[Class::Egress as usize] = 2;
-    assert_eq!(Loss { first: 5, count: 2, by_class }.encode().to_vec(), unhex("0500000000000000020000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000000000000"));
+    assert_eq!(Loss { first: 5, count: 2, by_class, sink_alive: true }.encode().to_vec(), unhex("050000000000000002000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000000000001"));
     let mut by_class = [0u32; CLASSES];
     by_class[Class::CapDenial as usize] = 3;
     let subjects = [(42, 7), (0, 0), (0, 0), (0, 0)];
@@ -709,7 +714,7 @@ fn format_v4_is_frozen() {
     assert_eq!(extend(&[0xdd; 32], &data).to_vec(), unhex("6c06ab1f5004c77fa0d3c59589563547f09ffee89229d7d289a55932dd0e29b2"));
     let mut by_class = [0u32; CLASSES];
     by_class[Class::Egress as usize] = 2;
-    assert_eq!(azos_seclog::chain::declaration(&[0; 32], 5, 2, &by_class).to_vec(), unhex("2c5389774abbd2c3ecf4ee5069c76e4f65950b9048cf0e718d2bcbb20ca47ddc"));
+    assert_eq!(azos_seclog::chain::declaration(&[0; 32], 5, 2, &by_class, false).to_vec(), unhex("b255000223c2f9eb1e052266af913a7a7d065696b9048038a2458cf267a8f7d0"));
     let r = Rec { env, payload };
     assert_eq!(String::from_utf8(line(&r)).unwrap(), format!("v4 4 1000 0 1 2 1 {ev} event microphone rule=59 verdict=1"));
 }
