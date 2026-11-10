@@ -80,6 +80,11 @@ pub fn passes() -> u32 {
 fn tick(now: u64) {
     azos_behavior::payload::payload_tick();
     bridge_estop();
+    if azos_actuation::estop_line::take_dead() {
+        azos_actuation::gate::latch_and_stop();
+        let _ = azos_actuation::logger::log_safety_violation_durable(
+            azos_actuation::logger::SAFETY_ESTOP, azos_actuation::estop::ESTOP_ACTION_LINE_DEAD, 0);
+    }
     let mut state = SensorState::new();
     azos_behavior::sensor_bus::SENSOR_BUS.snapshot(&mut state);
     state.timestamp = now;

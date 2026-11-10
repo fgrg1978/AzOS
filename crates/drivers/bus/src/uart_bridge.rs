@@ -180,10 +180,39 @@ mod uart1 {
             azos_drv_sys::kprintln!("[BRIDGE] UART1 @ {:#010x} not responding", BASE);
             return -1;
         }
+        if !loopback() {
+            azos_drv_sys::kprintln!("[BRIDGE] UART1 @ {:#010x} did not carry a byte back in loopback", BASE);
+            return -1;
+        }
 
         INIT_DONE.store(true, Ordering::Release);
         azos_drv_sys::kprintln!("[BRIDGE] UART1 @ {:#010x} ready (115200 8N1)", BASE);
         0
+    }
+
+    /// A byte through the UART's own loopback (MCR bit 4): the transmitter and
+    /// receiver work, within a bounded wait. The far side is not involved.
+    fn loopback() -> bool {
+        const MCR_LOOP: u8 = 1 << 4;
+        const PROBE: u8 = 0xA5;
+        wr(MCR, 0x03 | MCR_LOOP);
+        while rd(LSR) & LSR_DATA_READY != 0 {
+            let _ = rd(RBR);
+        }
+        wr(THR, PROBE);
+        let mut got = false;
+        for _ in 0..100_000 {
+            if rd(LSR) & LSR_DATA_READY != 0 {
+                got = rd(RBR) == PROBE;
+                break;
+            }
+            core::hint::spin_loop();
+        }
+        wr(MCR, 0x03);
+        while rd(LSR) & LSR_DATA_READY != 0 {
+            let _ = rd(RBR);
+        }
+        got
     }
 
     pub fn bridge_is_ready() -> bool {

@@ -27,7 +27,7 @@ board (`config/axes/Kconfig.build`):
 | Kconfig symbol | Default | Turns on |
 |----------------|---------|----------|
 | `SECURE_BOOT_ENFORCED` | `y` unless `BUILD_TYPE_DEV`; forced on `BUILD_TYPE_CERTIFIABLE` | Refusing an unverified kernel image at boot and at OTA install |
-| `LINK_PROVISIONING_ENFORCED` | `y` unless `BUILD_TYPE_DEV` (robot domain only; forced on in certifiable builds) | No boot without a link key, no handshake on an unseeded pool; on a robot the kernel initialises the UART line itself (whether or not the network is built) and takes only e-stop frames from it |
+| `LINK_PROVISIONING_ENFORCED` | `y` unless `BUILD_TYPE_DEV` (robot domain only; forced on in certifiable builds) | No boot without a link key, no handshake on an unseeded pool; on a robot the kernel initialises the UART line itself (whether or not the network is built), latches the e-stop when the SoC UART does not answer, and takes only e-stop frames from it |
 | `CONSOLE_LOCKDOWN` | `n` | No recovery console; every authority-table row checked |
 | `TOPOLOGY_SOURCE` | signed required unless `BOARD_QEMU`, where a missing set boots the built-in topology | Where task grants come from |
 | `TOPOLOGY_NEVERALLOW`, `TOPOLOGY_BIND_DEVICE`, `TOPOLOGY_COUNTER_FLOOR` | `y` | The topology admission checks named below |
@@ -1185,7 +1185,7 @@ Policy symbol:
 
 | Kconfig symbol | Effect |
 |----------------|--------|
-| `LINK_PROVISIONING_ENFORCED` | Compile-time (cargo feature `link-provisioning-enforced`, which only Kconfig sets), no runtime override; on by default outside `BUILD_TYPE_DEV` (forced on in `BUILD_TYPE_CERTIFIABLE`). Boot halts rather than go on with no valid link key. The UART bridge carries no session and no command: on a robot the kernel initialises the line in the robot's install (independent of `NET`), says at boot whether it is ready, absent (a build without the bridge hardware) or dead, refuses to boot on a dead one, and takes only e-stop frames from it. The link itself is the same Noise session in every build. |
+| `LINK_PROVISIONING_ENFORCED` | Compile-time (cargo feature `link-provisioning-enforced`, which only Kconfig sets), no runtime override; on by default outside `BUILD_TYPE_DEV` (forced on in `BUILD_TYPE_CERTIFIABLE`). Boot halts rather than go on with no valid link key. The UART bridge carries no session and no command: on a robot the kernel initialises the line in the robot's install (independent of `NET`), says at boot whether it is ready (the SoC UART answered and carried a byte back in loopback), absent (a build without the bridge hardware) or dead, latches the e-stop and records it on a dead one (the boot goes on; the operator's signed release lifts the latch), and takes only e-stop frames from it. The ESP32 on the far side is not probed: the relay answers no probe frame, so an unplugged or crashed one is not detected. The link itself is the same Noise session in every build. |
 
 **Node-to-node RPC links** (`userspace/lib/rpc`). Every session is
 authenticated. A node dials with `Noise_IK_25519_ChaChaPoly_SHA256`: the dialer

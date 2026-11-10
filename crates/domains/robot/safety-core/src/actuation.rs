@@ -270,7 +270,7 @@ pub fn install() {
         azos_drv_bus::uart_bridge::bridge_claim_for_estop(),
     );
     if !azos_actuation::estop_line::report(line) {
-        panic!("the UART e-stop line does not respond");
+        azos_actuation::estop_line::mark_dead();
     }
     // The companion protocol's authority frames, from the ring-3 behaviour engine.
     azos_syscall::authority_host::set_handler(crate::frames::submitted);

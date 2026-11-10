@@ -12626,7 +12626,7 @@ host_job host_canary_row "ipv6: no DAD canary" net-tests slaac-no-dad-canary the
 host_job host_canary_row "ipv6: claim ignored canary" net-tests slaac-no-dad-canary a_tentative_address_is_not_ours_and_an_advertisement_for_it_leaves_it_unassigned
 host_job host_canary_row "ipv6: two hours canary" net-tests slaac-two-hours-canary a_refresh_over_two_hours_is_taken_as_it_is_even_when_it_lowers_what_remains
 host_job host_canary_row "estop: dead uart line canary" actuation-tests estop-line-dead-ready-canary \
-    a_dead_uart_estop_line_refuses_the_boot_and_an_absent_one_is_said
+    a_dead_uart_estop_line_latches_the_estop_and_an_absent_one_is_said
 host_job host_canary_row "envelope: delete row canary" actuation-tests envelope-row-canary a_contained_delete_row_refuses_every_delete_with_a_receipt
 host_job host_canary_row "envelope: egress row canary" actuation-tests envelope-row-canary an_egress_row_holds_a_domain_to_the_classes_its_level_reaches
 # The config, ota and rt_time kinds of the same gate (Documentation/effects.md,

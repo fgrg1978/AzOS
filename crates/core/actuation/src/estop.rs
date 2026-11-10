@@ -880,6 +880,12 @@ pub const ESTOP_ACTION_COMMANDER_LOST: u8 = 14;
 /// It latches like the other watchdog stops.
 pub const ESTOP_ACTION_HANG: u8 = 15;
 
+/// `SAFETY_ESTOP` action code of the stop the enforcer latches at its first pass
+/// when the UART e-stop line of a bridge build did not answer at boot
+/// (`estop_line::Line::Dead`). `detail` is 0. It latches like the other stops;
+/// the operator's signed release lifts it.
+pub const ESTOP_ACTION_LINE_DEAD: u8 = 16;
+
 /// `detail` of an [`ESTOP_ACTION_COMMANDER_LOST`] record: the dead task's
 /// TID in the low 24 bits, the wheels it commanded (bit `i` = wheel `i`) in
 /// the top 8.

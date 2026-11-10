@@ -233,6 +233,8 @@ pub const SAFETY_ENVELOPE_REFUSED: u8 = 0x01;
 /// `azos_config::AuthorityLoss` code.
 /// 15 = the hung-task or stuck-CPU detector's safe stop (`safety::ESTOP_ACTION_HANG`),
 /// `detail` the task's tid or the CPU's id with the top bit set.
+/// 16 = the UART e-stop line did not answer at boot (`safety::ESTOP_ACTION_LINE_DEAD`),
+/// `detail` 0.
 pub const SAFETY_ESTOP: u8 = 0x02;
 
 /// Degraded mode entered, changed or left. `action_code` is the level that is

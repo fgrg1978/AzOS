@@ -492,15 +492,15 @@ pub(crate) mod tests {
         assert_eq!(got, vec![(PIN_NO_KILL_SWITCH, 5)], "one record, for the configured pin only");
     }
 
-    /// **A robot never boots with a dead UART e-stop line, and says which
-    /// case it is in.** The line is ready when the bridge answered; absent (and
-    /// said) in a build without the bridge; dead when the build has it and it
-    /// did not answer, and only that refuses the boot.
+    /// **A robot with a dead UART e-stop line is latched, and says which case it
+    /// is in.** The line is ready when the SoC UART answered; absent (and said) in a
+    /// build without the bridge; dead when the build has it and it did not answer,
+    /// and only that asks for the latch, once.
     ///
     /// **Canary.** `estop-line-dead-ready-canary`: a bridge that did not
     /// answer is reported ready.
     #[test]
-    fn a_dead_uart_estop_line_refuses_the_boot_and_an_absent_one_is_said() {
+    fn a_dead_uart_estop_line_latches_the_estop_and_an_absent_one_is_said() {
         use crate::estop_line::{line, report, Line};
         assert_eq!(line(true, true), Line::Ready);
         assert_eq!(line(false, false), Line::NoBridge);
@@ -508,6 +508,10 @@ pub(crate) mod tests {
         assert!(report(Line::Ready));
         assert!(report(Line::NoBridge));
         assert!(!report(Line::Dead), "the boot goes on without an e-stop line");
+        use crate::estop_line::{mark_dead, take_dead};
+        assert!(!take_dead());
+        mark_dead();
+        assert!(take_dead() && !take_dead(), "the latch is asked for once");
     }
 
     /// `detail` of every `SAFETY_ESTOP` record in `files`, in order.

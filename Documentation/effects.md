@@ -158,8 +158,10 @@ shared by every domain with an actuator.
   change never lifts degraded mode.
 - The UART bridge (VF2) is the companion's TCP-independent e-stop channel: the
   robot's install claims and initialises the line (independent of `NET`) and
-  says at boot whether it is ready, absent (no bridge hardware in the build) or
-  dead (the boot is refused); the robot enforcer reads the line and every
+  says at boot whether it is ready (the SoC UART answered and looped a byte
+  back), absent (no bridge hardware in the build) or dead (the e-stop is
+  latched and recorded, and the signed release lifts it; the far-side ESP32 is
+  not probed); the robot enforcer reads the line and every
   `PKT_ESTOP` frame latches straight in the kernel; it takes no other frame, and the `Uart` interface refuses to
   attach the claimed line.
 - Every motor write is capped by the safety layer's fresh verdict
