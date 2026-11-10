@@ -29,6 +29,8 @@ pub const LINK_BEAT_MS: u64 = 250;
 /// The kernel arms containment when a session reported up has gone this long
 /// without a report (ms): the engine stopped.
 pub const LINK_SILENCE_MS: u64 = 1_000;
+/// A session whose companion sends no frame for this long is lost (ms).
+pub const LINK_RX_SILENCE_MS: u64 = 3_000;
 /// A verdict missing continuously for this long counts as lost (ms).
 pub const VERDICT_LOSS_MS: u64 = 2_000;
 

@@ -15,6 +15,7 @@ geofence = []
 drone-cut-canary = []
 ground-drives-canary = []
 link-silence-canary = []
+reconnect-any-beat-canary = []
 
 [dependencies]
 azos_sync         = { workspace = true }

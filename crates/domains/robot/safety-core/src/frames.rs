@@ -68,6 +68,7 @@ pub fn authority_frame(kind: u8, payload: &[u8]) {
     };
     match kind {
         PKT_ACTUATOR => {
+            azos_behavior::link_watch::LINK.heard(azos_drv_sys::timebase::now());
             // The companion's own doubt only ever tightens: it sets the cap, and
             // only the operator's degrade clear lifts it.
             if decode_actuator_cmd(body).is_some_and(|c| c.is_low_confidence()) {
@@ -155,14 +156,16 @@ fn config(cfg: ConfigCmd) {
 
 /// The engine's report of the companion link. Reports of loss arm the
 /// profile's containment; a session reported up arms the silence watch
-/// (`link_tick`) and lets a drone's flight handoff lapse. It never lifts a
+/// (`link_tick`), and a new session after one that ended lets a drone's flight
+/// handoff lapse. It never lifts a
 /// containment: that stays the operator's signed degrade clear.
 fn link_state(body: &[u8]) {
     let now = azos_drv_sys::timebase::now();
-    if body.first() == Some(&azos_behavior::containment::LINK_UP) {
+    let report = azos_behavior::link_watch::LINK.report(body, now);
+    if report.reconnected {
         azos_behavior::link_watch::flight_handoff_clear();
     }
-    if let Some(loss) = azos_behavior::link_watch::LINK.report(body, now) {
+    if let Some(loss) = report.loss {
         companion_lost(loss, now);
     }
 }
@@ -207,6 +210,7 @@ fn degrade(body: &[u8]) {
     let reason = body.first().copied().unwrap_or(DEGRADE_REASON_MALFORMED);
     if reason == DEGRADE_CLEAR {
         azos_ipc::cap::degraded_set(false);
+        azos_behavior::link_watch::flight_handoff_clear();
         safety::cmd_set_low_confidence(false);
         azos_drv_sys::kwarn!("[COMPANION] degraded mode cleared by verified operator authority");
         logger::log_safety_violation(logger::SAFETY_DEGRADE, 0, 0);
