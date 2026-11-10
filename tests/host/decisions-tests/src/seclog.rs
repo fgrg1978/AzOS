@@ -7,7 +7,7 @@
 //!
 //! **Canaries.** `canary-no-security-copy` (nothing is copied): every test
 //! that reads the ring red; `canary-global-security-bucket` (no subject share,
-//! no reserve): the two tests of the shared bucket red.
+//! own shares): the tests of the shared bucket red.
 
 use azos_decision::{Rule, SecClass, Verdict};
 use azos_seclog::{kind, Event};
@@ -62,6 +62,7 @@ fn seclog_the_rate_cap_holds_a_flood_back_and_counts_it() {
     clock();
     let from = head();
     let (_, held0, _) = azos_decision::security_tally();
+    TIME.store(TIME.load(Ordering::Relaxed) + 10_000, Ordering::Relaxed);
     // A denial of a rule that is not paced by the durable bucket: Neverallow.
     for i in 0..(azos_limits::SEC_LOG_PER_S as u32) {
         azos_decision::record(Rule::Neverallow, Verdict::Refuse, 100 + i, [0, 0, 0]);
@@ -241,6 +242,30 @@ fn seclog_the_reserve_outlasts_a_flood_of_every_loopable_class() {
     for (i, (rule, class)) in RESERVED.iter().enumerate() {
         assert!(ev.contains(&(*class as u8, *rule as u8, Verdict::Admit as u8, 30_000 + i as u32)), "{class:?} lost its reserve: {ev:?}");
     }
+}
+
+/// A task that execs or attaches the camera in a loop has a share of its own:
+/// the other kernel-driven classes still get their records, from every subject.
+///
+/// **Canary.** `canary-global-security-bucket`: the loop spends the whole bucket.
+#[test]
+fn seclog_an_exec_or_camera_attach_loop_does_not_hold_back_other_classes() {
+    let _g = ONE.lock().unwrap_or_else(|e| e.into_inner());
+    clock();
+    TIME.store(TIME.load(Ordering::Relaxed) + 10_000, Ordering::Relaxed);
+    let from = head();
+    for i in 0..(8 * azos_limits::SEC_LOG_PER_S as u32) {
+        azos_decision::record_keyed(Rule::ExecGrant, Verdict::Admit, 40_000 + i, 41_000 + i % 8, [0, 0, 0]);
+        azos_decision::record(Rule::CamCapture, Verdict::Admit, 42_000 + i % 4, [0, 0, 0]);
+    }
+    for (rule, class, s) in [(Rule::PackageInstall, SecClass::Update, 43_001u32), (Rule::UsbAuthorize, SecClass::Usb, 43_002), (Rule::HardeningFallback, SecClass::Hardening, 43_003)] {
+        azos_decision::record(rule, Verdict::Admit, s, [0, 0, 0]);
+        let (ev, _) = events(from);
+        assert!(ev.contains(&(class as u8, rule as u8, Verdict::Admit as u8, s)), "{class:?} held back by the loops: {ev:?}");
+    }
+    let (ev, _) = events(from);
+    let loads = ev.iter().filter(|e| e.0 == SecClass::ImageLoad as u8).count();
+    assert!(loads <= 2 * azos_limits::SEC_LOG_PER_S as usize / 4, "{loads} image loads copied");
 }
 
 /// The subjects held back are the heaviest ones, whatever order they came

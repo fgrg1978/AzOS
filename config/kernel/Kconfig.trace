@@ -827,9 +827,11 @@ config SEC_LOG_PER_S
       reports of them), half of it for egress, logins and microphone records,
       and a quarter of that for each task (each Domain where the caller names
       it) in the classes it shares; half of it for each task across
-      those classes. The last quarter of the whole is kept for the classes no task
-      can raise in a loop (camera, image load, update, USB, hardening), so
-      one flooding class or task leaves the others room.
+      those classes. Image loads and camera attaches, which a task raises once
+      per exec or attach, have half of it and a quarter of that for each task.
+      Update, USB and hardening records have a quarter of it each. The
+      classes of a share of their own do not spend the bucket, so one
+      flooding class or task leaves the others room.
       What the cap holds back is counted by class and declared in the chain
       (a `held` record). At most a quarter of the ring a second by default:
       the sealer and `logd` read it every second. Before the kernel installs

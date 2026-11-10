@@ -1938,15 +1938,18 @@ pub fn security_tally() -> (
 }
 
 /// The security records' rate cap (Kconfig `SEC_LOG_PER_S`): a bucket for
-/// them all; a quarter of it for each class a task can raise in a loop
-/// (capability denials, the decision layer's reports of them), half of it
-/// for egress, logins and microphone records and a quarter of that for each
-/// subject, and a half for each subject across those classes (the record's bucket: its Domain where the
-/// caller names it), so a flood of one class or one application leaves the
-/// others room. The classes no task can raise in a loop (camera, image load,
-/// update, USB, hardening) keep the last quarter of the whole for themselves:
-/// the rest may not spend it. A record costs 1000 of the whole's tokens and
-/// 4000 of a share's, both refilled at the whole's rate: no division drops a
+/// the classes a task can raise in a loop (capability denials, the decision
+/// layer's reports of them, egress, logins, microphone records), a quarter of
+/// it for each of the first two and half of it for the others, a quarter of
+/// that for each subject (the record's bucket: its Domain where the caller
+/// names it), and half of it for each subject across them, so a flood of one
+/// class or one application leaves the others room. Image loads and camera
+/// attaches, which a task raises once per exec or attach, have a share of the
+/// whole's rate and a subject's quarter of it. The other classes (update,
+/// USB, hardening) are kernel-driven and have a quarter of the rate each; no
+/// class spends another's, and the classes of a share of their own do not
+/// spend the bucket. A record costs 1000 of the bucket's tokens and 4000 of a
+/// share's, both refilled at the whole's rate: no division drops a
 /// remainder, and the time the tokens did not account for is kept for the
 /// next call.
 struct SecCap {
@@ -2005,14 +2008,8 @@ const fn sec_paced(class: SecClass) -> bool {
     matches!(class, SecClass::CapDenial | SecClass::Limited | SecClass::Egress | SecClass::Login | SecClass::Microphone)
 }
 
-/// The classes the whole's reserve is kept for: the ones a task cannot raise
-/// in a loop.
-const fn sec_reserved(class: SecClass) -> bool {
-    !sec_paced(class)
-}
-
 const fn sec_per_subject(class: SecClass) -> bool {
-    matches!(class, SecClass::Egress | SecClass::Login | SecClass::Microphone)
+    matches!(class, SecClass::Egress | SecClass::Login | SecClass::Microphone | SecClass::ImageLoad | SecClass::Camera)
 }
 
 /// What the cap says of a record.
@@ -2087,19 +2084,25 @@ fn sec_admit(class: SecClass, subject: u32, dest: Option<u64>) -> SecAdmit {
             return SecAdmit::Repeat;
         }
         let canary = cfg!(feature = "canary-global-security-bucket");
-        let class_slot = (sec_per_subject(class) && !(canary && class == SecClass::Microphone)).then(|| sec_slot(t, class as u8, subject, rate, None));
-        let any_slot = sec_paced(class).then(|| sec_slot(t, SEC_ANY, subject, rate, class_slot));
-        let paced = sec_paced(class) && !(canary && class == SecClass::Microphone);
+        let (ordinary, raised) = (sec_paced(class), sec_per_subject(class));
+        // The canary leaves the classes a task raises once per call to the whole's tokens alone.
+        let old = canary && matches!(class, SecClass::Microphone | SecClass::ImageLoad | SecClass::Camera);
+        let class_slot = (raised && !old).then(|| sec_slot(t, class as u8, subject, rate, None));
+        let any_slot = (ordinary && !canary).then(|| sec_slot(t, SEC_ANY, subject, rate, class_slot));
+        // A class of its own share spends it and not the whole's.
+        let own = !ordinary && !canary;
+        let shared = (ordinary && !old) || own;
         // A class shared by subjects takes half the whole, a subject a quarter.
         let class_cost = if class_slot.is_some() { SHARE / 2 } else { SHARE };
-        let floor = if sec_reserved(class) || canary { ONE } else { ONE + rate / 4 };
-        let ok = t.all >= floor
-            && (!paced || t.class[c] >= class_cost)
+        let ok = (own || t.all >= ONE)
+            && (!shared || t.class[c] >= class_cost)
             && class_slot.is_none_or(|i| t.subj[i].2 >= SHARE)
-            && any_slot.is_none_or(|i| canary || t.subj[i].2 >= ANY_COST);
+            && any_slot.is_none_or(|i| t.subj[i].2 >= ANY_COST);
         if ok {
-            t.all -= ONE;
-            if paced {
+            if !own {
+                t.all -= ONE;
+            }
+            if shared {
                 t.class[c] -= class_cost;
             }
             if let Some(i) = class_slot {

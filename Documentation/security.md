@@ -827,9 +827,12 @@ second; capability denials and their reports take at most a quarter of it each,
 egress, logins and microphone records at most half each and a quarter for any one
 application (its root Domain, with every task and child Domain it spawns), and an
 application's records of the classes a task can raise in a loop together at most half of it, so a flood of one
-class or one application cannot spend a share that is another's. The last quarter of
-the bucket is spendable only by the classes no task can raise in a loop (camera,
-image load, update, USB, hardening). The refill keeps what an integer
+class or one application cannot spend a share that is another's. Image loads and
+camera attaches, which a task raises once per exec or attach, have half of the rate
+and a quarter of it for each application (a thread for the camera); update, USB and
+hardening records have a quarter each; none of these spends the bucket of the
+others. A task that creates threads or Domains takes a new subject share each time,
+bounded by its class's share. The refill keeps what an integer
 division would drop, so calls microseconds apart refill at the rate too. An egress
 admit to a destination the Domain's record was copied for last is no new
 destination and not recorded again; one the cap held back is recorded when there

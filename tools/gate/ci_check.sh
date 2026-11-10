@@ -14279,13 +14279,13 @@ if ! (cd "$REPO_ROOT" && KCONFIG_CONFIG="$ds_cfg" python3 -m olddefconfig >/dev/
     bad; echo "      $ds_cfg: olddefconfig lost SEC_LOG"
 else
     ds_run() { (cd "${REPO_ROOT}/tests/host/decisions-tests" && KCONFIG_CONFIG="$ds_cfg" CARGO_TARGET_DIR="$AZOS_OUT/target/host-canary/decisions-seclog" "$CARGO" test --release --features "seclog$1" -- seclog_ 2>&1); }
-    if ds_out=$(ds_run "") && echo "$ds_out" | qgrep -qE "^test result: ok\. 10 passed"; then
+    if ds_out=$(ds_run "") && echo "$ds_out" | qgrep -qE "^test result: ok\. 11 passed"; then
         ds_c=$(ds_run ",canary-no-security-copy"); ds_g=$(ds_run ",canary-global-security-bucket")
-        if echo "$ds_c" | qgrep -qE "^test result: FAILED\. 2 passed; 8 failed" \
-            && echo "$ds_g" | qgrep -qE "^test result: FAILED\. 8 passed; 2 failed"; then
+        if echo "$ds_c" | qgrep -qE "^test result: FAILED\. 2 passed; 9 failed" \
+            && echo "$ds_g" | qgrep -qE "^test result: FAILED\. 8 passed; 3 failed"; then
             ok
         else
-            bad; echo "      a canary did not turn its tests red (nothing copied: the ring's readers; shared bucket: exactly two):"; { echo "$ds_c"; echo "$ds_g"; } | grep "^test result" | sed 's/^/      /'
+            bad; echo "      a canary did not turn its tests red (nothing copied: the ring's readers; shared bucket: exactly three):"; { echo "$ds_c"; echo "$ds_g"; } | grep "^test result" | sed 's/^/      /'
         fi
     else
         bad; echo "$ds_out" | grep -m5 -E "^error|panicked at|FAILED|^test result" | sed 's/^/      /'; ci_debug_dump "decisions-seclog" "$ds_out"
