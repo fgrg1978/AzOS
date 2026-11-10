@@ -133,6 +133,12 @@ pub const UNDELETABLE_POLICY: [u8; DIGEST_BYTES] = [
     0x2a, 0xab, 0x5a, 0xf8, 0x60, 0x44, 0x7b, 0xfe, 0x6b, 0xc4, 0x5c, 0xfc, 0x57, 0x42, 0xf1, 0xad, 0x57, 0xad, 0x40, 0x2b,
     0xbb, 0xc0, 0x39, 0xbc, 0xd9, 0x22, 0x20, 0x12, 0xe8, 0xa8, 0xbd, 0xf7,
 ];
+/// Is the index's policy the one no sequence of policy commands is known to
+/// satisfy? A same-length digest of another value is not.
+fn undeletable_policy(p: &NvPublic) -> bool {
+    p.policy_len == UNDELETABLE_POLICY_LEN && (cfg!(feature = "canary-policy-len") || p.policy == UNDELETABLE_POLICY)
+}
+
 /// A `TPM_RC` of the format-one kind (bit 7) whose error is a password the
 /// TPM refused: `TPM_RC_AUTH_FAIL` (0x0E) or `TPM_RC_BAD_AUTH` (0x22). An
 /// index that exists and refuses the driver's password is someone else's.
@@ -187,8 +193,10 @@ pub struct NvPublic {
     pub index: u32,
     pub name_alg: u16,
     pub attrs: u32,
-    /// Length of `authPolicy`; the digest itself is not kept.
+    /// Length of `authPolicy`, and its first [`DIGEST_BYTES`] bytes (zero
+    /// padded when shorter).
     pub policy_len: u16,
+    pub policy: [u8; DIGEST_BYTES],
     pub size: u16,
 }
 
@@ -471,13 +479,12 @@ impl<T: Transport> Tpm<T> {
             return Err(Error::Malformed);
         }
         let mut a = Reader::new(area);
-        let p = NvPublic {
-            index: a.u32()?,
-            name_alg: a.u16()?,
-            attrs: a.u32()?,
-            policy_len: a.tpm2b()?.len() as u16,
-            size: a.u16()?,
-        };
+        let (named, name_alg, attrs) = (a.u32()?, a.u16()?, a.u32()?);
+        let policy = a.tpm2b()?;
+        let mut digest = [0u8; DIGEST_BYTES];
+        let kept = policy.len().min(DIGEST_BYTES);
+        digest[..kept].copy_from_slice(&policy[..kept]);
+        let p = NvPublic { index: named, name_alg, attrs, policy_len: policy.len() as u16, policy: digest, size: a.u16()? };
         if a.remaining() != 0 || p.index != index {
             return Err(Error::Malformed);
         }
@@ -595,8 +602,9 @@ impl<T: Transport> Tpm<T> {
     /// hold.
     ///
     /// The one other index taken is the undeletable variant: these
-    /// attributes plus [`UNDELETABLE_ATTRS`] and a 32-byte policy, which the
-    /// platform hierarchy defined (the driver never does). Whether nothing
+    /// attributes plus [`UNDELETABLE_ATTRS`] and [`UNDELETABLE_POLICY`] as
+    /// its policy, which the platform hierarchy defined (the driver never
+    /// does): a policy of any other value is one someone may satisfy. Whether nothing
     /// satisfies that policy, `NV_ReadPublic` cannot show: it is the
     /// provisioning step's to make so.
     pub fn nv_adopt(
@@ -613,7 +621,7 @@ impl<T: Transport> Tpm<T> {
                     Err(Error::NvMismatch)
                 } else if defined == attrs && p.policy_len == 0 {
                     Ok(Adopted::Owner)
-                } else if defined == attrs | UNDELETABLE_ATTRS && p.policy_len == UNDELETABLE_POLICY_LEN {
+                } else if defined == attrs | UNDELETABLE_ATTRS && undeletable_policy(&p) {
                     Ok(Adopted::Undeletable)
                 } else {
                     Err(Error::NvMismatch)

@@ -36,6 +36,9 @@ canary-release = []
 # An NV index that already exists is adopted as the rollback floor without
 # looking at what it is.
 canary-nvsquat = []
+# An existing index with a 32-byte policy is adopted as undeletable whatever
+# the policy's value.
+canary-policy-len = []
 # CRB: CTRL_START is never written, so no command starts.
 canary-crb-start = []
 # TPM_RC_RETRY / TPM_RC_TESTING are the answer: the command is not sent again.

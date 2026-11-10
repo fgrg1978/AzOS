@@ -28,6 +28,7 @@ canary-burst = ["azos_tpm/canary-burst"]
 canary-spi-wait = ["azos_tpm/canary-spi-wait"]
 canary-release = ["azos_tpm/canary-release"]
 canary-nvsquat = ["azos_tpm/canary-nvsquat"]
+canary-policy-len = ["azos_tpm/canary-policy-len"]
 canary-crb-start = ["azos_tpm/canary-crb-start"]
 canary-no-retry = ["azos_tpm/canary-no-retry"]
 

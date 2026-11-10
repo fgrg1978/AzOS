@@ -261,9 +261,12 @@ fn floor_provision_defines_once_and_adopts_only_our_own_index() {
     assert_eq!(provision_against(&nv_public_rsp("00 0B", "02 04 00 24", "", "00 08")), Ok(Adopted::Owner));
     assert_eq!(provision_against(&nv_public_rsp("00 0B", "22 04 00 24", "", "00 08")), Ok(Adopted::Owner));
     // The undeletable variant the platform hierarchy defined: the same
-    // rights plus PLATFORMCREATE | POLICY_DELETE, and a 32-byte policy.
+    // rights plus PLATFORMCREATE | POLICY_DELETE, and the driver's policy.
+    let ours: String = azos_tpm::tpm::UNDELETABLE_POLICY.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(" ");
+    assert_eq!(provision_against(&nv_public_rsp("00 0B", "42 04 04 24", &ours, "00 08")), Ok(Adopted::Undeletable));
+    // A 32-byte policy of another value is one somebody may satisfy.
     let policy: String = (0..32).map(|i| format!("{i:02X}")).collect::<Vec<_>>().join(" ");
-    assert_eq!(provision_against(&nv_public_rsp("00 0B", "42 04 04 24", &policy, "00 08")), Ok(Adopted::Undeletable));
+    assert_eq!(provision_against(&nv_public_rsp("00 0B", "42 04 04 24", &policy, "00 08")), Err(Error::NvMismatch));
     // Those attributes with no policy, or the policy without them: not ours.
     assert_eq!(provision_against(&nv_public_rsp("00 0B", "42 04 04 24", "", "00 08")), Err(Error::NvMismatch));
     assert_eq!(provision_against(&nv_public_rsp("00 0B", "02 04 00 24", &policy, "00 08")), Err(Error::NvMismatch));
