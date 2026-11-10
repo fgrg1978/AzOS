@@ -765,6 +765,10 @@ pub enum MarkEvent {
     /// boot began, so nothing held it against an older one: whichever signed
     /// index the volume held rebuilt it. Once, in that boot.
     Rebuilt = 6,
+    /// Admit: the index was remembered into a memory whose newest copy did not
+    /// read in full (the first number: the serial), over the bank that reads
+    /// whole, so the memory reads again. Once, in that boot.
+    Recovered = 7,
 }
 
 /// Where the newest accepted index of each signer is remembered, with the floors
@@ -1023,9 +1027,11 @@ pub struct Condition {
     /// A sector could not be read (not the same as one that reads and is
     /// invalid): nothing is written to the memory until a boot reads it all.
     pub unreadable: bool,
-    /// A bank that did not read in full may hold newer marks than the table
-    /// the boot holds (it is not shown to be older, or no bank reads): the
-    /// table judges nothing, and no package passes its floor.
+    /// The table the boot holds may be older than what the memory held: a bank
+    /// that did not read in full could be a whole newer one (nothing shows it
+    /// is not), or no bank reads whole. The table judges nothing: a package
+    /// passes its floor only through a signed index accepted in this boot,
+    /// which rewrites the memory ([`MarkEvent::Recovered`], [`MarkEvent::Rebuilt`]).
     pub untrusted: bool,
     /// The bank that was written before and does not read whole, ignored
     /// while the other one stands.
@@ -1098,7 +1104,7 @@ impl<T: Tail> MarkStore<T> {
             // `st`: this runs on the kernel's boot stack. Per bank: all zero,
             // how many sectors verify on their own, and whether it is whole.
             let (mut blank, mut valid, mut whole, mut newest) = ([true; 2], [0usize; 2], [false; 2], 0);
-            let (mut unread, mut seen_gen) = ([false; 2], [None::<u32>; 2]);
+            let (mut unread, mut seen_gen, mut stray) = ([false; 2], [None::<u32>; 2], [false; 2]);
             let mut raw = [[0u8; SECTOR]; BANK_SECTORS_MAX];
             for b in 0..2 {
                 for (i, sec) in raw.iter_mut().enumerate().take(n) {
@@ -1106,6 +1112,10 @@ impl<T: Tail> MarkStore<T> {
                         st.cond.unreadable = true;
                         unread[b] = true;
                         *sec = [0xFF; SECTOR];
+                    } else if sector_gen(sec).is_none() {
+                        // A sector that reads and is not one of a bank's: that
+                        // bank was never a whole newer one.
+                        stray[b] = true;
                     }
                 }
                 blank[b] = raw[..n].iter().all(|s| s.iter().all(|&x| x == 0));
@@ -1122,10 +1132,14 @@ impl<T: Tail> MarkStore<T> {
                     }
                 }
             }
-            // A bank with a sector that did not read is shown older than the
-            // table only by a sector of it that reads, with a lower generation.
+            // A bank with a sector that did not read could be a whole newer
+            // table, unless a sector of it that reads is not one of a bank's
+            // (a bank is written whole), or has a lower generation, and
+            // another bank reads whole.
             st.cond.untrusted = !cfg!(feature = "pkg-unreadable-canary")
-                && (0..2).any(|b| unread[b] && !(st.bank.is_some() && seen_gen[b].is_some_and(|g| g < newest)));
+                && (0..2).any(|b| {
+                    unread[b] && !(st.bank.is_some() && (stray[b] || seen_gen[b].is_some_and(|g| g < newest)))
+                });
             match st.bank {
                 Some(b) => {
                     st.gen = st.gen.max(newest);
@@ -1137,6 +1151,7 @@ impl<T: Tail> MarkStore<T> {
                 None if blank[0] && blank[1] && !tail.provisioned() => {}
                 None => {
                     st.cond.lost = true;
+                    st.cond.untrusted = true;
                     st.cond.erased = blank[0] && blank[1];
                     st.spare = usize::from(valid[1] < valid[0]);
                 }
@@ -1166,16 +1181,18 @@ impl<T: Tail> Marks for MarkStore<T> {
         let mut st = self.state.borrow_mut();
         let mut next = st.table;
         let taken = next.accept(signer, mark, floors)?;
-        if next == st.table && !st.cond.lost {
+        if next == st.table && !st.cond.lost && !st.cond.untrusted {
             return Ok(taken);
         }
-        // What did not read may be the newest copy: a write now could go over it.
-        if st.cond.unreadable {
+        // What did not read may be the newest copy: a write now could go over
+        // it, unless the table is untrusted anyway: the signed index being
+        // accepted then rewrites the memory over the bank that reads whole.
+        if st.cond.unreadable && !st.cond.untrusted {
             return Err(MarkErr::Unreadable);
         }
         let gen = st.gen.checked_add(1).ok_or(MarkErr::Write)?;
         // **Canary** `pkg-bank-canary`: over the bank that holds the newest copy.
-        let target = if cfg!(feature = "pkg-bank-canary") { st.bank.unwrap_or(st.spare) } else { st.spare };
+        let target = if cfg!(feature = "pkg-bank-canary") || st.cond.unreadable { st.bank.unwrap_or(st.spare) } else { st.spare };
         let bank = next.encode_bank(gen);
         for (i, sec) in bank.iter().enumerate().take(self.sectors) {
             if !self.tail.write(target * self.sectors + i, sec) {
@@ -1185,7 +1202,7 @@ impl<T: Tail> Marks for MarkStore<T> {
         if !self.tail.flush() {
             return Err(MarkErr::Write);
         }
-        *st = State { table: next, gen, bank: Some(target), spare: 1 - target, cond: Condition { lost: false, erased: false, ..st.cond } };
+        *st = State { table: next, gen, bank: Some(target), spare: 1 - target, cond: Condition { lost: false, erased: false, untrusted: false, unreadable: false, ..st.cond } };
         Ok(taken)
     }
 }

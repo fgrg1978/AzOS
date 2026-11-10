@@ -166,6 +166,12 @@ struct FloorCtx {
     /// The memory was lost when the boot began: every index accepted in it
     /// rebuilds it from what the volume holds, and is recorded as such.
     rebuild: bool,
+    /// The memory's table could not be trusted when the boot began: only a
+    /// signed index newer than its mark, accepted in this boot, judges for its
+    /// signer, and the others' packages are held below their floors.
+    untrusted: bool,
+    /// The signers whose index was accepted in this boot over such a memory.
+    recovered: Vec<usize>,
 }
 
 /// Is the verified package `v` below its security floor? Reads the slot of
@@ -212,12 +218,21 @@ fn below_floor<D: BlockDev>(
                 let subject = signer as u32 + 1;
                 match boot.marks.accept(&key, ix.mark(), &floors) {
                     Ok(taken) => {
+                        if raise.is_some() && cx.untrusted {
+                            cx.recovered.push(signer);
+                        }
                         if raise.is_some() && cx.rebuild {
                             sink.note(format_args!(
                                 "[PKG] signer {}: the index marks are rebuilt from the stored index (serial {}), whichever signed one the volume held",
                                 signer + 1, ix.serial
                             ));
                             sink.record(&receipt::index_rebuilt(&ix, boot.now_ns));
+                        } else if raise.is_some() && cx.untrusted {
+                            sink.note(format_args!(
+                                "[PKG] signer {}: the index marks are rewritten from the index (serial {}): the newest copy did not read",
+                                signer + 1, ix.serial
+                            ));
+                            sink.record(&receipt::index_recovered(&ix, boot.now_ns));
                         } else if raise.is_some() {
                             sink.record(&receipt::index_accepted(&ix, boot.now_ns));
                         }
@@ -255,7 +270,8 @@ fn below_floor<D: BlockDev>(
         cx.cache.push((signer, state));
     }
     // A table that may be older than the memory's newest copy judges nothing:
-    // the package is held below its floor, whatever the floors it names.
+    // a signer without a signed index accepted in this boot has its packages
+    // held below their floors.
     let judged = match cx.cache.iter().find(|(s, _)| *s == signer).map(|(_, f)| f) {
         Some(SignerFloors::Known(b)) => index::verify(b, topo).ok().is_some_and(|ix| {
             assess(&Installed { name: v.meta.name, version: v.meta.version, signer_index: signer, id: v.id }, &ix).below_floor()
@@ -265,7 +281,7 @@ fn below_floor<D: BlockDev>(
         }
         _ => false,
     };
-    judged || boot.marks.condition().untrusted
+    judged || (cx.untrusted && !cx.recovered.contains(&signer))
 }
 
 /// A staged package as the supersede logic sees it: read from its head only.
@@ -947,6 +963,8 @@ pub fn apply<D: BlockDev>(
         cache: Vec::new(),
         staged: heads.iter().filter_map(|h| h.pkg.as_ref().map(|(n, s)| (*s, n.clone()))).collect(),
         rebuild: boot.marks.condition().lost,
+        untrusted: boot.marks.condition().untrusted,
+        recovered: Vec::new(),
     };
     let mut fresh: Vec<Vec<u8>> = Vec::new();
     let mut kept_images: Vec<Vec<u8>> = Vec::new();

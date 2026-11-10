@@ -1303,9 +1303,10 @@ fn a_failed_write_of_the_marks_is_on_record_and_no_store_is_not() {
 
 /// A boot that cannot read a sector of the memory says so (event 4, and event 5 for
 /// the bank it ignores), judges by the volume's index with the package held below its
-/// floor, and writes nothing: the newer index is remembered by the next boot that reads it all.
+/// floor, and rewrites the memory from the signed index over the bank that reads (event 7), so
+/// a sector that never reads again does not keep the packages held.
 #[test]
-fn a_boot_that_cannot_read_the_marks_says_so_and_writes_none() {
+fn a_boot_that_cannot_read_the_marks_says_so_and_recovers_from_a_signed_index() {
     use azos_pkg::index::{mark_key, MarkEvent, Marks};
     let d = signed_device();
     let key = mark_key(&key_id(SigAlg::Ed25519 as u16, author().verifying_key().as_bytes()));
@@ -1334,14 +1335,16 @@ fn a_boot_that_cannot_read_the_marks_says_so_and_writes_none() {
     assert_eq!(recs, [
         (0, refuse, [0, 0, MarkEvent::Unreadable as u64]),
         (0, refuse, [1, 0, MarkEvent::BankIgnored as u64]),
-        (1, refuse, [3, 7, MarkEvent::NotRemembered as u64]),
+        (1, Verdict::Admit as u8, [1, 7, MarkEvent::Recovered as u64]),
     ]);
-    assert_eq!(*tail.sectors.borrow(), before, "nothing written");
-    assert_eq!(marks.mark(&key).map(|m| m.serial), Some(5), "the older copy is what reads");
-    tail.unreadable.borrow_mut().clear();
-    let marks = mem_marks_on(tail, 5);
-    assert_eq!(boot_with(&mut v, marks).1, [(1, Verdict::Admit as u8, [1, 7, 0])]);
+    assert_ne!(*tail.sectors.borrow(), before, "the signed index rewrote the memory over the bank that reads");
     assert_eq!(marks.mark(&key).map(|m| m.serial), Some(7));
+    // The sector still does not read: the rewritten bank is the newest that reads, and judges.
+    let marks = mem_marks_on(tail, 5);
+    assert_eq!(marks.mark(&key).map(|m| m.serial), Some(7));
+    assert!(!marks.condition().untrusted, "the unread bank is shown older");
+    tail.unreadable.borrow_mut().clear();
+    assert_eq!(boot_with(&mut v, mem_marks_on(tail, 5)).1, []);
 }
 
 /// **An unreadable newest bank does not let the older table judge the boot.**

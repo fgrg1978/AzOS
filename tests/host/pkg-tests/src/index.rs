@@ -568,17 +568,17 @@ mod banks {
         assert_eq!(cases, 84);
     }
 
-    /// **A sector that does not read is not damage.** Sectors 0 and 2 (one of each
-    /// bank) do not read: no bank reads whole and the boot judges by nothing, but it
-    /// writes nothing either, so the next boot that reads them has every mark. One
-    /// unreadable sector of the newest bank leaves the older copy in the table, which the
-    /// condition says is not to be trusted, and nothing is written over the newest one.
+    /// **A sector that does not read is not damage, and not a verdict.** A bank
+    /// with a sector that does not read could be a whole newer one: the table the
+    /// boot holds is then untrusted (the older copy is not to judge), and the first
+    /// signed index accepted rewrites the memory over the bank that reads whole,
+    /// after which the unread bank is shown older and the memory judges again. When
+    /// no bank reads whole (sectors 0 and 2) the memory is lost and untrusted, and
+    /// the same accept rebuilds it.
     ///
-    /// Canary (by hand): `accept` writing past an unreadable sector turns this red (the
-    /// rebuilt bank 0 replaces the newer marks).
+    /// Canary `pkg-unreadable-canary`: nothing is untrusted.
     #[test]
-    fn a_boot_that_cannot_read_a_sector_writes_nothing() {
-        use azos_pkg::index::MarkErr;
+    fn a_boot_that_cannot_read_a_sector_holds_until_a_signed_index_rewrites_the_memory() {
         for unread in [vec![0usize, 2], vec![0], vec![1]] {
             let t = populated();
             let before = t.sectors.borrow().clone();
@@ -587,15 +587,38 @@ mod banks {
             let c = s.condition();
             assert!(c.unreadable && c.untrusted, "{unread:?}: a bank that may be newer did not read");
             assert_eq!(c.lost, unread.len() == 2, "{unread:?}: lost only when no bank reads");
-            assert_eq!(s.accept(&A, Mark { serial: 7, digest: 7 }, &floors(&A, &[("p", "1.0")])), Err(MarkErr::Unreadable));
-            assert_eq!(s.accept(&B, Mark { serial: 4, digest: 4 }, &[]), Err(MarkErr::Unreadable));
-            assert_eq!(*t.sectors.borrow(), before, "{unread:?}: nothing written");
-            t.unreadable.borrow_mut().clear();
-            let again = load(&t);
-            assert_eq!(again.condition(), Default::default());
-            assert_eq!(view(&again, &A, &["p", "q"]), (Some(6), vec![Some(v("1.5")), Some(v("2.0"))]), "{unread:?}");
-            assert_eq!(again.mark(&B).map(|m| m.serial), Some(3));
+            assert_eq!(*t.sectors.borrow(), before, "{unread:?}: loading writes nothing");
+            s.accept(&A, Mark { serial: 7, digest: 7 }, &floors(&A, &[("p", "1.0")])).unwrap();
+            assert_ne!(*t.sectors.borrow(), before, "{unread:?}: the memory is rewritten");
+            assert!(!s.condition().untrusted && !s.condition().lost, "{unread:?}");
+            if unread.len() == 1 {
+                let again = load(&t);
+                assert!(!again.condition().untrusted, "{unread:?}: the unread bank is shown older");
+                assert_eq!(again.mark(&A).map(|m| m.serial), Some(7));
+                assert_eq!(again.mark(&B).map(|m| m.serial), Some(3), "the other signer's mark came along");
+            }
         }
+        // Read in full, the memory is whole and judges.
+        assert_eq!(load(&populated()).condition(), Default::default());
+    }
+
+    /// A bank that was never written, with a sector that does not read, beside a
+    /// bank that reads whole, is ignored: no sector that reads in it is one of a bank's, so
+    /// it was never a whole newer one. On a medium nothing was written to, the same sector makes
+    /// the memory lost (nothing reads whole) until the first signed index.
+    #[test]
+    fn an_unreadable_sector_of_a_never_written_bank_does_not_hold() {
+        let t = RamTail::new(4);
+        load(&t).accept(&A, Mark { serial: 1, digest: 1 }, &[]).unwrap();
+        t.unreadable.borrow_mut().push(3);
+        let c = load(&t).condition();
+        assert_eq!((c.unreadable, c.untrusted, c.ignored, c.lost), (true, false, Some(1), false));
+        let t = RamTail::new(4);
+        t.unreadable.borrow_mut().push(3);
+        let s = load(&t);
+        assert!(s.condition().lost && s.condition().untrusted);
+        s.accept(&A, Mark { serial: 1, digest: 1 }, &[]).unwrap();
+        assert!(!s.condition().untrusted);
     }
 
     /// A bank that was written and does not read whole is said to be ignored, and a

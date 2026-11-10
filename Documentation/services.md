@@ -663,9 +663,14 @@ and the other bank stands (a refusal record, event 5, names the bank). So no cut
 of a write loses a mark or a floor (host tests cut at every sector boundary and tear every sector,
 with the newest copy in either bank). A sector that cannot be READ is not damage: that boot records it (event 4, and event 1 with reason 3 for each
 index it could not remember) and writes nothing, so a newer copy that failed to read is never
-overwritten. A bank with a sector that did not read, not shown older than the one that reads (a sector of
-it that reads, with a lower generation, shows it), may hold the newest marks: the table then judges
-nothing, and every package is held below its floor until a boot reads the memory in full. A write or flush that fails is recorded the same way (reason 2). The topology refuses two signers whose
+overwritten. A bank with a sector that did not read could be a whole newer table, unless a sector of it that
+reads is not one of a bank's (a bank is written whole) or has a lower generation than the bank that
+reads: then the table the boot holds is untrusted, and so is the table of a memory no bank of which
+reads whole (lost). An untrusted table judges nothing: a signer's packages are held below their
+floors unless a signed index newer than its mark is accepted in that boot, which rewrites the memory
+over the bank that reads whole (event 7, `recovered`; event 6 for a lost memory), after which the
+unread bank is shown older. A plant of one low-generation sector in the unread bank shows it older
+without a key: the bank's digest is not keyed. A write or flush that fails is recorded the same way (reason 2). The topology refuses two signers whose
 key ids agree on the first 28 bits (the name of the index slot on the volume), so a signer cannot be
 ground to take another's slot or mark. An index put back that is older, one that differs at the same
 serial, and a deleted slot are not used: the floors the device remembered stand, and they stop only

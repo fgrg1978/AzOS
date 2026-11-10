@@ -75,6 +75,15 @@ pub fn index_rebuilt(ix: &crate::index::Index<'_, '_>, clock_ns: u64) -> Provena
     p
 }
 
+/// The record of an index the boot-time apply accepted into a memory whose
+/// newest copy did not read: [`index_accepted`] with
+/// [`MarkEvent::Recovered`](crate::index::MarkEvent).
+pub fn index_recovered(ix: &crate::index::Index<'_, '_>, clock_ns: u64) -> ProvenanceRecord {
+    let mut p = index_accepted(ix, clock_ns);
+    p.n[2] = crate::index::MarkEvent::Recovered as u64;
+    p
+}
+
 /// A refusal record of the boot-time apply about the device's memory of the
 /// indexes ([`Rule::PackageIndex`]): `event` for signer `signer` of the
 /// topology plus one (0: the memory as a whole), with `detail` and the
