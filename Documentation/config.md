@@ -469,7 +469,6 @@ The index lists every declared option: 1323.
 | `BOOT_INI_MAX_KB` | `config/subsys/Kconfig.topology` | Largest CONFIG.INI the boot reads (KiB) |
 | `BOOT_SELFTESTS` | `config/axes/Kconfig.build` | Boot self-tests: start the demo, stress and probe work at boot |
 | `BOOT_SLOTS` | `config/subsys/Kconfig.ota` | A/B boot slots: slot validation, boot counter, recovery mode, boot confirmation |
-| `COMPANION_CAMERA_PERIOD_MS` | `config/subsys/Kconfig.drivers` | Frame class: capture period while a reader is attached (ms) |
 | `BUILD_TYPE_CERTIFIABLE` | `config/axes/Kconfig.build` | Certifiable: release, with secure boot and signed OTA forced on |
 | `BUILD_TYPE_DEV` | `config/axes/Kconfig.build` | Development: test machinery and the TEST key allowed |
 | `BUILD_TYPE_RELEASE` | `config/axes/Kconfig.build` | Release: test machinery forced off, TEST key refused |
@@ -483,6 +482,7 @@ The index lists every declared option: 1323.
 | `CHAOS` | `config/axes/Kconfig.build` | Fault injection (chaos=<point>:<rate> on the kernel command line) |
 | `CHAOS_SEED` | `config/axes/Kconfig.build` | Fault injection: default seed |
 | `CHAOS_TIMER_DELAY_US` | `config/axes/Kconfig.build` | Fault injection: how late an injected timer-wake fault wakes (us) |
+| `COMPANION_CAMERA_PERIOD_MS` | `config/subsys/Kconfig.drivers` | Frame class: capture period while a reader is attached (ms) |
 | `COMPOSITOR` | `config/subsys/Kconfig.display` | Compositor (COMPSRV.ELF): the sole holder of the Display interface, the trusted path's banner |
 | `COMPOSITOR_BANNER_MS` | `config/subsys/Kconfig.display` | Compositor: milliseconds the trusted-path banner holds the focus gate after the Secure Attention Key |
 | `COMPOSITOR_FRAME_MS` | `config/subsys/Kconfig.display` | Compositor: milliseconds between two looks at the clients' damage and the trusted page |
@@ -1365,9 +1365,9 @@ The index lists every declared option: 1323.
 | `USERSPACE_ABITEST` | `tools/build/gen_userspace_kconfig.py` | ABITEST.ELF (userspace/tests/abitest) |
 | `USERSPACE_AUDIOD` | `tools/build/gen_userspace_kconfig.py` | AUDIOD.ELF (userspace/services/audiod) |
 | `USERSPACE_BEHAVIOR` | `tools/build/gen_userspace_kconfig.py` | BEHAVIOR.ELF (userspace/services/famtools) |
-| `USERSPACE_COMPCLI` | `tools/build/gen_userspace_kconfig.py` | COMPCLI.ELF (userspace/services/companion_client) |
 | `USERSPACE_BUZZDRV` | `tools/build/gen_userspace_kconfig.py` | BUZZDRV.ELF (userspace/drivers/buzz_drv) |
 | `USERSPACE_CAPTEST` | `tools/build/gen_userspace_kconfig.py` | CAPTEST.ELF (userspace/tests/captest) |
+| `USERSPACE_COMPCLI` | `tools/build/gen_userspace_kconfig.py` | COMPCLI.ELF (userspace/services/companion_client) |
 | `USERSPACE_COMPMGR` | `tools/build/gen_userspace_kconfig.py` | COMPMGR.ELF (userspace/services/compmgr) |
 | `USERSPACE_COMPSRV` | `tools/build/gen_userspace_kconfig.py` | COMPSRV.ELF (userspace/services/compositor) |
 | `USERSPACE_CONFIG` | `tools/build/gen_userspace_kconfig.py` | CONFIG.ELF (userspace/services/famtools) |
