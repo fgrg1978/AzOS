@@ -8,6 +8,7 @@ publish = false
 [features]
 # Host-suite canary (tests/host/flight-tests): a known-bad value, never enabled by a build.
 handoff-disarm-canary = []
+handoff-poshold-canary = []
 
 [dependencies]
 azos_common = { workspace = true }

@@ -87,6 +87,40 @@ pub const fn handoff_action(server_driven: bool, held_us: u64) -> FailsafeAction
     }
 }
 
+const fn severity(a: FailsafeAction) -> u8 {
+    match a {
+        FailsafeAction::None => 0,
+        FailsafeAction::PosHold => 1,
+        FailsafeAction::RTL => 2,
+        FailsafeAction::Land => 3,
+        FailsafeAction::Disarm => 4,
+    }
+}
+
+/// `ticks` of a `freq` Hz clock in µs, without the overflow of multiplying
+/// first (a stale request can be hours old at a GHz timebase).
+pub const fn ticks_to_us(ticks: u64, freq: u64) -> u64 {
+    (ticks / freq).saturating_mul(1_000_000).saturating_add((ticks % freq) * 1_000_000 / freq)
+}
+
+/// What the flight task acts on each tick: the ages' chain and, while a lost
+/// companion link's handoff stands (`handoff_held_ticks` since its request),
+/// the more severe of that and the chain. The chain answers PosHold on its own
+/// once the server's target is stale, which a lost link makes certain, so the
+/// handoff must be able to raise a hold to a landing.
+pub fn flight_failsafe(
+    attitude_age_us: u64, rc_age_us: u64, server_age_us: u64,
+    server_driven: bool, handoff_held_ticks: Option<u64>, freq: u64,
+) -> FailsafeAction {
+    let chain = check_failsafe(attitude_age_us, rc_age_us, server_age_us);
+    let Some(held) = handoff_held_ticks else { return chain };
+    if cfg!(feature = "handoff-poshold-canary") && chain != FailsafeAction::None {
+        return chain;
+    }
+    let handoff = handoff_action(server_driven, ticks_to_us(held, freq));
+    if severity(handoff) > severity(chain) { handoff } else { chain }
+}
+
 pub fn check_failsafe(attitude_age_us: u64, rc_age_us: u64, server_age_us: u64) -> FailsafeAction {
     // Priority 1: attitude estimation failure (>50 ms old).
     if attitude_age_us > 50_000 {

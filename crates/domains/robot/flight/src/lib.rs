@@ -611,7 +611,7 @@ impl FlightPid {
 }
 
 pub mod failsafe;
-pub use failsafe::{check_failsafe, handoff_action, rc_frame_is_fresh_input, FailsafeAction};
+pub use failsafe::{check_failsafe, flight_failsafe, handoff_action, ticks_to_us, rc_frame_is_fresh_input, FailsafeAction};
 
 // ── RC mapping ──────────────────────────────────────────────────────────────
 

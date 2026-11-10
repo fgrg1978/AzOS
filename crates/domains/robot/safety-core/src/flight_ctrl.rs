@@ -147,6 +147,8 @@ pub fn flight_control_task(_: usize) {
         }
 
         if !is_armed() {
+            // A request from a flight that is over does not land the next one.
+            azos_behavior::link_watch::flight_handoff_clear();
             // Not armed — ensure ESC outputs are zero.
             for i in 0..4u8 {
                 azos_robot_drivers::esc::esc_set_throttle(i, 0);
@@ -186,17 +188,12 @@ pub fn flight_control_task(_: usize) {
         // Server age: use flight target channel.
         let srv_age = CH_FLIGHT_TARGET.age_us(now, azos_drv_sys::timebase::TIMER_FREQ);
 
-        let mut fs = check_failsafe(att_age, rc_age, srv_age);
         // A lost companion link hands a server-driven flight to the failsafe:
         // hold, then land. The motors keep running; only the ground or an
         // e-stop cuts them.
-        if fs == FailsafeAction::None {
-            if let Some(since) = azos_behavior::link_watch::flight_handoff_since() {
-                let held_us = now.wrapping_sub(since) * 1_000_000 / azos_drv_sys::timebase::TIMER_FREQ;
-                let server_driven = matches!(flight_mode(), FlightMode::Auto | FlightMode::PosHold);
-                fs = handoff_action(server_driven, held_us);
-            }
-        }
+        let held = azos_behavior::link_watch::flight_handoff_since().map(|t| now.wrapping_sub(t));
+        let server_driven = matches!(flight_mode(), FlightMode::Auto | FlightMode::PosHold);
+        let fs = flight_failsafe(att_age, rc_age, srv_age, server_driven, held, azos_drv_sys::timebase::TIMER_FREQ);
         match fs {
             FailsafeAction::Disarm => {
                 azos_drv_sys::kerr!("[FLIGHT] FAILSAFE: Disarm (critical failure)");

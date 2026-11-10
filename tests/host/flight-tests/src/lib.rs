@@ -69,6 +69,52 @@ mod failsafe_tests {
         }
     }
 
+    /// **The flight task's glue lands a drone whose link was lost, though the
+    /// server's target is stale from the first tick.** A tick loop as the flight
+    /// task runs it (`flight_failsafe`, the transitions of its `match`): the
+    /// chain answers PosHold on its own (nothing publishes the target), and the
+    /// handoff must raise that hold to a landing once the hold time is over.
+    ///
+    /// **Canary.** `handoff-poshold-canary`: the handoff is consulted only while
+    /// the chain is quiet; the drone holds forever.
+    #[test]
+    fn a_stale_target_does_not_keep_the_handoff_from_landing() {
+        const FREQ: u64 = 1_000_000_000;
+        #[derive(Clone, Copy, PartialEq, Debug)]
+        enum Mode { Auto, PosHold, Land }
+        let tick = FREQ / 10;
+        let mut mode = Mode::Auto;
+        let mut landed_at = None;
+        for n in 0..200u64 {
+            let held = Some(n * tick);
+            let driven = matches!(mode, Mode::Auto | Mode::PosHold);
+            let fs = flight_failsafe(0, 0, u64::MAX, driven, held, FREQ);
+            assert!(fs != FailsafeAction::Disarm, "airborne motors are never cut");
+            match fs {
+                FailsafeAction::Land => mode = Mode::Land,
+                FailsafeAction::PosHold if mode == Mode::Auto => mode = Mode::PosHold,
+                _ => {}
+            }
+            if mode == Mode::Land && landed_at.is_none() {
+                landed_at = Some(n);
+            }
+            if n * tick / (FREQ / 1_000_000) < HANDOFF_HOLD_US {
+                assert!(mode != Mode::Land, "no landing before the hold is over");
+            }
+        }
+        assert_eq!(landed_at, Some(HANDOFF_HOLD_US / 100_000));
+    }
+
+    /// **A stale handoff cannot overflow the clock arithmetic**, whatever the
+    /// timebase: hours of ticks at 1 GHz.
+    #[test]
+    fn handoff_ticks_do_not_overflow() {
+        assert_eq!(ticks_to_us(10_000_000_000, 1_000_000_000), 10_000_000);
+        assert_eq!(ticks_to_us(u64::MAX, 1_000_000_000), 18_446_744_073_709_551);
+        assert_eq!(ticks_to_us(10_000_000, 10_000_000), 1_000_000);
+        assert_eq!(ticks_to_us(0, 1_000_000_000), 0);
+    }
+
     #[test]
     fn attitude_loss_outranks_rc_loss_and_server_loss() {
         // Priority, not just detection: all three conditions true at once must
