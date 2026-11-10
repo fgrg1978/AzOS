@@ -55,8 +55,12 @@ pub trait Host {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Note {
-    /// The hardware refused a seal: the boot's seals are advisory from here.
+    /// The hardware did not take a seal after every try: the boot's seals are
+    /// advisory from here.
     Refused,
+    /// The hardware did not take a seal: it is tried again after a wait, and
+    /// nothing is sealed meanwhile.
+    Retrying,
     /// The anchor read back is not the one the extend gives.
     Diverged,
     /// The sink wrote more claims than its page holds between two passes.
@@ -75,6 +79,12 @@ pub struct Config {
     pub urgent_per_day: u32,
     pub declaration_per_day: u32,
 }
+
+/// Tries a seal makes at the hardware before the boot's seals go advisory, and
+/// the wait before the second (seconds), doubled after each failure: a TPM
+/// that rate-limits NV writes or is busy answers again within a few tries.
+const HW_TRIES: u8 = 5;
+const HW_BACKOFF_S: u64 = 1;
 
 /// Passes a record may stay pending before the sealer declares it lost.
 const PENDING_PASSES: u32 = 3;
@@ -104,6 +114,12 @@ pub struct Pass<const LOG: usize> {
     /// A declaration no seal covers yet.
     uncovered: bool,
     hw_failed: bool,
+    /// Failed tries at the hardware since its last seal, when the next is
+    /// due, and the counter value a try took whose extend failed (the retry
+    /// extends under it instead of incrementing again).
+    hw_tries: u8,
+    hw_retry_at: u64,
+    hw_counter: Option<u64>,
     flags: u8,
     /// The sink's heartbeat as last seen, and when it last moved.
     beat: u64,
@@ -134,6 +150,9 @@ impl<const LOG: usize> Pass<LOG> {
             sealed: false,
             uncovered: false,
             hw_failed: false,
+            hw_tries: 0,
+            hw_retry_at: 0,
+            hw_counter: None,
             flags,
             beat: 0,
             beat_at: now,
@@ -173,6 +192,10 @@ impl<const LOG: usize> Pass<LOG> {
         if !(force || period || wanted) {
             return None;
         }
+        if !force && hw.is_some() && !self.hw_failed && now < self.hw_retry_at {
+            return None;
+        }
+        let mut spent = None;
         if !(force || period) {
             if now.wrapping_sub(self.day) >= 86_400 * cfg.hz {
                 (self.day, self.urgent_used, self.declaration_used) = (now, 0, 0);
@@ -191,8 +214,18 @@ impl<const LOG: usize> Pass<LOG> {
                 return None;
             }
             *used += 1;
+            spent = Some(self.uncovered);
         }
-        Some(self.seal(hw, host, now))
+        let seq = self.seal(hw, host, now, cfg.hz, force);
+        if seq.is_none() {
+            // Nothing was sealed: the try does not spend the day's budget.
+            match spent {
+                Some(true) => self.declaration_used -= 1,
+                Some(false) => self.urgent_used -= 1,
+                None => {}
+            }
+        }
+        seq
     }
 
     /// Read and fold what the ring holds: whether a loss was declared.
@@ -351,13 +384,22 @@ impl<const LOG: usize> Pass<LOG> {
         host.publish(kind::SINK_LOSS, &Loss { first, count, by_class }.encode());
     }
 
-    fn seal(&mut self, hw: Option<&mut dyn Hw>, host: &mut dyn Host, now: u64) -> u64 {
+    /// Take a seal: its record's sequence number, or `None` when the
+    /// hardware did not take it and a retry is due (nothing is sealed, and
+    /// the counter a failed extend took is kept for the retry). After
+    /// [`HW_TRIES`] failures, or when `force`d (the last pass), the seal is
+    /// taken advisory and the boot's later seals are too.
+    fn seal(&mut self, hw: Option<&mut dyn Hw>, host: &mut dyn Host, now: u64, hz: u64, force: bool) -> Option<u64> {
         let hw = hw.filter(|_| !self.hw_failed);
         let present = hw.is_some();
         let (hardware, counter, held) = match hw {
-            Some(h) => match h.increment() {
+            Some(h) => match self.hw_counter.or_else(|| h.increment()) {
                 Some(c) => {
+                    self.hw_counter = Some(c);
                     let ok = h.extend(&self.s.data(c));
+                    if ok {
+                        self.hw_counter = None;
+                    }
                     (ok, c, if ok { h.read() } else { None })
                 }
                 None => (false, 0, None),
@@ -365,8 +407,16 @@ impl<const LOG: usize> Pass<LOG> {
             None => (false, 0, None),
         };
         if present && !hardware {
+            self.hw_tries += 1;
+            if !force && self.hw_tries < HW_TRIES && !cfg!(feature = "canary-hw-latch") {
+                self.hw_retry_at = now.saturating_add(hz.saturating_mul(HW_BACKOFF_S << (self.hw_tries - 1)));
+                host.note(Note::Retrying);
+                return None;
+            }
             self.hw_failed = true;
             host.note(Note::Refused);
+        } else if present {
+            self.hw_tries = 0;
         }
         let seal = self.s.seal(hardware, counter, held, self.flags);
         if seal.flags & FLAG_DIVERGED != 0 {
@@ -375,6 +425,6 @@ impl<const LOG: usize> Pass<LOG> {
         let seq = host.publish(kind::SEAL, &seal.encode());
         host.sealed(&seal, hardware);
         (self.last_seal, self.urgent_since, self.sealed, self.uncovered) = (now, None, true, false);
-        seq
+        Some(seq)
     }
 }

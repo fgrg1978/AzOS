@@ -275,10 +275,59 @@ fn pass_urgent_seals_keep_to_the_days_budget() {
     assert_eq!(tpm.counter as usize, host.seals.len(), "one increment per seal");
 }
 
-/// The TPM refuses an extend: that seal and the later ones are advisory.
+/// The TPM refuses an extend once: nothing is sealed until the retry, which
+/// the TPM takes under the counter the failed try took; every seal is
+/// hardware and the chain verifies. A TPM that keeps refusing goes advisory
+/// after the tries, and says so.
+///
+/// **Canary.** `canary-hw-latch`: the first refusal latches the boot's seals
+/// to advisory.
+#[test]
+fn pass_a_transient_tpm_refusal_is_retried_and_a_persistent_one_goes_advisory() {
+    let rig = Rig::new();
+    let mut host = FakeHost::new(&rig);
+    let mut tpm = FakeTpm { anchor: [0; 32], counter: 0, refuse: false, foreign: false };
+    let mut p = new_boot(&rig, &mut host, &tpm);
+    host.event(Class::Update, 1);
+    pass(&mut p, &rig, &mut host, Some(&mut tpm), None);
+    tpm.refuse = true;
+    host.now += 61_000;
+    host.event(Class::Update, 2);
+    assert_eq!(pass(&mut p, &rig, &mut host, Some(&mut tpm), None), None, "refused: nothing is sealed yet");
+    assert!(host.notes.contains(&Note::Retrying));
+    assert_eq!(host.seals.len(), 1);
+    // Inside the wait the TPM is not asked.
+    let asked = tpm.counter;
+    host.now += 500;
+    assert_eq!(pass(&mut p, &rig, &mut host, Some(&mut tpm), None), None);
+    assert_eq!(tpm.counter, asked);
+    tpm.refuse = false;
+    host.now += 1_000;
+    assert!(pass(&mut p, &rig, &mut host, Some(&mut tpm), None).is_some(), "the retry seals");
+    host.now += 61_000;
+    host.event(Class::Update, 3);
+    pass(&mut p, &rig, &mut host, Some(&mut tpm), None);
+    let hw: Vec<bool> = host.seals.iter().map(|s| s.1).collect();
+    assert_eq!(hw, vec![true, true, true]);
+    assert_eq!(tpm.counter as usize, host.seals.len(), "the retry took no second increment");
+    assert!(!host.notes.contains(&Note::Refused));
+    let f = verify(&rig.records());
+    assert!(f.iter().all(|x| !x.is_evidence()) && !f.iter().any(|x| matches!(x, Finding::Advisory { .. })), "{f:?}");
+    // A TPM that never answers: advisory after the tries, and the pass says so.
+    tpm.refuse = true;
+    host.now += 61_000;
+    host.event(Class::Update, 4);
+    for _ in 0..40 {
+        host.now += 4_000;
+        pass(&mut p, &rig, &mut host, Some(&mut tpm), None);
+    }
+    assert!(host.notes.contains(&Note::Refused));
+    assert_eq!(host.seals.last().map(|s| s.1), Some(false));
+}
+
 /// Something else extends the index: the seal says diverged.
 #[test]
-fn pass_a_refused_or_foreign_extend_is_said() {
+fn pass_a_foreign_extend_is_said() {
     let rig = Rig::new();
     let mut host = FakeHost::new(&rig);
     let mut tpm = FakeTpm { anchor: [0; 32], counter: 0, refuse: false, foreign: true };
@@ -287,18 +336,6 @@ fn pass_a_refused_or_foreign_extend_is_said() {
     pass(&mut p, &rig, &mut host, Some(&mut tpm), None);
     assert!(host.seals[0].0.flags & azos_seclog::FLAG_DIVERGED != 0);
     assert!(host.notes.contains(&Note::Diverged));
-    tpm.foreign = false;
-    tpm.refuse = true;
-    host.now += 61_000;
-    host.event(Class::Update, 2);
-    pass(&mut p, &rig, &mut host, Some(&mut tpm), None);
-    tpm.refuse = false;
-    host.now += 61_000;
-    host.event(Class::Update, 3);
-    pass(&mut p, &rig, &mut host, Some(&mut tpm), None);
-    let hw: Vec<bool> = host.seals.iter().map(|s| s.1).collect();
-    assert_eq!(hw, vec![true, false, false]);
-    assert!(host.notes.contains(&Note::Refused));
 }
 
 /// The urgent seals of the day are spent by a trigger; a declared loss is

@@ -137,7 +137,8 @@ impl azos_seclog::pass::Host for KHost {
     }
     fn note(&mut self, n: Note) {
         match n {
-            Note::Refused => kerr!("[SECLOG] the TPM refused a seal: the seals of this boot are advisory from here"),
+            Note::Refused => kerr!("[SECLOG] the TPM did not take a seal after every try: the seals of this boot are advisory from here"),
+            Note::Retrying => kerr!("[SECLOG] the TPM did not take a seal: trying again after a wait"),
             Note::Diverged => kerr!("[SECLOG] the TPM's anchor is not the one this seal extended: something else extended the index"),
             Note::ClaimsLapped => kerr!("[SECLOG] logd's page lapped the sealer: a sink-loss claim was not read"),
             Note::UrgentBudget => {}

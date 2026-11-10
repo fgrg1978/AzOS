@@ -22,3 +22,6 @@ canary-no-chain-check = []
 canary-no-order-check = []
 canary-no-anchor-check = []
 canary-no-declaration-check = []
+# The first seal the hardware does not take latches the boot's seals to
+# advisory (no retry).
+canary-hw-latch = []
