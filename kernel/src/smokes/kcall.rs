@@ -32,7 +32,9 @@
 //! * `a_power_read_of_a_hung_host_is_bounded`: a host that takes the call and
 //!   does not answer costs a power read the reply budget
 //!   (`PROXY_REPLY_TIMEOUT_MS`), then `DeadlineExpired`, and while it waits
-//!   the call task runs at the reader's priority, back to its own after.
+//!   the call task runs at the reader's priority (sampled when the host takes
+//!   the call and halfway through the budget, while the read still waits),
+//!   back to its own after.
 //!   Runtime canaries `powermon-unbounded` (the read waits for the answer)
 //!   and `call-no-lend` (the reader lends nothing): `not ok`.
 
@@ -298,9 +300,20 @@ static HUNG_READ_DONE: AtomicBool = AtomicBool::new(false);
 static HUNG_RC: AtomicI64 = AtomicI64::new(NOT_YET);
 #[cfg(feature = "board-io")]
 static HUNG_MS: AtomicU32 = AtomicU32::new(0);
-/// The call task's priority while the read waits, and after it ended.
+/// The call task's priority when the host took the call, halfway through the
+/// reader's budget (0: the read had ended by then, not sampled), and after the
+/// read ended.
 #[cfg(feature = "board-io")]
-static HUNG_PRIO: [AtomicU32; 2] = [const { AtomicU32::new(0) }; 2];
+static HUNG_PRIO: [AtomicU32; 3] = [const { AtomicU32::new(0) }; 3];
+/// When the read began (timebase ticks), and how long after it the host took
+/// the call (ms).
+#[cfg(feature = "board-io")]
+static HUNG_T0: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+#[cfg(feature = "board-io")]
+static HUNG_TAKE_MS: AtomicU32 = AtomicU32::new(0);
+/// The read still waited when the host took the call.
+#[cfg(feature = "board-io")]
+static HUNG_TAKEN_WAITING: AtomicBool = AtomicBool::new(false);
 
 /// Serves `endpoint.powermon` and answers nothing until the read has ended
 /// (or 3 s, so a canary boot does not keep the call task stuck).
@@ -326,13 +339,25 @@ fn hung_host(_: usize) {
             break h;
         }
     };
-    HUNG_TOOK.store(true, Ordering::Release);
     let prio = || azos_sched::task_priority(crate::powermon::call_task_tid()).unwrap_or(u32::MAX);
-    // Halfway through the reader's budget it has lent its priority.
-    let _ = crate::ktest::until_for(azos_limits::PROXY_REPLY_TIMEOUT_MS / 2, || false);
+    let waiting = || !HUNG_READ_DONE.load(Ordering::Acquire);
+    // The reader lent its priority before the call task took the call: it
+    // holds from here for as long as the read waits, however late the call
+    // came (the gate's hosts are loaded, and these boots run on wall-clock
+    // time), and is judged only while it waits.
     HUNG_PRIO[0].store(prio(), Ordering::Release);
-    let _ = crate::ktest::until_for(3_000, || HUNG_READ_DONE.load(Ordering::Acquire));
-    HUNG_PRIO[1].store(prio(), Ordering::Release);
+    HUNG_TAKEN_WAITING.store(waiting(), Ordering::Release);
+    let t0 = HUNG_T0.load(Ordering::Acquire);
+    let took = azos_drv_sys::timebase::now().saturating_sub(t0) * 1000 / azos_drv_sys::timebase::freq();
+    HUNG_TAKE_MS.store(took.min(u64::from(u32::MAX)) as u32, Ordering::Release);
+    HUNG_TOOK.store(true, Ordering::Release);
+    let _ = crate::ktest::until_for(azos_limits::PROXY_REPLY_TIMEOUT_MS / 2, || !waiting());
+    let mid = prio();
+    if waiting() {
+        HUNG_PRIO[1].store(mid, Ordering::Release);
+    }
+    let _ = crate::ktest::until_for(3_000, || !waiting());
+    HUNG_PRIO[2].store(prio(), Ordering::Release);
     let rep = MsgDesc { version: azos_abi::ipc_msg::MSG_VERSION, ..MsgDesc::default() };
     let _ = dispatch(SYS_IPC_REPLY, [h as u64, &rep as *const MsgDesc as u64, 0, 0, 0, 0], &mut out);
 }
@@ -342,6 +367,7 @@ fn hung_reader(_: usize) {
     use azos_drv_sys::timebase::{freq, now};
     let mut m = MsgDesc { version: azos_abi::ipc_msg::MSG_VERSION, n_words: 1, ..MsgDesc::default() };
     let t0 = now();
+    HUNG_T0.store(t0, Ordering::Release);
     let r = crate::powermon::endpoint_call(&mut m);
     HUNG_MS.store(((now() - t0) * 1000 / freq()) as u32, Ordering::Release);
     HUNG_RC.store(if r == Err(azos_devif::IdlError::DeadlineExpired) { 1 } else { -1 }, Ordering::Release);
@@ -374,11 +400,17 @@ azos_ktest::ktest_late! {
             return Err("the timed-out read was not counted");
         }
         // The host samples the call task's priority after the read ended.
-        crate::ktest::wait("the hung host never answered", || HUNG_PRIO[1].load(Ordering::Acquire) != 0)?;
-        if HUNG_PRIO[0].load(Ordering::Acquire) != PRIO {
+        crate::ktest::wait("the hung host never answered", || HUNG_PRIO[2].load(Ordering::Acquire) != 0)?;
+        let (take, mid) = (HUNG_PRIO[0].load(Ordering::Acquire), HUNG_PRIO[1].load(Ordering::Acquire));
+        azos_drv_sys::kprintln!("# hung host: took the call {} ms into the read, the call task at {} then and {} halfway (0: the read had ended)",
+            HUNG_TAKE_MS.load(Ordering::Acquire), take, mid);
+        if !HUNG_TAKEN_WAITING.load(Ordering::Acquire) {
+            return Err("the host took the call only after the read had ended: the lend cannot be judged");
+        }
+        if take != PRIO || (mid != 0 && mid != PRIO) {
             return Err("the call task did not run at the waiting reader's priority");
         }
-        if HUNG_PRIO[1].load(Ordering::Acquire) != azos_sched::DEFAULT_PRIORITY {
+        if HUNG_PRIO[2].load(Ordering::Acquire) != azos_sched::DEFAULT_PRIORITY {
             return Err("the call task kept the reader's priority after the read ended");
         }
         Ok(())
