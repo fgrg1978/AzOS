@@ -935,11 +935,11 @@ index; the driver has no policy sessions.
 
 A TPM increment or extend that fails is tried again: nothing is sealed, the
 counter value a failed extend took is kept for the retry (the counter still moves
-once per seal), and the next try waits 1, 2, 4 and 8 s; the retry does not spend
+once per seal), and an extend that failed is checked against the value the TPM holds, so one it took with its answer lost is not taken again (a retry reads first too); the next try waits 1, 2, 4 and 8 s; the retry does not spend
 the day's urgent or declaration budget. After five failures, or on the last pass at
 power-off, that seal and the later ones are advisory, the next boot's anchor is the
 last seal the TPM took, and the verifier links the boots there (or at the first
-refused seal, whose extend the TPM may have taken with its answer lost). After each
+refused seal, whose extend the TPM may have taken with its answer lost). The boot does not try the TPM again after the five failures, and an advisory seal after hardware ones in a boot is reported as advisory, not as evidence. After each
 extend the kernel reads the index back: a value its extend does not give
 (something else extended it) becomes the seal's anchor, flagged `diverged`,
 which the verifier tells apart from a rewritten record. Each seal is one NV

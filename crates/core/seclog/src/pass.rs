@@ -397,8 +397,14 @@ impl<const LOG: usize> Pass<LOG> {
         let (hardware, counter, held) = match hw {
             Some(h) => match self.hw_counter.or_else(|| h.increment()) {
                 Some(c) => {
-                    self.hw_counter = Some(c);
-                    let ok = h.extend(&self.s.data(c));
+                    let retry = self.hw_counter.replace(c).is_some();
+                    let want = self.s.expected(c);
+                    // An extend the TPM took with its answer lost is not taken again:
+                    // the value it holds is read first on a retry and after a failure.
+                    let readback = !cfg!(feature = "canary-extend-readback");
+                    let ok = (readback && retry && h.read() == Some(want))
+                        || h.extend(&self.s.data(c))
+                        || (readback && h.read() == Some(want));
                     if ok {
                         self.hw_counter = None;
                     }

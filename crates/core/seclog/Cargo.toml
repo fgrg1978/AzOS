@@ -25,5 +25,8 @@ canary-no-declaration-check = []
 # The first seal the hardware does not take latches the boot's seals to
 # advisory (no retry).
 canary-hw-latch = []
+# An extend that failed is never checked against the value the TPM holds: one
+# it took with its answer lost is taken again and reads as diverged.
+canary-extend-readback = []
 # A sink loss is declared as if the sink had stopped, whatever its heartbeat.
 canary-sink-claim-unmarked = []

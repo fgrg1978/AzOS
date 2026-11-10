@@ -223,6 +223,11 @@ impl Sealer {
         seal_data(&self.boot_anchor, self.nonce, &self.numbers(counter), &self.head)
     }
 
+    /// The backend's value after the next seal's extend, under `counter`.
+    pub fn expected(&self, counter: u64) -> Hash {
+        extend(&self.anchor, &self.data(counter))
+    }
+
     /// The seal of the head now. `hardware`: the backend took the commit;
     /// `counter`: the backend's counter it was taken under; `held`: the value
     /// the backend was read to hold after it (`None`: not read). The anchor

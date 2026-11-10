@@ -105,6 +105,8 @@ struct FakeTpm {
     counter: u64,
     refuse: bool,
     foreign: bool,
+    /// The extend lands and the answer is lost.
+    lose: bool,
 }
 
 impl Hw for FakeTpm {
@@ -120,7 +122,7 @@ impl Hw for FakeTpm {
             self.anchor = azos_seclog::chain::extend(&self.anchor, &[0x66; 32]);
         }
         self.anchor = azos_seclog::chain::extend(&self.anchor, data);
-        true
+        !self.lose
     }
     fn read(&mut self) -> Option<Hash> {
         Some(self.anchor)
@@ -167,7 +169,7 @@ fn new_boot(_rig: &Rig, host: &mut FakeHost<'_>, tpm: &FakeTpm) -> Pass<LOG> {
 fn pass_the_first_pass_seals_and_the_ring_verifies() {
     let rig = Rig::new();
     let mut host = FakeHost::new(&rig);
-    let mut tpm = FakeTpm { anchor: [0; 32], counter: 0, refuse: false, foreign: false };
+    let mut tpm = FakeTpm { anchor: [0; 32], counter: 0, refuse: false, foreign: false, lose: false };
     let mut p = new_boot(&rig, &mut host, &tpm);
     host.event(Class::ImageLoad, 1);
     assert!(pass(&mut p, &rig, &mut host, Some(&mut tpm), None).is_some(), "the first pass seals");
@@ -185,7 +187,7 @@ fn pass_the_first_pass_seals_and_the_ring_verifies() {
 fn pass_a_loss_is_declared_by_class_and_sealed_at_once() {
     let rig = Rig::new();
     let mut host = FakeHost::new(&rig);
-    let mut tpm = FakeTpm { anchor: [0; 32], counter: 0, refuse: false, foreign: false };
+    let mut tpm = FakeTpm { anchor: [0; 32], counter: 0, refuse: false, foreign: false, lose: false };
     let mut p = new_boot(&rig, &mut host, &tpm);
     host.event(Class::Login, 1);
     pass(&mut p, &rig, &mut host, Some(&mut tpm), None);
@@ -211,7 +213,7 @@ fn pass_a_loss_is_declared_by_class_and_sealed_at_once() {
 fn pass_a_claim_of_records_still_in_the_ring_waits_for_the_ring() {
     let rig = Rig::new();
     let mut host = FakeHost::new(&rig);
-    let mut tpm = FakeTpm { anchor: [0; 32], counter: 0, refuse: false, foreign: false };
+    let mut tpm = FakeTpm { anchor: [0; 32], counter: 0, refuse: false, foreign: false, lose: false };
     let page: Page = unsafe { core::mem::zeroed() };
     let mut p = new_boot(&rig, &mut host, &tpm);
     let lost = host.event(Class::Camera, 9);
@@ -248,7 +250,7 @@ fn pass_a_sink_loss_says_whether_the_sink_was_running() {
     let run = |beating: bool| {
         let rig = Rig::new();
         let mut host = FakeHost::new(&rig);
-        let mut tpm = FakeTpm { anchor: [0; 32], counter: 0, refuse: false, foreign: false };
+        let mut tpm = FakeTpm { anchor: [0; 32], counter: 0, refuse: false, foreign: false, lose: false };
         let page: Page = unsafe { core::mem::zeroed() };
         let mut p = new_boot(&rig, &mut host, &tpm);
         let lost = host.event(Class::Camera, 9);
@@ -304,7 +306,7 @@ fn pass_a_claim_count_from_the_sink_bounds_nothing() {
 fn pass_urgent_seals_keep_to_the_days_budget() {
     let rig = Rig::new();
     let mut host = FakeHost::new(&rig);
-    let mut tpm = FakeTpm { anchor: [0; 32], counter: 0, refuse: false, foreign: false };
+    let mut tpm = FakeTpm { anchor: [0; 32], counter: 0, refuse: false, foreign: false, lose: false };
     let mut p = new_boot(&rig, &mut host, &tpm);
     host.event(Class::Login, 1);
     pass(&mut p, &rig, &mut host, Some(&mut tpm), None);
@@ -330,7 +332,7 @@ fn pass_urgent_seals_keep_to_the_days_budget() {
 fn pass_a_transient_tpm_refusal_is_retried_and_a_persistent_one_goes_advisory() {
     let rig = Rig::new();
     let mut host = FakeHost::new(&rig);
-    let mut tpm = FakeTpm { anchor: [0; 32], counter: 0, refuse: false, foreign: false };
+    let mut tpm = FakeTpm { anchor: [0; 32], counter: 0, refuse: false, foreign: false, lose: false };
     let mut p = new_boot(&rig, &mut host, &tpm);
     host.event(Class::Update, 1);
     pass(&mut p, &rig, &mut host, Some(&mut tpm), None);
@@ -369,12 +371,41 @@ fn pass_a_transient_tpm_refusal_is_retried_and_a_persistent_one_goes_advisory() 
     assert_eq!(host.seals.last().map(|s| s.1), Some(false));
 }
 
+/// An extend the TPM took whose answer was lost is not taken again: the seal
+/// is a hardware seal of the value the TPM holds, with no divergence, and the
+/// chain verifies.
+///
+/// **Canary.** `canary-extend-readback`: the extend is taken again and the seal says diverged.
+#[test]
+fn pass_an_extend_the_tpm_took_with_its_answer_lost_is_not_taken_again() {
+    let rig = Rig::new();
+    let mut host = FakeHost::new(&rig);
+    let mut tpm = FakeTpm { anchor: [0; 32], counter: 0, refuse: false, foreign: false, lose: false };
+    let mut p = new_boot(&rig, &mut host, &tpm);
+    host.event(Class::Update, 1);
+    pass(&mut p, &rig, &mut host, Some(&mut tpm), None);
+    tpm.lose = true;
+    host.now += 61_000;
+    host.event(Class::Update, 2);
+    assert!(pass(&mut p, &rig, &mut host, Some(&mut tpm), None).is_some(), "the TPM holds it: sealed");
+    tpm.lose = false;
+    host.now += 61_000;
+    host.event(Class::Update, 3);
+    pass(&mut p, &rig, &mut host, Some(&mut tpm), None);
+    let hw: Vec<bool> = host.seals.iter().map(|s| s.1).collect();
+    assert_eq!(hw, vec![true, true, true]);
+    assert!(!host.notes.contains(&Note::Diverged) && !host.notes.contains(&Note::Retrying));
+    assert_eq!(tpm.counter as usize, host.seals.len());
+    let f = verify(&rig.records());
+    assert!(f.iter().all(|x| !x.is_evidence()), "{f:?}");
+}
+
 /// Something else extends the index: the seal says diverged.
 #[test]
 fn pass_a_foreign_extend_is_said() {
     let rig = Rig::new();
     let mut host = FakeHost::new(&rig);
-    let mut tpm = FakeTpm { anchor: [0; 32], counter: 0, refuse: false, foreign: true };
+    let mut tpm = FakeTpm { anchor: [0; 32], counter: 0, refuse: false, foreign: true, lose: false };
     let mut p = new_boot(&rig, &mut host, &tpm);
     host.event(Class::Update, 1);
     pass(&mut p, &rig, &mut host, Some(&mut tpm), None);
@@ -388,7 +419,7 @@ fn pass_a_foreign_extend_is_said() {
 fn pass_a_declaration_has_its_own_seal_budget() {
     let rig = Rig::new();
     let mut host = FakeHost::new(&rig);
-    let mut tpm = FakeTpm { anchor: [0; 32], counter: 0, refuse: false, foreign: false };
+    let mut tpm = FakeTpm { anchor: [0; 32], counter: 0, refuse: false, foreign: false, lose: false };
     let mut p = new_boot(&rig, &mut host, &tpm);
     host.event(Class::Login, 1);
     pass(&mut p, &rig, &mut host, Some(&mut tpm), None);
