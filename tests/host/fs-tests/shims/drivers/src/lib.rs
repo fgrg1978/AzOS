@@ -251,7 +251,7 @@ pub fn disk_poke(sector: u64, bytes: &[u8]) {
 #[path = "../../../../../../crates/drivers/block/src/partition.rs"]
 pub mod partition;
 
-/// The block layer's write observer, the real file (wave 14): the shim's
+/// The block layer's write observer, the real file: the shim's
 /// `blkdev::write` reports through it exactly as the kernel's does.
 #[path = "../../../../../../crates/drivers/block/src/write_observer.rs"]
 pub mod write_observer;
@@ -513,7 +513,7 @@ pub mod uart {
         let _ = std::io::stdout().write_all(&[c]);
     }
 
-    /// `/dev/stdout`'s device callback writes through this (wave 11).
+    /// `/dev/stdout`'s device callback writes through this.
     pub fn console_write_ring3(bytes: &[u8]) {
         let _ = std::io::stdout().write_all(bytes);
     }

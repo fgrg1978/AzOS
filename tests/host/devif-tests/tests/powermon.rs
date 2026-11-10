@@ -145,7 +145,7 @@ fn the_pool_name_is_the_topology_name_without_its_prefix() {
 
 /// Each op says whether it only reads: `read` and `stats` do, and any other
 /// request (another op number, another interface, a new op) is taken to act,
-/// so the kernel's call by name refuses it under containment (review FU-1).
+/// so the kernel's call by name refuses it under containment.
 ///
 /// **Canary.** Make `request_observes` answer `true` for any op of the
 /// interface: the unknown op is taken to read and the last two assertions fail.

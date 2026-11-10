@@ -48,7 +48,7 @@ mod wx;
 #[path = "../../../../crates/core/mm/src/cow_table.rs"]
 mod cow_table;
 
-// Per-task frame budget arithmetic (owner decision 102), carved out of
+// Per-task frame budget arithmetic, carved out of
 // `crates/core/sched/src/scheduler.rs`'s `mm_charge`/`mm_discharge`/
 // `mm_reset_charge` so the host can link the real code. See its header for
 // why the original functions cannot be pulled directly, and for what is (and
@@ -88,7 +88,7 @@ mod resv;
 #[cfg(test)]
 mod thp_resv;
 
-// Wave 15 (SLAB): the per-CPU magazine layer of the kernel heap. Depends on
+// The per-CPU magazine layer of the kernel heap. Depends on
 // `core` only; its rows are in `slab_tests.rs`.
 #[allow(dead_code)]
 #[path = "../../../../crates/core/mm/src/slab.rs"]
@@ -1038,15 +1038,13 @@ mod cow_table_tests {
 /// The per-task frame budget (`budget.rs`, carved out of `scheduler.rs`'s
 /// `mm_charge`/`mm_discharge`/`mm_reset_charge`).
 ///
-/// **WHY THIS CLOSES THE OPEN FINDING.** Scan unit 3 finding 3 (owner decision
-/// 102) shipped with the positive half proven in `tests/host/syscall-tests`
+/// **WHY THIS TEST EXISTS.** The per-task frame budget shipped with the positive half proven in `tests/host/syscall-tests`
 /// (`mmap_guards.rs`) and the refusal proven at the QEMU gate
 /// (`mem-quota-canary`, `tools/gate/ci_check.sh`) — but neither exercises the REAL
 /// `mm_charge`/`mm_discharge` in `scheduler.rs`. `syscall-tests`' own shim says
 /// so explicitly: it is "State, not behaviour... SEMANTICS are copied
 /// deliberately", proving the WIRING in `handlers.rs`, not this decision. The
-/// diagnosis that a per-test arena was missing (the mistake that cost three
-/// withdrawn attempts on the write-guard finding) does not apply here: `mm_charge`
+/// diagnosis that a per-test arena was missing does not apply here: `mm_charge`
 /// takes no allocator lock and touches no PMM arena at all, it is three
 /// integers behind a task-table index. What was actually missing was a SEAM —
 /// the arithmetic was inlined on `TASKS[idx]` inside a file that cannot be

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Host rows for `crates/core/mm/src/slab.rs` (wave 15, SLAB), the real file
+//! Host rows for `crates/core/mm/src/slab.rs` (SLAB), the real file
 //! pulled with `#[path]`.
 //!
 //! The backing here is the host allocator with a byte budget (to make the

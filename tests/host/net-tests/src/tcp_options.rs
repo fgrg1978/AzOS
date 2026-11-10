@@ -326,7 +326,7 @@ fn an_active_open_offers_both_options_in_a_syn_whose_window_is_not_scaled() {
 
 /// A connection is its two rings, each `TCP_BUF_SIZE` bytes from `.config`, and
 /// a fixed amount of state, so the static table follows the configured size
-/// byte for byte. `STATE` was measured on 2026-09-14 (6,088 B) and grew by 24 B in wave 15 (delayed-ACK state, N6) and by 24 B for the IPv6
+/// byte for byte. `STATE` was measured at 6,088 B and grew by 24 B for delayed-ACK state and by 24 B for the IPv6
 /// endpoint addresses (`tcp::IpAddr`), by 24 B for Timestamps (RFC 7323) and by 8 B for ECN (RFC 3168): 268,312 B per connection
 /// at 131072 (edge, embedded) and 38,936 B at 16384 (fleet), the figures
 /// `config/limits/Kconfig.limits` quotes. `STATE` is exact on purpose:

@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! Prints the board's ELF service list, one FAT32 name per line, sorted.
 //!
-//! Owner decision 2026-09-24: an ELF ships on a board's FAT32 volume iff the
+//! An ELF ships on a board's FAT32 volume iff the
 //! topology declares a service it provides. This binary IS that query — it
 //! is not a second list to keep in sync, it just reads
 //! `crates/core/topology/src/builder.rs::default_minimal()` and prints every

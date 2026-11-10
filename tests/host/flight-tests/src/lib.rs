@@ -21,7 +21,7 @@ pub mod path3d;
 
 /// The failsafe chain, compiled unmodified — it names no external crate.
 ///
-/// It had no test at all until 2026-09-06: `check_failsafe` and
+/// It has a test of its own because `check_failsafe` and
 /// `FailsafeAction` appear nowhere in the tree except `crates/domains/robot/flight/src` and
 /// one kernel call site, so nothing exercised the failsafe logic of a flying
 /// machine on the host or in QEMU.
@@ -138,7 +138,7 @@ mod tests {
         // bounds one call to 6 samples; unbounded, the same call can span the
         // volume diagonal (173 m) and take 111.
         //
-        // Measured 2026-09-05: 7,070 with the filter, 18,532 without. The
+        // Measured: 7,070 with the filter, 18,532 without. The
         // budget sits between them with headroom, and the run is fully
         // deterministic — one thread, one fixed seed — so the headroom is for
         // deliberate change, not for noise.

@@ -5,7 +5,7 @@
 //! Owner, reason and timeout; the quota per owner and the longest timeout;
 //! release only by the owner; a lapse handed back for its record.
 //!
-//! Canaries (by hand, 2026-10-23, each restored with git):
+//! Canaries (by hand, each restored with git):
 //!
 //! * never reap in `Ledger::reap`:
 //!   `an_assertion_past_its_timeout_is_released_and_handed_back` and

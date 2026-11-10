@@ -149,7 +149,7 @@ pub mod cpu {
 // ──────────────────────────────────────────────────────────────────────────
 // The cross-ISA contract, modelled on top of this shim's own `csr` cells.
 //
-// Added 2026-09-21, when `spinlock.rs` and `preempt.rs` stopped reaching
+// Added, when `spinlock.rs` and `preempt.rs` stopped reaching
 // `sstatus` directly and started going through `arch-api`. Without it those
 // two files — which this crate compiles UNMODIFIED via `#[path]`, which is
 // the whole point — would not build here.

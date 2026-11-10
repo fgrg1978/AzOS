@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Host tests for `azos_percpu` (wave 15, NRCPUS): the CPU masks, the
+//! Host tests for `azos_percpu` (NRCPUS): the CPU masks, the
 //! DTB-count clamp, `nr_cpu_ids`, and the per-CPU area allocator with its
 //! out-of-range refusal. `NR_CPUS` is the `.config`'s (the qemu default, 64,
 //! when this suite is run from a configured tree).
@@ -291,7 +291,7 @@ mod tests {
     /// (isolcpus, RCU_NOCBS_CPUS) while one is free; the classes that name a
     /// CPU on purpose, and a boot with every CPU avoided, resolve as before.
     ///
-    /// Canary (run 2026-11-04): `resolve_outside` returning `resolve`'s answer
+    /// Canary: `resolve_outside` returning `resolve`'s answer
     /// for `last` makes the first line red.
     #[test]
     fn service_classes_avoid_the_cpus_they_are_told_to() {

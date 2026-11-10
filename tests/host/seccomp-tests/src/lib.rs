@@ -204,7 +204,7 @@ mod filter_semantics {
     /// real syscall is — is bounded by the array whatever `count` says, so a
     /// corrupted count cannot make the dispatcher read past the filter.
     ///
-    /// **Changed with the bitmap (wave 7).** This used to plant `77` straight
+    /// **Changed with the bitmap.** This used to plant `77` straight
     /// into `allowed[63]` and expect `Allow`. A number below
     /// `SYSCALL_FILTER_BITMAP_BITS` is now answered from the bitmap, which only
     /// `allow` writes, so a planted list entry grants nothing there (the
@@ -236,10 +236,10 @@ mod filter_semantics {
     /// of the 640-bit bitmap, 132 → 212. `filter.rs` asserts size and offsets at
     /// compile time for the kernel as well.
     ///
-    /// Wave 9: the list grew from 64 to 96 entries (`SYSCALL_FILTER_MAX`), so
+    /// The list grew from 64 to 96 entries (`SYSCALL_FILTER_MAX`), so
     /// `count`/`audit`/`bits` each moved by 64 and the struct is 276 bytes.
     ///
-    /// Wave 15: the length is `CONFIG_SYSCALL_FILTER_MAX` (default 128), so
+    /// The length is `CONFIG_SYSCALL_FILTER_MAX` (default 128), so
     /// the offsets are written as functions of it, independently of the
     /// constants `filter.rs` derives: `count` after the list, `audit` the
     /// next byte, `bits` at the next 4-byte boundary, 84 bytes of bitmap.
@@ -267,7 +267,7 @@ mod filter_semantics {
     }
 }
 
-/// The bitmap verdict against the linear scan it replaced (owner decision,
+/// The bitmap verdict against the linear scan it replaced (
 /// round 8: `verdict_for` was a scan of `allowed[..count]` on every filtered
 /// syscall; it is now one bit of a bitmap `allow` builds).
 ///
@@ -448,12 +448,12 @@ mod profiles {
     /// as by the kernel's owner claim. `LOG_CONSOLE_WAIT` is in the
     /// shell's profile and in no other, so no tool, driver or test image can
     /// even ask for console bytes; `SYS_SPAWN_EX` and `SYS_ALERT`
-    /// (611) are the shell's too — and, for 608 only, `VSBENCH.ELF`'s since
-    /// wave 12 (its `spawn+wait` lane; the call still needs a `Cap<Launch>`
+    /// (611) are the shell's too — and, for 608 only, `VSBENCH.ELF`'s
+    /// (its `spawn+wait` lane; the call still needs a `Cap<Launch>`
     /// for the image, which only QEMU topologies grant it). No role profile
     /// lists any of the three.
     ///
-    /// Wave 13: a Linux image's row lists 609 and 611 too (`LXHELLO.ELF`, and
+    /// A Linux image's row lists 609 and 611 too (`LXHELLO.ELF`, and
     /// the third-party BusyBox row), because seccomp runs after translation
     /// and its `read` and `kill` reach them. A Linux task cannot issue a
     /// native number itself: its 609 is a `read` of a console the shell LENT
@@ -555,7 +555,7 @@ mod profiles {
         }
     }
 
-    /// Wave 15: the tracer's ops are `TRACECTL.ELF`'s alone, and that profile
+    /// The tracer's ops are `TRACECTL.ELF`'s alone, and that profile
     /// has no exec, spawn, kill or untyped privileged call. The tracer's ops
     /// are the `READ`, `CTL` and `ADMIN` classes of kind `Log` (the console
     /// has only `WRITE` and `WAIT`).
@@ -603,7 +603,7 @@ mod profiles {
         assert_eq!(holders, vec!["BRAINCLI.ELF"]);
     }
 
-    /// Wave 12: each family's interface is its tool's alone, and the four
+    /// Each family's interface is its tool's alone, and the four
     /// tools hold no other privileged or exec call and no other interface.
     ///
     /// **Canary.** Add `azos_devif::key::OTA` to `CONFIG.ELF`'s row: red,
@@ -764,7 +764,7 @@ mod profiles {
     /// presents as a working task that fails at the one call it needed —
     /// on the board, not here. Assert the headroom so growth trips here.
     ///
-    /// **The ceiling moved from 32 to 64 on 2026-09-07 (owner decision), and
+    /// **The ceiling is 64 rather than 32, and
     /// the reason was this test.** A role profile sat at 25 of 32, and the
     /// calls a migrated family could not run without would have left four
     /// slots for every remaining family. Rationing a security filter by an
@@ -973,7 +973,7 @@ mod activation {
 }
 
 /// **Every shipped ring-3 binary runs under the profile its source says it
-/// needs** (owner decision, 2026-09-14).
+/// needs**.
 ///
 /// `crates/core/sched/src/seccomp.rs` holds one row per image (`IMAGE_PROFILES`).
 /// A row written by hand is only as complete as the reading behind it, and
@@ -992,7 +992,7 @@ mod activation {
 /// glob import, an `ecall` whose `a7` is set some other way — PANIC instead of
 /// being skipped, so a blind spot is a red test rather than a missed call.
 ///
-/// Checked by hand on 2026-09-14 against `uhello` and `ipctest`; the two
+/// Checked by hand against `uhello` and `ipctest`; the two
 /// derived sets are pinned below so a scanner regression cannot pass as a
 /// profile that shrank with it.
 #[cfg(test)]
@@ -1244,7 +1244,7 @@ mod image_profiles {
     /// Every image and the sources its `Makefile` rule compiles into it.
     const SOURCES: &[(&str, Lang, &[(&str, &str)])] = &[
         ("HELLO.ELF", Lang::Asm, &[src!("userspace/tests/hello/hello.S")]),
-        // Wave 15: the kernel tracer's reader.
+        // The kernel tracer's reader.
         ("TRACECTL.ELF", Lang::Rust, &[
             src!("userspace/services/tracectl/src/main.rs"),
             src!("userspace/services/tracectl/src/profile.rs"),
@@ -1404,14 +1404,14 @@ mod image_profiles {
         ]),
         ("BUZZDRV.ELF", Lang::Rust, &[
             src!("userspace/drivers/buzz_drv/src/main.rs"),
-            // The chip logic, a crate of its own since wave 12 DRVPLACE
+            // The chip logic, a crate of its own
             // (shared with the kernel host): no syscalls.
             src!("crates/drivers/buzzer/src/lib.rs"),
         ]),
         ("INADRV.ELF", Lang::Rust, &[
             src!("userspace/drivers/ina_drv/src/main.rs"),
             src!("userspace/drivers/ina_drv/src/request.rs"),
-            // The chip logic, a crate of its own since wave 11 DRVPLACE
+            // The chip logic, a crate of its own
             // (shared with the kernel host): no syscalls.
             src!("crates/drivers/ina219/src/lib.rs"),
             src!("crates/drivers/ina219/src/chip.rs"),
@@ -1549,7 +1549,7 @@ mod image_profiles {
             src!("userspace/services/power/src/battery.rs"),
             src!("userspace/services/power/src/degrade.rs"),
         ]),
-        // Wave 12: one binary each of the family-tools crate, with the shared
+        // One binary each of the family-tools crate, with the shared
         // module every one of them pulls in by `#[path]`.
         ("FLIGHT.ELF", Lang::Rust, &[
             src!("userspace/services/famtools/src/bin/flight.rs"),
@@ -2852,7 +2852,7 @@ mod image_profiles {
     ///  * it asks `current_syscall_verdict(num)`, on the full number, before the
     ///    fast path;
     ///  * `Deny` calls `seccomp_deny_kill(num)`, which never returns —
-    ///    V1.8 (owner decision, 2026-09-26): a denied call kills the task
+    ///    V1.8: a denied call kills the task
     ///    instead of returning `-1`, because a `-1` a compromised or buggy
     ///    binary can silently ignore is not containment. The record →
     ///    console line → exit sequence itself lives in
@@ -2926,7 +2926,7 @@ mod image_profiles {
         // At warn level (`kwarn!`), so a release build (log level warn) still
         // prints it; a plain `kprintln!` is info and compiled out there.
         let line = body.find("kwarn!").expect("the operator-visible kill line is gone, or is no longer warn level");
-        // Wave 13: through `task_exit_by_signal` (the same code, and the
+        // Through `task_exit_by_signal` (the same code, and the
         // signal recorded so a Linux parent sees WIFSIGNALED SIGSYS).
         let exit = body
             .find("task_exit_by_signal(SECCOMP_KILL_EXIT_CODE)")
@@ -3028,7 +3028,7 @@ mod image_profiles {
                 f.count,
             );
         }
-        // Wave 9: the list went from 64 to 96 because the widest row
+        // The list went from 64 to 96 because the widest row
         // (ABITEST.ELF, audit mode) listed 62 of 64. Keep a quarter of the
         // list free, so the next row that grows trips here, not on a board.
         let widest = IMAGE_PROFILES.iter().map(|p| image_filter(p).count as usize).max().unwrap();
@@ -3038,7 +3038,7 @@ mod image_profiles {
         );
     }
 
-    // ── Bound to the bytes, not the name (owner decision 2026-09-14) ─────
+    // ── Bound to the bytes, not the name ─────
 
     /// The Makefile's `IMAGE_ELFS`: `(NAME, $(VAR))` in order.
     fn image_elfs_rule() -> Vec<(String, String)> {
@@ -3084,7 +3084,7 @@ mod image_profiles {
     /// tooling this host crate does not duplicate.
     fn image_recipe_copies() -> Vec<(String, String)> {
         // Each (name, ELF) pair once, at its first copy: one ELF may be copied
-        // onto several volumes (wave 13: L1's `disk-*lxbench.img` copy
+        // onto several volumes (L1's `disk-*lxbench.img` copy
         // LXSRV.ELF again after `disk-*lx.img`).
         let mut seen = std::collections::BTreeSet::new();
         MAKEFILE
@@ -3138,7 +3138,7 @@ mod image_profiles {
     /// names.
     fn image_recipe_copies_aarch64() -> Vec<(String, String)> {
         // Each (name, ELF) pair once, at its first copy: one ELF may be copied
-        // onto several volumes (wave 13: L1's `disk-*lxbench.img` copy
+        // onto several volumes (L1's `disk-*lxbench.img` copy
         // LXSRV.ELF again after `disk-*lx.img`).
         let mut seen = std::collections::BTreeSet::new();
         MAKEFILE
@@ -3602,7 +3602,7 @@ mod image_profiles {
             .find(|l| l.starts_with("USPACE_METADATA_TAG :="))
             .expect("the Makefile defines no USPACE_METADATA_TAG");
         assert!(tag.contains(r#"open("userspace/rustc_stable_metadata.py", "rb")"#), "{tag}");
-        // The two ML-service wrappers (BOARDIMG, wave 11) only set the key
+        // The two ML-service wrappers (BOARDIMG) only set the key
         // environment around $(USPACE_BUILD): they must end in it.
         const WRAPPED: [&str; 2] = ["&& $(MLSRV_QEMU_BUILD)", "&& $(MLSRV_BOARD_BUILD)"];
         for var in ["MLSRV_QEMU_BUILD", "MLSRV_BOARD_BUILD"] {
@@ -3637,17 +3637,17 @@ mod image_profiles {
         // crates too and go through the same $(USPACE_BUILD). Phase 6 prep,
         // aarch64 parity — no aarch64 kernel exec path exists yet, so none of
         // this is in `SOURCES`/`IMAGE_ELFS`, which stay riscv64-only.
-        // 15 since wave 9: the ring-3 buzzer and INA219 drivers.
+        // 15: the ring-3 buzzer and INA219 drivers.
         // 18 with the user shell and its tool image.
         // 19 with the power tool.
         // 20 with the Linux driver server skeleton.
-        // 24 with the flight, behavior, config and OTA tools (wave 12).
-        // 25 with the kernel tracer's reader (wave 15).
-        // +1 riscv64 since wave 11 BOARDIMG: the board volume's own ML service
+        // 24 with the flight, behavior, config and OTA tools.
+        // 25 with the kernel tracer's reader.
+        // +1 riscv64: the board volume's own ML service
         // (the same crate, the named key), `$(MLSRV_ELF_BOARD)`.
-        // +19 x86_64 (wave 15): `IMAGE_ELFS_X86_64`, one recipe per image.
-        // +1 x86_64 (wave 15 VSX86): vsbench's own x86_64 recipe.
-        // +1 x86_64 (wave 15 VS): vssrv, vsbench's ipc-roundtrip peer.
+        // +19 x86_64: `IMAGE_ELFS_X86_64`, one recipe per image.
+        // +1 x86_64: vsbench's own x86_64 recipe.
+        // +1 x86_64: vssrv, vsbench's ipc-roundtrip peer.
         // +1 on each of aarch64 and x86_64 with the terminal server (TERMD.ELF).
         // +1 on each of aarch64 and x86_64 with the name server (NAMESD.ELF).
         // +2 on each of riscv64, aarch64 and x86_64 with the decision server
@@ -4019,7 +4019,7 @@ mod dispatch_guards {
 /// topology row (`seccomp::locked_compatible`), pinned against the real
 /// profile table.
 ///
-/// **Canary** (run by hand 2026-09-28): drop `!p.audit &&` from
+/// **Canary** (run by hand): drop `!p.audit &&` from
 /// `locked_compatible` — `ABITEST.ELF`/`CAPTEST.ELF` (audit mode, which lets
 /// any unlisted call through) are reported compatible and the test fails.
 #[cfg(test)]

@@ -28,7 +28,7 @@ fn port_for(tid: u32) -> u32 {
     azos_ipc::port::port_create_ref(tid as usize).expect("a port")
 }
 
-/// Wave 10 IRQ5: a line the interrupt controller refuses after the binding
+/// A line the interrupt controller refuses after the binding
 /// was stored leaves no binding behind, and a routed one keeps it. (The
 /// refusal itself is ISA code — PLIC probe, APLIC read-back, GIC
 /// `ITLinesNumber` — so the route is the closure here; the QEMU rows run the

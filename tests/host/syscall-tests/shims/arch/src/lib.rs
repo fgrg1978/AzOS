@@ -297,7 +297,7 @@ fn leaf_flags(perms: PagePerms) -> mmu::PteFlags {
 }
 
 // `Interrupts`: the real `vdso.rs` (pulled by path into `shims/mm`) masks
-// interrupts around its seqlock write since wave 13 (RT7). The host has no
+// interrupts around its seqlock write (RT7). The host has no
 // interrupts, so the enable bit is a per-thread flag: `disable_all` clears it
 // and returns the previous value, `restore` puts that value back. Modelled
 // rather than no-op'd so a test could still see an unbalanced pair.

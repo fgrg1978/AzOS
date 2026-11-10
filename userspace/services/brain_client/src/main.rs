@@ -34,7 +34,7 @@ use azos_libsys as sys;
 use sys::dev::{BehaviorCall, MotorCall, MotorClient, MotorIdl, Regs, Sample, SensorIdl};
 
 // The brain link, client side: the same Noise session as the kernel's own link
-// (wave 9, owner decision P3; Noise since D9). Every frame this client sends
+// (Noise since D9). Every frame this client sends
 // or receives is a message of that session, so there is no second MAC.
 mod link;
 // The brain protocol's frame around a payload (pure, host-tested).
@@ -1284,7 +1284,7 @@ static mut BRAIN_PK: Option<[u8; 32]> = None;
 /// kernel's own link reads (`kernel/src/main.rs`), and the brain's pinned
 /// static key from the same endpoint.
 ///
-/// U06-9 (2026-09-26): this used to open `/fat/LINK.KEY` directly — the
+/// U06-9: this used to open `/fat/LINK.KEY` directly — the
 /// SAME bytes the kernel's own load read, back off the exported FAT volume
 /// the reserved sector exists to take them off of. The kernel stopped
 /// keeping a FAT copy that day (`kernel/src/reserved_tail.rs`,
@@ -1457,7 +1457,7 @@ fn run() {
         sys::println(b"[brain_client] link key (or the brain key) unavailable - the brain link stays down");
     }
 
-    // Wave 9 (P3/P9): every connection runs the Noise handshake with an
+    // Every connection runs the Noise handshake with an
     // ephemeral key drawn from the kernel entropy pool. An unseeded pool is
     // refused by the kernel (`NOT_READY`) and does not become seeded later in
     // the boot, so the only honest outcome is not to run the link — the same

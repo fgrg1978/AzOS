@@ -18,7 +18,7 @@
 //! live TIDs aliasing it — the wrong-slot race `idx_for_tid` can hit under
 //! `alloc_slot`) and a one-shot `shim_stale_once` that proved the
 //! delegation-only confirmation pass actually refused a stale match. Both
-//! `delegate` and `SYS_CAP_GRANT` were removed 2026-09-03 (boot-only caps), and `shim_stale_once`/`shim_clear_stale` were removed with
+//! `delegate` and `SYS_CAP_GRANT` were removed (boot-only caps), and `shim_stale_once`/`shim_clear_stale` were removed with
 //! their only callers. `shim_bind` aliasing one slot twice still works — the
 //! surviving test does not need it, but nothing here forbids it.
 //!
@@ -88,7 +88,7 @@ pub fn idx_for_tid(tid: u32) -> Option<usize> {
     with(|p| p.live.iter().find(|(t, _)| *t == tid).map(|(_, s)| *s))
 }
 
-/// Wave 13 (THREADS): `azos_sched::group` as host tests see it: a world
+/// `azos_sched::group` as host tests see it: a world
 /// with no thread groups, every task its own process.
 pub mod group {
     pub fn lead_of_idx(_idx: usize) -> u32 { 0 }

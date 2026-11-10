@@ -173,7 +173,7 @@ mod parser {
         assert_eq!(err("cat >a >b"), ParseError::Conflict);
         assert_eq!(err("cat a | wc <b"), ParseError::Conflict);
         assert_eq!(err("cat a >f | wc"), ParseError::Conflict);
-        // Wave 12 (tests/fuzz/sh-fuzz): a target that expands to nothing is
+        // A target that expands to nothing is
         // refused, as bash's "ambiguous redirect" — an unset variable, an
         // empty quoted word, for each of `<`, `>`, `>>` and `2>`.
         // **Canary.** Accept `Tok::Word(w)` whatever its length: these are

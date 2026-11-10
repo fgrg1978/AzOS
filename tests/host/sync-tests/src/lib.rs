@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Host-side runner for the K-C29 preemption-control mechanism.
+//! Host-side runner for the preemption-control mechanism.
 //!
 //! # What is real here and what is not — read this before trusting a green run
 //!
@@ -63,7 +63,7 @@ pub mod preempt_core;
 #[path = "../../../../crates/core/sync/src/preempt.rs"]
 pub mod preempt;
 
-// K-C29 fix applied to `WaitQueue`'s hand-rolled internal spin (see that
+// The preemption-control fix applied to `WaitQueue`'s hand-rolled internal spin (see that
 // file's module doc). Pulled in via `#[path]` for the same reason as
 // `preempt`/`preempt_core` above: the guard, the `SpinLock`/`IrqSaveGuard`
 // Drop ordering, and `WaitQueue`'s routing through them are the kernel's own
@@ -75,7 +75,7 @@ pub mod preempt;
 #[path = "../../../../crates/core/sync/src/spinlock.rs"]
 pub mod spinlock;
 
-// The queued SpinLock's slow half (wave 15, N3), which `spinlock.rs` calls
+// The queued SpinLock's slow half, which `spinlock.rs` calls
 // and which defines `azos_spin_mcs_slow32` for the trait's portable fast
 // path.
 #[path = "../../../../crates/core/sync/src/qspinlock.rs"]
@@ -96,7 +96,7 @@ pub mod waitstat;
 #[path = "../../../../crates/core/sync/src/claim.rs"]
 pub mod claim;
 
-// Lockdep-lite (wave 15, N1). The kernel instance is off here (no `lockdep`
+// Lockdep-lite. The kernel instance is off here (no `lockdep`
 // feature: every table is sized 0 and the lock paths call nothing); the
 // tests below drive its `Graph` and `HeldStack` directly.
 #[path = "../../../../crates/core/sync/src/lockdep.rs"]
@@ -105,11 +105,11 @@ pub mod lockdep;
 #[path = "../../../../crates/core/sync/src/isr_depth.rs"]
 pub mod isr_depth;
 
-// QSBR (wave 15, N4): the counter transitions and the grace-period decision.
+// QSBR: the counter transitions and the grace-period decision.
 #[path = "../../../../crates/core/sync/src/qsbr_core.rs"]
 pub mod qsbr_core;
 
-// Wave 15 IF: the interfaces of the wait graph (N7), the kernel mutex (N8),
+// The interfaces of the wait graph (N7), the kernel mutex (N8),
 // and the PI futex seam (N10). Stubs: only their
 // fixed, already-implemented parts are tested here (the attribute order,
 // the futex word protocol, the Kconfig-off behaviour).
@@ -221,11 +221,11 @@ mod interface_tests {
         assert_eq!(word_owner(FUTEX_WAITERS | FUTEX_OWNER_DIED), None);
         assert_eq!(word_owner(FUTEX_WAITERS | 77), Some(77));
         // A handover always sets FUTEX_WAITERS, even to the last waiter
-        // (Linux; owner decision 10-10).
+        // (Linux).
         assert_eq!(handover_word(77, false), 77 | FUTEX_WAITERS);
         assert_eq!(handover_word(77, true), 77 | FUTEX_WAITERS | FUTEX_OWNER_DIED);
         assert_eq!(handover_word(77 | FUTEX_OWNER_DIED, false), 77 | FUTEX_WAITERS);
-        // The heir of an exited owner (owner decision 10-10, Linux
+        // The heir of an exited owner (Linux
         // fixup_pi_state_owner): OWNER_DIED only when the robust walk
         // marked the word; a non-robust owner's word goes over plain.
         assert_eq!(heir_word(549 | FUTEX_WAITERS, 77), 77 | FUTEX_WAITERS);
@@ -289,7 +289,7 @@ mod pi_futex_tests {
         }
     }
 
-    /// Owner decision 10-10 (Linux handle_exit_race): an owner mid-exit is
+    /// Mirrors Linux `handle_exit_race`: an owner mid-exit is
     /// never installed as the word's owner; the locker retries, the word
     /// and the table untouched. Once the exit is over, a plain word is
     /// ESRCH and an OWNER_DIED one is taken over.
@@ -309,7 +309,7 @@ mod pi_futex_tests {
         assert_eq!(k.word, Some(101 | FUTEX_OWNER_DIED));
     }
 
-    /// Wave 15 N10d (Linux futex_proxy_trylock_atomic): CMP_REQUEUE_PI
+    /// CMP_REQUEUE_PI
     /// gives a free PI word to the top waiter (OWNER_DIED kept, WAITERS when
     /// more are requeued behind it); an owned word, a word the top already
     /// names, or a fault leaves the word as it was.
@@ -331,7 +331,7 @@ mod pi_futex_tests {
         assert_eq!(proxy_lock(&mut k, 101, false), Err(-EFAULT));
     }
 
-    /// Owner decision 10-10 (Linux rt_mutex_start_proxy_lock): the proxy
+    /// Mirrors Linux `rt_mutex_start_proxy_lock`: the proxy
     /// enqueue keeps a requeued waiter asleep only behind a live owner that
     /// is not the waiter; a free word, a word naming the waiter, a gone
     /// owner, an unknown waiter or a fault send it to its own LOCK_PI, the
@@ -549,7 +549,7 @@ mod qsbr_tests {
     /// outside) plus the explicit bits, and `isolcpus` joins at boot; the
     /// callback task then sits outside all of it.
     ///
-    /// Canary (run 2026-11-04): `rt_mask` ignoring `from_cluster` or the cut,
+    /// Canary: `rt_mask` ignoring `from_cluster` or the cut,
     /// or `rt_set` dropping `isolated`: a line red.
     #[test]
     fn the_rt_set_is_the_cluster_plus_the_bits_plus_isolcpus() {
@@ -573,7 +573,7 @@ mod qsbr_tests {
     /// CPU 0, and the placement says it is inside the mask (the boot then
     /// writes the `rcu-callback-cpu` record); otherwise it is the callback CPU.
     ///
-    /// Canary (run 2026-11-04): `callback_placement` answering `false`
+    /// Canary: `callback_placement` answering `false`
     /// for the fallback: the first line red.
     #[test]
     fn a_full_mask_places_the_callback_task_on_cpu_0_and_says_so() {
@@ -590,7 +590,7 @@ mod qsbr_tests {
     /// whose harts are 4, 1, 7 has CPUs 0, 1, 2: the RT test of the CPU the
     /// reclaim task runs on asks with the CPU id, not the hart id.
     ///
-    /// Canary (by hand, 2026-10-17): `cpu_in_mask` reading bit `cpu + 1`:
+    /// Canary (by hand): `cpu_in_mask` reading bit `cpu + 1`:
     /// the CPU 2 line red. (A task that asks with the hart id reads the same
     /// wrong bit; that call site is not host-testable.)
     #[test]
@@ -811,7 +811,7 @@ mod lockdep_tests {
         let line = format!("{}", r);
         assert!(line.contains("held 250 us, limit 100 us"), "{line}");
         assert!(What::HoldOverLimitNote.is_note() && !What::HoldOverLimit.is_note());
-        // Owner decision 10-10: rule F7 is report-only.
+        // Rule F7 is report-only.
         assert!(What::RtCrossCpu.is_note());
         r.what = What::RtCrossCpu;
         r.taken = Held { kind: Kind::Mutex, ..h };
@@ -822,7 +822,7 @@ mod lockdep_tests {
     }
 }
 
-/// Wave 15 N8c: a `Mutex` excludes, and `unlocked_for_io` really frees it
+/// A `Mutex` excludes, and `unlocked_for_io` really frees it
 /// for the length of the device wait and re-takes it after (rule F1).
 #[cfg(test)]
 mod mutex_io_tests {
@@ -977,7 +977,7 @@ mod kmutex_tests {
         assert!(M.try_lock().is_some(), "the fast path could not take a released mutex");
     }
 
-    /// Owner decision 10-10 (N7d): the owner after a dead one learns it
+    /// The owner after a dead one learns it
     /// from `MutexGuard::owner_died`; that owner's unlock clears the flag.
     #[test]
     fn owner_died_is_seen_by_the_next_owner_and_cleared_by_its_unlock() {
@@ -1406,7 +1406,7 @@ mod tests {
 
     #[test]
     fn a_tick_landing_between_the_decrement_and_the_decision_is_not_lost() {
-        // THE RACE THIS FIX EXISTS FOR (K-C29-adjacent lost wakeup). This must
+        // THE RACE THIS FIX EXISTS FOR (a lost wakeup). This must
         // pin `PreemptGuard::drop` itself, not just the pure `enable`/
         // `should_fire` split called correctly by a hand-written test caller
         // — that would prove the arithmetic is right while leaving open
@@ -1755,14 +1755,14 @@ mod tests {
     /// Steps before the model gives up and reports non-termination.
     const BOUND: usize = 1_000;
 
-    /// A discrete one-hart model of the K-C29 hang, driven entirely by the
+    /// A discrete one-hart model of the lock-holder hang, driven entirely by the
     /// production predicates.
     ///
     /// Task L (low priority) is running and takes a spinlock. Task H (high
     /// priority) becomes ready and spins on that same lock. Dispatch is
     /// strict-priority with no aging — the property this kernel actually has
     /// (`task.rs` placement + priority-ordered `cpu_dequeue`), and the reason
-    /// K-C26 starves. So once H is picked, L is never picked again while H is
+    /// L starves. So once H is picked, L is never picked again while H is
     /// runnable.
     ///
     /// Returns `Some(step)` when H finally acquires the lock, `None` if the
@@ -1844,7 +1844,7 @@ mod tests {
         assert!(steps < BOUND);
     }
 
-    // ── WaitQueue's internal lock (K-C29 applied to a second hand-rolled
+    // ── WaitQueue's internal lock (the same control applied to a second hand-rolled
     // spin) ──────────────────────────────────────────────────────────────
     //
     // `WaitQueue` used to protect its waiters array with a bare `AtomicBool`
@@ -2346,9 +2346,9 @@ mod tests {
         assert_eq!(held_by(43), 0, "the releaser's slot is untouched");
     }
 
-    /// The table is keyed by the exact TID (wave 13): a TID whose home entry
+    /// The table is keyed by the exact TID: a TID whose home entry
     /// is another task's reads as holding nothing, and both count their own.
-    /// Before wave 13 (`count[tid % 64]`) `held_by(44 + 64)` read 1 here.
+    /// Before the table was keyed by exact TID (`count[tid % 64]`) `held_by(44 + 64)` read 1 here.
     #[test]
     fn held_count_is_exact_per_tid() {
         use super::held::held_by;
@@ -2464,7 +2464,7 @@ mod tests {
     }
 }
 
-// ── SpinWait + SpinLock over it (wave 15, N2) ───────────────────────────────
+// ── SpinWait + SpinLock over it ───────────────────────────────
 //
 // The shim's `SpinWait` is the trait's provided bodies: the fallback every
 // ISA keeps (`compare_exchange`, `spin_loop`). These run the SpinLock's
@@ -2687,7 +2687,7 @@ mod claim_tests {
         claim::held_forget(ME);
     }
 
-    /// Owner decision 10-10: an owner that exits leaves the table (the exit
+    /// An owner that exits leaves the table (the exit
     /// path's `claim::held_forget`), only its own entries; `0` is no task.
     #[test]
     fn held_forget_drops_a_dead_owner() {

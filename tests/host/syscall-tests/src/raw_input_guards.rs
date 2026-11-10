@@ -35,7 +35,7 @@ fn ioring_create_refuses_a_null_pointer() {
     assert_eq!(sys_ioring_create_typed(0), Errno::EINVAL.to_syscall_ret());
 }
 
-/// Defects the 2026-09-19 user-pointer audit found, each pinned so it cannot
+/// Defects a user-pointer audit found, each pinned so it cannot
 /// come back. These are source-text assertions where the behaviour needs two
 /// harts (which this host harness cannot make) and value assertions where it
 /// does not.
@@ -109,8 +109,8 @@ mod audit_2026_09_19 {
                  one and the .min() below can no longer see it"
             );
         }
-        // The `out_cap` clamp lived in `sys_driver_request`, retired with 526
-        // in wave 11 (OVSwrap review F3); the negative check above still keeps
+        // The `out_cap` clamp lived in `sys_driver_request`, retired with 526; the negative
+        // check above still keeps
         // the narrow-first shape out.
     }
 }

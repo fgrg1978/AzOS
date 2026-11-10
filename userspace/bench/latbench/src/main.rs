@@ -59,7 +59,7 @@ const TIMER_HZ: u64 = 10_000_000;
 /// `TIMER_HZ` constant is RISC-V's `time` CSR on QEMU virt. aarch64's
 /// `cntvct_el0` runs at whatever `CNTFRQ_EL0` says — 1 GHz under QEMU
 /// `-cpu max` — and dividing it by RISC-V's 10 MHz made every aarch64 figure
-/// read 100x too high (a 41,300-"instruction" syscall floor on 2026-09-22).
+/// read 100x too high (a 41,300-"instruction" syscall floor).
 /// `CNTFRQ_EL0` is readable at EL0 whenever `cntvct_el0` is, which this
 /// binary already relies on. RISC-V keeps its original expression unchanged.
 /// x86_64 has no architectural TSC rate ring 3 can read: its ticks are the

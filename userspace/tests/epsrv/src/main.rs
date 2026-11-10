@@ -29,7 +29,7 @@
 //! autorun, `uhello` held `WRITE` — it was nobody's server — and it hung
 //! there, **invisibly**: the `userspace: minimal Rust ELF` gate row asserts the
 //! seccomp-refusal line, which is printed before the serve loop, so the row
-//! stayed green over a task that never exited. Measured 2026-09-20: the
+//! stayed green over a task that never exited. Measured: the
 //! autorun log ends at the refusal line and the "served 0 exchange(s)" line
 //! never appears.
 //!

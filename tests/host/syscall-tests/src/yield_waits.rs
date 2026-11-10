@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 // Host tests for the handler waits that used to be counted in `task_yield()`
-// calls (wave 11), now bounded by the clock and sleeping between looks
+// calls, now bounded by the clock and sleeping between looks
 // through `crate::sleep::wait_until_ms`.
 //
 // HOW THE SHIMS MODEL TIME

@@ -17,18 +17,18 @@ azos_arch_api = { path = "../../../arch/api" }
 azos_chaos = { path = "../../../crates/core/chaos" }
 azos_sync = { path = "../cap-tests/shims/sync", package = "cap_test_sync" }
 azos_mm = { path = "shims/mm", package = "drv_test_mm" }
-# S2 (wave 15): ads1115.rs, pulled via #[path], over a scripted ADS1115.
+# S2: ads1115.rs, pulled via #[path], over a scripted ADS1115.
 azos_drv_bus = { path = "shims/bus", package = "drv_test_bus" }
 azos_arch = { path = "shims/arch", package = "drv_test_arch" }
 # rangefinder.rs, pulled via #[path]: the record of a refusal.
 azos_decision = { path = "../../../crates/core/decision", features = ["on"] }
-# `motor_pid.rs` reads Kconfig `PID_DT_MS` (wave 11); the real crate, as
+# `motor_pid.rs` reads Kconfig `PID_DT_MS`; the real crate, as
 # cap-tests uses it.
 azos_limits = { path = "../../../crates/core/limits" }
 azos_rings = { path = "../../../crates/core/rings" }
 # The input event word and the screen region contract (keymap.rs re-exports it).
 azos_input_wire = { path = "../../../crates/drivers/input/wire" }
-# The INA219 chip logic both placements compile (wave 11 DRVPLACE).
+# The INA219 chip logic both placements compile.
 azos_ina219 = { path = "../../../crates/drivers/ina219" }
 # The real-time clock drivers (Kconfig DRV_RTC), against a model of each chip.
 azos_rtc = { path = "../../../crates/drivers/rtc" }
@@ -78,12 +78,12 @@ sensor-drop-canary = []
 # virtio/mod.rs (pulled via #[path]) gates its PCI transport on `pci`; declared
 # here so the cfg is a known value on the host build (never enabled).
 pci = []
-# virtio/blk.rs's wave-15 canaries (never enabled here; declared so the cfg
+# virtio/blk.rs's canaries (never enabled here; declared so the cfg
 # is a known value).
 blk-poll-canary = []
 blk-stall-canary = []
 blk-discard-unmap-canary = []
-# virtio/blk.rs's F1 probe and its canary (wave 15): known values, never enabled.
+# virtio/blk.rs's F1 probe and its canary: known values, never enabled.
 blk-wait-probe = []
 blk-lock-wait-canary = []
 # blkdev.rs routes to the NVMe driver behind `nvme`; virtio/input.rs has a

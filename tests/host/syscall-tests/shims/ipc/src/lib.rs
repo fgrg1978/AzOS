@@ -13,7 +13,7 @@
 //! because those names are `#[path]`-pulled at this crate's own root, same
 //! as `tests/host/cap-tests`.
 //!
-//! **`io_ring` is pulled too, since 2026-09-03 — the reported blocker was not
+//! **`io_ring` is pulled too, — the reported blocker was not
 //! real.** This doc used to say `io_ring.rs` could not be
 //! pulled because its embedded `#[cfg(test)]` module needs
 //! `azos_mm::shim_reset` / `shim_free_count` / `shim_pages_in_use` and
@@ -107,7 +107,7 @@ pub mod ioport_cap;
 pub mod dma_bind;
 
 
-// Wave 10: the directory-tree `Cap<File>` the tree-modifying calls check.
+// The directory-tree `Cap<File>` the tree-modifying calls check.
 #[path = "../../../../../../crates/core/ipc/src/file_cap.rs"]
 pub mod file_cap;
 
@@ -171,7 +171,7 @@ pub mod fastcall {
     }
 }
 
-/// Stand-in for `azos_ipc::trace`'s region (wave 15): no tracer region on
+/// Stand-in for `azos_ipc::trace`'s region: no tracer region on
 /// the host, so the tracer's ops answer `-ENOSYS` once its capability
 /// check has passed. The check itself is the real one.
 pub mod trace {

@@ -1,16 +1,16 @@
 /* SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only */
 /* SPDX-FileCopyrightText: 2026 Fernando Rodriguez */
 /*
- * LXTHR.ELF: threads under the Linux personality (wave 13, THREADS), a
+ * LXTHR.ELF: threads under the Linux personality (THREADS), a
  * static musl program (`make lxthreads`, zig cc; musl is MIT). It uses
  * pthreads exactly as an unmodified Linux program does: pthread_create (musl
  * maps the stack, clones with CLONE_VM|...|CLONE_SETTLS|CLONE_PARENT_SETTID|
  * CLONE_CHILD_CLEARTID), mutex contention (futex wait/wake), thread-local
  * storage, pthread_join (futex wait on the joined thread's state word; the
  * thread-list lock released by the kernel's clear-tid wake), and one open
- * file description written by two threads. Wave 13: signals across threads
+ * file description written by two threads. Signals across threads
  * (a process-directed signal, a tgkill to a blocked thread, a fatal default
- * action in a threaded child). Wave 15: a leader's pthread_exit while a
+ * action in a threaded child). A leader's pthread_exit while a
  * thread runs (its clear-tid word, which holds musl's thread-list lock), an
  * execve from a thread that is not the leader, and a writev that is one
  * transfer (no other writer of the pipe between its segments).
@@ -82,7 +82,7 @@ static void *worker(void *arg)
     return (void *)(long)(tls_var == (int)id * 100 + 7);
 }
 
-/* ── Wave 13 (SIGNALS): signals and threads ─────────────────────────────── */
+/* ── SIGNALS: signals and threads ─────────────────────────────── */
 
 static volatile pid_t usr1_tid;
 static volatile int usr2_hits, t_ready, t_go, t_stop, blocked_pending, unblocked_hits;
@@ -197,7 +197,7 @@ static void signals(void)
           w == pid && WIFSIGNALED(st) && WTERMSIG(st) == SIGTERM);
 }
 
-/* Wave 15: the leader's clear-tid word. musl's start code hands the kernel
+/* The leader's clear-tid word. musl's start code hands the kernel
  * its thread-list lock with set_tid_address, and pthread_exit holds that lock
  * across SYS_exit, relying on the kernel's clear-tid write and wake to
  * release it once the thread is gone. A leader that ends with pthread_exit
@@ -252,7 +252,7 @@ static void leader_exit(void)
           w == pid && WIFEXITED(st) && WEXITSTATUS(st) == 7);
 }
 
-/* Wave 15: execve from a thread that is not the leader (POSIX: "all other
+/* Execve from a thread that is not the leader (POSIX: "all other
  * threads ... shall be destroyed"; Linux de_thread). A forked child with
  * three other threads -- the leader in a timed sleep loop, one parked in a
  * condition wait with no deadline, one in a timed sleep loop -- has a fourth
@@ -340,7 +340,7 @@ static void exec_from_thread(void)
     check("execve from a thread: the new image creates and joins a thread", image && !(code & 4));
 }
 
-/* Wave 15 (K2): a writev is ONE transfer. The pipe is filled to 100 bytes of
+/* A writev is ONE transfer. The pipe is filled to 100 bytes of
  * room; a thread writevs 50 + 3000 bytes of 'A', which as one write waits
  * whole for 3050 bytes of room. Main then writes 40 bytes of 'M' and drains
  * the pipe. One transfer: the A bytes are one run after the M bytes. The
@@ -431,7 +431,7 @@ static void writev_atomic(void)
           made && w == WV_M && have == want && (long)r == WV_A1 + WV_A2 && run == WV_A1 + WV_A2);
 }
 
-/* Wave 15 N9: pthread_cond_broadcast wakes every waiter (musl moves them
+/* Pthread_cond_broadcast wakes every waiter (musl moves them
  * onto the mutex with FUTEX_REQUEUE), and a raw FUTEX_CMP_REQUEUE wakes one
  * waiter and moves the rest: the herd counter reads 1 until the target word
  * is woken. Same binary on Linux. */
@@ -520,7 +520,7 @@ static void cond_broadcast(void)
     check("FUTEX_CMP_REQUEUE reads a word on an untouched page", untouched == 0);
 }
 
-/* Wave 15 N10d: the condition variable of a PI mutex. musl (this binary's
+/* The condition variable of a PI mutex. musl (this binary's
  * libc) does not requeue onto a PI mutex: its pthread_cond_* wakes the
  * waiters, which then lock the mutex with FUTEX_LOCK_PI, so the first check
  * is LOCK_PI/UNLOCK_PI under a condition variable. The requeue-PI pair

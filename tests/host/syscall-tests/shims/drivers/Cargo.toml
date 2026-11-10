@@ -7,14 +7,14 @@ publish = false
 description = "Host stand-in for the driver class crates (azos_drv_*), used only by tests/host/syscall-tests. NOT part of the kernel."
 
 [dependencies]
-# platform.rs reads Kconfig TIMER_FREQ through azos_limits (2026-09-26)
+# platform.rs reads Kconfig TIMER_FREQ through azos_limits
 azos_limits = { path = "../../../../../crates/core/limits" }
 # Real, pure, host-buildable (no RISC-V deps) -- the `api` module IS this
 # crate in production too (crates/drivers/api/src/lib.rs re-exports it verbatim).
 azos_drv_api = { path = "../../../../../crates/drivers/api" }
 # Real, pure, host-buildable, zero deps of its own -- `platform.rs` (pulled
 # below) reads `azos_abi::vdso::{VDSO_USER_BASE, ...}` in its per-board
-# `const` asserts (2026-09-22 vDSO placement fix). Same "real crate, not a
+# `const` asserts. Same "real crate, not a
 # shim" treatment as `azos_drv_api` above.
 azos_abi = { path = "../../../../../crates/core/abi" }
 # The `Spi`, `Can`, `Uart` and `Adc` traits the port stand-ins in `h3_ports.rs`

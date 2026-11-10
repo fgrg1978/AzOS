@@ -17,7 +17,7 @@
 //! `mem_locked` rule IS tested at the shipping seam (`storm_begin`), the page
 //! level of it ("the walk never offers a locked page") is not.
 //!
-//! Canaries (by hand, 2026-10-16; discriminates / does not / did not compile):
+//! Canaries (by hand; discriminates / does not / did not compile):
 //! * `reclaim_target` measuring from `high` instead of `low`:
 //!   `crossing_high_reclaims_down_to_low_and_no_further` red.
 //! * `storm_begin` not testing `locked` (or `rt_hart`):

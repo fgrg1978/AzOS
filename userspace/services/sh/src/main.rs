@@ -495,7 +495,7 @@ impl Shell {
                 said = true;
             }
         }
-        // A child nobody waits for (a job given up on, or — wave 13 — an
+        // A child nobody waits for (a job given up on, or an
         // orphan of a job, which this shell adopts as a child subreaper):
         // reap it so its notice does not wake every later wait, and say so.
         let mut st = 0i32;
@@ -1067,7 +1067,7 @@ impl Shell {
                 Redir::None => rb.fd(2, Fd::Console),
             }
 
-            // Wave 13: the first stage of a foreground job with no input
+            // The first stage of a foreground job with no input
             // redirection reads the terminal: the console is lent to it (the
             // kernel does so only for a Linux image) until it exits.
             let console_in = !self.line.background && spawned == 0 && c.stdin.is_none();
@@ -1283,7 +1283,7 @@ fn main() -> ! {
     if let Some(u) = user {
         let _ = sh.env.set(b"USER", u);
     }
-    // Wave 13: a child subreaper (`DOMAIN_SUBREAPER`), so what a job
+    // A child subreaper (`DOMAIN_SUBREAPER`), so what a job
     // leaves running when it exits is adopted here and reaped above
     // (`reap_background`), not left with no parent.
     let _ = sys::task_subreaper(sys::SUBREAPER_SET);

@@ -93,7 +93,7 @@ mod cow_table;
 #[path = "../../../../../../crates/core/mm/src/cow.rs"]
 pub mod cow;
 
-// Wave 14 (DEMANDPAGE): `vmm.rs` sends unowned faults to the pagers, and the
+// `vmm.rs` sends unowned faults to the pagers, and the
 // mapping records are the pure seam they keep; an anonymous mapping's object
 // keeps its pages' slot words.
 #[allow(dead_code)]
@@ -148,7 +148,7 @@ pub mod memobj;
 #[path = "../../../../../../crates/core/mm/src/uaccess.rs"]
 pub mod uaccess;
 
-// Wave 14 (SPAWNCACHE): a verified image's kept frames, the real file
+// A verified image's kept frames, the real file
 // (`image_cache.rs`, pulled into this suite, keeps and maps them).
 #[path = "../../../../../../crates/core/mm/src/image_frames.rs"]
 pub mod image_frames;

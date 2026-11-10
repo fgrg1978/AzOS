@@ -12,7 +12,7 @@
 //! (watermarks follow `MM_RECLAIM_HIGH_PCT` / `MM_RECLAIM_LOW_PCT` of the
 //! limit) and the default `MM_RECLAIM_OFF` (none).
 //!
-//! Canaries (by hand, 2026-10-17; discriminates / does not / did not compile):
+//! Canaries (by hand; discriminates / does not / did not compile):
 //! * `domain::set_limit` calling `PageBudget::set_limit` (no marks):
 //!   `a_rows_limit_gives_the_domain_its_watermarks` red (with reclaim on).
 //! * `domain::set_limit` passing the percentages the wrong way round: the same row red.

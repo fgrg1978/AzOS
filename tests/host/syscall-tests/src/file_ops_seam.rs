@@ -207,7 +207,7 @@ fn the_file_syscalls_route_through_the_seam() {
     let rc = super::sys_readdirat(dir, p, 3, name_out.as_mut_ptr() as u64, azos_abi::syscall_nr::READDIR_NAME_BYTES as u64);
     assert_eq!(rc, Ok(Some((1234, true, false))), "readdir failed");
 
-    // **The name-buffer length gate** (owner decision 100b): the record is
+    // **The name-buffer length gate**: the record is
     // `READDIR_NAME_BYTES` bytes ALWAYS, so a shorter declared buffer is
     // refused, and refused before the filesystem is CALLED (what separates
     // the gate from a lookup that also fails).

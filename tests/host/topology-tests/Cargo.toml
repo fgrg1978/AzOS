@@ -76,10 +76,10 @@ sqpoll-bench = ["azos_topology/sqpoll-bench"]
 # GENERIC board and must hold no motor capability at all; the canary run
 # mirrors `qemu` and must hold the pair. See `crates/core/topology/Cargo.toml`.
 profile-actuation = ["azos_topology/profile-actuation"]
-# Which rows the kernel starts at boot (wave 9). Mirrors `qemu`; the plain run
+# Which rows the kernel starts at boot. Mirrors `qemu`; the plain run
 # is a board, where no row starts.
 ring3-driver-start = ["azos_topology/ring3-driver-start"]
-# Wave 11 (DRVPLACE): the kernel placement of the INA219 (no INADRV.ELF row),
+# The kernel placement of the INA219 (no INADRV.ELF row),
 # and the gate's restart-policy topology.
 ina219-kernel = ["azos_topology/ina219-kernel"]
 buzzer-kernel = ["azos_topology/buzzer-kernel"]
@@ -93,7 +93,7 @@ toolbox-write-canary = ["azos_topology/toolbox-write-canary"]
 coreutil-grant-canary = ["azos_topology/coreutil-grant-canary"]
 ext4d-grant-canary = ["azos_topology/ext4d-grant-canary"]
 coreutil-write-canary = ["azos_topology/coreutil-write-canary"]
-# Wave 12: the family tools without capabilities, and the drivetrain moved to
+# The family tools without capabilities, and the drivetrain moved to
 # FLIGHT.ELF (gate rows).
 family-cap-canary = ["azos_topology/family-cap-canary"]
 flight-tool-drivetrain = ["azos_topology/flight-tool-drivetrain"]

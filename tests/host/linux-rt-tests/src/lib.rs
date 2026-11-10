@@ -1226,7 +1226,7 @@ mod tests {
 
     // ── x86_64: the runtime's x86-64 face (`Runtime::dispatch_x86_64`) ──────
     //
-    // Canaries (by hand, 2026-10-17, each reverted): `REG_ARGS[3]` = 1 (rcx
+    // Canaries (by hand, each reverted): `REG_ARGS[3]` = 1 (rcx
     // for r10): the run dies on a wild pointer (a fourth argument read as
     // 0xdead0001 by the openat row);
     // `stat_from_generic` unshuffled: the stat rows red; the `Post::DupSame`

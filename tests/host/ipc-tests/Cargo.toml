@@ -83,7 +83,7 @@ ioring-regbuf-leak-canary = []
 # lost-wakeup test in that file's suite fails (the event in the gap wakes
 # nobody).
 port-recheck-canary = []
-# `crates/core/ipc/src/port.rs`'s capability-binding canary (wave 11):
+# `crates/core/ipc/src/port.rs`'s capability-binding canary:
 # `port_cap_event` ignores every event; the revoke test in that file's suite
 # fails (the revoked capability's binding still delivers).
 port-revoke-canary = []

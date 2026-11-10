@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! `azos_rings::region::trace`: the kernel tracer's per-CPU record rings (wave 15).
+//! `azos_rings::region::trace`: the kernel tracer's per-CPU record rings.
 //! Wrap, drops, the overwrite policy's lost-record detection, a hostile
 //! tail, the header check, and two concurrent producer/consumer models.
 

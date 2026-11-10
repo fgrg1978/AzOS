@@ -17,7 +17,7 @@ description = "Host-side regression tests for kernel bugs found and fixed. Exclu
 azos_common = { path = "../../../crates/core/common" }
 azos_crypto = { path = "../../../crates/core/crypto" }
 # `crates/drivers/dtb/src/lib.rs` (pulled in with `#[path]`) sizes its CPU
-# table by `azos_limits::NR_CPUS` (wave 15).
+# table by `azos_limits::NR_CPUS`.
 azos_limits = { path = "../../../crates/core/limits" }
 
 [dev-dependencies]

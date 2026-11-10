@@ -8,7 +8,7 @@
 // The kernel glue over them (`kernel/src/boot/pagecache.rs`: the filesystem to
 // its backing, the Domain and the clocks) has no host row; it is a boot row.
 //
-// What each row pins, and the mutation that turns it red (by hand, 2026-10-17;
+// What each row pins, and the mutation that turns it red (by hand;
 // discriminates / does not / did not compile):
 //
 // * `reads_cross_windows_and_a_second_read_is_a_hit`: a range over the edge of

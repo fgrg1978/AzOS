@@ -44,7 +44,7 @@ fn the_flow_decodes_dispatches_and_returns_on_every_isa() {
     assert_eq!(calls, vec![(SYS_CAP_INFO, false); 3], "the number each ISA keeps in its own register");
 }
 
-/// The order the owner decision and the SYSFLOOR work fixed: interrupts on,
+/// The order the SYSFLOOR work fixed: interrupts on,
 /// the census, the filter, (the prologue,) the call, the census out.
 #[test]
 fn the_flow_runs_in_its_order() {

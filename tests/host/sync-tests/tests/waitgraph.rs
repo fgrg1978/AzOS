@@ -131,7 +131,7 @@ impl OwnerDiedHook for DiedRec {
 }
 static DIED: DiedRec = DiedRec { calls: Mutex::new(Vec::new()) };
 
-/// Owner decision 10-10: an owner that exits holding an object with
+/// An owner that exits holding an object with
 /// waiters makes the graph call the kind's OwnerDiedHook (EOWNERDEAD); the
 /// canary `owner-died-silent` falls back to detach-only.
 fn owner_died_hook() {
@@ -179,7 +179,7 @@ static G4: Graph<N> = Graph::new();
 static OL: [PiWaiters; 8] = [const { PiWaiters::new(EdgeKind::IpcCall) }; 8];
 static O4M: PiWaiters = PiWaiters::new(EdgeKind::Mutex);
 
-/// Wave 15 GIPC: `block_on_lazy`. The quiet call records only the edge;
+/// `block_on_lazy`. The quiet call records only the edge;
 /// every way it could come to matter materializes it.
 fn lazy() {
     G4.register_sched(&S4);

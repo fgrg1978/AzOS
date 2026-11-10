@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! RED/GREEN host tests for the 2026-09-25 owner decision: **the brain may
+//! RED/GREEN host tests for the e-stop release rule: **the brain may
 //! REQUEST an e-stop release; it may never CLEAR the latch.** A release now
 //! requires a [`super::safety::ReleaseAuthority`], and the only production
 //! way to construct one is [`super::safety::verify_operator_release`] — an
@@ -91,7 +91,7 @@ fn sign(key: &SigningKey, nonce: u64) -> [u8; RELEASE_SIG_BYTES] {
 /// `RELEASE_NONCE_FLOOR` are all process-wide statics.
 ///
 /// **Also takes `flight_recorder::SERIAL`, and returns its guard for the
-/// caller to hold.** Added 2026-09-26: `verify_operator_release` now reads
+/// caller to hold.** Added: `verify_operator_release` now reads
 /// `logger::logger_active()` and, when true, writes through the logger —
 /// both process-wide state this crate's OTHER test modules
 /// (`flight_recorder`, `motor_actuation_reaches_the_flight_recorder`) touch
@@ -114,7 +114,7 @@ fn reset() -> super::flight_recorder::RecorderGuard {
     g
 }
 
-/// **The core of the owner decision.** A bare `PKT_MODE`/`MODE_ID_ESTOP_RESET`
+/// **The core of the rule.** A bare `PKT_MODE`/`MODE_ID_ESTOP_RESET`
 /// request — no proof attached — must never itself be able to produce a
 /// `ReleaseAuthority`. `crates/domains/robot/safety-core/src/frames.rs` treats a payload shorter than
 /// `1 + RELEASE_PROOF_BYTES` as exactly this: no proof to check at all, so it
@@ -294,9 +294,8 @@ impl super::logger::LogReplaySource for Replay {
 }
 
 /// **The property this module's header did not yet cover: a captured proof
-/// must not replay across a RESET, not just within one boot.** Found by the
-/// wave-1 coordinator (`RELEASE_NONCE_FLOOR` was a plain in-process counter)
-/// and closed 2026-09-26 by persisting every accepted nonce through the
+/// must not replay across a RESET, not just within one boot.** `RELEASE_NONCE_FLOOR` was a plain in-process counter;
+/// it is closed by persisting every accepted nonce through the
 /// SAME durable path the e-stop latch already uses
 /// (`logger::log_release_nonce_floor_durable`, read back at boot by
 /// `logger::replay_boot`).
@@ -348,7 +347,7 @@ fn a_nonce_accepted_in_a_prior_session_is_rejected_after_a_simulated_reboot() {
 }
 
 // ---------------------------------------------------------------------------
-// Owner decision 2026-10-17: the release FAILS CLOSED when no durable recorder
+// The release FAILS CLOSED when no durable recorder
 // is active, except in a development build (Kconfig BUILD_TYPE_DEV). The tests
 // drive `verify_operator_release_for` so one binary states both build types.
 // `--features estop-unrecorded-canary` (the check off) must turn the refusal
@@ -495,7 +494,7 @@ fn a_forged_proof_on_a_release_build_writes_no_receipt() {
 }
 
 // ---------------------------------------------------------------------------
-// G1 (2026-10-17): the signed topology's release key is pinned in the flight
+// G1: the signed topology's release key is pinned in the flight
 // recorder on first use; a later boot offering another key is refused and
 // recorded. The tests drive the real two-call sequence (pin during "boot 1",
 // replay and seed during "boot 2") through the mock storage seam.

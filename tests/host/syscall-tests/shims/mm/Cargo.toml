@@ -23,8 +23,7 @@ azos_common = { path = "../../../../../crates/core/common" }
 azos_limits = { path = "../../../../../crates/core/limits" }
 azos_sync = { path = "../../../cap-tests/shims/sync", package = "cap_test_sync" }
 # Real, pure, host-buildable, zero deps of its own -- `vdso.rs` (pulled
-# below) re-exports `azos_abi::vdso::VDSO_USER_BASE` (2026-09-22 vDSO
-# placement fix) rather than declaring its own constant.
+# below) re-exports `azos_abi::vdso::VDSO_USER_BASE` rather than declaring its own constant.
 azos_abi = { path = "../../../../../crates/core/abi" }
 # Real crate: `zpool.rs` (pulled below; `pager.rs` names it) compresses with its
 # WKdm coder and encrypts with its AES-128-CTR, and `pager.rs` takes its key from
@@ -61,7 +60,7 @@ storm-ignore-locked-canary = []
 # Mirrors azos_mm's gate canary so `cfg(feature = "lx-wx-canary")` in
 # the #[path]-pulled vmm.rs is a known feature here.
 lx-wx-canary = []
-# ... and `cfg(feature = "cow-ro-canary")` in the pulled-in `cow.rs` (wave 13).
+# ... and `cfg(feature = "cow-ro-canary")` in the pulled-in `cow.rs`.
 cow-ro-canary = []
 # ... and the fork clone's `pager.rs` canary.
 cow-shared-write-canary = []
@@ -109,18 +108,18 @@ as-key-no-gen-canary = []
 table-refusable-canary = []
 uaccess-mmio-canary = []
 # ... and `cfg!(feature = "demand-region-canary")` in the pulled-in `vmm.rs`
-# (wave 14, DEMANDPAGE).
+# (DEMANDPAGE).
 demand-region-canary = []
 cow-reuse-canary = []
-# ... and `cfg(feature = "cow-spurious-canary")` in the pulled-in `cow.rs` (CTXHUNT).
+# ... and `cfg(feature = "cow-spurious-canary")` in the pulled-in `cow.rs`.
 cow-spurious-canary = []
-# ... and the wave 14 (SPAWNCACHE) canary in the pulled-in `image_frames.rs`.
+# ... and the canary in the pulled-in `image_frames.rs`.
 image-share-all-canary = []
-# ... and the wave 14 security canary in the pulled-in `vmm.rs`.
+# ... and the security canary in the pulled-in `vmm.rs`.
 mprotect-shared-canary = []
 vdso-write-canary = []
 # ... and `cfg(feature = "vdso-write-window")` in the pulled-in `vdso.rs`
-# (wave 13, RT7). Off: the real write.
+#. Off: the real write.
 vdso-write-window = []
 # ... and the L2 (physical memory) canaries of the pulled-in frame.rs /
 # buddy.rs / cow_table.rs: their host rows are in tests/host/mm-tests; here

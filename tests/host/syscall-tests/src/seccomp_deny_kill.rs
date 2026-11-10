@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-// V1.8 (owner decision, 2026-09-26) / U07-6: a seccomp filter denial ends the
+// V1.8 / U07-6: a seccomp filter denial ends the
 // program (Linux strict-mode `SECCOMP_RET_KILL_PROCESS` semantics), it does
 // not return `-1`. `dispatch.rs`'s `FilterVerdict::Deny` arm calls
 // `handlers::seccomp_deny_kill` and nothing else — see that function's doc

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! `azos_common::hook` (security audit 2026-10-17, finding D): the set-once
+//! `azos_common::hook`: the set-once
 //! semantics of a hook, and the linker-script half of the read-only seal.
 //!
 //! The seal itself (a hook set after it panics) lives in

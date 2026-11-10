@@ -149,7 +149,7 @@ fn line(parts: &[&[u8]]) {
         n += take;
     }
     // A cut line says so: a silently truncated number reads as a wrong one
-    // (wave 13: "counter hz 1000000000" printed as "10000000").
+    // ("counter hz 1000000000" printed as "10000000").
     if cut {
         b[n - 3..n].copy_from_slice(b"...");
     }

@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! Host rows for `vfs::vfs_sync_all` / `vfs::sync_volumes`: what the orderly
-//! power-off and the `Power` interface's `sync` make durable (owner decision
-//! 2026-10-23, Q1: both the ring-3 power service and the kernel's orderly path
+//! power-off and the `Power` interface's `sync` make durable (both the ring-3 power service and the kernel's orderly path
 //! sync every filesystem before the power goes).
 //!
 //! * The real FAT32 volume, write-back on, behind a disk with a volatile cache:
@@ -12,7 +11,7 @@
 //!   is waited for until it answers or the time is up (and the volumes after
 //!   it are still synced), a failure is counted and does not stop the rest.
 //!
-//! Canaries (by hand, 2026-10-23; discriminates / does not / did not compile):
+//! Canaries (by hand; discriminates / does not / did not compile):
 //! * `vfs_sync_all` returning `SyncAll::default()` without syncing:
 //!   `a_closed_file_survives_a_power_cut_after_sync_all` red.
 //! * `sync_volumes` not waiting for a ticket (`None` taken as done):

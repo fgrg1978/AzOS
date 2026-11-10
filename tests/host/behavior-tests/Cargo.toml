@@ -9,7 +9,7 @@ description = "Host-side tests for the brain wire protocol in crates/domains/rob
 # Run with:  cd tests/host/behavior-tests && cargo test --release
 
 [features]
-# logger.rs's RT-flush gate canary (wave 15): a known value, never enabled.
+# logger.rs's RT-flush gate canary: a known value, never enabled.
 rt-flush-canary = []
 # Gate canaries only (host suite `behavior-tests`): the replay does not end its
 # walk at a file's state records; a rotation leaves the latch out of the new
@@ -58,7 +58,7 @@ ml-timeout-canary = []
 ml-grant-canary = []
 ml-unaskable-canary = []
 range-stale-canary = []
-# Wave 15: `safety.rs`'s E03 section is the `geofence` feature and `rc_link.rs`
+# `safety.rs`'s E03 section is the `geofence` feature and `rc_link.rs`
 # exists only under `rc-input` in the real crate; on here so the suite tests
 # both (the files are pulled in by `#[path]`).
 default = ["geofence", "rc-input"]
@@ -91,7 +91,7 @@ beh_test_drivers = { path = "shims/drivers" }
 # does — it needs a `SpinLock::get_mut_unchecked` this crate's own
 # `cap_test_sync` (line above) deliberately omits, so it cannot share the
 # `azos_sync` alias this crate uses for everything else. See
-# `shims/robot`'s own doc. Motor-gate/record suite (Q1.3/Q1.4, 2026-09-25).
+# `shims/robot`'s own doc. Motor-gate/record suite (Q1.3/Q1.4).
 azos_robot = { path = "shims/robot", package = "beh_test_robot" }
 azos_robot_sensors = { path = "shims/robot_sensors", package = "beh_test_robot_sensors" }
 azos_limits = { path = "shims/limits", package = "beh_test_limits" }

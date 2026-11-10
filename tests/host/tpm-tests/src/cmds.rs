@@ -31,7 +31,7 @@ fn startup_state_encodes_su_state() {
     }
 }
 
-/// The orderly power-off's last TPM command (owner decision 2026-10-23):
+/// The orderly power-off's last TPM command:
 /// `TPM2_Shutdown` (0x145) with `TPM_SU_STATE`, so the next boot's Startup
 /// does not count an unorderly shutdown. A failure code reaches the caller
 /// (the kernel says it and powers off anyway).

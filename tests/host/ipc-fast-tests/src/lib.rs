@@ -10,7 +10,7 @@
 //!
 //! Run with:  cd tests/host/ipc-fast-tests && cargo test
 
-// The per-endpoint call queues (wave 15 N5): no dependencies, their own host
+// The per-endpoint call queues: no dependencies, their own host
 // substitutes. They replaced the machine-wide slot table, `fast_ipc.rs`.
 #[path = "../../../../crates/core/ipc/src/ep_queue.rs"]
 pub mod ep_queue;

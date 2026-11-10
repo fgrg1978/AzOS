@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! Host-side tests for `azos_config::signed::cfg_load_verified` —
-//! W2-B5 (audit U10-2).
+//! W2-B5.
 //!
 //! Shares `crate::tests::TEST_LOCK` (see that module's doc) instead of a
 //! lock of its own: every test here, like every test in `crate::tests`,
@@ -192,7 +192,7 @@ fn decode_hex(s: &str) -> Vec<u8> {
 
 /// A signed file that repeats a key is ambiguous: it is NOT loaded, the store
 /// holds the factory defaults, and the kill switch is forced to its
-/// fail-closed pin, exactly as for an unverified file (wave 11, HERM).
+/// fail-closed pin, exactly as for an unverified file (HERM).
 /// Anchored on values only the refusal can produce: `autorun` absent although
 /// the first (and second) line set it, and the pin 255 although both lines
 /// asked for 5 or 6.
@@ -213,7 +213,7 @@ fn verified_but_ambiguous_fails_closed() {
     assert_eq!(cfg_get(b"autorun"), None, "no line of an ambiguous file runs");
 }
 
-// ── Wave 11: replay protection and a fail-closed that latches ─────────────
+// ── Replay protection and a fail-closed that latches ─────────────
 //
 // `config_authority_decision` is the whole policy (hardware root of trust: the config authority is one decision); the
 // kernel only gathers its two inputs. These pin every cell of the table.
@@ -229,7 +229,7 @@ mod authority {
 
     /// No device record: nothing can be loaded (there is no id to bind a
     /// signature to) and nothing latches (no record says a signed file was
-    /// ever accepted) — the pre-wave-11 defaults.
+    /// ever accepted) — the earlier defaults.
     #[test]
     fn an_unprovisioned_device_takes_defaults_and_never_latches() {
         for c in NOT_VALID.iter().copied().chain([C::Valid(5)]) {
@@ -253,7 +253,7 @@ mod authority {
     /// **The replay.** Floor 5: counter 5 loads without raising, 6 loads and
     /// raises, 4 — an older, validly signed file — latches as a replay.
     ///
-    /// **Canary (by hand, 2026-10-02).** Change the `c >= f` guard to `true`:
+    /// **Canary (by hand).** Change the `c >= f` guard to `true`:
     /// red on the counter-4 assertion (it loads).
     #[test]
     fn an_older_counter_is_a_replay_and_latches() {
@@ -267,7 +267,7 @@ mod authority {
     /// CONFIG.INI deleted, tampered, v1, malformed, another device's — and on
     /// a signed file that repeats a key.
     ///
-    /// **Canary (by hand, 2026-10-02).** Make the `_ if f == 0` arm `_ =>`
+    /// **Canary (by hand).** Make the `_ if f == 0` arm `_ =>`
     /// (always defaults): red on "NoSig did not latch".
     #[test]
     fn a_lost_signature_on_a_provisioned_device_latches() {
@@ -279,7 +279,7 @@ mod authority {
         assert_eq!(config_after_rejected(F::Provisioned(1)), Some(L::Ambiguous));
     }
 
-    /// **The oversized file** (audit K2-M2). A CONFIG.INI larger than the
+    /// **The oversized file**. A CONFIG.INI larger than the
     /// boot reads was not verified at all: on a provisioned device it still
     /// latches (the authority is gone), but the durable record and the log
     /// say `TooLarge`, not a signature that failed, so it does not read as

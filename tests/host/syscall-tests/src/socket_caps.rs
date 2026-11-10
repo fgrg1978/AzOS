@@ -249,7 +249,7 @@ fn a_forged_handle_is_stale_on_every_call_and_recorded() {
 ///
 /// The second close of a released handle is stale, as for any handle.
 ///
-/// **Canary (by hand, 2026-10-02).** Drop the `socket_access_ok(fd)` test in
+/// **Canary (by hand).** Drop the `socket_access_ok(fd)` test in
 /// `sys_close_typed`'s Socket arm (close unconditionally, as before): step 1
 /// fails on "B's close of a moved handle closed A's socket".
 #[test]

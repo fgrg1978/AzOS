@@ -11,7 +11,7 @@
 //! tests (`tests/host/ipc-tests`); the file layer's half is
 //! `tests/host/fs-tests/src/page_cache.rs`.
 //!
-//! Canaries (by hand, 2026-10-16; discriminates / does not / did not compile):
+//! Canaries (by hand; discriminates / does not / did not compile):
 //! * `valid_len` not clamping to the end of the file: `valid_len_is_the_part_of_a_page_inside_the_file` red.
 //! * `fill_page` asking the backing for the whole page: `a_fill_asks_the_backing_for_the_valid_part_only` red.
 //! * `fill_page` not zeroing after a short read: `a_short_read_is_zero_filled` red.

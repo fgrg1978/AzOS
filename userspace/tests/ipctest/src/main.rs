@@ -62,7 +62,7 @@
 //!      the stranger is refused, or the test would also pass against a kernel
 //!      that denies everyone. The stranger uses the parent's exact handle
 //!      values out of shared statics — a forked child holds only its
-//!      inherited descriptors and its row's capabilities (wave 13), and every
+//!      inherited descriptors and its row's capabilities, and every
 //!      parent handle on anything else is stale in it, so every one must
 //!      answer `-ECAPSTALE`.
 //!
@@ -322,7 +322,7 @@ static mut MSEEN: [u8; MBOX_LEN] = [0; MBOX_LEN];
 /// to it.
 static mut PARENT_TID: u32 = 0;
 
-// **The mailbox is addressed by capability** (wave 15 N5, which retired the
+// **The mailbox is addressed by capability** (which retired the
 // raw-TID call, syscall 108). Root creates an endpoint in `_start`, before
 // the first fork, and every direct child inherits a capability to it
 // (`endpoint_inherit_at_fork`) — found again by its pool
@@ -375,7 +375,7 @@ fn file_if_mailbox(word0: u64, word1: u64) -> bool {
 /// rather than losing the verdict: a dropped verdict reads as a timeout,
 /// i.e. as a hang that did not happen.
 ///
-/// The mailbox is addressed by capability (wave 15 N5: the raw-TID call,
+/// The mailbox is addressed by capability (the raw-TID call,
 /// syscall 108, is retired). A direct child of root posts through root's
 /// endpoint, inherited at fork ([`post`]); a grandchild holds only its own
 /// parent's endpoint and posts there, and that parent relays the post on to
@@ -519,7 +519,7 @@ fn hb_hold() -> Option<sys::FastRequest> {
 /// deliberate `sys::sleep`s before the client can even post its verdict)
 /// exceeds that shrunk budget outright, which is why `wait_tag(TAG_CLIENT_GOT,
 /// ..)` — the first blocking wait phase B takes after the sweep — timed out
-/// deterministically (5/5 hand runs, 2026-09-25) and every later `wait_tag` in
+/// deterministically (5/5 hand runs) and every later `wait_tag` in
 /// the same phase passed: by the time those ran, the mailbox already held the
 /// answer (`mbox_get` is checked before blocking), so their own shrunk budget
 /// never mattered. **Not a lost cross-hart wake** — `tools/gate/ci_check.sh`'s
@@ -1155,7 +1155,7 @@ fn note_own_endpoint(ep: isize) {
 /// looked up by that endpoint's index.
 ///
 /// It used to be computed as `(slot 0, generation 1)`: the first grant into
-/// an empty table. Since wave 13 (NATFORK) a native fork child's table is not
+/// an empty table. Since NATFORK a native fork child's table is not
 /// empty when that grant lands: it holds its inherited descriptors at the
 /// parent's handles and its row's capabilities, so the grant takes some
 /// other free slot, and the handle has to be asked for.
@@ -1259,8 +1259,8 @@ fn phase_b_client(_immediate_parent: u32) -> ! {
     // before it creates anything): the grant on its parent's own endpoint. A
     // second one would mean the fork grant minted more than the single
     // relation it is supposed to — the failure shape of the design reverted
-    // on 2026-09-21, which inherited by capability CLASS instead of by
-    // ownership. (It probed slot 1 for emptiness until wave 13: a native fork
+    // earlier, which inherited by capability CLASS instead of by
+    // ownership. (It probed slot 1 for emptiness once: a native fork
     // child now holds its row's capabilities and its inherited descriptors,
     // so slot 1 is no longer necessarily free.)
     //
@@ -1305,7 +1305,7 @@ fn phase_b_client(_immediate_parent: u32) -> ! {
     // Gap 2, the CALL direction — the probe, not the plumbing
     // above. Root serves an endpoint and is ALIVE, running a generic accept
     // loop that answers any delivered call. A fast call is addressed by an
-    // endpoint capability only (wave 15 N5 retired the raw-TID call, 108),
+    // endpoint capability only (the raw-TID call is retired),
     // and the fork grant gives a child its own parent's endpoints and
     // nothing wider: this grandchild must hold no capability on root's
     // endpoint. With one (a fork grant by class, or one inherited past a
@@ -1502,8 +1502,7 @@ fn phase_g_stale_reply_accept() {
 
 /// The parent's typed handles, shared with the forked stranger through memory.
 /// `OWNED_SHM` is a region the parent holds and never maps: a mapped
-/// `Cap<Shm>` is a descriptor and a fork child inherits it (owner decision
-/// 16-10, the POSIX pipe), an unmapped one is a runtime object and stays
+/// `Cap<Shm>` is a descriptor and a fork child inherits it (as with the POSIX pipe), an unmapped one is a runtime object and stays
 /// stale in the child.
 static mut OWNED_SHM: u32 = 0;
 static mut OWNED_PORT: u32 = 0;
@@ -1552,7 +1551,7 @@ fn phase_c_cycle() {
     // Release unmaps this task's mapping, gives back every reference this task
     // holds on the region (the creation reference and the map's), which frees
     // it, and DELETES the capability's slot (W3-F5): a copy shared from it
-    // would stay with its holder (owner decision 20-10).
+    // would stay with its holder.
     expect_eq(b"C/shm_release_typed", sys::shm_release_typed(cap), 0);
 
     // The slot was deleted, so the same handle now names an empty slot.
@@ -1803,7 +1802,7 @@ const D_SPAWNS: u32 = 90;
 /// Milliseconds between spawns, after each child is reaped
 /// ([`D_REAP_MS`]).
 const D_SPAWN_GAP: u64 = 2;
-/// How long phase D waits to reap each child. Wave 12: an exit notice is
+/// How long phase D waits to reap each child. An exit notice is
 /// kept until the parent reaps it, as a Linux zombie, and holds the place of
 /// a task slot while it waits — 90 unreaped children would leave the rest of
 /// this run no fork at all. Reaping does not undo what the phase is for: the
@@ -2536,7 +2535,7 @@ fn reap_within(cp: u32, ms: u32) -> Option<i32> {
 
 // ── Phase P: one port, several sources, one wait with a deadline ────────────
 //
-// Wave 11 (PORTWAIT): `SYS_PORT_WAIT` with a deadline, and the io_ring and
+// `SYS_PORT_WAIT` with a deadline, and the io_ring and
 // timer sources of `PORT_BIND`. The server forks the client and
 // relays its verdict to root. The client (the waiter) creates a port and binds
 // a far timer to it; the timer, re-armed 100 ms ahead, must be the next event,
@@ -2727,7 +2726,7 @@ pub extern "C" fn _start() -> ! {
     }
     unsafe { PARENT_TID = me as u32 };
     unsafe { ROW_EP_COUNT = count_endpoints() };
-    // Root's mailbox endpoint (wave 15 N5: the mailbox is addressed by
+    // Root's mailbox endpoint (the mailbox is addressed by
     // capability; the raw-TID call is retired). Created before the first
     // fork, so every direct child inherits a capability to it.
     let root_ep = sys::endpoint_create_typed();

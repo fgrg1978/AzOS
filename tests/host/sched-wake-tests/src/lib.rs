@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Host-side runner for the K-C10 wake logic in `crates/core/sched/src/wait.rs`.
+//! Host-side runner for the wake logic in `crates/core/sched/src/wait.rs`.
 //!
 //! # What is real here and what is not — read this before trusting a green run
 //!
@@ -8,13 +8,13 @@
 //! `TASKS`/`PER_CPU` arrays, RISC-V CSR reads (`read_sstatus`), an assembly
 //! context switch, and `current_cpu_id()` reading `tp`. Refactoring it to be
 //! host-buildable would mean rewriting the core of a production scheduler,
-//! which is far more dangerous than the race K-C10 closes. So it is **not**
+//! which is far more dangerous than the race it closes. So it is **not**
 //! compiled here.
 //!
 //! What *is* compiled from the kernel tree, unmodified, via `#[path]`:
 //!
 //!   * `crates/core/sched/src/task.rs` — the real `WaitReason`, `TaskState`,
-//!     `Task`, the real `MAX_TASKS`, and since K-C19 the real `sched_word`
+//!     `Task`, the real `MAX_TASKS`, and the real `sched_word`
 //!     transition protocol (state + wake stamp in one atomic word). It has
 //!     no dependency beyond `azos_limits`.
 //!   * `crates/core/sched/src/wait.rs` — the real `wake_action()` truth table and
@@ -25,7 +25,7 @@
 //! stub records every call so the tests can assert which primitive each wake
 //! routed to and exactly which `WaitReason` values its predicate accepts.
 //!
-//! So these tests prove: (1) the K-C10 decision table is what the kernel
+//! So these tests prove: (1) the wake decision table is what the kernel
 //! executes, because `wake_task_by_tid` matches on `wait::wake_action()`;
 //! (2) each targeted wake addresses the right TID with the right predicate;
 //! (3) the broadcast wakes still use the sweep and were not swept into the
@@ -134,7 +134,7 @@ pub mod scheduler {
     pub enum Call {
         /// `try_wake_task(idx, pred)` — the sweep path.
         Sweep { idx: usize, accepts: Vec<WaitReason> },
-        /// `wake_task_by_tid(tid, pred)` — the K-C10 targeted path.
+        /// `wake_task_by_tid(tid, pred)` — the targeted path.
         ByTid { tid: u32, accepts: Vec<WaitReason> },
         /// `wake_task_by_tid_ipc(tid, pred)` — the same path, placed by the
         /// IPC-affinity rule (fast-IPC call/reply hand-offs only).
@@ -205,7 +205,7 @@ mod tests {
         f()
     }
 
-    // ── 1. The K-C10 truth table ────────────────────────────────────────────
+    // ── 1. The wake truth table ────────────────────────────────────────────
 
     #[test]
     fn wake_action_covers_the_full_truth_table() {
@@ -250,7 +250,7 @@ mod tests {
 
     #[test]
     fn only_stamp_pending_is_reachable_when_not_blocked() {
-        // The property that makes K-C10 correct: a task that has not blocked
+        // The property that makes the targeted wake correct: a task that has not blocked
         // yet can never be Dispatched (its wait_reason is None, so no
         // targeted predicate accepts it) and must never be judged a Mismatch
         // (that would drop the wake — the original bug).
@@ -261,9 +261,9 @@ mod tests {
         }
     }
 
-    // ── 2. The K-C9/K-C19 handshake — the REAL protocol, not a model ────────
+    // ── 2. The block/wake handshake — the REAL protocol, not a model ────────
     //
-    // Until K-C19 this section *modelled* block/wake over the removed
+    // This section once *modelled* block/wake over the removed
     // `wake_pending: AtomicBool`, replicating scheduler.rs by hand — exactly
     // the "test that replicates the logic it guards" trap. The protocol now
     // lives in `task::sched_word` as free functions over an `AtomicU32`, so
@@ -288,13 +288,13 @@ mod tests {
         wake_transition(w, || true, || reason_matches, true, || true)
     }
 
-    /// The same wake against an UNSAVED target (K-C24: Blocked but still
+    /// The same wake against an UNSAVED target (Blocked but still
     /// executing past an unswitched block).
     fn wake_unsaved(w: &AtomicU32, reason_matches: bool) -> WakeTransition {
         wake_transition(w, || true, || reason_matches, true, || false)
     }
 
-    /// Wave 13 (RT7): `saved` is read only once `Blocked` has been seen. The
+    /// `saved` is read only once `Blocked` has been seen. The
     /// blocker sets `context_saving` BEFORE its Release commit, so only a read
     /// that follows the Acquire load of `Blocked` is guaranteed to see it; a
     /// read made before (the old `bool` argument) could be `saved` from the
@@ -485,7 +485,7 @@ mod tests {
 
     #[test]
     fn mismatch_while_blocked_touches_nothing() {
-        // The rule that stops K-C10 turning a hang into cross-task
+        // The rule that stops the targeted wake turning a hang into cross-task
         // corruption: a task blocked on an unrelated reason must not be
         // marked, or it would skip its own next, unrelated wait.
         let w = word(TaskState::Running);
@@ -507,11 +507,11 @@ mod tests {
         assert_eq!(state_now(&w), TaskState::Running);
     }
 
-    // ── 2b. K-C19: the invariant is structural now ──────────────────────────
+    // ── 2b. The invariant is structural now ──────────────────────────
 
     #[test]
     fn a_stamped_word_cannot_commit_to_blocked() {
-        // The blocker half of K-C19: committing past a pending wake is not a
+        // The blocker half of the handshake: committing past a pending wake is not a
         // race that discipline avoids — the CAS refuses it.
         let w = word(TaskState::Running);
         wake(&w, true);
@@ -528,7 +528,7 @@ mod tests {
 
     #[test]
     fn a_committed_word_cannot_be_stamped() {
-        // The waker half of K-C19: once the task is Blocked, a targeted wake
+        // The waker half of the handshake: once the task is Blocked, a targeted wake
         // must dispatch (or mismatch) — it can never leave a stamp behind for
         // nobody to consume. This was the measured ~1-in-3 permanent sleep.
         let w = word(TaskState::Running);
@@ -542,7 +542,7 @@ mod tests {
     #[test]
     fn blocked_with_stamp_is_unreachable_from_every_interleaving() {
         // Exhaustive over every serialized order of one blocker step and up
-        // to two wakes: the two rows deliberately absent from the K-C10
+        // to two wakes: the two rows deliberately absent from the wake
         // truth table must be unrepresentable outcomes, whatever the order.
         type Step = u8; // 0 = commit, 1 = matching wake, 2 = mismatched wake
         fn run(steps: &[Step]) -> u32 {
@@ -570,7 +570,7 @@ mod tests {
         }
     }
 
-    // ── 2c. K-C24: Blocked does not mean parked ─────────────────────────────
+    // ── 2c. Blocked does not mean parked ─────────────────────────────
     //
     // `block_current`'s do_schedule can find nothing to run and RETURN: the
     // task keeps executing with `state == Blocked` and its context unsaved.
@@ -606,7 +606,7 @@ mod tests {
 
     #[test]
     fn a_parked_stamp_is_swept_by_the_dispatch_cas() {
-        // If the task DOES get parked with a K-C24 stamp set (do_schedule's
+        // If the task DOES get parked with a stamp set (do_schedule's
         // Blocked-arm conversion races are re-covered kernel-side), a later
         // targeted wake against the now-saved task must deliver: the
         // dispatch CAS replaces the whole word, stamp included.
@@ -619,7 +619,7 @@ mod tests {
         assert!(!stamped(&w), "dispatch must sweep the stamp with the state");
     }
 
-    // ── 2d. K-C25: an orphaned parked stamp needs a reaper ──────────────────
+    // ── 2d. An orphaned parked stamp needs a reaper ──────────────────
     //
     // The leg 2c's sweep test cannot cover: the stamp lands AFTER
     // do_schedule's switch-away sweep checked and the task parks with it set.
@@ -630,7 +630,7 @@ mod tests {
 
     #[test]
     fn an_orphaned_parked_stamp_is_reaped() {
-        // The measured 2026-08-24 wedge, step by step: client committed to
+        // The measured wedge, step by step: client committed to
         // Blocked; the reply's one-shot wake stamped it (unsaved — mid
         // switch-out, past the sweep's check); the context save completed;
         // no further wake will ever fire.
@@ -659,7 +659,7 @@ mod tests {
     #[test]
     fn reap_refuses_a_running_stamp() {
         // A stamp on a not-yet-blocked task belongs to block_current's
-        // consume path (K-C9); the reaper stealing it would turn the
+        // consume path; the reaper stealing it would turn the
         // imminent block into a permanent sleep.
         let w = word(TaskState::Running);
         assert_eq!(wake(&w, true), WakeTransition::Stamped);
@@ -781,7 +781,7 @@ mod tests {
         // blocker committing while a waker delivers exactly one wake. In
         // every round, either the blocker consumed the stamp (skip) or the
         // waker dispatched (Blocked → Ready). A round ending Blocked is a
-        // lost wake — the K-C19 hang. The reverted double-check handshake
+        // lost wake — the hang. The reverted double-check handshake
         // failed the mirror property (dispatching a task that never
         // committed); both are asserted.
         use std::sync::{Arc, Barrier};
@@ -887,7 +887,7 @@ mod tests {
     #[test]
     fn broadcast_wakes_still_use_the_sweep() {
         // These have no addressee TID. Routing them through the TID path
-        // would be the trap K-C10 exists to avoid, so pin them here.
+        // would be the trap the targeted wake exists to avoid, so pin them here.
         for (label, log) in [
             ("ring", with_log(|| { wait::wake_by_ring(5); scheduler::log() })),
             ("port", with_log(|| { wait::wake_by_port(5); scheduler::log() })),
@@ -948,10 +948,10 @@ mod tests {
         assert_eq!(log, vec![Call::Block { cpu: 0, reason: WaitReason::FastIpcClient(3) }]);
     }
 
-    // ── K-C29: `task_block_outcome` reports a refusal to block ──────────────
+    // ── `task_block_outcome` reports a refusal to block ──────────────
     //
     // `block_current` can return without having parked the caller. After
-    // K-C29 it does so deliberately whenever preemption is disabled on the
+    // the preemption-control change it does so deliberately whenever preemption is disabled on the
     // hart, because parking a spinlock holder turns a priority-dependent hang
     // into a certain one. Callers that have a condition to re-test are
     // correct under that by looping; a wait with nothing to re-test (the
@@ -1039,7 +1039,7 @@ mod tests {
     /// This is a separate claim from the mapping and it has its own mutant:
     /// an "optimisation" that returns `Refused` *without* calling
     /// `task_block` would pass both tests above while silently disabling the
-    /// K-C29 audit — the `BLOCK_WHILE_ATOMIC` counter, the last-offender
+    /// block-while-atomic audit — the `BLOCK_WHILE_ATOMIC` counter, the last-offender
     /// record and the rate-limited console line all live inside
     /// `block_current`, and they are the only evidence that a caller is
     /// blocking under a lock at all. Losing them would hide the very bug the
@@ -1072,7 +1072,7 @@ mod tests {
         assert_eq!(log, vec![Call::Block { cpu: 0, reason: WaitReason::Ring(9) }]);
     }
 
-    // ── K-C12: CPU placement policy ─────────────────────────────────────
+    // ── CPU placement policy ─────────────────────────────────────
     //
     // These exercise `task::pick_cpu_by_load`, the real decision the kernel
     // makes in `scheduler::find_best_cpu`. What the kernel does around it —
@@ -1126,7 +1126,7 @@ mod tests {
 
     #[test]
     fn placement_avoids_a_hart_with_higher_priority_residents() {
-        // The K-C12 shape, taken from the measured boot layout: hart 0 hosts
+        // The placement shape, taken from the measured boot layout: hart 0 hosts
         // rt-motor + flight-ctrl (priority 8) and looks *emptiest* by queued
         // count; hart 2 hosts only same-or-lower priority work. A newcomer at
         // DEFAULT_PRIORITY must go to hart 2 even though hart 0 carries fewer
@@ -1204,7 +1204,7 @@ mod tests {
         assert_eq!(pick_cpu_by_load(&[]), 0);
     }
 
-    // ── K-C12: ready-queue admission ────────────────────────────────────
+    // ── Ready-queue admission ────────────────────────────────────
     //
     // `cpu_enqueue`'s guard used to be a `debug_assert!`, compiled out of the
     // release profile the kernel ships. These pin the replacement policy.
@@ -1306,7 +1306,7 @@ mod tests {
 
     /// The measured layout that made this change necessary.
     ///
-    /// After K-C27 the real-time daemons sleep between activations, so for
+    /// The real-time daemons sleep between activations, so for
     /// almost all of every period harts 0 and 1 are idle. Placement kept
     /// scoring their sleeping residents as full blockers, so every unpinned
     /// child went to hart 2 — the one hart with no real-time residents — and
@@ -1396,7 +1396,7 @@ mod tests {
     //
     // This used to add: "Two documented writers
     // (`boost_ready_task`/`restore_ready_task`) do not take the lock at all,
-    // so they can lose an update outright." **Fixed 2026-09-20** (scan unit 4)
+    // so they can lose an update outright." **Fixed** (scan unit 4)
     // — both now go through `cpu_remove_anywhere`, which takes each CPU's lock
     // in turn. The audit turned up a second, worse half that this note never
     // mentioned: they used the DONOR's hart, so on any other hart the removal
@@ -1496,7 +1496,7 @@ mod tests {
     /// the real rule returns exactly `B`. Both mutants return a superset that
     /// names innocent slots, and the audit prints a task name per bit — a
     /// false CLAIM-NO-ENTRY line for a healthy task is what would send the
-    /// next K-C26-style hunt down the wrong hart.
+    /// next hunt down the wrong hart.
     #[test]
     fn persistence_is_per_slot_not_per_tick() {
         const A: u64 = 1 << 1;
@@ -1589,7 +1589,7 @@ mod tests {
 //
 // How to tell "hung on the lost wakeup" from "hung on something else" — this
 // is the part that matters, because a bare timeout proves nothing:
-//   * Lost wakeup (K-C10) looks like: the run stops making progress, the
+//   * Lost wakeup looks like: the run stops making progress, the
 //     LAST line for one or more children is a `seq=` line, and the *parent*
 //     keeps going or itself blocks in FAST_ACCEPT with no pending call. The
 //     signature is that the stuck child is `Blocked` on
@@ -1598,12 +1598,12 @@ mod tests {
 //     from the shell: a `ps`-style dump showing state + wait_reason per task
 //     plus the fast-IPC call records (owner TID, replied flag). If a record is
 //     `replied=true` with its owner `Blocked on FastIpcClient(that slot)`,
-//     that is K-C10 and nothing else.
+//     that is this race and nothing else.
 //   * Slot exhaustion looks different: FAST_CALL returns -1 immediately
 //     rather than hanging. Children must print `IPCTEST child=<i> ENOSLOT`
 //     and continue, so exhaustion never masquerades as a hang.
 //   * A `-1` from `fast_ipc_collect` after a *successful* wake is the
-//     spurious-`wake_pending` signature (see the K-C10 report): the call
+//     spurious-`wake_pending` signature: the call
 //     returns, but with -1 and no reply. Children must count those
 //     separately and print `IPCTEST child=<i> spurious=<n>`; a non-zero
 //     count is a real finding even if the run completes.
@@ -1612,7 +1612,7 @@ mod tests {
 //     progress at all, or as a board reset — distinguishable because the
 //     panic handler prints first.
 //
-// Expected result today: green. Both sides wake by TID (K-C10):
+// Expected result today: green. Both sides wake by TID:
 // `wake_fast_ipc_server` on FAST_ACCEPT, `wake_fast_ipc_client_tid` on
 // FAST_REPLY. Put either back on a sweep and this scenario hangs — which
 // makes it a genuine regression test rather than a formality.
@@ -1686,7 +1686,7 @@ pub mod ipc_direct;
 #[path = "../../../../crates/core/sched/src/donation.rs"]
 pub mod donation;
 
-/// The donation-vs-last-restore race (wave 9), forced.
+/// The donation-vs-last-restore race, forced.
 ///
 /// `donation::boost_locked` / `restore_locked` are the functions the kernel's
 /// `boost_ready_task` / `restore_ready_task` call, with
@@ -1826,8 +1826,7 @@ mod donation_race_tests {
     }
 }
 
-/// The ready queues as intrusive lists (`ready_list`, wave 15
-/// NRCPUS-FLEET-AREA): FIFO order, removal from anywhere keeping order, one
+/// The ready queues as intrusive lists (`ready_list`): FIFO order, removal from anywhere keeping order, one
 /// link table shared by several lists, and walks that stay bounded and in
 /// range over garbage links (the audit's lockless walk).
 ///
@@ -2426,7 +2425,7 @@ mod elf_bounds_tests {
         }
     }
 
-    /// Wave 15 (VI): a page two segments share took the union of their
+    /// A page two segments share took the union of their
     /// permissions, so `.rodata` on the last `.text` page was executable.
     /// A segment that starts on the page the previous one ends on, mapped
     /// differently, refuses the image: code then rodata, rodata then data,
@@ -2573,7 +2572,7 @@ mod hart_set_tests {
 
     #[test]
     fn boot_hart_two_with_hart_zero_dead_used_to_claim_hart_zero_was_alive() {
-        // Boot hart 2 was measured in QEMU virt (K-C16 evidence). Harts 1
+        // Boot hart 2 was measured in QEMU virt. Harts 1
         // and 3 start, hart 0 does not.
         let started = [false, true, false, true]; // index 2 unused: it is the boot hart
         assert_eq!(legacy_online(4, 2, &started), 1);
@@ -3006,7 +3005,7 @@ mod stop_policy_tests {
     }
 }
 
-/// w14 RTMAX: the tick's K-C25 reaper walks the task pool only when
+/// The tick's reaper walks the task pool only when
 /// `STAMP_PENDING` was set, and the SCHED-RT set walks are skipped while the
 /// hart holds no reservation. `scheduler.rs`/`rt.rs` do not build on the
 /// host, so the wiring is read from source; the stamp/reap protocol itself is
@@ -3225,7 +3224,7 @@ mod reap_flag_gate {
 
 }
 
-// Wave 15 (VW): the per-CPU deferred remote-wake list
+// The per-CPU deferred remote-wake list
 // (`SCHED_REMOTE_WAKE_DEFER`): lock-free MPSC push, FIFO drain.
 #[path = "../../../../crates/core/sched/src/wake_list.rs"]
 pub mod wake_list;

@@ -284,7 +284,7 @@ mod tid_lookup {
         for sig in [
             "pub fn wake_task_by_tid(",
             "pub fn wq_wake_by_tid(",
-            // Wave 9: one donation lock for every donor, so the lookup
+            // One donation lock for every donor, so the lookup
             // lives here.
             "pub fn boost_ready_task(",
             "pub fn restore_ready_task(",
@@ -299,7 +299,7 @@ mod tid_lookup {
     fn the_tid_hint_is_published_in_exactly_two_places() {
         let c = code();
         // Per statement, not per line: two writes on one line are two writes.
-        // Where the TID is issued, and (wave 13) the scan's repair of a cell a
+        // Where the TID is issued, and the scan's repair of a cell a
         // later TID overwrote (`idx_for_tid`).
         let writes = c
             .match_indices("TID_SLOT[")
@@ -388,7 +388,7 @@ mod class_name_tests {
     }
 }
 
-/// Wave 11 SCHED-RT: the arithmetic `scheduler::rt` applies per hart and per
+/// The arithmetic `scheduler::rt` applies per hart and per
 /// reservation (`crates/core/sched/src/rt_core.rs`). The kernel side only stores
 /// these values and calls them at the dispatch, tick and switch points; the
 /// QEMU rows (`sched-rt:` in `tools/gate/ci_check.sh`) prove the wiring.
@@ -451,7 +451,7 @@ mod rt_core_tests {
         }
     }
 
-    /// Owner decision 10-10: the exempt safety loops
+    /// The exempt safety loops
     /// are the stop class, above DL; legacy never takes the stop step.
     #[test]
     fn classes_puts_exempt_loops_above_dl_and_legacy_does_not() {
@@ -682,7 +682,7 @@ mod rt_core_tests {
         levels_check(LevelOrder::Fixed, b).is_ok()
     }
 
-    /// The wave-15 `mixed` pair: 75 % of density, but under fixed priority
+    /// The `mixed` pair: 75 % of density, but under fixed priority
     /// H's 5 ms at level 4 run before L's 2 ms deadline at level 6. Refused
     /// there, naming level 6; at one level it fits. Under EDF across levels
     /// (the default dispatch) the rule does not bind: admitted. Canaries
@@ -897,7 +897,7 @@ mod rt_core_tests {
     }
 }
 
-/// Wave 11 SCHED-RT wiring that only the source can show: the old EDF path is
+/// Wiring that only the source can show: the old EDF path is
 /// gone, the RT hooks sit where the module doc says, and the pick is the
 /// class walk alone.
 #[cfg(test)]
@@ -918,7 +918,7 @@ mod rt_wiring {
     fn the_dispatch_tail_charges_after_the_last_comparator_write() {
         let c = code();
         let ds = body(&c, "unsafe fn do_schedule(");
-        // Wave 15: do_schedule passes the priority it already loaded.
+        // Do_schedule passes the priority it already loaded.
         let tail = ds.rfind("rt::on_switch_prio(cpu, next_idx").expect("on_switch missing");
         let last_tickless = ds.rfind("set_next_tick_tickless(").unwrap();
         let switch = ds.rfind("context_switch(old_ptr").unwrap();
@@ -945,7 +945,7 @@ mod rt_wiring {
     }
 }
 
-/// Wave 11 SCHED-RT owner decision: the kernel safety loops are exempt from
+/// The kernel safety loops are exempt from
 /// the RT band budget. The rule (`rt_core::band_throttled`/`band_charged`) and
 /// who may set the flag.
 #[cfg(test)]
@@ -1014,7 +1014,7 @@ mod rt_exemption {
     }
 }
 
-/// What one CPU's per-CPU area holds besides its ready queues (wave 15,
+/// What one CPU's per-CPU area holds besides its ready queues (
 /// NRCPUS-FLEET-AREA): the RT band state (`rt::RtCpu`: `SET_CAP` slot words,
 /// `SET_CAP` CBS reservations, the owner's band and three words). It does not
 /// depend on `MAX_TASKS`: `SET_CAP` is fixed, so these bytes are the same in
@@ -1846,7 +1846,7 @@ mod refusal_receipts {
 /// **The accessors of "the task running here" read the hart id and the slot
 /// in one masked window.** `current_cpu_id()` then `PER_CPU[cpu].current_idx`
 /// is two steps; a tick between them moves the task and the second read
-/// returns another hart's task (found 2026-10-20: a kernel page fault copying
+/// returns another hart's task (found: a kernel page fault copying
 /// to a user VA). `scheduler::on_this_hart` is the one place that masks
 /// interrupts across the pair, and every accessor of the running task goes
 /// through it (`here`, `my_idx`, `current_slot`, the filter verdicts).

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! `crates/core/trace/src/jump.rs` (wave 15, static keys), pulled in by
+//! `crates/core/trace/src/jump.rs` (static keys), pulled in by
 //! `#[path]`: the site table and the two ISAs' patch encoders. The vectors
 //! are words the assembler and linker produced in a built kernel (rv:
 //! `j` = `jal zero`; arm: `b`), read back with llvm-objdump.

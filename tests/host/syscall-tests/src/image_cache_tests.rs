@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-// Wave 14 (SPAWNCACHE): `image_cache::read_verified`, the one reader of an
+// `image_cache::read_verified`, the one reader of an
 // image by path for spawn and exec, against a medium whose stamp the test
 // controls. Every test checks the property the cache must never break: the
 // digest answered is the SHA-256 of the bytes in the buffer, which are the

@@ -14,7 +14,7 @@
 //! their answers (which bytes it hashes, which fields it hands the
 //! signature check, in which order it asks).
 //!
-//! Canaries (by hand, 2026-10-16), each turning the named rows red and no
+//! Canaries (by hand), each turning the named rows red and no
 //! others: `verify` testing the epoch floor with `<=` instead of `<`
 //! (`an_epoch_at_the_floor_is_admitted`); dropping the compare of the blob's
 //! build-id with the running kernel's (`a_blob_built_for_another_kernel_is_refused`

@@ -392,7 +392,7 @@ mod recovery_records {
     }
 }
 
-// `blkdev::write` reports to the block layer's write observer (wave 14), a
+// `blkdev::write` reports to the block layer's write observer, a
 // sibling module of `blkdev.rs` in its crate, so it comes along too.
 #[allow(dead_code)]
 #[path = "../../../../crates/drivers/block/src/write_observer.rs"]
@@ -607,7 +607,7 @@ mod virtq {
 
     /// **Pins the RISC-V QEMU `virt` transport window.** `blk.rs`, `net.rs`,
     /// `input.rs` and `rng.rs` check a device's base against one definition
-    /// in `virtio::mod` (ISA-selected there; the aarch64 port, 2026-09-21,
+    /// in `virtio::mod` (ISA-selected there; the aarch64 port,
     /// collapsed three copies into it), and the hardware bus enumerates the
     /// same window (`kernel/src/boot/hwbus.rs`), so a second ISA needs one new
     /// `#[cfg]` arm. This is a regression pin on the value that definition
@@ -630,7 +630,7 @@ mod virtq {
     /// **Discriminates (IO-QUEUES N1).** The doorbell is skipped only while
     /// the device sets `used.flags` NO_NOTIFY. Canary: make
     /// `virtq_device_wants_kick` return `true` unconditionally (the
-    /// pre-wave-15 behaviour) and the second assertion fails; invert the bit
+    /// earlier behaviour) and the second assertion fails; invert the bit
     /// test and the first one does.
     #[test]
     fn the_doorbell_is_skipped_only_while_the_device_says_no_notify() {
@@ -893,8 +893,7 @@ mod rc_failsafe {
     /// separate threads. Without this lock they race: one sets `Simulated`
     /// while the other is asserting `Sbus` is not ready, or the reverse.
     ///
-    /// **Observed, not theorised.** On 2026-09-07
-    /// `simulated_mode_still_reports_ready_with_failsafe_cleared` failed once
+    /// **Observed, not theorised.** `simulated_mode_still_reports_ready_with_failsafe_cleared` failed once
     /// and then passed 36/36 on three consecutive re-runs — the signature of
     /// a scheduling-dependent race, and the worst kind of red in a gate,
     /// because it looks like a regression in whatever was committed last.
@@ -943,7 +942,7 @@ mod rc_failsafe {
     /// failed too, the assertions above would be testing a `rc_read()` that
     /// always returns `None` regardless of mode, which proves nothing about
     /// the Sbus/Ppm path specifically.
-    /// Wave 15: the SBUS byte source. Sbus mode starts not ready; one frame
+    /// The SBUS byte source. Sbus mode starts not ready; one frame
     /// fed byte by byte (after line noise) makes it ready with the frame's
     /// sticks, counts it, and a frame carrying the failsafe bit raises the
     /// flag `rc_read` reports.
@@ -1004,7 +1003,7 @@ mod rc_failsafe {
     }
 }
 
-/// Wave 15: `sbus_encode` is the inverse of `sbus_decode` (the QEMU feeder
+/// `sbus_encode` is the inverse of `sbus_decode` (the QEMU feeder
 /// builds its frames with it), and `sbus_us_to_raw` of `sbus_channel_to_us`.
 #[cfg(test)]
 mod sbus_encode_roundtrip {
@@ -1629,7 +1628,7 @@ mod pwm_ownership_domain {
 #[path = "../../../../crates/drivers/bus/src/i2c.rs"]
 mod i2c;
 
-// The INA219 chip logic, from the ring-3 driver (wave 9): no kernel crate
+// The INA219 chip logic, from the ring-3 driver: no kernel crate
 // names it any more. Pure (a `Bus` trait, no syscalls), so it goes in
 // unmodified.
 //
@@ -1652,7 +1651,7 @@ mod i2c_bus_locks {
     /// The array is one static shared by every test thread, and all three
     /// lock bus 0. Run in parallel, one test holding bus 0 makes another's
     /// "the bus was not released" check fail although the lock is correct:
-    /// measured 2026-09-15 as 21 failures in 300 runs of the whole binary,
+    /// measured as 21 failures in 300 runs of the whole binary,
     /// every one in `two_callers_on_one_bus_cannot_hold_it_at_once`, and none
     /// when that test ran alone.
     static BUS_LOCK_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -1661,7 +1660,7 @@ mod i2c_bus_locks {
         BUS_LOCK_SERIAL.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    // ── The exclusion itself, which nothing tested until 2026-09-08 ───────
+    // ── The exclusion itself ───────
     //
     // Everything below this block checks the ARITHMETIC that picks a lock
     // slot. That is worth checking and it is not the property the locks exist
@@ -1907,8 +1906,7 @@ mod sbus_failsafe_policy {
 
 // ── An unconfigured INA219 must not report a healthy battery ──────────────
 //
-// The chip logic moved out of the kernel in wave 9 and into its own crate in
-// wave 11 (`crates/drivers/ina219`, used above). It is a struct over a `Bus` trait now, not
+// The chip logic lives in its own crate (`crates/drivers/ina219`, used above). It is a struct over a `Bus` trait now, not
 // process-wide statics over the kernel's I2C, so each test owns its chip and
 // its bus, and a reachable chip can finally be tested too.
 
@@ -2105,7 +2103,7 @@ mod ina219_no_fabricated_battery {
         assert_eq!(chip.mah_used(), 1);
     }
 
-    // ── Wave 10 (DRV2): the charge follows the clock, not a cadence ──────
+    // ── The charge follows the clock, not a cadence ──────
     //
     // Each sample's current is weighted by the time the driver's clock
     // measured since the previous published sample. Before, every poll stood
@@ -2498,7 +2496,7 @@ mod msi_pending_tests {
     }
 }
 
-// ── riscv64 ring-3 interrupt ownership (wave 9 IRQ4 item 2) ─────────────────
+// ── riscv64 ring-3 interrupt ownership ─────────────────
 //
 // `user_irq.rs`'s bitmaps build on the host; its controller half
 // (`bind`/`mask`/`unmask`/`release`) is riscv64-only and not compiled here.
@@ -2553,7 +2551,7 @@ mod user_irq_tests {
         assert_eq!(dtb_trigger(20), Some(false), "a later note overrides");
     }
 
-    // ── Routing by affinity (wave 10 IRQ5) ──────────────────────────────────
+    // ── Routing by affinity ──────────────────────────────────
 
     /// A pinned owner gets its pin, an unpinned one the hart it binds from;
     /// either only when that hart takes external interrupts, else the boot
@@ -2610,7 +2608,7 @@ mod user_irq_tests {
     }
 }
 
-// ── Console ownership and deferred kernel lines (wave 9) ────────────────────
+// ── Console ownership and deferred kernel lines ────────────────────
 //
 // `console_defer.rs` is the protocol `uart::console_write_ring3` runs: ring 3
 // owns the UART with interrupts on, and kernel output from any hart or
@@ -2922,7 +2920,7 @@ mod console_ownership {
         assert!(!st.is_owned() && !st.has_residual());
     }
 
-    // ── Wave 10: the writer that finds a residual (owner decision 2026-09-28)
+    // ── The writer that finds a residual
 
     /// What a budget-limited release leaves: `lines` kernel lines deferred,
     /// console unowned.
@@ -3131,7 +3129,7 @@ mod console_ownership {
         assert_eq!(wire.text(), "a[R] line\nbc");
     }
 
-    // ── Wave 10 follow-up: idle drain, and no takeover under a spinlock ────
+    // ── Idle drain, and no takeover under a spinlock ────
 
     /// A residual with no later writer (a quiet system): the idle loop's
     /// drain, gated on the lock-free `stranded` read, puts it on the wire as
@@ -3191,7 +3189,7 @@ mod console_ownership {
         assert!(!lock.0.lock().unwrap().is_owned(), "a spinlock holder took the console");
     }
 
-    // ── Wave 11: the wire is a TX ring that can be full ────────────────────
+    // ── The wire is a TX ring that can be full ────────────────────
     //
     // Under the UART lock a kernel writer may not wait for the UART, so the
     // kernel's wire takes only what its TX ring has room for (`Wire::put`)
@@ -3293,11 +3291,11 @@ mod console_ownership {
         drain_all(&mut st, &mut w);
         let text = String::from_utf8(w.out.clone()).unwrap();
         // Deferred bytes first, the report once the buffer is empty (the
-        // protocol's order since wave 9) — and the report in one piece.
+        // protocol's order) — and the report in one piece.
         assert_eq!(text, "after\n[CONSOLE] dropped 13 kernel bytes (1 lines) while ring 3 held the console\n");
     }
 
-    // ── Wave 15 (C2): a real-time caller only appends ──────────────────────
+    // ── A real-time caller only appends ──────────────────────
     //
     // `BandWire` is the kernel's wire for an RT caller (`uart::kernel_emit`);
     // its `on_wait` is the dev check `RT_CONSOLE_WIRE_CHECK`, counted here.
@@ -3352,7 +3350,7 @@ mod console_ownership {
     }
 
     /// The discriminating side of the check: the same call classified non-RT
-    /// (what the kernel did before wave 15 for every caller) owns the console
+    /// (as the kernel treats a non-RT caller) owns the console
     /// and waits for the wire — exactly where the dev check fires.
     #[test]
     fn a_non_rt_writer_in_the_same_state_does_wait_for_the_wire() {
@@ -3494,7 +3492,7 @@ mod console_ownership {
     }
 }
 
-// ── ratelimit.rs: console report rate limit (wave 14, LOGLEVEL) ─────────────
+// ── ratelimit.rs: console report rate limit (LOGLEVEL) ─────────────
 #[allow(dead_code)] // only the test module calls it
 #[path = "../../../../crates/drivers/sys/src/ratelimit.rs"]
 mod ratelimit;
@@ -3545,7 +3543,7 @@ mod ratelimit_tests {
 // ── timer_arm.rs: the next timer event (one-shot timer mode) ──────
 //
 // `timebase` programs the comparator; `timer_arm.rs` decides the instant. The
-// two cases the wave fixed: a busy hart whose comparator holds the next tick
+// two cases: a busy hart whose comparator holds the next tick
 // must move it when a task blocks on an earlier deadline, and the tick handler
 // must program the nearest sleeper when it is earlier than the next tick (the
 // aarch64 handler programmed `now + period` unconditionally).
@@ -3638,7 +3636,7 @@ mod timer_arm_tests {
         assert!(earlier_than_programmed(programmed, d2));
     }
 
-    /// Wave 13: hart 0's idle keepalive exists only with a watchdog armed, at
+    /// Hart 0's idle keepalive exists only with a watchdog armed, at
     /// timeout / KEEPALIVES_PER_TIMEOUT, and always leaves that many feeds
     /// inside one timeout.
     #[test]
@@ -3715,7 +3713,7 @@ mod console_rx_owner {
         }
     }
 
-    /// Wave 13: only the owner lends, one lend at a time, the lendee's exit
+    /// Only the owner lends, one lend at a time, the lendee's exit
     /// ends it, and an owner that goes takes its lend with it.
     #[test]
     fn only_the_owner_lends_and_the_lend_ends_with_either() {
@@ -3736,7 +3734,7 @@ mod console_rx_owner {
     }
 }
 
-/// Wave 12 (DRVPLACE): the buzzer chip logic both hosts run
+/// The buzzer chip logic both hosts run
 /// (`crates/drivers/buzzer`), against a recording PWM channel, through the
 /// `Buzzer` interface both hosts serve.
 #[cfg(test)]
@@ -3836,7 +3834,7 @@ mod buzzer_chip {
     }
 }
 
-// ── ADS1115 pipelined read (wave 15, S2) ────────────────────────────────────
+// ── ADS1115 pipelined read ────────────────────────────────────
 //
 // `rangefinder.rs` on a real board (this crate stands in for `azos_drv_sys`, with
 // `ON_QEMU` false): there is no driver, so it refuses, serves nothing and leaves a
@@ -4101,7 +4099,7 @@ mod ads1115_pipeline {
     }
 }
 
-// ── i2c_txn.rs: queued DesignWare I2C transactions (wave 15, S1) ─────────────
+// ── i2c_txn.rs: queued DesignWare I2C transactions ─────────────
 //
 // The controller state machine runs here against a model of the DesignWare
 // APB I2C: TX and RX FIFOs of a given depth, IC_STATUS, the raw interrupt
@@ -4115,7 +4113,7 @@ mod ads1115_pipeline {
 #[path = "../../../../crates/drivers/bus/src/i2c_txn.rs"]
 mod i2c_txn;
 
-// ── i2c_k1.rs: the SpacemiT K1 I2C master (front k1-i2c) ──────────────────────
+// ── i2c_k1.rs: the SpacemiT K1 I2C master ──────────────────────
 //
 // The step machine runs here against a model of the controller written from
 // the mainline driver (`i2c_k1_tests.rs`). Board validation is pending.
@@ -4387,7 +4385,7 @@ mod i2c_txn_model {
 
     /// Each transaction addresses its own device: `IC_TAR` is written while
     /// the controller is disabled, so a device after another one is not sent
-    /// the first one's transaction. Canary (2026-10-23): the start that wrote
+    /// the first one's transaction. Canary: the start that wrote
     /// `IC_TAR` to the enabled controller (before this front) fails here and
     /// in `a_nack_fails_the_transaction_and_the_queue_moves_on`: the
     /// model ignores the write, as the controller does, and the device after
@@ -4449,11 +4447,11 @@ mod i2c_txn_model {
         assert_eq!(bus.submit(0x68, &[0; 5], 1), Err(SubmitError::BadLength));
     }
 
-    /// The synchronous path (wave 15): a 100-byte read on the caller's own
+    /// The synchronous path: a 100-byte read on the caller's own
     /// buffer (`submit_ext`), waited for with `wait_completion`. The bus
     /// lock (a step) is held for a bounded number of register accesses and
     /// for NO byte time: the wire moves only while the caller sleeps. Before
-    /// wave 15 the lock was held for every byte time of the transfer
+    /// The lock was held for every byte time of the transfer
     /// (101 here; 15 for the IMU, ~1.35 ms at 100 kHz).
     #[test]
     fn a_synchronous_transfer_holds_the_lock_per_step_never_across_the_wire() {
@@ -4750,7 +4748,7 @@ mod i2c_sim_queued {
     }
 }
 
-// Wave 15 MMC (owner rule F1): the submit/wait request queue `mmc.rs` puts
+// The submit/wait request queue `mmc.rs` puts
 // in front of each SD/eMMC controller, driven here by a fake one-command-
 // at-a-time controller.
 #[allow(dead_code)]
@@ -6182,7 +6180,7 @@ mod klog_wire;
 #[cfg(test)]
 mod klog;
 
-// ── The SpacemiT K1 GPIO and PWM (front k1-build) ───────────────────────────
+// ── The SpacemiT K1 GPIO and PWM ───────────────────────────
 //
 // The register-level cores of `crates/drivers/gpio/src/gpio_k1.rs` and
 // `crates/drivers/actuator/src/pwm_k1.rs`, the real files, run against models

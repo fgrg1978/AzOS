@@ -323,7 +323,7 @@ mod types;
 mod safety;
 
 // The e-stop latch, its release authority and safe mode moved out of
-// `safety.rs` into `crates/core/actuation/src/estop.rs` (wave 11, DOMAIN);
+// `safety.rs` into `crates/core/actuation/src/estop.rs` (DOMAIN);
 // `safety.rs` re-exports `crate::estop::*`, so the kernel and this crate both
 // reach the latch through the same file. `providers` is the table the latch
 // runs the robot provider's latch work through.
@@ -334,10 +334,9 @@ mod estop;
 #[path = "../../../../crates/core/actuation/src/providers.rs"]
 mod providers;
 
-// RED/GREEN tests for the 2026-09-25 owner decision (the brain may REQUEST an
-// e-stop release, it may never CLEAR the latch). A NEW file, not folded into
-// the `mode_reset` module below, per the wave's file-split: another agent
-// owns actuation-record tests in this same crate. See its module doc for the
+// RED/GREEN tests for the e-stop release rule (the brain may REQUEST an
+// e-stop release, it may never CLEAR the latch). A separate file, not folded into
+// the `mode_reset` module below. See its module doc for the
 // full RED-to-GREEN account. `cfg(test)`, matching `envelope`/`mode_reset`
 // below: it uses `ReleaseAuthority::for_test`/`test_reset_operator_authority`,
 // both themselves `cfg(test)`-only in `safety.rs`.
@@ -350,7 +349,7 @@ mod operator_key_source;
 
 
 
-// Pulled in 2026-09-11, when `payload_cam_trigger`'s 50 ms busy-wait turned
+// Pulled in when `payload_cam_trigger`'s 50 ms busy-wait turned
 // out to be reachable per-frame from a remote peer. It needs the shim's GPIO.
 #[allow(dead_code)]
 #[path = "../../../../crates/domains/robot/behavior/src/payload.rs"]
@@ -488,7 +487,7 @@ mod envelope {
 // PKT_MODE e-stop reset gate (`crates/domains/robot/behavior/src/brain_protocol.rs`,
 // `MODE_ID_ESTOP_RESET` / `mode_estop_record` / `mode_degrade_record`).
 //
-// Owner decision, 2026-09-06: `PKT_ESTOP` only ever ARMS (grep it), so
+// `PKT_ESTOP` only ever ARMS (grep it), so
 // `PKT_MODE` is the only rearm path in the tree, and until this gate existed
 // `decode_mode_cmd` handed back a byte NOTHING validated — any `mode_id`
 // cleared an armed e-stop. `crates/domains/robot/safety-core/src/frames.rs` has two dispatch sites (the
@@ -508,8 +507,7 @@ mod envelope {
 // the gate deleted, or swapped for `mode_clears_containment(mode_id) || true`
 // — fails here without needing QEMU or the vf2-only UART build.
 //
-// **`should_clear` alone is no longer the whole story.** Owner decision,
-// 2026-09-25: `crates/domains/robot/safety-core/src/frames.rs` now treats `should_clear == true` as "this MAY be an
+// **`should_clear` alone is no longer the whole story.** `crates/domains/robot/safety-core/src/frames.rs` now treats `should_clear == true` as "this MAY be an
 // authorised release", not "clear it" — it additionally requires a verified
 // `safety::ReleaseAuthority` (an operator-signed proof today; see
 // `safety::verify_operator_release`'s module note) before it will actually
@@ -654,7 +652,7 @@ mod mode_reset {
 // micro-degrees, the snapshot and the staleness rule are the code under test
 // too. What stays out of reach here: the kernel's `update_gps` call on the
 // `CH_GPS` publish, which the `geofence-smoke` QEMU probe covers. The boot's
-// own arm (`geofence_arm_home`, wave 15) is `geofence_home_arm` below; the
+// own arm (`geofence_arm_home`) is `geofence_home_arm` below; the
 // `fence-refuse-smoke` QEMU rows cover it end to end.
 // ---------------------------------------------------------------------------
 
@@ -733,8 +731,7 @@ mod geofence {
         assert_eq!(r.action, SafetyAction::None);
     }
 
-    /// **A breach latches the stop and says how far out it was** (owner
-    /// decision 2026-09-16). Before it, L0 commanded (0, 0) only while the
+    /// **A breach latches the stop and says how far out it was.** Before it, L0 commanded (0, 0) only while the
     /// reading said `Outside`.
     #[test]
     fn a_breach_latches_the_estop_and_reports_the_overshoot() {
@@ -799,7 +796,7 @@ mod geofence {
     /// entry) and 8 (simulator) carry a position the receiver did not
     /// measure, and a fence acting on one stops the machine on a number
     /// somebody typed — or, worse, reads a drifting dead-reckoned position as
-    /// inside. Owner decision 2026-09-16; 3 (PPS) is a real fix and stays in.
+    /// inside. 3 (PPS) is a real fix and stays in.
     #[test]
     fn only_measured_fix_qualities_move_the_fence() {
         let _g = serial();
@@ -1256,9 +1253,9 @@ mod geofence {
 
 #[cfg(test)]
 mod imu_incoherence {
-    //! Owner decision, 2026-09-26 (V1.6): a dead IMU must stop the robot
+    //! A dead IMU must stop the robot
     //! after a bounded grace period, not read as "nothing to check" forever
-    //! (the pre-decision behaviour every OTHER `geofence`/`arbitration`
+    //! (the earlier behaviour every OTHER `geofence`/`arbitration`
     //! fixture relies on for the FIRST ~200 ms-to-1 s of a boot, before the
     //! first real sample arrives — those fixtures still pass unmodified;
     //! only a stretch of invalidity that actually PERSISTS past the bound
@@ -1350,7 +1347,7 @@ mod imu_incoherence {
 
 // ---------------------------------------------------------------------------
 // Flight recorder (`crates/core/actuation/src/logger.rs`; moved from
-// `crates/domains/robot/behavior/src/logger.rs` in wave 11).
+// `crates/domains/robot/behavior/src/logger.rs`).
 // ---------------------------------------------------------------------------
 
 #[allow(dead_code)]
@@ -1482,7 +1479,7 @@ mod log_storage_mock {
         pub fail_next_fsyncs: usize,
         /// The `serial` argument of every `open()` call, in call order — so
         /// a test can pin WHICH serial `logger_init` opened, not just how
-        /// many times it opened something. Added 2026-09-26 (U08-3): before
+        /// many times it opened something. Added (U08-3): before
         /// then every session opened 0, 1, 2, ... from its own start, so the
         /// call-order index and the serial always agreed and nothing needed
         /// to tell them apart.
@@ -1582,7 +1579,7 @@ mod log_storage_mock {
     }
 }
 
-/// The motor-command watchdog's record (`SAFETY_RT_WATCHDOG`, wave 14): the
+/// The motor-command watchdog's record (`SAFETY_RT_WATCHDOG`): the
 /// transitions policy, and the record through the recorder and back.
 #[cfg(test)]
 mod rt_watchdog_records {
@@ -2202,7 +2199,7 @@ mod flight_recorder {
     /// recorder taking the board down with it, so this runs the real
     /// contention instead of trusting the ordering by inspection alone.
     ///
-    /// Since wave 15 the ring takes no lock (producers claim slots with a
+    /// The ring takes no lock (producers claim slots with a
     /// CAS) and `LOG_FILE` is the recorder's own flush claim, whose
     /// waiters sleep on a condition variable here (`cap_test_sync`'s
     /// `Claim`): a hang would still be a lock bug, and this test still
@@ -2278,7 +2275,7 @@ mod flight_recorder {
     }
 }
 
-/// Wave 15, owner rule: an RT task never does block I/O. The ring is
+/// An RT task never does block I/O. The ring is
 /// lock-free and the RT caller's flush is handed to the log flusher.
 #[cfg(test)]
 mod flight_recorder_rt {
@@ -2923,7 +2920,7 @@ mod semantic_level_records {
         semantic_level_record, SAFETY_SEMANTIC_LEVEL, SAFETY_SEMANTIC_MALFORMED,
     };
 
-    /// Owner decision, 2026-09-05: every level change is recorded, not only
+    /// Every level change is recorded, not only
     /// the transition into CONTAINED. The graded levels exist to answer *why
     /// the robot was moving slowly*, and recording only the stop would leave
     /// exactly that question unanswered.
@@ -3124,7 +3121,7 @@ mod cam_trigger_does_not_spin {
 
 #[cfg(test)]
 mod payload_refuses_while_latched {
-    //! H22 (coordinator audit, 2026-09-26): `payload_exec` had no e-stop
+    //! `payload_exec` had no e-stop
     //! check — a 12 V spray pump kept running through a latched e-stop.
     use super::payload::{payload_exec, payload_spray_active};
     use super::brain_protocol::{PayloadCmd, PAYLOAD_TYPE_SPRAY, PAYLOAD_OFF};
@@ -3185,7 +3182,7 @@ mod payload_refuses_while_latched {
 
 // ── A refused e-stop clear must not be an unmetered durable write ──────────
 //
-// Found 2026-09-11, same audit. `PKT_MODE` with any id other than the reset
+// Found, same audit. `PKT_MODE` with any id other than the reset
 // one, while the e-stop is armed, is refused — and used to cost a synchronous
 // flight-recorder flush and a console line EVERY TIME, for a frame that
 // changes no state. Seven bytes on the wire, 36 of them per 256-byte read.
@@ -3230,7 +3227,7 @@ mod refused_estop_clears_are_metered {
 
 // ── A ring-3 re-latch after an operator clear is attributable ──────────────
 //
-// Audit unit 1. Only `MODE_ID_ESTOP_RESET` clears the latch, and `ring3_estop`
+// Only `MODE_ID_ESTOP_RESET` clears the latch, and `ring3_estop`
 // early-returns only while it holds — so a ring-3 program can latch again the
 // instant an operator clears it. That must stay a stop (a stop is never
 // refused), but the record wrote action 4, shared with a refused clear, and
@@ -3277,8 +3274,7 @@ mod ring3_relatch_is_attributed {
                    "a tid cannot forge the re-latch bit");
     }
 
-    /// **A clear is spent when the latch arms again** (owner decision
-    /// 2026-09-16). The stamp says "an operator clear is in effect"; it used
+    /// **A clear is spent when the latch arms again.** The stamp says "an operator clear is in effect"; it used
     /// to survive any number of stops, so a ring-3 stop within 10 s of a clear
     /// that ANOTHER source had already answered was recorded as undoing it.
     #[test]
@@ -3301,7 +3297,7 @@ mod ring3_relatch_is_attributed {
 
 // ── The e-stop latch survives a reset ──────────────────────────────────────
 //
-// Owner decision, 2026-09-13: boot reads the last `SAFETY_ESTOP` in the durable
+// Boot reads the last `SAFETY_ESTOP` in the durable
 // record and starts latched if the previous session ended latched, or if a log
 // file exists and cannot be read. Every boot opens serial 0 with TRUNCATE, so
 // the kernel runs this before `logger_init`; these tests hand the decision every
@@ -3476,7 +3472,7 @@ mod estop_latch_survives_a_reset {
         assert_eq!(boot(vec![Some(file(&[estop(3), estop(ring3)]))]), BootLatch::Armed(ring3));
     }
 
-    /// Wave 15: a dead motor commander's SAFE STOP (action 14) is recorded and
+    /// A dead motor commander's SAFE STOP (action 14) is recorded and
     /// never latches, so the next boot reads the record before it.
     #[test]
     fn a_commander_lost_record_neither_latches_nor_releases() {
@@ -3532,7 +3528,7 @@ mod estop_latch_survives_a_reset {
         assert!(BootLatch::Unreadable.latches());
     }
 
-    /// Owner decision, 2026-09-26 (U08-3): a crash between `open` and the
+    /// A crash between `open` and the
     /// header write leaves an empty file at the tail serial. Under the
     /// contiguous-serial scheme (`logger_seed_next_serial`) this is no
     /// longer evidence that a record was destroyed — nothing before this
@@ -3578,7 +3574,7 @@ mod estop_latch_survives_a_reset {
                    BootLatch::Armed(2));
     }
 
-    /// Owner decision, 2026-09-26 (U08-3): boot numbering is now contiguous
+    /// Boot numbering is now contiguous
     /// across reboots, never reset to 0 (`logger_seed_next_serial`), so
     /// there is no such thing as a "stale file an older, longer session
     /// left above the tail" any more — every file up to the tail belongs to
@@ -3724,7 +3720,7 @@ mod estop_latch_survives_a_reset {
 
 #[cfg(test)]
 mod logger_serial_survives_a_reboot {
-    //! U08-3, owner decision 2026-09-26: **the flight recorder must not
+    //! U08-3: **the flight recorder must not
     //! erase the previous session's records on every boot.** Before this
     //! decision, `logger_init` always opened serial 0 with TRUNCATE
     //! (`open_flags::TRUNCATE` in `kernel/src/boot/robot.rs`'s `KernelLogStorage`)
@@ -3921,7 +3917,7 @@ mod logger_serial_survives_a_reboot {
 
 
 // ═══════════════════════════════════════════════════════════════════════
-// Q1.3 / Q1.4 (owner decisions, 2026-09-25) — the actuation gate fails
+// Q1.3 / Q1.4 — the actuation gate fails
 // closed with no gate installed, and an admitted actuation command gets a
 // bounded, rate-limited record.
 // ═══════════════════════════════════════════════════════════════════════
@@ -3985,7 +3981,7 @@ mod motor_gate_and_record {
 
     // ── Q1.4: fail closed ────────────────────────────────────────────────
 
-    /// **RED before / GREEN after.** Before 2026-09-25, `gate_speed`'s
+    /// **RED before / GREEN after.** Before the fix, `gate_speed`'s
     /// `None` arm returned `speed_pct` unchanged: a caller reaching
     /// `motor_set_reporting` before boot finished installing the gate got
     /// full authority, not none. Revert `gate_speed`'s `None => 0`
@@ -4096,7 +4092,7 @@ mod motor_actuation_reaches_the_flight_recorder {
     use super::log_storage_mock as fsmock;
     use super::flight_recorder::begin;
 
-    /// **RED before / GREEN after.** Before 2026-09-25 `log_actuator_cmd`
+    /// **RED before / GREEN after.** Before the fix `log_actuator_cmd`
     /// had zero callers anywhere in the tree (`grep -rn log_actuator_cmd`),
     /// so a successful motor command reached no recorder and this ring
     /// stayed empty for the life of a boot — the first assertion below has
@@ -4156,7 +4152,7 @@ mod motor_actuation_reaches_the_flight_recorder {
 
 
 // ---------------------------------------------------------------------------
-// Wave 15: the boot arms the fence at the home fix (`safety::geofence_arm_home`).
+// The boot arms the fence at the home fix (`safety::geofence_arm_home`).
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -4256,7 +4252,7 @@ mod geofence_home_arm {
 }
 
 // ---------------------------------------------------------------------------
-// Wave 15: the RC receiver's safety policy (`crates/domains/robot/behavior/src/rc_link.rs`).
+// The RC receiver's safety policy (`crates/domains/robot/behavior/src/rc_link.rs`).
 // ---------------------------------------------------------------------------
 
 #[allow(dead_code)]

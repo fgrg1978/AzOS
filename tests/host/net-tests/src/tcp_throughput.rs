@@ -16,7 +16,7 @@
 //! reassembles without limit and acknowledges every segment with SACK blocks,
 //! the way Linux does less delayed ACKs and timestamps. That measures the
 //! sender without this stack's own out-of-order queue (four slots of one MSS
-//! each; 256 B each until 2026-09-14) in the way.
+//! each) in the way.
 //!
 //! **The numbers** are bytes delivered in order to the receiving application
 //! per simulated round trip. The link has a fixed delay and, where stated, a
@@ -538,7 +538,7 @@ fn run(sc: &Scenario) -> Report {
 /// 10 Mbit/s bottleneck with a 32-frame queue. Printed, for the record;
 /// asserted only to arrive intact.
 ///
-/// The periodic 1-in-100 rows were the "1% loss" rows until 2026-09-14 (5,526
+/// The periodic 1-in-100 rows were the "1% loss" rows (5,526
 /// B/RTT to this stack, 14,585 to the model). They stay, relabelled, as the
 /// fixed point a change is compared against.
 #[test]
@@ -584,7 +584,7 @@ fn bytes_delivered_per_round_trip() {
     }
 }
 
-/// N6 (wave 15): a bulk transfer to this stack's receiver costs at most about
+/// N6: a bulk transfer to this stack's receiver costs at most about
 /// one pure ACK per two data segments (RFC 1122 §4.2.3.2), not one per segment
 /// plus one per `recv` as before, and the window stays as open as it was.
 ///
@@ -602,7 +602,7 @@ fn bytes_delivered_per_round_trip() {
 /// `recv` may hold back for a round trip. On this link every flight arrives in
 /// one instant, so a sender limited by our window settles on whatever right
 /// edge the updates of the previous round trip reached: with an initial window
-/// of 2 (until 2026-10-23) that was 95.7% of the ring at 128 KiB, with RFC
+/// of 2 that was 95.7% of the ring at 128 KiB, with RFC
 /// 6928's ten it is 84.7% (111,011 B/RTT), the last 17 KiB of each drain held
 /// under the 32 KiB step and carried by the next flight's first ACK, as
 /// Linux's `tcp_cleanup_rbuf` rule would. A window-update step too coarse for

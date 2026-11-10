@@ -261,7 +261,7 @@ mod tests {
         assert_eq!(t[17], 3, "VINTR is ^C");
     }
 
-    // ── Wave 13: signal frames, default actions, the line discipline ────────
+    // ── Signal frames, default actions, the line discipline ────────
 
     use azos_linux_abi::signal as sg;
 
@@ -494,7 +494,7 @@ mod tests {
         assert!(native_reach(nr::READ).unwrap().contains(&(k::SYS_INVOKE as u16)));
     }
 
-    /// Wave 13: a child a signal ended reads back as glibc/musl's macros read
+    /// A child a signal ended reads back as glibc/musl's macros read
     /// it: `WIFSIGNALED`, `WTERMSIG` = the signal; an exit with 128 + n stays
     /// `WIFEXITED` with that code (what a native-style exit looks like).
     #[test]
@@ -511,7 +511,7 @@ mod tests {
     }
 }
 
-/// Wave 15: the robust futex list walked at a Linux thread's exit
+/// The robust futex list walked at a Linux thread's exit
 /// (`crates/core/linux-abi/src/robust.rs`), over a sparse fake memory.
 #[cfg(test)]
 mod robust_list {
@@ -753,7 +753,7 @@ mod robust_list {
     }
 }
 
-/// Wave 15 (K2): `readv`/`writev` as ONE transfer each
+/// `readv`/`writev` as ONE transfer each
 /// (`crates/core/linux-abi/src/iov.rs`), over a sparse fake memory.
 #[cfg(test)]
 mod iov_walk {
@@ -994,7 +994,7 @@ mod file_mmap_args {
     /// `MAP_FIXED`, `PROT_EXEC` and a zero length are refused with `-EINVAL`
     /// before the kernel is asked, and only `MAP_SHARED` / `MAP_PRIVATE`
     /// travel (the kernel wants exactly one; every other bit is dropped).
-    /// Canaries (by hand, 2026-10-17): dropping the `MAP_FIXED` test: the
+    /// Canaries (by hand): dropping the `MAP_FIXED` test: the
     /// first assert red; passing `flags` unmasked: the masking asserts red;
     /// dropping the `len == 0` test: the empty row red; dropping `PROT_EXEC`:
     /// the W^X row red. Does not discriminate: the order of the three tests
@@ -1021,7 +1021,7 @@ mod file_mmap_args {
     /// `linux.rs` and `linux_rt`): plain `MAP_FIXED` (replace what the range
     /// holds) refused with `-EINVAL`, as are `PROT_EXEC` and a zero length;
     /// `MAP_FIXED_NOREPLACE`, alone or over `MAP_FIXED`, travels with the
-    /// pre-commit bits, and nothing else does. Canaries (by hand, 2026-10-23):
+    /// pre-commit bits, and nothing else does. Canaries (by hand):
     /// testing `MAP_FIXED` alone (not "without NOREPLACE"): the FIXED|NOREPLACE
     /// row red; dropping `MAP_FIXED_NOREPLACE` from the mask: both NOREPLACE
     /// rows red.
@@ -1051,7 +1051,7 @@ mod x86_64_face {
     //! runtime answers, and the layouts that differ, read back the way a
     //! static musl x86_64 binary reads them.
     //!
-    //! Canaries (by hand, 2026-10-17, each reverted): `REG_ARGS[3]` = 1 (the
+    //! Canaries (by hand, each reverted): `REG_ARGS[3]` = 1 (the
     //! System V `rcx` where `syscall` has `r10`): the register row red;
     //! `stat_from_generic` copying the generic bytes unshuffled: the layout
     //! row red; `nr::OPENAT` removed from the translated set: the snapshot
@@ -1204,7 +1204,7 @@ mod x86_64_face {
     /// `XNR_` names. Each name's number is the runtime's table's (a program
     /// that called the asm-generic number would be calling another call), and
     /// the runtime answers every call the program issues except the two it is
-    /// written to see refused. Canary (by hand, 2026-10-17, reverted):
+    /// written to see refused. Canary (by hand, reverted):
     /// `XNR_pipe` 22 -> 59 (execve there): the number row red; `lseek`
     /// added to the translated set (so the runtime would answer it): the
     /// refusal row red.

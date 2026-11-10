@@ -28,7 +28,7 @@
 //! way, for its scalar `dot_f32`. Nothing here may execute an EL1-only
 //! register read: EL0 on macOS does not emulate ID-register reads the way
 //! Linux does (a probe reading `ID_AA64PFR0_EL1` via `mrs` from this host
-//! process takes SIGILL, checked 2026-09-22), so such a call would crash the
+//! process takes SIGILL, checked), so such a call would crash the
 //! test binary, not fail an assertion.
 #[allow(dead_code)]
 #[path = "../../../../arch/aarch64/src/mmu/mod.rs"]
@@ -769,7 +769,7 @@ mod aarch64_encoding_tests {
     /// uncached one Device-nGnRE — read through `MAIR_VALUE` at the leaf's
     /// own index, which is how the hardware reads it.**
     ///
-    /// Review 2026-09-21: `mmu/mod.rs` had its two indices swapped relative to
+    /// Regression guard: `mmu/mod.rs` had its two indices swapped relative to
     /// the `MAIR_EL1` value `mmu/setup.rs` programs, so every RAM leaf would
     /// have been Device memory (uncached, and alignment-faulting) and every
     /// MMIO leaf cacheable Normal memory (writes merged and reordered). It
@@ -967,7 +967,7 @@ mod aarch64_encoding_tests {
     /// test used to assert the OPPOSITE ("UXN is redundant, EL0 has no
     /// AP-granted access") — false on VMSAv8-64: AP = 00 with UXN = 0 is the
     /// EL0 execute-only encoding, so kernel text without UXN is executable
-    /// from EL0 (wave 4 found it happening). A kernel non-exec leaf also
+    /// from EL0. A kernel non-exec leaf also
     /// keeps PXN.
     ///
     /// **Canary.** Drop the `if !perms.user { attrs |= UXN; }` in
@@ -1270,7 +1270,7 @@ mod aarch64_psci_tests {
 }
 
 /// Host tests for `psci::select_conduit_from_fdt` — the second, independent
-/// FDT walker the 2026-09-22 DTB audit spot-checked (bounds-checked
+/// FDT walker a DTB audit spot-checked (bounds-checked
 /// arithmetic, a depth cap, a size cap) but did not audit. Safe to call
 /// directly on the host, unlike `cpu_on`/`psci_call`/`system_off`: it
 /// executes no `hvc`/`smc`/`mrs` — only `[u8]::get`, arithmetic, and (on a
@@ -1649,7 +1649,7 @@ mod aarch64_psci_fdt_tests {
     }
 }
 
-/// Wave 7 CON: the two pure encoders behind `gic::route_spi` (the PL011
+/// The two pure encoders behind `gic::route_spi` (the PL011
 /// console SPI). Never calls `route_spi` itself — it touches real MMIO.
 #[cfg(test)]
 mod aarch64_gic_spi_route_tests {
@@ -1677,7 +1677,7 @@ mod aarch64_gic_spi_route_tests {
     }
 }
 
-/// Wave 8 IRQ3: which INTIDs ring 3 may bind, and the ownership bitmap
+/// Which INTIDs ring 3 may bind, and the ownership bitmap
 /// `handle_irq` reads. Pure: `user_spi_mark` never touches the GIC.
 #[cfg(test)]
 mod aarch64_gic_user_spi_tests {
@@ -1716,7 +1716,7 @@ mod aarch64_gic_user_spi_tests {
         assert!(!user_spi_owned(66));
     }
 
-    /// Wave 9 IRQ4 item 4: the release clears exactly that line's ownership
+    /// Item 4: the release clears exactly that line's ownership
     /// and nothing else, and releasing a line nobody owns is refused.
     /// Canary: `fetch_and(!bit)` → `fetch_and(bit)` in `spi_clear` clears the
     /// neighbour 37 too.
@@ -1732,7 +1732,7 @@ mod aarch64_gic_user_spi_tests {
     }
 }
 
-/// Wave 9 IRQ4 item 3: the device tree's SPI trigger, as `user_spi_bind`
+/// Item 3: the device tree's SPI trigger, as `user_spi_bind`
 /// reads it. Pure bitmaps.
 #[cfg(test)]
 mod aarch64_gic_dtb_trigger_tests {
@@ -2009,7 +2009,7 @@ mod entropy_tests {
         assert_eq!(&out[..4], &[2, 0, 4, 0]);
     }
 
-    /// The credit rates (owner decision 2026-10-23): RDSEED and RNDRRS 1:1,
+    /// The credit rates: RDSEED and RNDRRS 1:1,
     /// Zkr ES16 at the spec's 2:1 conditioning ratio, RDRAND 0. Canary: give
     /// RDRAND full credit and this fails.
     #[test]
@@ -2072,7 +2072,7 @@ mod tlb_space_mask_tests {
         assert!(fence < lookup, "the fence comes first");
     }
 
-    /// One ASID per address space (owner decision 10-10): the record a
+    /// One ASID per address space: the record a
     /// re-tag adopts. Canary: drop the `asid` store in `assign` and the
     /// first three asserts fail.
     #[test]
@@ -2133,7 +2133,7 @@ mod tlb_space_mask_tests {
         assert_eq!(t.lookup(0x8_0789, 8), Some(0));
     }
 
-    /// The fact `azos_sched::asid::prepare_switch`'s memo restates (wave 15,
+    /// The fact `azos_sched::asid::prepare_switch`'s memo restates (
     /// TLBC): once a hart is recorded for a space, it stays recorded until
     /// the generation's reset, whatever else the table does: other spaces'
     /// notes, an overflow, a reused root frame's new ASID, lookups. Canary:
@@ -2246,7 +2246,7 @@ mod tlb_space_mask_tests {
         assert!(!harts_scopable(|_| STALE, STALE, 4));
     }
 
-    /// N12e (owner decision 10-10): exec's install leaves the hart tracked.
+    /// N12e: exec's install leaves the hart tracked.
     /// The install marks it outside the scheme (aarch64 `UNTRACKED`,
     /// riscv64/x86_64 `STALE`); `enter_installed` then records the space's
     /// generation, so a scoped broadcast counts on the hart again, and asks

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-// Host tests for the wave-12 privileged families, kernel-hosted interfaces
-// since D6 part A -- `crates/core/syscall/src/families.rs`: `Flight`,
+// Host tests for the privileged families, kernel-hosted interfaces
+// -- `crates/core/syscall/src/families.rs`: `Flight`,
 // `Behavior`, `Config` and `Ota`.
 //
 // Included inside `mod handlers { .. }` like `power_guards.rs`. The

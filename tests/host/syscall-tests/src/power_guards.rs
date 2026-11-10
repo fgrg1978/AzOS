@@ -215,7 +215,7 @@ fn cpu_online_checks_the_right_then_the_direction_then_the_build() {
     assert_eq!(rw.cpu_online(1, 1).code, built);
 }
 
-/// `sync` (owner decision 2026-10-23): what the power service asks before a
+/// `sync`: what the power service asks before a
 /// reboot or power-off. The right (`WRITE`) first: refused and recorded
 /// without it, and nothing is synced. With it, every volume through the same
 /// `FileOps::sync_all` the orderly path runs: `OK` with the volumes synced,

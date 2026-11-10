@@ -433,7 +433,7 @@ fn tree_targets_are_validated_and_interned_once() {
 // Every open names a directory the caller holds (a tree `Cap<File>`, the
 // `Cap<Dir>`) and a name relative to it. The directory's root is what the
 // filesystem is handed; creating, truncating or writing needs a held tree with
-// `WRITE` that covers the file (security survey, 2026-09-29: `vfs_open`
+// `WRITE` that covers the file (security survey: `vfs_open`
 // creates on O_CREAT and truncates on O_TRUNC inside the open, and a write
 // descriptor rewrites the file, so all three bypassed the five named calls'
 // capability). The directory itself is that tree when it has `WRITE`; a

@@ -6,7 +6,7 @@
 // The file is a byte vector behind the real `PageBacking` seam, which counts
 // what the cache asked of it.
 //
-// What each row pins, and the mutation that turns it red (by hand, 2026-10-16;
+// What each row pins, and the mutation that turns it red (by hand;
 // discriminates / does not / did not compile):
 //
 // * `shared_mappers_get_one_frame`: two tasks map the same file and the frame
@@ -30,7 +30,7 @@
 // * `a_fork_child_gets_the_private_regions_only`.
 // * `a_refused_fork_leaves_the_parents_file_counts` (canary `fork-file-count-late-canary`, a gate row).
 //
-// Canaries (by hand, 2026-10-17; discriminates / does not / did not compile):
+// Canaries (by hand; discriminates / does not / did not compile):
 // * `exit_writeback` doing nothing: the three exit rows red.
 // * `exit_writeback` after `memobj_release_all` (the booking gone):
 //   `a_store_after_the_last_sync_still_reaches_the_file_at_exit` red, the

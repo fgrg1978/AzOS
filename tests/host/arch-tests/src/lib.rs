@@ -3,9 +3,9 @@
 //! Host-side tests for the pure parts of `arch/riscv` (and
 //! of the aarch64 and x86_64 paging code, further down).
 //!
-//! **WHY.** 1375 lines with no test of any kind, and it is where the bug of
-//! 2026-08-31 lived: `sie.SSIE` was never enabled on secondary harts, so the
-//! K-C15 wake doorbell had never once worked on a hart other than 0 since it
+//! **WHY.** 1375 lines with no test of any kind, and it is where a bug
+//! lived: `sie.SSIE` was never enabled on secondary harts, so the
+//! wake doorbell had never once worked on a hart other than 0 since it
 //! was added. Nothing caught it for months because nothing looks at this crate.
 //!
 //! Most of it is inline assembly and cannot run on the host. What can is the
@@ -22,7 +22,7 @@ mod mmu;
 #[path = "../../../../arch/riscv/src/ext/pmp.rs"]
 mod pmp;
 
-// x86_64 paging and shootdown (wave 15, front X3).
+// x86_64 paging and shootdown.
 mod x86_paging;
 
 // aarch64 per-process PAC keys (`cpu/cfi.rs`): the pure half (key derivation,
@@ -67,7 +67,7 @@ mod cpu_power;
 #[cfg(test)]
 mod pgsz;
 
-// Wave 8 TLB shootdown: which harts a revoke must interrupt. A wrong mask is
+// Shootdown: which harts a revoke must interrupt. A wrong mask is
 // silent in the direction that matters — a hart left out keeps a stale
 // translation and nothing faults — so the selection rule is pinned here.
 #[allow(dead_code)]

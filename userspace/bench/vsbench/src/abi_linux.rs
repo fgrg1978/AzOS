@@ -3,7 +3,7 @@
 //! Linux/riscv64, Linux/aarch64 and Linux/x86_64 backend: raw `ecall` /
 //! `svc 0` / `syscall`, no libc.
 //!
-//! aarch64 (N0, wave 15): the same generic syscall numbers (both ISAs use
+//! aarch64: the same generic syscall numbers (both ISAs use
 //! `asm-generic/unistd.h`), `x8` for the number and `x0`-`x5` for the
 //! arguments; each riscv64 `asm!` block has an aarch64 twin under `cfg`, so
 //! the riscv64 ELF is unchanged.
@@ -19,7 +19,7 @@
 //! build; it calls a different syscall and quietly reports a different
 //! measurement, which is the worst possible failure for a benchmark.
 
-// x86_64 (wave 15): its own syscall table (every number below goes through
+// x86_64: its own syscall table (every number below goes through
 // `nr`, so the two tables sit side by side and are checkable against
 // `arch/x86/entry/syscalls/syscall_64.tbl`), `syscall` with the number in
 // rax, arguments in rdi rsi rdx r10 r8 r9, rcx and r11 clobbered, and
@@ -326,7 +326,7 @@ const TCSBRK: usize = 0x5409;
 /// CPUs, and whatever the serial driver still held was never sent: in the
 /// `-accel tcg,thread=single -icount` pass, the last lanes and `side=linux
 /// done` were lost in 3 of 10 boots of the e8d673e binary and 1 of 6 of the
-/// wave-11 one. One boot lost a line in the middle (`switch-loaded = 8870
+/// One. One boot lost a line in the middle (`switch-loaded = 8870
 /// ns/op (36.` and then the panic). The benchmark had finished; its report had
 /// not. Best effort: a failed `ioctl` changes nothing.
 pub fn drain_console() {
@@ -600,7 +600,7 @@ impl Mem for LinuxAbi {
 
 // Generic ABI again: `brk` is 214 and `wait4` is 260. There is no `waitpid`.
 pub const SYS_BRK: usize = nr(214, 12);
-// `SYS_WAIT4`, used by `fork_exit_wait` since 2026-09-07. The note
+// `SYS_WAIT4`, used by `fork_exit_wait`. The note
 // below is kept because it records why the number was reserved before it
 // had a caller:
 // `SYS_WAIT4` is left documented: it will be needed when this lane
@@ -633,7 +633,7 @@ impl Proc for LinuxAbi {
 
     fn fork_exit(&self) -> Result<(), i64> {
         // The full cycle, the child's exit inside the caller's window: see
-        // `Proc::fork_exit` (wave 14).
+        // `Proc::fork_exit`.
         self.fork_exit_wait()
     }
 
@@ -664,7 +664,7 @@ impl Proc for LinuxAbi {
 /// `WNOHANG` from `<sys/wait.h>`.
 const WNOHANG: usize = 1;
 
-// ── Wave 12: the shell lanes' counterparts (`bench_core::Shell`) ───────────
+// ── The shell lanes' counterparts (`bench_core::Shell`) ───────────
 
 /// `execve`: the second half of `posix_spawn`.
 pub const SYS_EXECVE: usize = nr(221, 59);
@@ -903,7 +903,7 @@ pub const SYS_OPENAT: usize = nr(56, 257);
 const SYS_MKDIRAT: usize = nr(34, 258);
 const SYS_MOUNT: usize = nr(40, 165);
 const SYS_FSYNC: usize = nr(82, 74);
-/// Wave 15 `file-write`: a file on the vfat disk `disk_setup` mounts.
+/// `file-write`: a file on the vfat disk `disk_setup` mounts.
 const DISK_PATH: &[u8] = b"/mnt/vsbw.dat\0";
 /// `dup` (asm-generic).
 pub const SYS_DUP: usize = nr(23, 32);
@@ -968,7 +968,7 @@ const POLL_BOUND: u32 = 100_000;
 // Used by `fork_exit_wait`'s `wait4`. It carried `#[allow(dead_code)]` and a
 // comment saying it was "kept for when the lane measures the full life cycle
 // again" — which is now.
-/// The thread-shaped `clone` (wave 13): `syscall5`'s five arguments, and
+/// The thread-shaped `clone`: `syscall5`'s five arguments, and
 /// `entry` for the child. The child resumes after the `ecall` with `a0 == 0`
 /// on its new stack and jumps to `entry` (in a callee-saved register, which
 /// the child's copy of the register file keeps), which never returns; the
@@ -1474,7 +1474,7 @@ impl Net for LinuxAbi {
         }
     }
 
-    /// The AzOS lane's twin (wave 15, IO-QUEUES N1): a UDP socket connected
+    /// The AzOS lane's twin (IO-QUEUES N1): a UDP socket connected
     /// to `255.255.255.255:9`, every datagram through the NIC driver. With
     /// no init, `eth0` is down and has no address: brought up here with the
     /// address AzOS takes from QEMU's user network (10.0.2.15), and the
@@ -1534,7 +1534,7 @@ const SO_BROADCAST: usize = 6;
 const SO_BINDTODEVICE: usize = 25;
 const SIOCSIFADDR: usize = 0x8916;
 
-// ── Wave 6 counterparts: futex, the SPSC ring, io_uring ─────────────────────
+// ── Counterparts: futex, the SPSC ring, io_uring ─────────────────────
 //
 // The AzOS lanes these answer live in `main.rs` (`ring_lanes`,
 // `ioring_lanes`); each function below says which one it mirrors and where
@@ -1790,7 +1790,7 @@ pub fn ring_lanes(abi: &impl Abi, floor_ns: u64) {
         put_u(abi, n);
     }
     abi.write(b"\n");
-    // The canary, bounded by what the scheduler did (N0, wave 15). AzOS's
+    // The canary, bounded by what the scheduler did. AzOS's
     // bound (`main.rs`) assumes the two sides alternate in whole ring-fulls on
     // one hart. Linux does not: it preempts a waker for the task it woke, and
     // its tick preempts the producer mid-ring, so the consumer drains a
@@ -2247,7 +2247,7 @@ pub fn ioring_recv_lanes(abi: &impl Abi, floor_ns: u64) {
     ring.destroy();
 }
 
-/// `timer-periodic`'s sleep (wave 13): `clock_nanosleep(CLOCK_MONOTONIC,
+/// `timer-periodic`'s sleep: `clock_nanosleep(CLOCK_MONOTONIC,
 /// TIMER_ABSTIME, deadline)`, restarted on `EINTR`.
 pub fn sleep_until_abs_ns(deadline_ns: u64) {
     let ts = Timespec {

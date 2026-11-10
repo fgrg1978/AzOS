@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! Host stand-in for the driver class crates (`azos_drv_*`), reduced to what the pulled-in
 //! behaviour modules use: a monotonic clock, `kprintln!`, and — since
-//! `payload.rs` was pulled in on 2026-09-11 — an in-memory GPIO and PWM.
+//! `payload.rs` was pulled in — an in-memory GPIO and PWM.
 //!
 //! The clock needs to advance but its absolute value is irrelevant, except
 //! where a test pins it (`clint::set_test_time`).

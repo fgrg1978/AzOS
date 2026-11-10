@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-// Ring 3 starts only images a seccomp image profile is bound to (owner
-// decision 2026-09-14: the table is a whitelist of user images, on every
+// Ring 3 starts only images a seccomp image profile is bound to (the table is a whitelist of user images, on every
 // path that starts one). `SYS_SPAWN_EX` (`spawn.rs`) and the Linux `execve`
 // (`linux.rs`) both ask `exec_image_is_bound_by_digest` about the digest of the
 // bytes they are about to load; neither is compiled here, so these tests drive
@@ -21,7 +20,7 @@ const NOT_SHIPPED: &[u8] = b"\x7fELF bytes that no image profile is bound to";
 /// uhello's bytes, compiled in from the same `$AZOS_OUT/build/` the image table
 /// (`$AZOS_OUT/build/image_hashes.rs`, `include!`d by `seccomp.rs`) is compiled from.
 ///
-/// Read at compile time, not at run time (wave 11 fix). The file used to be
+/// Read at compile time, not at run time. The file used to be
 /// read when the test ran, the table when the crate was compiled, so a
 /// `make` that rewrote `$AZOS_OUT/build/` in between (a gate or another worktree's
 /// build, a libsys change) left uhello's digest in no row of the compiled
@@ -138,7 +137,7 @@ fn a_loop_of_refused_images_is_bounded_under_its_own_kind() {
 }
 
 /// A file system whose one file is [`NOT_SHIPPED`], with a content stamp, so
-/// the image is read through the verified-image cache (wave 14).
+/// the image is read through the verified-image cache.
 struct StampedDisk { hashed: std::sync::atomic::AtomicU32 }
 impl crate::file_ops::FileOps for StampedDisk {
     fn open_at(&self, _: &[u8], _: &[u8], _: u32) -> i64 { -1 }
@@ -167,7 +166,7 @@ impl crate::file_ops::FileOps for StampedDisk {
 }
 static STAMPED: StampedDisk = StampedDisk { hashed: std::sync::atomic::AtomicU32::new(0) };
 
-/// **A cached digest changes no refusal (wave 14, SPAWNCACHE).** An image no
+/// **A cached digest changes no refusal (SPAWNCACHE).** An image no
 /// profile is bound to, read by path twice: the second read takes its digest
 /// from the verified-image cache (no hash pass), and the digest is refused and
 /// recorded exactly as the first, under the same head.

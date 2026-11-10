@@ -167,7 +167,7 @@ pub fn shim_set_brk(v: u64) {
     USER_BRK.store(v, Ordering::SeqCst);
 }
 
-/// Owner decision 102 — the per-task frame budget, mirrored from
+/// The per-task frame budget, mirrored from
 /// `scheduler.rs`'s `mm_charge`/`mm_discharge`.
 ///
 /// State, not behaviour, like `CURRENT_USER_PT` above: one counter and one
@@ -288,7 +288,7 @@ pub fn mm_discharge_tid(tid: u32, pages: u32) {
     }
 }
 
-// ── Wave 14 (DEMANDPAGE) ─────────────────────────────────────────────────
+// ── Demand paging ─────────────────────────────────────────────────
 static SCHED_CLASS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(3);
 static OTHER_PT: std::sync::Mutex<Vec<(u32, usize)>> = std::sync::Mutex::new(Vec::new());
 static OTHER: azos_mm::budget::PageBudget = azos_mm::budget::PageBudget::new();
@@ -685,7 +685,7 @@ pub fn copy_from_user_resident(kernel_dst: *mut u8, user_src: usize, len: usize)
 
 /// Transcribed from `crates/core/sched/src/process.rs`. It uses the PROBE, not `translate_user(.., true)`:
 /// asking whether a write would be permitted must not break a COW page, which
-/// is what production does since owner decision 100c.
+/// is what production does.
 /// Mirrors `process.rs`'s `user_range_writable`: the same walk `copy_to_user`
 /// does, with the same write permission, but without writing anything.
 ///
@@ -1020,14 +1020,14 @@ pub mod scheduler {
         BASE_PRIO.store(p, std::sync::atomic::Ordering::SeqCst);
     }
 
-    /// Mirrors `scheduler::task_exit_by_signal` (wave 13): the same exit as
+    /// Mirrors `scheduler::task_exit_by_signal`: the same exit as
     /// [`crate::task_exit_with_code`] (the signal it records only matters to
     /// a Linux parent's `wait4`, which no test here has).
     pub fn task_exit_by_signal(code: i32) -> ! {
         crate::task_exit_with_code(code)
     }
 
-    /// Mirrors `scheduler::ExecDethreadError` (wave 15, plan 4a).
+    /// Mirrors `scheduler::ExecDethreadError` (plan 4a).
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
     pub enum ExecDethreadError {
         Ending,
@@ -1072,7 +1072,7 @@ pub mod scheduler {
         SUBREAPER.store(false, std::sync::atomic::Ordering::SeqCst);
     }
 
-    /// Mirror of `scheduler::VdsoFacts` (wave 6), field for field.
+    /// Mirror of `scheduler::VdsoFacts`, field for field.
     #[derive(Clone, Copy)]
     pub struct VdsoFacts {
         pub idx: usize,
@@ -1436,7 +1436,7 @@ pub mod process {
     }
 }
 
-// exec installs the image filter through the crate root (2026-09-26)
+// exec installs the image filter through the crate root
 pub use scheduler::set_current_syscall_filter;
 
 // The F06 driver registry, real: `crates/core/sched/src/driver.rs` pulled whole, as
@@ -1453,13 +1453,13 @@ pub mod driver;
 pub mod supervisor;
 pub use driver::{driver_register, driver_start, driver_info};
 
-/// Wave 13 (THREADS): `azos_sched::group` as host tests see it: a world
+/// `azos_sched::group` as host tests see it: a world
 /// with no thread groups, every task its own process.
 pub mod group {
     use core::sync::atomic::{AtomicU64, Ordering};
     /// Test-only: one thread-group member, `(slot << 32) | leader TID`, or 0.
     static MEMBER: AtomicU64 = AtomicU64::new(0);
-    /// Test-only control surface (wave 15): the task in pool slot `idx` is a
+    /// Test-only control surface: the task in pool slot `idx` is a
     /// thread of `lead`, sharing its capability table; `lead == 0` clears it.
     pub fn shim_set_member(idx: usize, lead: u32) {
         crate::shim_assert_serial("shim_set_member");
@@ -1641,8 +1641,8 @@ pub mod futex {
     }
 }
 
-/// Wave 13: the process id; with no thread groups, the task's own.
-/// Wave 15: [`set_current_proc_tid`] makes the current task a thread of
+/// The process id; with no thread groups, the task's own.
+/// [`set_current_proc_tid`] makes the current task a thread of
 /// another process (0 puts it back).
 pub fn current_proc_tid() -> u32 {
     match CURRENT_PROC_TID.load(Ordering::SeqCst) {

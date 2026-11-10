@@ -6,7 +6,7 @@
 //!                         <POLICY.GGF> <POLICY.SIG> \
 //!                         [<CAPS.TOM> <CAPS.SIG> <SCHED.TOM>]
 //!
-//! With the three topology files (wave 15), the signed topology is loaded the
+//! With the three topology files, the signed topology is loaded the
 //! way the kernel loads it before its boot admission
 //! (`azos_topology::signed::load_signed`: CAPS.SIG, the binding against the
 //! image's device id and SCHED.TOM's hash with floor 0, both parses, then
@@ -17,7 +17,7 @@
 //! file (the call the ring-3 inference service makes), both against
 //! `TRUSTED_PUBKEY`, which is whatever key this binary was BUILT with:
 //! `TOPOLOGY_PUBKEY_PATH=<fleet key> cargo run --bin verify_board_volume`.
-//! Used by `tools/sign/check_board_keys.py sigs` (wave 11 BOARDIMG). Exit 1 when any
+//! Used by `tools/sign/check_board_keys.py sigs`. Exit 1 when any
 //! signature does not verify.
 
 use azos_topology::{verify_config_sig_v2, verify_signature, TRUSTED_PUBKEY};

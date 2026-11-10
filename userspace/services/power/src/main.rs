@@ -639,7 +639,7 @@ fn unanswered(what: &[u8], code: u32) -> i32 {
 }
 
 /// Before a reboot or power-off: every filesystem made durable
-/// (`Power::sync`, owner decision 2026-10-23). A failure is said and the
+/// (`Power::sync`). A failure is said and the
 /// power-off goes on: the kernel's orderly path syncs again after this one.
 fn sync_first(k: &mut Kernel) {
     match k.c.sync() {

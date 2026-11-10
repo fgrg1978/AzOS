@@ -94,7 +94,7 @@ pub fn linear_layer_with(
 ///
 /// Returns `false` if any tensor is missing or dimensions are inconsistent.
 ///
-/// **U11-9 fix (2026-09-26).** Before this fix, none of the three "must"s in
+/// **U11-9 fix.** Before this fix, none of the three "must"s in
 /// this doc comment were checked: `linear_layer` computes its per-row byte
 /// stride from `x.len()` (the CALLER's slice length), not from the tensor's
 /// own `dims[0]`, so a `POLICY.GGF` whose `w1`/`w2` dims disagree with

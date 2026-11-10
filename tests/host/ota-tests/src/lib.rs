@@ -308,7 +308,7 @@ mod tests {
         assert_eq!(meta.boot_count, 1);
     }
 
-    /// Owner decision 2026-09-28. Already on last_good with the attempts
+    /// Already on last_good with the attempts
     /// spent: there is nothing to roll back to. This used to "roll back" onto
     /// the same slot and reset the count to 1 — a crash loop with no end. The
     /// count is now kept (and keeps climbing) and the outcome is `Exhausted`,
@@ -892,7 +892,7 @@ mod tests {
 
     // ── bad_slots: a rollback must not select an unsigned slot ───────────
     //
-    // Owner decision 2026-09-19. `ota_boot_validate_pure` rolled back to
+    // `ota_boot_validate_pure` rolled back to
     // `last_good` UNCONDITIONALLY, so an attacker who writes the inactive
     // slot and then induces `max_attempts` failed boots got their image
     // selected. The boot gate now verifies every slot it is not running and
@@ -988,9 +988,9 @@ mod tests {
         assert!(meta.slot_is_bad(SLOT_B));
     }
 
-    // ── Slot labelling (owner decision 99 made SLOT_R reachable) ─────────
+    // ── Slot labelling (SLOT_R is a reachable boot state) ─────────
     //
-    // Until decision 99, every log site in the tree spelled the slot label as
+    // Log sites in the tree used to spell the slot label as
     // `if slot == SLOT_A { 'A' } else { 'B' }`, which was harmless only while
     // nothing could actually be running R. `secure_boot_steer_to_recovery`
     // makes `active_slot == SLOT_R` a real boot state, and the next boot's
@@ -1123,7 +1123,7 @@ mod tests {
         assert_eq!(parsed.min_fw_version, 0xCAFEBABE);
     }
 
-    // ── Owner decisions 2026-09-28: safe mode and the orderly void ─────────
+    // ── Safe mode and the orderly void ─────────
 
     /// The recovery input the kernel computes (`boot_count_loaded`): the
     /// running slot's unconfirmed boots before this one, after validation.

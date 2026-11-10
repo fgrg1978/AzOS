@@ -97,7 +97,7 @@ pub mod file_ops;
 #[path = "../../../../crates/core/syscall/src/file_map.rs"]
 pub mod file_map;
 
-// Wave 14 (SPAWNCACHE): the verified-image digest cache, the real file;
+// The verified-image digest cache, the real file;
 // `handlers.rs` names it as `crate::image_cache` (`sys_execpath`).
 #[path = "../../../../crates/core/syscall/src/image_cache.rs"]
 pub mod image_cache;
@@ -117,7 +117,7 @@ pub mod ipc_handlers;
 #[path = "../../../../crates/core/syscall/src/ioring_ops.rs"]
 pub mod ioring_ops;
 
-// Wave 15: the motor-commander table the `Motor` interface notes into,
+// The motor-commander table the `Motor` interface notes into,
 // the real file. At the crate root, where the kernel's `lib.rs` declares it.
 #[path = "../../../../crates/core/syscall/src/motor_commander.rs"]
 pub mod motor_commander;
@@ -131,7 +131,7 @@ pub mod link_key;
 #[path = "../../../../crates/core/syscall/src/ipc_deadline.rs"]
 pub mod ipc_deadline;
 // The interfaces the kernel hosts (D6 part A): the dispatcher and the
-// `Entropy` server (wave 9 P9). At the crate root, same reason as
+// `Entropy` server. At the crate root, same reason as
 // `link_key`: they name `crate::handlers::{E_CONTAINED, note_typed_denial_for}`.
 #[path = "../../../../crates/core/syscall/src/khost.rs"]
 pub mod khost;
@@ -181,7 +181,7 @@ pub mod frame_host;
 pub mod power;
 #[path = "../../../../crates/core/syscall/src/power_assert.rs"]
 pub mod power_assert;
-// Wave 12: the flight/behavior/config/OTA typed calls, the real file.
+// The flight/behavior/config/OTA typed calls, the real file.
 #[path = "../../../../crates/core/syscall/src/families.rs"]
 pub mod families;
 // D6 part A: the `Gpio`, `I2c` and `Pwm` interfaces, the real file.
@@ -201,7 +201,7 @@ pub mod sensor_host;
 pub mod no_robot;
 #[path = "../../../../crates/core/syscall/src/block_host.rs"]
 pub mod block_host;
-// Wave 15: the kernel tracer's control call (632), the real file.
+// The kernel tracer's control call (632), the real file.
 #[path = "../../../../crates/core/syscall/src/trace_ctl.rs"]
 pub mod trace_ctl;
 // Dead client: the module-token table, the real
@@ -320,7 +320,7 @@ mod module_table_tests {
     }
 }
 
-// Wave 6 (front V): the per-task vDSO page and the native futex calls. A
+// The per-task vDSO page and the native futex calls. A
 // sibling of `link_key` for the same reason; `#[path]`, not `include!`.
 #[path = "../../../../crates/core/syscall/src/vdso_notify.rs"]
 pub mod vdso_notify;
@@ -345,7 +345,7 @@ pub mod phys_map;
 pub mod ioport;
 
 // `SYS_SLEEP_UNTIL` and the kernel-context sleep helpers `handlers.rs` waits with
-// (`crate::sleep::wait_until_ms`, wave 11). At the crate root, where the
+// (`crate::sleep::wait_until_ms`). At the crate root, where the
 // kernel's `lib.rs` declares it; `#[path]`, not `include!`, for the same
 // reason as `file_ops`.
 // `SYS_SPAWN_EX`'s endpoint entries: the checks and the move
@@ -391,7 +391,7 @@ pub mod invoke;
 #[path = "../../../../crates/core/syscall/src/nicq.rs"]
 pub mod nicq;
 
-// `handlers.rs`'s `sys_fork` names `crate::natfork` (wave 13). The real file
+// `handlers.rs`'s `sys_fork` names `crate::natfork`. The real file
 // needs the topology and the cap store; the sched shim's
 // `sys_fork_impl_hooked` never runs its hook, so this is never reached.
 pub mod natfork {
@@ -907,14 +907,14 @@ mod handlers {
         include!("driver_supervise.rs");
     }
 
-    // Wave 10: the tree capability mkdir/unlink/rmdir/rename/truncate need.
+    // The tree capability mkdir/unlink/rmdir/rename/truncate need.
     #[cfg(test)]
     mod fs_tree_caps {
         use super::*;
         include!("fs_tree_caps.rs");
     }
 
-    // Wave 11: `sys_accept` waits on the counter, not on a count
+    // `sys_accept` waits on the counter, not on a count
     // of yields.
     #[cfg(test)]
     mod yield_waits {
@@ -945,7 +945,7 @@ mod handlers {
     }
 }
 
-// Wave 10: the table `dispatch.rs` builds from its arms. `dispatch.rs` itself
+// The table `dispatch.rs` builds from its arms. `dispatch.rs` itself
 // is never compiled here (U14-8), so the macro is pulled alone and driven on
 // arms of every shape the dispatch uses.
 #[cfg(test)]

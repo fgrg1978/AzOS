@@ -375,7 +375,7 @@ fn a_held_device_takes_stops_only_and_a_stop_does_not_release_it() {
     let other = Effect { subject: 0, ..effect(Class::Reversible, 3) };
     effect_gate::issue(&other, &t, || ((), true)).expect("a held wheel held its neighbour");
 
-    // A stop, failed or landed, does not release it (owner decision 16-10):
+    // A stop, failed or landed, does not release it:
     // only `safe_state::release` does (`held.rs`).
     effect_gate::issue(&effect(Class::Safe, 4), &t, || ((), false)).expect("a stop is never refused");
     assert!(safe_state::held(KIND_MOTOR, 1), "a failed stop released a device");

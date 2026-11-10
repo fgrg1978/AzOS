@@ -67,7 +67,7 @@ pub mod memobj {
 #[cfg(test)]
 mod refcount_wrap;
 
-// The futex table's own unit tests (wave 15 N9).
+// The futex table's own unit tests.
 #[path = "../../../../crates/core/sched/src/futex_table.rs"]
 pub mod futex_table;
 
@@ -127,7 +127,7 @@ pub(crate) mod harness {
 // `endpoint::endpoint_inherit_at_fork` (this crate's `endpoint.rs` mount)
 // mints the child's capabilities at fork. These tests pin the RELATION it
 // must express — `owner_tid == parent_tid`, not capability CLASS — which is
-// exactly what the design reverted on 2026-09-21 got wrong: it inherited
+// exactly what an earlier design got wrong: it inherited
 // every `Endpoint` cap the parent HELD, including ones a third party OWNED.
 // See that function's own doc for the property; these tests are its proof.
 //
@@ -248,7 +248,7 @@ mod fork_grant_tests {
         // rather than merely checking a handle the child was never given.
     }
 
-    /// Owner decision 2026-09-26 (O3.4): a fork-minted endpoint capability is
+    /// A fork-minted endpoint capability is
     /// non-transferable. `endpoint_inherit_at_fork` mints `WRITE` only, never
     /// `DUP`, and `cap_store::move_cap` now refuses any capability lacking
     /// `DUP` before touching either table. So a READ-only server's child —

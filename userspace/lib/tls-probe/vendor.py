@@ -49,12 +49,11 @@ KEEP = re.compile(r"^(Cargo\.toml|Cargo\.toml\.orig|LICEN[CS]E.*|license.*|COPYI
 HEADER = """# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 # SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 #
-# The crates.io tree third_party/vendor holds, fixed on 2026-10-16 (owner-approved
+# The crates.io tree third_party/vendor holds, fixed (owner-approved
 # download): rustls 0.23 with the rustls-rustcrypto provider (no aws-lc-rs, no
 # ring in any build for an azos or a unix host target), quinn-proto 0.11 (no
 # crypto feature) and their dependencies, the dependencies of the ported
-# programs ripgrep, fd-find and kibi (third_party/ports; extended 2026-11-08,
-# owner-approved download), plus the dependencies of the pinned
+# programs ripgrep, fd-find and kibi (third_party/ports), plus the dependencies of the pinned
 # toolchain's std workspace (build-std resolves them through the same source
 # replacement). One line per package: name, version, sha256 of the .crate file as
 # crates.io publishes it (the Cargo.lock checksum), and `pruned` when the sources

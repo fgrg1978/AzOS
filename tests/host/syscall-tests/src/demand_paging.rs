@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-// Wave 14 (DEMANDPAGE): host rows for demand-paged `mmap`, against the real
+// Host rows for demand-paged `mmap`, against the real
 // `handlers.rs`, `vmm.rs`, `pager.rs` and `mapping.rs` on the shim arena.
 //
 // What each row pins, and its canary:

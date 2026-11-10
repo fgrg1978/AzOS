@@ -1,14 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 // Degraded-mode containment on the untyped twins, and the per-task bound on
-// capability-denial records. Two audit findings, 2026-09-13.
+// capability-denial records. Two audit findings.
 //
 // ── F1: the untyped door to a contained write ─────────────────────────────
 //
 // Containment lived in `CapTable::get` and `holds_kind_resource_with`, so a
 // task whose typed write was refused while degraded made the same write
-// through the untyped call on the same fd, socket, pin or channel. Owner
-// decision 2026-09-13: every WRITE through a capability is refused, files and
+// through the untyped call on the same fd, socket, pin or channel. The rule: every WRITE through a capability is refused, files and
 // sockets included; receiving, closing and releasing stay live (see "Releases
 // and motors" below).
 //
@@ -29,7 +28,7 @@
 //
 // Deliberately live: fd 1/2 (the console), every receive, every close, and every kernel-context caller.
 //
-// ── Releases and motors (owner decisions, 2026-09-13) ─────────────────────
+// ── Releases and motors ─────────────────────
 //
 // Releasing an object is exempt from containment and keeps its authority:
 //
@@ -890,15 +889,15 @@ fn every_typed_call_records_one_denial_under_its_own_kind() {
             let t = azos_sched::current_task_tid();
             crate::handlers::endpoint_dest_recording(t, 0).map_or(-1, |v| v.owner as i64)
         }),
-        // 604, wave 11 (PORTWAIT).
+        // 604 (PORTWAIT).
         ("port_wait", ty::PORT, || sys_port_wait(0, S, 0)),
-        // 637, wave 15 N11b: the badged mint consumes the endpoint
+        // 637: the badged mint consumes the endpoint
         // capability it copies; its arm delegates the step to this.
         ("cap_mint_badged", ty::ENDPOINT, || {
             let t = azos_sched::current_task_tid();
             crate::handlers::mint_badged_recording(t, 0, 1, azos_abi::cap::CapPerms::WRITE, 0).map_or(-1, |h| h.0 as i64)
         }),
-        // 638, wave 15 N6b: `SYS_SCHEDCTL` checks the time warrant for RT
+        // 638: `SYS_SCHEDCTL` checks the time warrant for RT
         // and DL through this step (`crate::schedctl`, not compiled here).
         ("schedctl", ty::ENDPOINT, || {
             let t = azos_sched::current_task_tid();
@@ -949,8 +948,7 @@ fn every_typed_call_records_one_denial_under_its_own_kind() {
 /// the table refuses it, `-ECAPSTALE`, and one record names the tracer, for
 /// the read (`info`) and the write (`start`) alike. The null handle is refused
 /// by the call's shape before any table is read (`-EINVAL`: its type has no
-/// tracer ops) and leaves no record. That is what tracectl presented until
-/// 2026-10-24, and why the gate row `trace: refused without Cap<Trace>` saw
+/// tracer ops) and leaves no record. That is what tracectl used to present, and why the gate row `trace: refused without Cap<Trace>` saw
 /// no refusal: the test above calls `trace_op` directly, past the dispatch.
 ///
 /// **Canary.** Present the null handle in the loop: the read is `-EINVAL`,

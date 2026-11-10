@@ -11,12 +11,12 @@
 
 pub const ROBOT_TYPE_ID: usize = 0;
 
-/// Kconfig `SAFETY_COMMS_TIMEOUT_S` / `SAFETY_DRONE_COMMS_TIMEOUT_S` (wave 11),
+/// Kconfig `SAFETY_COMMS_TIMEOUT_S` / `SAFETY_DRONE_COMMS_TIMEOUT_S`,
 /// at their defaults: the safety layer scales them by `TIMER_FREQ`.
 pub const SAFETY_COMMS_TIMEOUT_S: usize = 5;
 pub const SAFETY_DRONE_COMMS_TIMEOUT_S: usize = 3;
 
-/// Wave 15 (config/subsys/Kconfig.robot, "RC input and geofence"), at their defaults.
+/// The `config/subsys/Kconfig.robot` "RC input and geofence" options, at their defaults.
 pub const RC_INPUT: bool = true;
 pub const RC_FAILSAFE_ESTOP: bool = true;
 pub const RC_LINK_TIMEOUT_MS: u64 = 500;
@@ -44,7 +44,7 @@ pub const EFFECT_WATCH_SLOTS: usize = 8;
 /// Kconfig `B2_HOLD_MIN_MS` (B2), at its default.
 pub const B2_HOLD_MIN_MS: usize = 500;
 
-/// Kconfig `BRAIN_TX_STALL_MS` (wave 15, B1), at its default.
+/// Kconfig `BRAIN_TX_STALL_MS`, at its default.
 pub const BRAIN_TX_STALL_MS: u64 = 2_000;
 /// Kconfig `BUILD_TYPE_DEV`: the host suites stand for the QEMU development
 /// build. `estop.rs`'s release-without-a-recorder tests state the other build

@@ -2,8 +2,8 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! Host stand-in for `azos_mm`, used only by `tests/host/sched-wake-tests`.
 //!
-//! **WHY this exists.** Owner decision 102 wired the per-task frame budget
-//! (`crates/core/mm/src/budget.rs::PageBudget`) into the task's domain
+//! **WHY this exists.** The per-task frame budget
+//! (`crates/core/mm/src/budget.rs::PageBudget`) is wired into the task's domain
 //! (`crates/core/sched/src/domain.rs`), which `sched-wake-tests` pulls in whole
 //! via `#[path]` (see that crate's `lib.rs` doc for why: the real scheduler
 //! cannot be host-built, but `domain.rs` has no target-specific code). That

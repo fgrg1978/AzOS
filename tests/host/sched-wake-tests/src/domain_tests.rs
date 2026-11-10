@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Host tests for `crates/core/sched/src/domain.rs` (owner decision D2), the
+//! Host tests for `crates/core/sched/src/domain.rs`, the
 //! real file: the domain lifecycle (create, join, last exit frees), charge
 //! accounting against the budget, and generation reuse.
 //!

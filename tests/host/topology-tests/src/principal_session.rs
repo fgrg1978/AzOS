@@ -91,7 +91,7 @@ fn the_session_class_survives_the_signed_file() {
 }
 
 /// The shell's shipped row is scheduled and reported as the interactive class
-/// at the latency QoS tier, not `best_effort` (owner decision 16-10). This
+/// at the latency QoS tier, not `best_effort`. This
 /// reads the class the kernel resolves the row to (`SchedClass::from_name` on
 /// the row's class, as `topo_sched::resolve` does). **Canary**: map `session`
 /// to `BestEffort` in `class.rs`.

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! `CONFIG.ELF`: the ring-3 form of the recovery console's `config get` and
-//! `config set` (wave 12), through the kernel-hosted
+//! `config set`, through the kernel-hosted
 //! `config` endpoint its row grants. Setting any key needs WRITE; it is applied at once,
 //! as on the console. Saving to `/fat/CONFIG.INI` stays a console command.
 //!

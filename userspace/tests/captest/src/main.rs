@@ -580,7 +580,7 @@ pub extern "C" fn _start() -> ! {
                      br.io(true, 2, PART1_SECTORS as u32, &mut first), E_CAPPERMS);
         sys::println(b"[CAPTEST] partition checks done");
 
-        // ── Wave 10: the second partition, a READ-only endpoint, the length ──
+        // ── The second partition, a READ-only endpoint, the length ──
         let part0 = sys::dev::lookup(sys::dev::key::BLOCK, 1);
         report(b"lookup(block.part.0) [granted READ]", part0.is_some(), 0);
         if let Some(part0) = part0 {
@@ -616,7 +616,7 @@ pub extern "C" fn _start() -> ! {
     let mut batt = [0u8; 2];
     expect_admitted(b"sensor read(BATTERY)", read_sensor(sys::SENSOR_TYPE_BATTERY, &mut batt));
 
-    // ── Wave 11 (SENSORTS): the reading's acquisition stamp ──────────────
+    // ── SENSORTS: the reading's acquisition stamp ──────────────
     stamped_reads();
 
     // ── The frame class: a camera frame reaches ring 3 ───────────────────
@@ -761,7 +761,7 @@ pub extern "C" fn _start() -> ! {
         }
         expect_errno(b"fsync_typed(0) [forged cap]", sys::fsync_typed(0), -22);
 
-        // Wave 10: these five need a `Cap<File>` WRITE tree covering the
+        // These five need a `Cap<File>` WRITE tree covering the
         // path. The QEMU topology grants autorun `/fat` and `/tmp` (a tmpfs
         // directory); everything else is refused with -EACCES before the
         // filesystem is asked, so the refusal says nothing about existence.
@@ -801,7 +801,7 @@ pub extern "C" fn _start() -> ! {
         expect_errno(b"rmdir(/tmp/captest.d) again -> -ENOENT",
                      rc(sys::rmdir_at(root, sys::cstr!(b"tmp/captest.d"))), E_NOENT);
 
-        // Wave 11 (HERM): `mkdir` and `unlink` reach FAT32 under `/fat` (they
+        // `mkdir` and `unlink` reach FAT32 under `/fat` (they
         // used to know only the ramfs, so `mkdir /fat/X` answered -1), and
         // `rename` answers with the real errno instead of -EIO. Everything
         // created here is removed again: this image is private to the row.
@@ -906,7 +906,7 @@ pub extern "C" fn _start() -> ! {
         // Reaching either below `motor_set` bypasses the e-stop latch and the
         // motor envelope together — the duty route decides how FAST a wheel
         // turns, the direction route decides which WAY, and the second guard
-        // did not exist until 2026-09-10.
+        // did not exist at first.
         //
         // The distinction that makes these worth writing: REFUSED here means
         // "you hold it and you still may not", which is a different claim
@@ -1063,7 +1063,7 @@ pub extern "C" fn _start() -> ! {
     // boot and not allocated dynamically -- that is what makes the set of
     // rights a robot holds a static, auditable fact -- and the gate its own design
     // requires for dynamic delegation was never built. So the call
-    // was removed on 2026-09-03.
+    // was removed.
     //
     // Removing a syscall from the source is not the same as it being refused
     // at the boundary, and only the second one is a security property. A stale
@@ -1245,7 +1245,7 @@ pub extern "C" fn _start() -> ! {
     }
 }
 
-// ── Ring-3 interrupt delivery, mask-until-ACK (wave 8 aarch64, wave 9 both) ──
+// ── Ring-3 interrupt delivery, mask-until-ACK ──
 //
 // The qemu topology grants this image the board RTC's interrupt line and the
 // RTC writable as `mmio.2`: aarch64 the PL031 (`irq.34`, SPI 2), riscv64 the
@@ -1547,7 +1547,7 @@ fn irq_section() {
     absent_line(port);
 }
 
-/// Wave 10 IRQ5: a line the capability range admits and the interrupt
+/// A line the capability range admits and the interrupt
 /// controller does not implement (`ABSENT_IRQ`, granted by the qemu
 /// topology). The bind must answer -ENODEV — it used to answer 0 with a
 /// binding no interrupt could reach — and the kernel prints how many

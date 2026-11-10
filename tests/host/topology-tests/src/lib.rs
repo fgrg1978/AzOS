@@ -59,7 +59,7 @@ pub mod cap_store;
 
 
 
-// A channel bound to an event port stores this link (wave 11, PORTWAIT).
+// A channel bound to an event port stores this link (PORTWAIT).
 #[path = "../../../../crates/core/ipc/src/port_link.rs"]
 pub mod port_link;
 
@@ -67,7 +67,7 @@ pub mod port_link;
 /// modules call. No test here binds a source to a port, so no link is ever
 /// stored and none is reached; they answer "the port is gone".
 mod port {
-    /// The kinds the pulled-in modules name (wave 15 N5b).
+    /// The kinds the pulled-in modules name.
     #[allow(dead_code)]
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
     pub enum PortSourceKind {
@@ -107,7 +107,7 @@ pub mod mmio_cap;
 #[path = "../../../../crates/core/ipc/src/ioport_cap.rs"]
 pub mod ioport_cap;
 
-// Wave 10: `cap_seed`'s `File` arm mints a directory-tree capability through
+// `cap_seed`'s `File` arm mints a directory-tree capability through
 // this.
 #[path = "../../../../crates/core/ipc/src/file_cap.rs"]
 pub mod file_cap;
@@ -418,7 +418,7 @@ policy             = \"fair\"
         assert_eq!(list[0].target.as_str(), "msi.0");
     }
 
-    // M40 (2026-09-26): `motor` is a profile word; without `profile-actuation`
+    // M40: `motor` is a profile word; without `profile-actuation`
     // the parser refuses it and no Motor cap mints — this test is profile-only.
     #[cfg(feature = "profile-actuation")]
     #[test]
@@ -493,7 +493,7 @@ caps = []
 
     /// **One writer per motor.** Two tasks each holding WRITE on motor 0 are
     /// two command sources for one wheel, with nothing between them.
-    // M40 (2026-09-26): `motor` is a profile word; without `profile-actuation`
+    // M40: `motor` is a profile word; without `profile-actuation`
     // the parser refuses it and no Motor cap mints — this test is profile-only.
     #[cfg(feature = "profile-actuation")]
     #[test]
@@ -514,7 +514,7 @@ caps = [ { kind = \"endpoint\", target = \"motor.0\", perm = \"w\" } ]
 
     /// The id, not the spelling: `motor.00` and `motor.+0` mint motor 0
     /// (`cap_seed::parse_dotted` is a `u32` parse), so they conflict with it.
-    // M40 (2026-09-26): `motor` is a profile word; without `profile-actuation`
+    // M40: `motor` is a profile word; without `profile-actuation`
     // the parser refuses it and no Motor cap mints — this test is profile-only.
     #[cfg(feature = "profile-actuation")]
     #[test]
@@ -536,7 +536,7 @@ caps = [ { kind = \"endpoint\", target = \"motor.0\", perm = \"w\" } ]
 
     /// What the rule does not refuse: readers alongside the writer, one
     /// writer per wheel, and one task naming its own motor twice.
-    // M40 (2026-09-26): `motor` is a profile word; without `profile-actuation`
+    // M40: `motor` is a profile word; without `profile-actuation`
     // the parser refuses it and no Motor cap mints — this test is profile-only.
     #[cfg(feature = "profile-actuation")]
     #[test]
@@ -617,7 +617,7 @@ caps = [
         assert!(matches!(r, Err(ParseError::MissingField)));
     }
 
-    // M40 (2026-09-26): `motor` is a profile word; without `profile-actuation`
+    // M40: `motor` is a profile word; without `profile-actuation`
     // the parser refuses it and no Motor cap mints — this test is profile-only.
     #[cfg(feature = "profile-actuation")]
     #[test]
@@ -1096,10 +1096,10 @@ mod manager_authority {
 
     /// A fixed driver placed in the kernel has one host, the kernel's task:
     /// the manager does not start its ring-3 image beside it, so two hosts
-    /// never drive the same device (review R2-2). `stateless` does not make a
+    /// never drive the same device. `stateless` does not make a
     /// driver move: only one with a placement controller (`MOVABLE_DRIVERS`,
     /// the buzzer) does, and keeps its ring-3 standby wherever it starts
-    /// (review F3). A fixed ring-3 driver starts.
+    ///. A fixed ring-3 driver starts.
     ///
     /// **Canary.** Drop the `!(host == Kernel && !moves_at_run_time())` clause
     /// from `manager_starts`: `INA.ELF` is started and the first assertion
@@ -1163,7 +1163,7 @@ mod start_flag_tests {
     use azos_topology::{default_minimal, parse_caps, ParseError, Topology};
 
     /// **`start` reaches the row it is declared on, and only that row**
-    /// (wave 9, owner decision: what the kernel starts at boot is declared in
+    /// (what the kernel starts at boot is declared in
     /// the signed topology). A row that says nothing is not started; only the
     /// words `true` and `false` are accepted.
     ///
@@ -1405,7 +1405,7 @@ mod start_flag_tests {
 mod restart_tests {
     use azos_topology::{default_minimal, parse_caps, ParseError, RestartPolicy, Topology};
 
-    /// **Wave 11 (DRVPLACE): `restart` is a format-2 key.** A topology written
+    /// `restart` is a format-2 key.** A topology written
     /// before it (no `format` line: format 1) parses as it always did and
     /// every row gets `on-failure`; a format-2 file sets it per row, reset
     /// at each new row; a format-1 file that carries the key is refused
@@ -1420,7 +1420,7 @@ mod restart_tests {
     /// goes red.
     #[test]
     fn restart_is_a_format_2_key_with_on_failure_by_default() {
-        // Format 1 (no `format` line): the pre-wave-11 file.
+        // Format 1 (no `format` line): the earlier file.
         let mut topo = Topology::empty();
         parse_caps(b"[task.A.ELF]\nstart = true\ncaps = []\n", &mut topo).unwrap();
         assert_eq!(topo.tasks()[0].restart, RestartPolicy::OnFailure);
@@ -1450,7 +1450,7 @@ mod restart_tests {
                 "{:?}", core::str::from_utf8(bad));
         }
         // Formats this parser does not know, and a second declaration.
-        // (4 became known in wave 15: the TOPOSIGN binding keys; 5 with the
+        // (4 is the TOPOSIGN binding keys; 5 with the
         // `imports` task key; 6 with the `[device.NAME]`, `[signer.NAME]` and `[peer.NAME]` sections, `export` and the placement keys; 7 with TOPO-ROWS-A/B; 8 with TOPO-ROWS-C.)
         for bad in [&b"format = 9\n[task.A.ELF]\n"[..], b"format = 0\n[task.A.ELF]\n",
                     b"format = 2\nformat = 2\n[task.A.ELF]\n"] {
@@ -1495,7 +1495,7 @@ mod restart_tests {
         assert_eq!(topo.restart_of(b"SH.ELF"), RestartPolicy::OnFailure);
     }
 
-    /// Wave 11 (DRVPLACE): the INA219's ring-3 row exists exactly when the
+    /// The INA219's ring-3 row exists exactly when the
     /// driver is placed in ring 3.
     #[test]
     fn the_inadrv_row_follows_the_placement() {
@@ -1618,7 +1618,7 @@ mod abi_tests {
         }
     }
 
-    /// Wave 13: the BusyBox row is not gate-only. It is there exactly when the
+    /// The BusyBox row is not gate-only. It is there exactly when the
     /// `.config` says `BUSYBOX` (or the gate asks), with the personality; it
     /// holds `/tmp` and no hardware; and the shell holds the grant to start
     /// it exactly then. A deployment that ships BusyBox can run it from the
@@ -1711,7 +1711,7 @@ mod builder_tests {
         // The FIRST writer is pushed here, not taken from `default_minimal()`.
         // It used to be `autorun`'s `motor.1` grant, which made this test —
         // about a rule of the parser — depend on the default topology being a
-        // robot's. Since `profile-actuation` (2026-09-21) it is not, and the
+        // robot's. Since `profile-actuation` it is not, and the
         // rule still has to hold in both builds, so the test now declares
         // both halves of the conflict itself.
         let mut t = default_minimal();
@@ -1895,17 +1895,17 @@ mod builder_tests {
         let t = default_minimal();
         // supervisor, brain_link, autorun (P1 cap-seed migration entry —
         // see `default_topology_has_autorun_motor_grants` below).
-        // 5 since 2026-09-21: supervisor, brain_link, autorun, the
+        // 5: supervisor, brain_link, autorun, the
         // `VSSRV.ELF` benchmark server (a `fork()`ed peer can never be
         // addressed by capability) and the
         // `EPSRV.ELF` row — the first named after an IMAGE, which is how a
         // spawned process gets any capability at all.
-        // +3 since 2026-09-24: the unconditional board service registry rows
-        // (`GPIODRV.ELF`/`REFLEX.ELF`/`BRAINCLI.ELF`) — owner decision, an
+        // +3: the unconditional board service registry rows
+        // (`GPIODRV.ELF`/`REFLEX.ELF`/`BRAINCLI.ELF`) — an
         // ELF ships on a board volume iff the topology declares a service it
         // provides. See `crates/core/topology/src/builder.rs`'s
         // `TASK_GPIODRV_IMAGE` block comment.
-        // +3 in wave 9: the ring-3 ML service (MLSRV.ELF) and the ring-3
+        // +3: the ring-3 ML service (MLSRV.ELF) and the ring-3
         // driver rows (BUZZDRV.ELF/INADRV.ELF).
         // +1 with the Terminal object: the terminal server (TERMD.ELF).
         // +1 with the Names object: the name server (NAMESD.ELF).
@@ -1938,7 +1938,7 @@ mod builder_tests {
             + azos_topology::builder::EXT4D_ROW as usize
             + azos_limits::USERSPACE_RG as usize
             + azos_limits::USERSPACE_FD as usize
-            + azos_limits::USERSPACE_KIBI as usize); // +1 per ported program (Kconfig USERSPACE_RG, USERSPACE_FD, USERSPACE_KIBI); +1 with Kconfig INPUTD: INPUTD.ELF; +1 with Kconfig HV: VMMD.ELF; +1 with Kconfig MCP_BRIDGE: MCPD.ELF; +1 with Kconfig SSHD: SSHD.ELF; +1 with Kconfig CONSOLE_LOGIN: LOGIND.ELF; +1 with Kconfig PTPD: PTPD.ELF; +1 with Kconfig AUDIOD: AUDIOD.ELF; +1 with Kconfig RPC_QUIC: RPCQUIC.ELF; +1 with Kconfig ZENOH_GW: ZENOHD.ELF; +1 with Kconfig USERSPACE_COMPMGR: COMPMGR.ELF; +3 in wave 11: SH.ELF, TOOLBOX.ELF, POWER; +4 in wave 12: FLIGHT/BEHAVIOR/CONFIG/OTA.ELF; -1 per driver placed in the kernel; +1 under lx-server: LXSRV.ELF; +1 for the wave-12 Linux test row (gate only); +1 in wave 15: TRACECTL.ELF
+            + azos_limits::USERSPACE_KIBI as usize); // +1 per ported program (Kconfig USERSPACE_RG, USERSPACE_FD, USERSPACE_KIBI); +1 with Kconfig INPUTD: INPUTD.ELF; +1 with Kconfig HV: VMMD.ELF; +1 with Kconfig MCP_BRIDGE: MCPD.ELF; +1 with Kconfig SSHD: SSHD.ELF; +1 with Kconfig CONSOLE_LOGIN: LOGIND.ELF; +1 with Kconfig PTPD: PTPD.ELF; +1 with Kconfig AUDIOD: AUDIOD.ELF; +1 with Kconfig RPC_QUIC: RPCQUIC.ELF; +1 with Kconfig ZENOH_GW: ZENOHD.ELF; +1 with Kconfig USERSPACE_COMPMGR: COMPMGR.ELF; +3 for the shell stack: SH.ELF, TOOLBOX.ELF, POWER; +4: FLIGHT/BEHAVIOR/CONFIG/OTA.ELF; -1 per driver placed in the kernel; +1 under lx-server: LXSRV.ELF; +1 for the Linux test row (gate only); +1: TRACECTL.ELF
         let supervisor = t
             .find_task(&MaybeStr::from_bytes(b"supervisor"))
             .expect("supervisor present");
@@ -1951,7 +1951,7 @@ mod builder_tests {
         }
     }
 
-    /// The board service registry (owner decision 2026-09-24): the three
+    /// The board service registry: the three
     /// real board programs get their own topology row, unconditionally (no
     /// feature gate), each carrying zero capabilities — the grant still
     /// flows through the generic `autorun` row until the kernel-side P1
@@ -2093,7 +2093,7 @@ mod builder_tests {
              board topology must declare none at all",
         );
         // The drivetrain, and ONLY under `profile-actuation`. This is the
-        // half of the 2026-09-21 pivot that a count alone would not catch: a
+        // half of the generic-deployment rule that a count alone would not catch: a
         // generic deployment must hold no `Motor` capability whatsoever, not
         // merely a different number of capabilities.
         assert_eq!(
@@ -2101,8 +2101,8 @@ mod builder_tests {
             crate::AUTORUN_DRIVETRAIN,
             "a drivetrain belongs to a deployment profile, not to the default topology",
         );
-        // Shutdown/reboot authority is NOT in the default topology (owner
-        // decision 2026-09-26: the power endpoint is minted from the SIGNED
+        // Shutdown/reboot authority is NOT in the default topology (the power
+        // endpoint is minted from the SIGNED
         // topology). Granting it here would hand it to whatever image
         // CONFIG.INI autoruns; before the kind had a minter, ring 3 could not
         // shut the machine down at all, and the default keeps it that way. A
@@ -2124,7 +2124,7 @@ mod builder_tests {
         assert_eq!(lk.len(), 1, "exactly one linkkey endpoint grant in the default topology");
         assert_eq!(lk[0].perms, CapPerms::READ, "the link key is read, never written");
         assert!(!lk[0].transfer, "the link key capability must not be transferable");
-        // The entropy pool (wave 9, P9): the kernel-hosted `entropy`
+        // The entropy pool: the kernel-hosted `entropy`
         // endpoint, READ only, one grant, never transferable.
         let en: Vec<_> = caps
             .iter()
@@ -2144,7 +2144,7 @@ mod builder_tests {
         assert_eq!((fr[0].perms, fr[0].transfer), (CapPerms::READ, false), "a camera frame is read, never written or passed on");
         assert_eq!(fr[0].target, MaybeStr::from_bytes(b"frame.0"));
         let motors = if crate::AUTORUN_DRIVETRAIN { 2 } else { 0 };
-        // `disk.part.1` RW and (wave 10) `disk.part.0` READ under
+        // `disk.part.1` RW and `disk.part.0` READ under
         // `disk-part-row` only (partition-scoped block gate row).
         let disk = if cfg!(feature = "disk-part-row") { 2 } else { 0 };
         assert_eq!(
@@ -2152,7 +2152,7 @@ mod builder_tests {
             motors + disk
                 + match (cfg!(feature = "cap-refusal-canary"), cfg!(feature = "ipc-endpoint-canary")) {
                     // `ipc-endpoint-canary`: the demo and bench endpoints,
-                    // and (wave 12) `Cap<Launch>` on TOOLBOX.ELF for
+                    // and `Cap<Launch>` on TOOLBOX.ELF for
                     // vsbench's `spawn+wait` lane.
                     (true, true) => 25, (true, false) => 22,
                     (false, true) => 20, (false, false) => 17,
@@ -2193,7 +2193,7 @@ mod builder_tests {
         let roots: Vec<_> = caps.iter().filter(|c| c.kind == CapKind::Node && c.target.as_str() == "/").collect();
         assert_eq!(roots.len(), 1, "exactly one root directory grant");
         assert!(roots[0].perms == CapPerms::READ && !roots[0].transfer);
-        // Wave 10: the directory trees ring 3 may change, WRITE, never
+        // The directory trees ring 3 may change, WRITE, never
         // transferable, and only under the canary (a board grants no tree).
         let trees: Vec<_> = caps.iter().filter(|c| c.kind == CapKind::Node && c.target.as_str() != "/").collect();
         let want_trees: Vec<&str> = if cfg!(feature = "cap-refusal-canary") {
@@ -2261,7 +2261,7 @@ mod builder_tests {
         );
     }
 
-    /// Wave 9 (DRV1): each ring-3 driver row holds exactly the authority its
+    /// Each ring-3 driver row holds exactly the authority its
     /// device needs. The INA219 serves its one endpoint and holds its one I2C
     /// slave; the buzzer serves its one endpoint (`READ` on
     /// `endpoint.buzzer`, which is how it claims it) and holds its one PWM
@@ -2332,17 +2332,17 @@ mod state_tests {
         let t = get().expect("post-init get must yield topology");
         assert_eq!(t.classes_len(), 6);
         // supervisor, brain_link, autorun (P1 cap-seed migration entry).
-        // 5 since 2026-09-21: supervisor, brain_link, autorun, the
+        // 5: supervisor, brain_link, autorun, the
         // `VSSRV.ELF` benchmark server (a `fork()`ed peer can never be
         // addressed by capability) and the
         // `EPSRV.ELF` row — the first named after an IMAGE, which is how a
         // spawned process gets any capability at all.
-        // +3 since 2026-09-24: the unconditional board service registry rows
-        // (`GPIODRV.ELF`/`REFLEX.ELF`/`BRAINCLI.ELF`) — owner decision, an
+        // +3: the unconditional board service registry rows
+        // (`GPIODRV.ELF`/`REFLEX.ELF`/`BRAINCLI.ELF`) — an
         // ELF ships on a board volume iff the topology declares a service it
         // provides. See `crates/core/topology/src/builder.rs`'s
         // `TASK_GPIODRV_IMAGE` block comment.
-        // +3 in wave 9: the ring-3 ML service (MLSRV.ELF) and the ring-3
+        // +3: the ring-3 ML service (MLSRV.ELF) and the ring-3
         // driver rows (BUZZDRV.ELF/INADRV.ELF).
         // +1 with the Terminal object: the terminal server (TERMD.ELF).
         // +1 with the Names object: the name server (NAMESD.ELF).
@@ -2373,7 +2373,7 @@ mod state_tests {
             + azos_topology::builder::EXT4D_ROW as usize
             + azos_limits::USERSPACE_RG as usize
             + azos_limits::USERSPACE_FD as usize
-            + azos_limits::USERSPACE_KIBI as usize); // +1 per ported program (Kconfig USERSPACE_RG, USERSPACE_FD, USERSPACE_KIBI); +1 with Kconfig INPUTD: INPUTD.ELF; +1 with Kconfig HV: VMMD.ELF; +1 with Kconfig MCP_BRIDGE: MCPD.ELF; +1 with Kconfig SSHD: SSHD.ELF; +1 with Kconfig CONSOLE_LOGIN: LOGIND.ELF; +1 with Kconfig PTPD: PTPD.ELF; +1 with Kconfig AUDIOD: AUDIOD.ELF; +1 with Kconfig RPC_QUIC: RPCQUIC.ELF; +1 with Kconfig ZENOH_GW: ZENOHD.ELF; +1 with Kconfig USERSPACE_COMPMGR: COMPMGR.ELF; +3 in wave 11: SH.ELF, TOOLBOX.ELF, POWER; +4 in wave 12: FLIGHT/BEHAVIOR/CONFIG/OTA.ELF; -1 per driver placed in the kernel; +1 under lx-server: LXSRV.ELF; +1 for the wave-12 Linux test row (gate only); +1 in wave 15: TRACECTL.ELF
+            + azos_limits::USERSPACE_KIBI as usize); // +1 per ported program (Kconfig USERSPACE_RG, USERSPACE_FD, USERSPACE_KIBI); +1 with Kconfig INPUTD: INPUTD.ELF; +1 with Kconfig HV: VMMD.ELF; +1 with Kconfig MCP_BRIDGE: MCPD.ELF; +1 with Kconfig SSHD: SSHD.ELF; +1 with Kconfig CONSOLE_LOGIN: LOGIND.ELF; +1 with Kconfig PTPD: PTPD.ELF; +1 with Kconfig AUDIOD: AUDIOD.ELF; +1 with Kconfig RPC_QUIC: RPCQUIC.ELF; +1 with Kconfig ZENOH_GW: ZENOHD.ELF; +1 with Kconfig USERSPACE_COMPMGR: COMPMGR.ELF; +3 for the shell stack: SH.ELF, TOOLBOX.ELF, POWER; +4: FLIGHT/BEHAVIOR/CONFIG/OTA.ELF; -1 per driver placed in the kernel; +1 under lx-server: LXSRV.ELF; +1 for the Linux test row (gate only); +1: TRACECTL.ELF
 
         // A second init must fail with AlreadyInit, by either path, and
         // `init_with` must not run its fill on a slot it does not hold.
@@ -2386,17 +2386,17 @@ mod state_tests {
 
         // get() still returns the originally-loaded topology.
         let t = get().expect("topology still installed");
-        // 5 since 2026-09-21: supervisor, brain_link, autorun, the
+        // 5: supervisor, brain_link, autorun, the
         // `VSSRV.ELF` benchmark server (a `fork()`ed peer can never be
         // addressed by capability) and the
         // `EPSRV.ELF` row — the first named after an IMAGE, which is how a
         // spawned process gets any capability at all.
-        // +3 since 2026-09-24: the unconditional board service registry rows
-        // (`GPIODRV.ELF`/`REFLEX.ELF`/`BRAINCLI.ELF`) — owner decision, an
+        // +3: the unconditional board service registry rows
+        // (`GPIODRV.ELF`/`REFLEX.ELF`/`BRAINCLI.ELF`) — an
         // ELF ships on a board volume iff the topology declares a service it
         // provides. See `crates/core/topology/src/builder.rs`'s
         // `TASK_GPIODRV_IMAGE` block comment.
-        // +3 in wave 9: the ring-3 ML service (MLSRV.ELF) and the ring-3
+        // +3: the ring-3 ML service (MLSRV.ELF) and the ring-3
         // driver rows (BUZZDRV.ELF/INADRV.ELF).
         // +1 with the Terminal object: the terminal server (TERMD.ELF).
         // +1 with the Names object: the name server (NAMESD.ELF).
@@ -2427,7 +2427,7 @@ mod state_tests {
             + azos_topology::builder::EXT4D_ROW as usize
             + azos_limits::USERSPACE_RG as usize
             + azos_limits::USERSPACE_FD as usize
-            + azos_limits::USERSPACE_KIBI as usize); // +1 per ported program (Kconfig USERSPACE_RG, USERSPACE_FD, USERSPACE_KIBI); +1 with Kconfig INPUTD: INPUTD.ELF; +1 with Kconfig HV: VMMD.ELF; +1 with Kconfig MCP_BRIDGE: MCPD.ELF; +1 with Kconfig SSHD: SSHD.ELF; +1 with Kconfig CONSOLE_LOGIN: LOGIND.ELF; +1 with Kconfig PTPD: PTPD.ELF; +1 with Kconfig AUDIOD: AUDIOD.ELF; +1 with Kconfig RPC_QUIC: RPCQUIC.ELF; +1 with Kconfig ZENOH_GW: ZENOHD.ELF; +1 with Kconfig USERSPACE_COMPMGR: COMPMGR.ELF; +3 in wave 11: SH.ELF, TOOLBOX.ELF, POWER; +4 in wave 12: FLIGHT/BEHAVIOR/CONFIG/OTA.ELF; -1 per driver placed in the kernel; +1 under lx-server: LXSRV.ELF; +1 for the wave-12 Linux test row (gate only); +1 in wave 15: TRACECTL.ELF
+            + azos_limits::USERSPACE_KIBI as usize); // +1 per ported program (Kconfig USERSPACE_RG, USERSPACE_FD, USERSPACE_KIBI); +1 with Kconfig INPUTD: INPUTD.ELF; +1 with Kconfig HV: VMMD.ELF; +1 with Kconfig MCP_BRIDGE: MCPD.ELF; +1 with Kconfig SSHD: SSHD.ELF; +1 with Kconfig CONSOLE_LOGIN: LOGIND.ELF; +1 with Kconfig PTPD: PTPD.ELF; +1 with Kconfig AUDIOD: AUDIOD.ELF; +1 with Kconfig RPC_QUIC: RPCQUIC.ELF; +1 with Kconfig ZENOH_GW: ZENOHD.ELF; +1 with Kconfig USERSPACE_COMPMGR: COMPMGR.ELF; +3 for the shell stack: SH.ELF, TOOLBOX.ELF, POWER; +4: FLIGHT/BEHAVIOR/CONFIG/OTA.ELF; -1 per driver placed in the kernel; +1 under lx-server: LXSRV.ELF; +1 for the Linux test row (gate only); +1: TRACECTL.ELF
     }
 
     /// The kernel installs `fill_default_minimal` in place
@@ -2562,7 +2562,7 @@ mod cap_seed_bridge_tests {
     /// exactly those minted caps -- the part A requirement, end to end:
     /// `Topology` decl -> bridge -> `cap_store` sees the right badge under
     /// each interface's own op classes.
-    // M40 (2026-09-26): `motor` is a profile word; without `profile-actuation`
+    // M40: `motor` is a profile word; without `profile-actuation`
     // the parser refuses it and no Motor cap mints -- this test is profile-only.
     #[cfg(feature = "profile-actuation")]
     #[test]
@@ -2637,11 +2637,11 @@ mod cap_seed_bridge_tests {
     ///
     /// The sensor endpoint's negative cases are in `sensor_endpoint_tests`
     /// and in the malformed targets below.
-    /// **A wheel outside the drivetrain mints nothing** (audit unit 2). Ids 2
+    /// **A wheel outside the drivetrain mints nothing.** Ids 2
     /// and 3 are real slots in `azos_robot`'s four-motor table, and a minted
     /// `motor.2` would be authority over that slot. The two wheels still mint,
     /// in the same table.
-    // M40 (2026-09-26): the `motor` endpoint is a profile target; without
+    // M40: the `motor` endpoint is a profile target; without
     // `profile-actuation` the parser refuses it and no wheel mints -- this
     // test is profile-only.
     #[cfg(feature = "profile-actuation")]
@@ -2666,7 +2666,7 @@ mod cap_seed_bridge_tests {
         let tid = fresh_tid();
         assert!(crate::cap_seed::seed_one_cap(tid, CapKind::Endpoint, CapPerms::READ, "sensor.imu")
             .is_none());
-        // U03-2 (2026-09-26): `Cap<Irq>` HAS a minter now; line 0 is the one
+        // U03-2: `Cap<Irq>` HAS a minter now; line 0 is the one
         // it refuses (SBI/M-mode reserved), so that is the "skipped" case here.
         assert!(crate::cap_seed::seed_one_cap(tid, CapKind::Device, CapPerms::READ, "irq.0").is_none());
         assert!(crate::cap_seed::seed_one_cap(tid, CapKind::Endpoint, CapPerms::RW, "motor.left")
@@ -2751,7 +2751,7 @@ mod cap_seed_bridge_tests {
             motors
                 + match (cfg!(feature = "cap-refusal-canary"), cfg!(feature = "ipc-endpoint-canary")) {
                     // `ipc-endpoint-canary`: the demo and bench endpoints,
-                    // and (wave 12) `Cap<Launch>` on TOOLBOX.ELF for
+                    // and `Cap<Launch>` on TOOLBOX.ELF for
                     // vsbench's `spawn+wait` lane.
                     (true, true) => 25, (true, false) => 22,
                     (false, true) => 20, (false, false) => 17,
@@ -2767,7 +2767,7 @@ mod cap_seed_bridge_tests {
         // The primitive the pair rule uses -- proves the seed is locatable by
         // interface and badge, not just "some cap got minted".
         //
-        // And the negative half, which is the point of the 2026-09-21 pivot:
+        // And the negative half, which is the point of the generic-deployment rule:
         // without the actuation profile the autorun row holds NEITHER wheel,
         // so the pair rule cannot be satisfied by anything this topology
         // declares. A grant that silently came back would flip this.
@@ -2794,7 +2794,7 @@ mod cap_seed_bridge_tests {
     /// The negative half declares one wheel only. That is not a hypothetical
     /// shape: `default_minimal()` is a development default and the production
     /// path parses a signed `CAPS.TOML`, which can name `motor.0` alone.
-    // M40 (2026-09-26): the `motor` endpoint is a profile target; without
+    // M40: the `motor` endpoint is a profile target; without
     // `profile-actuation` the parser refuses it -- this test is profile-only.
     #[cfg(feature = "profile-actuation")]
     #[test]
@@ -3495,7 +3495,7 @@ priority_range      = [0, 11]
     }
 
     /// Priority 5 is in the real-time band, where a profiled row must be
-    /// `mem = "locked"` (wave 11 SCHED-RT): these rows are, so the density
+    /// `mem = "locked"`: these rows are, so the density
     /// rules below are what decides.
     fn task(name: &str, class: &str, profile: &str) -> String {
         format!("[task.{name}]\nclass = \"{class}\"\npriority = 5\nmem = \"locked\"\nmem_pages = 1\n{profile}\ncaps = []\n\n")
@@ -3679,7 +3679,7 @@ priority_range      = [0, 11]
         assert!(matches!(too_few, Err(DeadlineRefusal::Invalid { fault: ProfileFault::NoCpuInMask, .. })));
     }
 
-    // ── wave 11 SCHED-RT: a band row needs a reservation AND locked memory ──
+    // ── SCHED-RT: a band row needs a reservation AND locked memory ──
 
     /// The one rule topology admission and `SYS_SPAWN_EX` both apply.
     #[test]
@@ -3716,7 +3716,7 @@ priority_range      = [0, 11]
         assert_eq!(t.row_band_entry(0), azos_topology::BandEntry::NoReservation);
     }
 
-    // ── wave 11 SCHED-RT: placement and the band cap ──────────────────────
+    // ── SCHED-RT: placement and the band cap ──────────────────────
 
     /// Run-time attachment pins a row's task to the CPU admission placed it
     /// on, so the report must say which CPU that was.
@@ -3754,7 +3754,7 @@ priority_range      = [0, 11]
         format!("[task.{name}]\nclass = \"rt_wide\"\npriority = {priority}\nmem = \"locked\"\nmem_pages = 1\n{profile}\ncaps = []\n\n")
     }
 
-    /// The wave-15 `mixed` pair: 25 % + 5 % of one CPU by density (75 % in
+    /// The `mixed` pair: 25 % + 5 % of one CPU by density (75 % in
     /// all), the level-6 row's 2 ms deadline beside 5 ms of the level-4 row.
     /// Under EDF across levels (the default dispatch) the density sum is the
     /// whole test: admitted, at parse time and at boot. Under fixed priority
@@ -3806,7 +3806,7 @@ priority_range      = [0, 11]
     }
 }
 
-/// Wave 7: the class and priority each default-topology row asks for, which
+/// The class and priority each default-topology row asks for, which
 /// the autorun loader and `SYS_SPAWN_EX` now apply. Pinned by value, so a row
 /// edit that moves a ring-3 program's priority fails here, by name.
 #[cfg(test)]
@@ -3840,8 +3840,8 @@ mod row_sched_tests {
         // The ML service: soft_rt at the default 16; it runs at the behavior
         // task's 14 only by donation, while the loop waits on it.
         assert_eq!(applied(&t, b"MLSRV.ELF"), ("soft_rt".into(), 16, 16));
-        // The buzzer's ring-3 host (wave 9): best_effort 24, like GPIODRV.ELF
-        // (owner decision 2026-09-28; it was soft_rt 16), above the shell.
+        // The buzzer's ring-3 host: best_effort 24, like GPIODRV.ELF
+        // (it was soft_rt 16), above the shell.
         if azos_topology::builder::BUZZDRV_ROW {
             assert_eq!(applied(&t, b"BUZZDRV.ELF"), ("best_effort".into(), 24, 24));
         }
@@ -3941,7 +3941,7 @@ priority_range      = [24, 30]
     }
 }
 
-/// The ring-3 priority bounds (owner decision 2026-09-28): nothing in ring 3
+/// The ring-3 priority bounds: nothing in ring 3
 /// may sit below `RT_PRIORITY_THRESHOLD` (12), where the tick never preempts.
 #[cfg(test)]
 mod ring3_priority_floor {
@@ -3951,7 +3951,7 @@ mod ring3_priority_floor {
 
     #[test]
     fn below_the_floor_is_raised_and_flagged() {
-        // The pre-wave-7 `autorun` row: hard_rt priority 0 → 8 after its class
+        // The earlier `autorun` row: hard_rt priority 0 → 8 after its class
         // range; either way it must land on 12, flagged.
         assert_eq!(ring3_priority(0, FLOOR, CEIL), (12, true));
         assert_eq!(ring3_priority(8, FLOOR, CEIL), (12, true));
@@ -3975,7 +3975,7 @@ mod ring3_priority_floor {
 /// Memory admission: the `mem` / `mem_pages` / `[pipeline.*]`
 /// fields and boot-time memory admission.
 ///
-/// **Canaries, run by hand before landing** (2026-09-28; the tests each broke):
+/// **Canaries, run by hand before landing** (the tests each broke):
 /// - count a ceiling row once, not twice (`r.cow_pages += pages` removed):
 ///   `ceiling_rows_pay_for_one_cow_copy`, `the_boundary_is_inclusive`,
 ///   `a_row_without_pages_takes_the_profile_default`,
@@ -3993,7 +3993,7 @@ mod memory_admission_tests {
 
     const SCHED: &[u8] = b"[class.best_effort]\ncpu_budget_min_pct = 10\ncpu_budget_max_pct = 100\npolicy = \"fair\"\npriority_range = [24, 30]\n";
 
-    /// Every row may fork: the pre-wave-9 arithmetic, which the tests below
+    /// Every row may fork: the earlier arithmetic, which the tests below
     /// written before the fork predicate existed still pin.
     const FORKS: fn(&TaskSpec<'_>) -> bool = |_| true;
 
@@ -4181,7 +4181,7 @@ mod memory_admission_tests {
         assert!(r.need < 32 * 1024, "default topology needs {} pages", r.need);
     }
 
-    // ── wave 9: `instances = N` and the fork predicate ─────────────────────
+    // ── `instances = N` and the fork predicate ─────────────────────
 
     #[test]
     fn instances_parse_default_to_one_and_refuse_zero_and_too_many() {
@@ -4354,7 +4354,7 @@ mod block_endpoint_tests {
     }
 }
 
-// Wave 10: `kind = "file"`, target the absolute root of a directory tree,
+// `kind = "file"`, target the absolute root of a directory tree,
 // minted as a tree `Cap<File>` (`crates/core/ipc/src/file_cap.rs`) — the authority
 // for mkdir/unlink/rmdir/rename/truncate. The tree table is a process-wide
 // static, so one test.
@@ -4554,7 +4554,7 @@ mod launch_cap_tests {
     }
 
     /// The shell's own row holds no hardware authority: a launch grant on
-    /// the tool image, directory trees, (wave 12) the full task
+    /// the tool image, directory trees, the full task
     /// view and no endpoint at all: it reaches the terminal server through the
     /// name server (`imports = ["term"]`, the kernel's badged `endpoint.names`
     /// at spawn), not by a grant of its own. The tool image holds only the view, the introspection
@@ -4899,7 +4899,7 @@ mod launch_cap_tests {
         assert_eq!(topo.admission_check(), Ok(()));
     }
 
-    /// **Discriminates** the focus split (owner 2026-10-23): the focus word,
+    /// **Discriminates** the focus split: the focus word,
     /// which decides whether the console or the focus holder gets the keyboard,
     /// is granted to the input server's row alone. Every other row, the
     /// terminal server's first (it maps the event region read-write), holds no
@@ -4924,7 +4924,7 @@ mod launch_cap_tests {
         }
     }
 
-    /// Wave 12 (owner round 48): the shell and the tool image (`ps`) hold the
+    /// The shell and the tool image (`ps`) hold the
     /// full task view — `Cap<Task>` `READ` on `"tasks"`, exactly — off the
     /// console lockdown and not under it; the decision server holds it (the
     /// warrant of the admin region its records are in), and with Kconfig
@@ -5129,7 +5129,7 @@ mod launch_cap_tests {
                    "the shell launches POWER.ELF exactly when the console is not locked down");
     }
 
-    /// Wave 12: the four family tools. BEHAVIOR/CONFIG/OTA hold their own
+    /// The four family tools. BEHAVIOR/CONFIG/OTA hold their own
     /// endpoint RW only; FLIGHT holds the `flight` endpoint and the drivetrain
     /// only under the gate's `flight-tool-drivetrain`, and then the autorun
     /// row does not (one writer per motor, and the topology still admits).
@@ -5281,7 +5281,7 @@ mod launch_cap_tests {
     }
 }
 
-// ── Wave 15 TOPOSIGN: the built-in topology as signed files ─────────────────
+// ── TOPOSIGN: the built-in topology as signed files ─────────────────
 //
 // The emitter (`azos_topology::emit`) writes the topology `builder.rs` builds
 // for THIS crate's feature set; the parser must read back the same topology,

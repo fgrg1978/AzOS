@@ -372,7 +372,7 @@ fn an_isolated_row_that_cannot_have_its_cpu_is_refused() {
 }
 
 /// An isolated row that names no CPU is REFUSED, not placed: the topology
-/// never picks the CPU of an isolated row (owner decision 16-10; the
+/// never picks the CPU of an isolated row (the
 /// placement 98bb5070 added is gone). The refusal names the row, at install
 /// time and at boot admission alike, and a row with a `cpu_mask` of its own is
 /// placed on exactly that CPU, whatever its position. **Canary**: drop the

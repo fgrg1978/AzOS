@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! `FLIGHT.ELF`: the ring-3 form of the recovery console's `flight arm` and
-//! `flight disarm` (wave 12), through the kernel-hosted `flight` endpoint its row grants.
+//! `flight disarm`, through the kernel-hosted `flight` endpoint its row grants.
 //!
 //! Its topology row is the whole of its authority: `Cap<Motor>` WRITE on
 //! both wheels of the drivetrain, and only under the actuation profile. It

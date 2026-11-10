@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! `OTA.ELF`: the ring-3 form of the recovery console's `ota status` and
-//! `ota rollback` (wave 12), through the kernel-hosted
+//! `ota rollback`, through the kernel-hosted
 //! `ota` endpoint its row grants: READ for the status, WRITE to roll back or to
 //! switch. `switch` makes the whole-system set the installer staged (`pkg
 //! update`) the one that boots next: the kernel verifies it again and flips one

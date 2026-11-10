@@ -21,7 +21,7 @@
 //! * `page_index` of a file region is the object page: `off` plus the distance
 //!   from the start, kept by a clip.
 //!
-//! Canaries (by hand, 2026-10-17; discriminates / does not / did not compile):
+//! Canaries (by hand; discriminates / does not / did not compile):
 //! * `joins` folding file regions: `file_regions_never_fold` red.
 //! * `whole_cut_ok` always true: `a_cut_takes_file_regions_whole_or_not_at_all` red.
 //! * `charged` always true: `a_shared_file_region_is_not_charged` red.
@@ -168,7 +168,7 @@ fn phys(a: usize, b: usize, pa: usize, inherit: bool) -> Mapping {
 
 /// A physical range is one piece, goes whole or not at all, is not charged and
 /// not folded into a neighbour whose frames are the next ones, and names its
-/// frames by the frame number of its start. By hand, 2026-11-07: `joins`
+/// frames by the frame number of its start. By hand: `joins`
 /// folding two ranges makes the length red; `whole_cut_ok` answering true makes
 /// the cut red; `charged` answering true makes the charge red; `has_phys`
 /// reading every record makes the last assertion red.
@@ -189,7 +189,7 @@ fn a_physical_range_goes_whole_and_never_folds() {
 }
 
 /// What a fork gives the child: the task's own memory and a range that says so,
-/// not any other owner's frames. By hand, 2026-11-07: `inherited` answering
+/// not any other owner's frames. By hand: `inherited` answering
 /// `charged` alone makes the range row red; answering true makes the file row red.
 #[test]
 fn a_fork_inherits_a_range_only_when_it_says_so() {

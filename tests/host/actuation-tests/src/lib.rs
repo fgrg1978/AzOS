@@ -364,8 +364,7 @@ pub(crate) mod tests {
     }
 
     /// **A stop is never refused, and is recorded.** With the effect limit
-    /// reached, a safe effect still reaches the device, and (owner decision
-    /// 16-10) its record takes a slot of the safety reserve: no committed
+    /// reached, a safe effect still reaches the device, and its record takes a slot of the safety reserve: no committed
     /// effect record is evicted to make room, and the record reaches the
     /// medium next to every effect record.
     ///

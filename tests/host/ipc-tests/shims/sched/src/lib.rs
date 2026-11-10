@@ -169,7 +169,7 @@ pub fn current_task_tid() -> u32 {
     with(|s| s.current_tid)
 }
 
-/// The calling process (wave 15): a host task is its own process.
+/// The calling process: a host task is its own process.
 pub fn current_proc_tid() -> u32 {
     current_task_tid()
 }
@@ -189,7 +189,7 @@ pub mod wait {
     }
 
     /// Wake a registered port waiter that blocks with a deadline
-    /// (`WaitReason::Timer`), by TID (`port.rs`, wave 11). Recorded in
+    /// (`WaitReason::Timer`), by TID (`port.rs`). Recorded in
     /// `super::PORT_TIMED_WAKES`; see `shim_port_timed_wakes`.
     pub fn wake_port_timed_waiter(tid: u32) {
         super::PORT_TIMED_WAKES.lock().unwrap_or_else(|e| e.into_inner()).push(tid);
@@ -333,7 +333,7 @@ pub fn shim_port_timed_wakes() -> Vec<u32> {
     PORT_TIMED_WAKES.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
-/// Wave 13 (THREADS): `azos_sched::group` as host tests see it: a world
+/// `azos_sched::group` as host tests see it: a world
 /// with no thread groups, every task its own process.
 pub mod group {
     pub fn lead_of_idx(_idx: usize) -> u32 { 0 }

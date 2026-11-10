@@ -208,8 +208,7 @@ pub fn shim_net_polls() -> Option<u64> {
 pub fn net_set_ip(_ip: [u8; 4], _mask: [u8; 4], _gw: [u8; 4]) {
     todo!("NIC stand-in: not reached by any test in this crate")
 }
-/// Default-route stand-in (ip.rs routes off-subnet traffic via the gateway
-/// since 2026-09-26); no test in this crate sends off-subnet.
+/// Default-route stand-in (ip.rs routes off-subnet traffic via the gateway); no test in this crate sends off-subnet.
 pub fn net_get_gateway() -> [u8; 4] {
     todo!("NIC stand-in: not reached by any test in this crate")
 }

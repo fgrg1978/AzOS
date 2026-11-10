@@ -14,7 +14,7 @@ package cargo hashes the absolute source path into the `-C metadata` it passes
 to rustc; rustc derives the crate disambiguator from it, which is part of every
 mangled symbol, and items are ordered by names that carry it. The same
 brain_client sources built in two directories differed in `.strtab`, and with
-symbols stripped in 2975 bytes of `.text` (measured 2026-09-14, after gate 40
+symbols stripped in 2975 bytes of `.text` (measured after gate 40
 refused a brain_client rebuilt in its snapshot directory).
 
 What: the `-C metadata=<hash>` value is replaced by one derived from the crate

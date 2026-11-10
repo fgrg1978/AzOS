@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The brain link, client side (wave 9, owner decision P3; Noise since owner
+//! The brain link, client side (Noise since owner
 //! decision D9).
 //!
 //! Every connection runs the Noise handshake and transport of

@@ -7,11 +7,11 @@ publish = false
 description = "Host stand-in for the driver class crates (azos_drv_*), used only by tests/host/topology-tests' P1 cap-seed bridge suite. NOT part of the kernel."
 
 [dependencies]
-# platform.rs reads Kconfig TIMER_FREQ through azos_limits (2026-09-26)
+# platform.rs reads Kconfig TIMER_FREQ through azos_limits
 azos_limits = { path = "../../../../../crates/core/limits" }
 # Real, pure, host-buildable, zero deps of its own -- `platform.rs` (pulled
 # below) reads `azos_abi::vdso::{VDSO_USER_BASE, ...}` in its per-board
-# `const` asserts (2026-09-22 vDSO placement fix).
+# `const` asserts.
 azos_abi = { path = "../../../../../crates/core/abi" }
 azos_devif = { path = "../../../../../crates/core/devif" }
 # The hardware bus: the logic is real, and so is the static instance

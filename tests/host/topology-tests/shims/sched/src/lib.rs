@@ -28,7 +28,7 @@ pub fn current_task_tid() -> u32 {
     0
 }
 
-/// The calling process (wave 15): a host task is its own process.
+/// The calling process: a host task is its own process.
 pub fn current_proc_tid() -> u32 {
     current_task_tid()
 }
@@ -105,7 +105,7 @@ pub fn idx_for_tid(tid: u32) -> Option<usize> {
     })
 }
 
-/// Wave 13 (THREADS): `azos_sched::group` as host tests see it: a world
+/// `azos_sched::group` as host tests see it: a world
 /// with no thread groups, every task its own process.
 pub mod group {
     pub fn lead_of_idx(_idx: usize) -> u32 { 0 }

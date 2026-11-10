@@ -8,7 +8,7 @@
 //!   and no ring-3 image row without a reservation sits below the ring-3
 //!   floor (12) that `topo_sched::resolve` would raise it to.
 //! * Every server strictly outranks every client it serves
-//!   (`Topology::server_not_above_client`, owner decision 2026-10-23): no
+//!   (`Topology::server_not_above_client`): no
 //!   server runs below a client, and none only equals one.
 //! * The interactive session (`SH.ELF`) runs below every server it depends on
 //!   (the terminal, name and input servers) and is not equal to any ring-3
@@ -81,7 +81,7 @@ fn every_server_outranks_its_clients() {
     }
 }
 
-/// No server only equals a client (owner decision 2026-10-23: none by
+/// No server only equals a client (none by
 /// design), listed in full so a failure names every pair at once.
 #[test]
 fn no_server_only_equals_its_client() {

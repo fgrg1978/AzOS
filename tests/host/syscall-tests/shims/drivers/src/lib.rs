@@ -461,7 +461,7 @@ pub mod clint {
     /// `platform.rs` gives the `qemu` profile and therefore what this host
     /// suite should model.
     ///
-    /// Needed here since 2026-09-18, when a handler stopped hardcoding
+    /// Needed here, when a handler stopped hardcoding
     /// `10_000_000` and started deriving its tick count from this constant —
     /// the raw number was right for QEMU and wrong for every board (VF2 runs
     /// mtime at 4 MHz, K1 at 24 MHz), so `alarm(1)` waited 2.5 s on the
@@ -475,8 +475,7 @@ pub mod clint {
     pub fn get_time() -> u64 {
         // Armed (`shim_fwd`, the info-forwarder tests): answer from the
         // recorder and log the call. Unarmed: the settable counter the io_ring
-        // timer entry reads, 0 unless a test set it. Merged at wave-6
-        // integration: front T made this a forwarder, front IO a counter.
+        // timer entry reads, 0 unless a test set it.
         crate::shim_fwd::try_hit("get_time".into(), |f| f.now)
             .unwrap_or_else(|| NOW.load(core::sync::atomic::Ordering::SeqCst))
     }
@@ -525,9 +524,9 @@ pub mod uart {
     /// look like part of what this crate proves. The real one
     /// (`crates/drivers/sys/src/uart.rs`) dispatches through whichever
     /// `Console` boot registered; here there is no boot and no device.
-    /// Ring-3 console path (Mutex line lock in the real uart.rs, 2026-09-26).
+    /// Ring-3 console path (Mutex line lock in the real uart.rs).
     ///
-    /// `sys_putchar` writes its byte through this (wave 11): recorded, so
+    /// `sys_putchar` writes its byte through this: recorded, so
     /// the test sees which path the byte took.
     pub fn console_write_ring3(bytes: &[u8]) {
         crate::shim_fwd::hit(format!("console_write_ring3 {bytes:?}"), |_| ())
@@ -946,7 +945,7 @@ pub mod shim_fwd {
 #[path = "../../../../../../crates/drivers/block/src/partition.rs"]
 pub mod partition;
 
-/// The block layer's write observer, the real file (wave 14, FATCACHE):
+/// The block layer's write observer, the real file (FATCACHE):
 /// `block_io` reports its sectors through `blkdev::note_external_write`.
 /// No observer is installed in this crate, so the report is a no-op here.
 #[path = "../../../../../../crates/drivers/block/src/write_observer.rs"]
@@ -963,7 +962,7 @@ pub mod blkdev {
     pub fn note_external_write(sector: u64, count: u32) {
         crate::write_observer::notify(sector, count);
     }
-    /// The kernel's `blkdev::note_external_read` (wave 15): the read observer.
+    /// The kernel's `blkdev::note_external_read`: the read observer.
     pub fn note_external_read(sector: u64, count: u32) {
         crate::write_observer::before_read(sector, count);
     }

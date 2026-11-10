@@ -14,7 +14,7 @@ azos_common = { path = "../../../../../crates/core/common" }
 azos_sync = { path = "../../../cap-tests/shims/sync", package = "cap_test_sync" }
 beh_test_drivers = { path = "../../../behavior-tests/shims/drivers" }
 azos_limits = { path = "../../../../../crates/core/limits" }
-# tcp.rs derives the ISN with HMAC-SHA256 (2026-09-26)
+# tcp.rs derives the ISN with HMAC-SHA256
 azos_crypto = { path = "../../../../../crates/core/crypto" }
 wcet-macro = { path = "../../../../../crates/core/wcet-macro" }
 # `ntp.rs` publishes the wall clock in `azos_abi::time`'s units.

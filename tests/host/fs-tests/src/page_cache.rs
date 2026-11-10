@@ -16,7 +16,7 @@
 //! object table's half is in `crates/core/ipc/src/memobj.rs`'s tests; the arithmetic
 //! alone is in `tests/host/mm-tests/src/page_cache.rs`.
 //!
-//! Canaries (by hand, 2026-10-16; discriminates / does not / did not compile):
+//! Canaries (by hand; discriminates / does not / did not compile):
 //! * `write_back_page` sending the whole page: both `*_does_not_lengthen_the_file` rows red.
 //! * `fill_page` not zeroing after the file's end: both `*_fill_*` rows red.
 //! * `FsPageBacking::write_page` mapping a refused write to `Ok`: `a_refused_write_is_an_error` red; a short one: `a_short_write_is_an_error` red.

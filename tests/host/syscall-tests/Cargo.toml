@@ -29,7 +29,7 @@ dma-refusal-silent-canary = ["azos_ipc/dma-refusal-silent-canary"]
 ioport-open-unrecorded-canary = []
 # The syscall sources pulled in below name the robot crates through the shims
 # in `shims/` (robot, imu, gps); `use-robot` is what makes them do so
-# instead of importing `crates/core/syscall/src/no_robot.rs` (wave 11).
+# instead of importing `crates/core/syscall/src/no_robot.rs`.
 default = ["use-robot", "virtio-snd", "linux-abi", "board-io", "pkg-sec-floor"]
 use-robot = []
 # Mirrors azos_syscall's `board-io`: the pulled-in khost.rs serves the `adc` key
@@ -50,7 +50,7 @@ hv = []
 # `exec-floor-canary`, for the pulled-in exec_grant.rs.
 pkg-sec-floor = []
 exec-floor-canary = []
-# Mirrors azos_syscall's gate canary (wave 13): `cfg!(feature =
+# Mirrors azos_syscall's gate canary: `cfg!(feature =
 # "mmap-prot-canary")` in the pulled-in handlers.rs. Off: the real behaviour.
 mmap-prot-canary = []
 # `azos_devif::gpio::badge`'s canary: a badge is stamped without its controller
@@ -97,15 +97,15 @@ mmap-noreplace-canary = []
 mmap-hint-window-canary = []
 mmap-brk-apart-canary = []
 mmap-break-only-canary = []
-# Mirrors azos_syscall's gate canary (wave 15, plan 4a) in the pulled-in
+# Mirrors azos_syscall's gate canary (plan 4a) in the pulled-in
 # ipc_handlers.rs. Off: the real behaviour.
 thread-objects-canary = []
 # Mirrors azos_syscall's `lx-loader` in the pulled-in invoke.rs (the module ops
 # of the domain). Off: the host has no module loader.
 lx-loader = []
-# Wave 14 (DEMANDPAGE): the pagers never resolve a fault.
+# The pagers never resolve a fault.
 demand-region-canary = ["azos_mm/demand-region-canary"]
-# Wave 14 (SPAWNCACHE): mirrors azos_syscall's canaries of the same names
+# Mirrors azos_syscall's canaries of the same names
 # (the pulled-in image_cache.rs).
 digest-cache-stale-canary = []
 digest-recheck-canary = []
@@ -247,7 +247,7 @@ block-scope-canary = []
 # Mirrors azos_syscall's vdso-bind-canary in the pulled-in sensor_host.rs: a robot
 # sensor binds without the Robot domain. Off: the real behaviour.
 vdso-bind-canary = []
-# Wave 15: mirrors azos_syscall's canary of the same name (the pulled-in
+# Mirrors azos_syscall's canary of the same name (the pulled-in
 # module_tokens.rs): a dead task's module tokens are kept.
 module-token-leak-canary = []
 # ... and its digest-table verdict: a module name with no row is admitted.
@@ -280,10 +280,10 @@ azos_fb = { path = "../../../crates/drivers/fb" }
 azos_rings = { path = "../../../crates/core/rings" }
 # The frame class's pool, served by the pulled-in `frame_host.rs`.
 azos_cam_ring = { path = "../../../crates/drivers/cam-ring" }
-# Wave 14 (SPAWNCACHE): `image_cache.rs` sizes its kept frames by Kconfig
+# `image_cache.rs` sizes its kept frames by Kconfig
 # `EXEC_IMAGE_CACHE_KB` (generated from the tree's .config, as the mm shim's).
 azos_limits = { path = "../../../crates/core/limits" }
-# Wave 15: the real tracer (host-buildable: abi, rings and limits only), for
+# The real tracer (host-buildable: abi, rings and limits only), for
 # the pulled-in `trace_ctl.rs`.
 azos_trace = { path = "../../../crates/core/trace" }
 # The real topology, for `families::install_policy`: it reads the `[policy.NAME]`

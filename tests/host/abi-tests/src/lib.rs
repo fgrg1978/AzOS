@@ -14,7 +14,7 @@ mod cap_tests {
     ///
     /// This was a hardcoded `256`, documented as a deliberate fifth copy of
     /// that number (alongside Kconfig, `crates/core/ipc`, `abi`'s own private
-    /// mirror and `crates/core/topology`'s parser). On 2026-09-18 `SLOT_BITS`
+    /// mirror and `crates/core/topology`'s parser). `SLOT_BITS`
     /// went 8 → 9 to close a real defect — the fleet profile declared 512
     /// caps per task against a field that addressed 256, so slot 256 packed
     /// to the same handle as slot 0 — and this copy did not follow, which is
@@ -121,7 +121,7 @@ mod cap_tests {
     /// Negative case: a slot index one past what the field can address must
     /// NOT round-trip — it silently truncates instead of being rejected,
     /// which is exactly the sharp edge callers must not hit. The fleet
-    /// profile sat on the wrong side of this edge until 2026-09-18.
+    /// profile sat on the wrong side of this edge while `SLOT_BITS` was 8.
     /// A generation is the whole of the slot word's field: the handle cannot
     /// name one the slot could not store, nor the reverse.
     #[test]
@@ -721,7 +721,7 @@ mod abi_version_tests {
     }
 }
 
-/// `crates/core/abi/src/vdso.rs` — the vDSO placement fix (2026-09-22). Real host-side tests: `crates/core/abi` itself builds under the
+/// `crates/core/abi/src/vdso.rs` — the vDSO placement fix. Real host-side tests: `crates/core/abi` itself builds under the
 /// workspace's `no_std` RV64 target, so a `#[cfg(test)]` block there never
 /// runs (see that file's own note).
 #[cfg(test)]
@@ -790,7 +790,7 @@ mod vdso_tests {
     // aarch64 — see this task's report for that build output.
 }
 
-// Wave 11 (SENSORTS): the sensor sample's stamp rules and the per-task vDSO page's
+// The sensor sample's stamp rules and the per-task vDSO page's
 // layout version 2. Wire layout, so every offset is pinned here.
 #[cfg(test)]
 mod sensor_sample_tests {
@@ -1000,7 +1000,7 @@ mod ushell_blocks {
     }
 }
 
-/// Wave 15: the kernel tracer's ABI names (`azos_abi::trace`).
+/// The kernel tracer's ABI names (`azos_abi::trace`).
 #[cfg(test)]
 mod trace_abi_tests {
     use azos_abi::trace::*;
@@ -1031,7 +1031,7 @@ mod trace_abi_tests {
 
 }
 
-/// Wave 15 N11: the message descriptor of ABI v2 of the call is frozen.
+/// The message descriptor of ABI v2 of the call is frozen.
 #[cfg(test)]
 mod ipc_msg_tests {
     use azos_abi::ipc_msg::*;
@@ -1105,7 +1105,7 @@ mod clock_id_tests {
     }
 }
 
-/// The foreign-ABI family (D6, `azos_abi::foreign`): the frame is the same size
+/// The foreign-ABI family (`azos_abi::foreign`): the frame is the same size
 /// on every ISA, and the kernel's placement of it keeps the ABI's red zone
 /// and alignment.
 #[cfg(test)]

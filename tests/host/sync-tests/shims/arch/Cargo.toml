@@ -10,5 +10,5 @@ description = "Host stand-in for azos_arch, used only by tests/host/sync-tests. 
 # The cross-ISA contract itself — pure traits and plain types, `no_std` and
 # host-portable (`tests/host/arch-api-tests` already runs it here). The shim has
 # to provide `Interrupts` + `ARCH` because `spinlock.rs` and `preempt.rs`
-# reach interrupt state through them since 2026-09-21, not through `cpu::`.
+# reach interrupt state through them, not through `cpu::`.
 azos_arch_api = { path = "../../../../../arch/api" }

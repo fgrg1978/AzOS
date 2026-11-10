@@ -28,7 +28,7 @@ pub fn current_task_tid() -> u32 {
     syscall_test_sched::current_task_tid()
 }
 
-/// The calling process (wave 15): a host task is its own process unless a
+/// The calling process: a host task is its own process unless a
 /// test says otherwise (`syscall_test_sched::set_current_proc_tid`).
 pub fn current_proc_tid() -> u32 {
     syscall_test_sched::current_proc_tid()
@@ -134,7 +134,7 @@ pub mod wait {
     }
 
     /// Wake a registered port waiter that blocks with a deadline
-    /// (`WaitReason::Timer`), by TID (`port.rs`, wave 11). Recorded, in
+    /// (`WaitReason::Timer`), by TID (`port.rs`). Recorded, in
     /// order; see `shim_port_timed_wakes`.
     pub fn wake_port_timed_waiter(tid: u32) {
         super::PORT_TIMED_WAKES.lock().unwrap_or_else(|e| e.into_inner()).push(tid);
@@ -195,10 +195,10 @@ pub fn shim_take_port_timed_wakes() -> Vec<u32> {
 
 static PORT_TIMED_WAKES: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
 
-/// Wave 13 (THREADS): `azos_sched::group` as host tests see it: a world
+/// `azos_sched::group` as host tests see it: a world
 /// with no thread groups, every task its own process — unless a test makes
-/// one task a thread of another (`syscall_test_sched::group::shim_set_member`,
-/// wave 15), whose capability table it then shares.
+/// one task a thread of another (`syscall_test_sched::group::shim_set_member`),
+/// whose capability table it then shares.
 pub mod group {
     pub fn lead_of_idx(_idx: usize) -> u32 { 0 }
     pub fn any_groups() -> bool { syscall_test_sched::group::any_groups() }

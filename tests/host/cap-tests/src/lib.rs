@@ -16,7 +16,7 @@
 //!
 //! **History.** This crate used to host 22 tests for `cap_store::delegate`,
 //! the kernel side of `SYS_CAP_GRANT` (cross-task capability delegation from
-//! ring 3). `SYS_CAP_GRANT` was removed 2026-09-03: the capability model
+//! ring 3). `SYS_CAP_GRANT` was removed: the capability model
 //! says capabilities are granted at boot, not allocated
 //! dynamically, and the syscall contradicted that (it also shipped without
 //! the gate it was specified with — a `CapMaster<T>` the issuer must hold — which was
@@ -122,7 +122,7 @@ mod cap_store_tests {
 
     // ── capability transfer in fast IPC: `cap_store::move_cap` ──────────────────
     //
-    // Owner decision 38: a MOVE, never a creation. Every test below pins one
+    // A MOVE, never a creation. Every test below pins one
     // half of that sentence, because "it worked" for a transfer is also what a
     // silent duplication looks like from the receiver's side.
 
@@ -310,7 +310,7 @@ mod cap_store_tests {
                    "the sender lost the capability to a move that failed");
     }
 
-    /// Owner decision 2026-09-26 (O3.4), split 2026-10-17: `TRANSFER` gates the
+    /// `TRANSFER` gates the
     /// move to a DIFFERENT task. A capability minted without it — the default
     /// for every minter in the tree today that is not an object's own creator
     /// or a `transfer = true` row — cannot be moved at all, refused before
@@ -359,7 +359,7 @@ mod cap_store_tests {
         assert!(cap_store::move_cap(a.tid, b.tid, src2.raw(), None).is_ok(), "TRANSFER held: the move succeeds");
     }
 
-    // ── Wave 15 N11: 128-bit slot, badge, all-or-nothing transfer ──────────
+    // ── 128-bit slot, badge, all-or-nothing transfer ──────────
 
     use crate::cap::targets::Endpoint;
     use crate::cap::CapExt;
@@ -458,7 +458,7 @@ mod cap_store_tests {
         assert_eq!(badge_of(srv.tid, b), None, "stale in the sender");
     }
 
-    /// Wave 15 N11b, the fork rule: a fork child never holds a badge. Its
+    /// N11b, the fork rule: a fork child never holds a badge. Its
     /// slots are written by `install_at` into a table `clear_all` wiped,
     /// which leaves the extension words; `install_at` must write NONE.
     /// Canary `canary_install_keeps_ext`: that store is skipped and the
@@ -693,7 +693,7 @@ mod cap_store_tests {
         shim_kill(heir_tid);
     }
 
-    // ── The warrant tree (owner decision D3/L4) ────────────────────────────
+    // ── The warrant tree ────────────────────────────
     //
     // Derivation attenuates, revoking a warrant revokes its subtree across
     // domains, every holder is told, a deadline fails like a revoke, a reused
@@ -875,7 +875,7 @@ mod cap_store_tests {
         assert_eq!(cap_store::occupied(b.tid), 0);
     }
 
-    // ── Delete is not revoke (owner decision 20-10) ────────────────────────
+    // ── Delete is not revoke ────────────────────────
     //
     // A close or an exit frees the capability's own slot; what was derived from
     // it stays, hung under the freed slot's own parent. Only an explicit
@@ -1545,7 +1545,7 @@ mod cap_store_tests {
         assert_eq!((desc.n[0], desc.n[1], desc.n[2]), (rref(&b, b1), rref(&a, r), 1), "revoked as a descendant of the root");
     }
 
-    // ── Weak warrants (owner decision 16-10) ──────────────────────────────
+    // ── Weak warrants ──────────────────────────────
     //
     // A weak warrant, and everything derived from it, resolves read-only; the
     // bit survives every derive; a table marked weak (a `shadow = true` row's
@@ -1823,7 +1823,7 @@ mod cap_store_tests {
 /// is the index when it is in bounds, 0 past it, and `get` answers exactly what
 /// `slice::get` answers.
 ///
-/// Canary (run by hand, 2026-10-02, aarch64 host): `sbc {m}, xzr, xzr`
+/// Canary (run by hand, aarch64 host): `sbc {m}, xzr, xzr`
 /// replaced by `mov {m}, #-1` fails `the_mask_is_zero_out_of_bounds`; the
 /// other three still pass.
 #[cfg(test)]

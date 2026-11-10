@@ -1036,7 +1036,7 @@ fn region_words(v: &[AtomicU64]) -> Vec<u64> {
     v.iter().map(|w| w.load(Relaxed)).collect()
 }
 
-/// The owner decision 21-10: a program without the admin right sees no task of
+/// A program without the admin right sees no task of
 /// another Domain, at the source. The public region is one for every reader, so
 /// the test is on its words: the same wakes with other task IDs publish the same
 /// region, no word of it is a task ID, and a reader of it (`why woke`) has none.

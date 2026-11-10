@@ -14,7 +14,7 @@
 //! over the real backends, a private copy never writing (the cache only writes
 //! back what a shared mapping made dirty).
 //!
-//! Canaries (by hand, 2026-10-17; discriminates / does not / did not compile):
+//! Canaries (by hand; discriminates / does not / did not compile):
 //! * `page_source` building the key from anything but the inode's own bytes:
 //!   `two_opens_of_a_file_name_one_source` and the FAT32 row red.
 //! * `backing_of` making a new value per call: the same two rows red (backing

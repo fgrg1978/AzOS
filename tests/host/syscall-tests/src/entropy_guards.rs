@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-// Host tests for the kernel-hosted `Entropy` interface (wave 9 P9, an endpoint
+// Host tests for the kernel-hosted `Entropy` interface (an endpoint
 // op since D6 part A) -- `crates/core/syscall/src/entropy.rs::Server`, and
 // `crates/core/syscall/src/khost.rs::serve` in front of it.
 //

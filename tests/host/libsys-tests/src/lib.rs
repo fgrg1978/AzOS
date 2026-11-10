@@ -450,7 +450,7 @@ mod sockaddr {
     }
 }
 
-/// The SPSC ring's decisions (wave 6): when a side may enter the kernel.
+/// The SPSC ring's decisions: when a side may enter the kernel.
 ///
 /// Single-threaded, so these pin the protocol's decisions, not its
 /// concurrency; the two-task run is `vsbench`'s `ring-stream`, whose printed
@@ -533,7 +533,7 @@ mod spsc_ring {
         for i in 0..4 { assert_eq!(r.try_pop(), (RingStep::Done, i)); }
     }
 
-    // `SpscSlots<W>`: the same protocol with a `W`-word slot (wave 11,
+    // `SpscSlots<W>`: the same protocol with a `W`-word slot (
     // SHMRING). The index code is shared with `SpscRing`, so these pin what
     // is new: whole slots move intact, slots do not overlap, and the wake
     // decisions are the same ones.
@@ -595,7 +595,7 @@ mod spsc_ring {
     }
 }
 
-/// Byte-slot rings with a kernel-style producer (wave 11, SHMRING):
+/// Byte-slot rings with a kernel-style producer (SHMRING):
 /// `azos_rings::region::{SpscBytes, BytesProducer}`.
 #[cfg(test)]
 mod spsc_bytes {
@@ -812,11 +812,11 @@ mod fd_table {
     }
 }
 
-/// `azos_rings::region::trace`: the kernel tracer's per-CPU record rings (wave 15).
+/// `azos_rings::region::trace`: the kernel tracer's per-CPU record rings.
 #[cfg(test)]
 mod trace_ring;
 
-/// `crates/core/trace/src/jump.rs`: static-key sites and encoders (wave 15).
+/// `crates/core/trace/src/jump.rs`: static-key sites and encoders.
 #[cfg(test)]
 mod jump_sites;
 
@@ -825,7 +825,7 @@ mod port_event {
     use super::libsys::{port_event_decode, PortEventInfo};
 
     /// **The 16-byte port event decodes key, type, code and source id from
-    /// their wire offsets** (wave 15 N5b: the code is bytes 10..12, where the
+    /// their wire offsets** (the code is bytes 10..12, where the
     /// padding was). Canary: read the code from byte 9: `code` reads 0x1500.
     #[test]
     fn a_no_senders_event_decodes_its_code_from_bytes_10_and_11() {

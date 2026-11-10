@@ -15,7 +15,7 @@
 //! `next` / `store` / `free`: it takes the order from the table, marks a page
 //! the coder gave up on, and forgets a page that left).
 //!
-//! Canaries (by hand, 2026-10-20; discriminates / does not / did not compile;
+//! Canaries (by hand; discriminates / does not / did not compile;
 //! all five variants compiled and went red on the rows named, nothing else):
 //! * `pick` walking the generations youngest first (`age = cur.level`):
 //!   `reclaim_takes_the_oldest_generation_first_and_address_order_inside_it`,

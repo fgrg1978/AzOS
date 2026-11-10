@@ -43,7 +43,7 @@ const UART: usize = 0x1000_0000;
 /// suite for a reason that has nothing to do with what is under test. Nothing
 /// on the mmap/munmap path consults `PT_META`.
 fn fresh_user_pt() -> usize {
-    // Wave 14 (DEMANDPAGE): the previous root's regions go first; roots here
+    // The previous root's regions go first; roots here
     // are never torn down, and dead ones would fill the region table.
     let old = azos_sched::current_user_pt();
     if old != 0 {
@@ -54,7 +54,7 @@ fn fresh_user_pt() -> usize {
     azos_sched::shim_forget_space(pt);
     azos_sched::set_current_user_pt(pt);
     azos_sched::set_current_task_tid(1);
-    // Owner decision 102 — clear the frame budget HERE, not in the tests that
+    // Clear the frame budget HERE, not in the tests that
     // set one.
     //
     // The shim's limit is a process-wide static. A test that sets one and then
@@ -159,7 +159,7 @@ fn mmap_refuses_prot_exec_and_still_maps_read_write() {
     );
 }
 
-/// **`prot` is exact (wave 13, security).** `PROT_READ` maps a page a write
+/// **`prot` is exact (security).** `PROT_READ` maps a page a write
 /// cannot reach (it used to be read-write whatever `prot` said); `0` reserves
 /// the range and maps nothing. **Canary.** `--features mmap-prot-canary`: the
 /// read-only page translates for a write.
@@ -178,9 +178,9 @@ fn mmap_honours_prot_read_and_prot_none() {
     assert_eq!(azos_sched::update_user_brk(0), (none + PAGE_SIZE) as u64, "the break moved past it");
 }
 
-// ── Owner decision 102 — the per-task frame budget ───────────────────────
+// ── The per-task frame budget ───────────────────────
 //
-// Scan unit 3 finding 3: CPU had quotas, memory had none, and one ring-3 task
+// CPU had quotas, memory had none, and one ring-3 task
 // could walk `brk`/`mmap` until the allocator was empty — taking the kernel
 // heap, the copy-on-write break and every allocating safety path with it.
 //
@@ -385,7 +385,7 @@ fn a_failed_mmap_leaves_no_physical_pages_stranded() {
     let before = azos_mm::shim_pages_in_use();
 
     // Ask for the full ceiling: 16,384 pages, of which only ~1,000 exist.
-    // Wave 14 (DEMANDPAGE): committed at map time (`MAP_POPULATE`, 0x8000),
+    // Committed at map time (`MAP_POPULATE`, 0x8000),
     // the path this row is about; a plain `mmap` now only reserves, and a
     // reservation needs no frame to succeed.
     let max = azos_mm::pager::MAX_MAP_BYTES;
@@ -822,7 +822,7 @@ fn a_mapped_then_unmapped_range_gives_every_frame_back() {
     const PAGES: usize = 8;
     let before = azos_mm::shim_pages_in_use();
 
-    // Wave 14: committed at map time (`MAP_POPULATE`), the frames this row
+    // Committed at map time (`MAP_POPULATE`), the frames this row
     // counts; the demand-paged twin is `demand_paging::munmap_frees_...`.
     let base = sys_mmap(0, (PAGES * PAGE_SIZE) as u64, 3, MMAP_MAP_POPULATE, ANON, 0);
     assert!(base > 0, "mmap failed ({base}); the test measures nothing");
@@ -937,7 +937,7 @@ fn fork_leaves_a_physical_range_out_of_the_child() {
     assert_eq!(azos_mm::vmm::page_getref(private), 0, "the entry went back with the last holder");
 }
 
-/// **The fork rule for a shared-memory mapping (owner decision 16-10).** A
+/// **The fork rule for a shared-memory mapping.** A
 /// child that inherits a `Cap<Shm>` inherits its mapping **shared, not
 /// copy-on-write**: the fork's walk leaves the mapping out of the child and
 /// `fork_share_range` gives the child the parent's leaves entry for entry, so
@@ -981,7 +981,7 @@ fn a_fork_child_shares_the_shm_mapping_it_inherited_not_a_copy_of_it() {
     azos_mm::vmm::destroy_user_pagetable(child2);
 }
 
-/// **W^X across fork (wave 13, security).** `fork_cow` marked every user
+/// **W^X across fork (security).** `fork_cow` marked every user
 /// leaf copy-on-write, code and read-only data included, so a store to one
 /// took the COW break, which hands back a WRITABLE private copy that keeps
 /// the execute bit. Now only a writable leaf becomes COW: a read-only or
@@ -1024,7 +1024,7 @@ fn fork_keeps_code_and_rodata_read_only() {
     assert_eq!(azos_mm::vmm::page_getref(rodata), 0);
 }
 
-/// **The last holder of a copy-on-write frame keeps it (wave 14).** A break
+/// **The last holder of a copy-on-write frame keeps it.** A break
 /// always allocated a frame, copied 4 KiB into it and dropped the original,
 /// also when every other sharer had already broken or exited and the
 /// original was the breaker's alone. Now a count of 0 or 1 restores the
@@ -1074,7 +1074,7 @@ fn cow_break_by_the_last_holder_keeps_the_frame() {
     assert!(azos_mm::vmm::unmap_user_and_free(pt, KEPT));
 }
 
-/// **`mprotect`'s write permission is exact (wave 13, security).**
+/// **`mprotect`'s write permission is exact (security).**
 /// `protect_user_range` makes a read-write leaf read-only and back, never adds
 /// write to an executable leaf, and keeps copy-on-write honest: a COW leaf
 /// made writable stays COW (its frame still shared), one made read-only loses
@@ -1343,7 +1343,7 @@ fn teardown_frees_the_tables_not_the_region() {
 }
 
 /// **A fork child's `mprotect(RW)` of a page its parent shares read-only
-/// lands on its own copy (wave 14, security).** A fork shares a read-only
+/// lands on its own copy (security).** A fork shares a read-only
 /// leaf as it is (frame counted, no COW marker); `protect_user_range` then
 /// set the write bit in place, and the child's stores went to the parent's
 /// frame. Now the leaf is made copy-on-write: the child's first store breaks
@@ -1389,7 +1389,7 @@ fn mprotect_shared_lands_on_a_private_copy() {
     assert_eq!(azos_mm::vmm::translate_user(pt, RO_VA, true), Some(ro_frame), "sole: written in place");
 }
 
-/// **The vDSO page never becomes writable through a user's table (wave 15,
+/// **The vDSO page never becomes writable through a user's table (
 /// security).** Every address space maps the one vDSO frame read-only. With
 /// no other counted holder (no fork since boot), `protect_user_range` set the
 /// write bit in place, so a task's `mprotect(RW)` and store rewrote the page
@@ -1446,7 +1446,7 @@ fn leaf_word(pt: usize, va: usize) -> Option<u64> {
 }
 
 /// A device window is mapped as DEVICE memory, in the kernel's table and in
-/// the copy a task's table gets (audit K2-H3): with Svpbmt on, the leaf
+/// the copy a task's table gets: with Svpbmt on, the leaf
 /// carries PBMT `IO`. It was `KERNEL_RW`, write-back: on aarch64 Normal
 /// cacheable memory over device registers. Svpbmt is the one ISA encoding the
 /// host walker has; the same `PagePerms::MMIO` gives aarch64 Device-nGnRE and

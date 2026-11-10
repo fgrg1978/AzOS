@@ -40,7 +40,7 @@
 //!   `a_fault_on_a_compressed_marker_restores_the_page` red.
 //! * `reclaim_pass` swapping before compressing, or without a `full` round:
 //!   `the_pass_runs_purge_then_cache_then_compression_then_swap_only_when_full` red.
-//! * `reclaim_pass` not running `purge` first (or at all): the same row red (2026-10-20).
+//! * `reclaim_pass` not running `purge` first (or at all): the same row red.
 //! * `reclaim_pass` ignoring `max_rounds`: `a_pass_is_bounded` red.
 //! * `PageBudget::set_limit` leaving the old marks: `a_limit_without_marks_has_none` red.
 //! * `set_limit_marked` taking the percentages the wrong way round:

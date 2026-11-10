@@ -2,8 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! Host stand-in for `azos_sync`, for the real `crates/domains/robot/robot/src/motor.rs`
 //! only. A copy of `tests/host/syscall-tests/shims/robot_sync`, scoped to
-//! `tests/host/behavior-tests`' own motor-gate/record suite (Q1.3/Q1.4,
-//! 2026-09-25) for the identical reason that one exists.
+//! `tests/host/behavior-tests`' own motor-gate/record suite for the identical reason that one exists.
 //!
 //! **Why not `cap_test_sync`.** That stand-in (this crate's sibling
 //! `../../cap-tests/shims/sync`, aliased as `azos_sync` everywhere else

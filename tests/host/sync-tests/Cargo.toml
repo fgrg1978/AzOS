@@ -36,7 +36,7 @@ azos_decision = { path = "../../../crates/core/decision", features = ["on"] }
 # `unexpected_cfgs` lint recognizes the name; nothing here turns it on.
 [features]
 lat-trace = []
-# `held.rs`'s diagnostic lock-address trace (wave 15, PI); off here.
+# `held.rs`'s diagnostic lock-address trace (PI); off here.
 pi-held-trace = []
 # `lockdep.rs` and the lock files carry `#[cfg(feature = "lockdep")]` and
 # read `cfg!(feature = "ktest")`; declared for the lint, never on here.

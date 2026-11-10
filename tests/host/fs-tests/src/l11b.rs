@@ -18,7 +18,7 @@
 //! ([`Installed`]), so the rest of the suite (written before the cache) keeps
 //! running against none.
 //!
-//! Canaries (by hand, 2026-10-17; discriminates / does not / did not compile):
+//! Canaries (by hand; discriminates / does not / did not compile):
 //! * `cache_read` not asking the cache (`None` always): `a_second_read_is_served_from_the_cache`
 //!   and `a_mapping_and_read_see_the_same_page` red.
 //! * `cache_write` writing the backend (`None` always): `a_write_inside_the_file_stays_in_the_cache_until_fsync` red.
@@ -33,7 +33,7 @@
 //! * `vfs_fsync` without `page_cache_flush_file`: the tmpfs row red (FAT32's fsync is a volume sync, which writes the pages itself); `fd_fsync_finish` the same through the split fsync.
 //! * `read_sector_with` retaining (`retain` ignored): `the_block_cache_does_not_keep_what_the_page_cache_filled` red.
 //! * `Fat32Fs::page_cached` / `TmpFs::page_cached` false: that backend's rows red.
-//! * (review fixes, 2026-10-17) `page_cache_writeback_due` ending the pass at the first failed file: `a_failing_file_does_not_starve_the_others` red.
+//! * `page_cache_writeback_due` ending the pass at the first failed file: `a_failing_file_does_not_starve_the_others` red.
 //! * `page_cache_throttle` dropping the failure (no `WB_FAILED`) or breaking at it: `a_throttle_that_cannot_write_a_file_back_goes_on_and_reports_it` red.
 //! * `dirty_note` matching the file only (the first dirtier's Domain): `pages_are_charged_to_the_domain_that_dirtied_them` red.
 //! * `cache_read` without the `handle_names` test: `a_read_only_stream_does_not_read_a_replaced_name_through_the_cache` red.
@@ -1286,7 +1286,7 @@ fn removing_the_cache_restores_the_backend_paths() {
     vfs::vfs_close(&mut t, fd);
 }
 
-// ── The reviewer's rows (2026-10-17): failing files, handles, appends, direct API ──
+// ── The reviewer's rows: failing files, handles, appends, direct API ──
 
 /// **A file whose write-back fails does not starve the files behind it.** Two
 /// files are old enough; the older one's write-back fails every time. The

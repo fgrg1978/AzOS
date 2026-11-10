@@ -27,7 +27,7 @@ use crate::ipc_proto::{frame, port, ring, IPC_SENTINEL};
 /// published IPC numbers describe; a server that replies and then accepts as
 /// two calls pays a whole extra trap per exchange for nothing.
 ///
-/// **This changed what `ipc-roundtrip` measures on 2026-09-18.** The server
+/// **This changed what `ipc-roundtrip` measures.** The server
 /// used to reply and accept separately (3,706 instructions per round trip at
 /// one hart, 4,021 before the TID lookup change). Recorded here,
 /// because a lane that quietly measures a different protocol is how a "win"
@@ -51,7 +51,7 @@ pub fn serve_loop(bound: u64) -> ! {
             },
         };
         let w = req.words[0];
-        // Wave 6: the ring lanes. The capability to the ring's page arrived
+        // The ring lanes. The capability to the ring's page arrived
         // with this call (moved, `a5`); map it, answer, serve the ring until
         // the client stops it, then take fast calls again.
         if w == ring::RING_SETUP {
@@ -165,7 +165,7 @@ fn ring_serve(base: usize) {
     }
 }
 
-// ── The driver-request A/B (wave 11, SHMRING) ─────────────────────────────
+// ── The driver-request A/B (SHMRING) ─────────────────────────────
 
 /// The producer of the frame-stream lane: `n` frames, sleeping on the tail
 /// whenever the ring is full (a ring-3 producer may wait; the kernel's never

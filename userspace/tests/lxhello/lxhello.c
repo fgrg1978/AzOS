@@ -398,7 +398,7 @@ static void stage3(void)
           w == pid && ((st >> 8) & 0xff) != 8, "status", (st >> 8) & 0xff);
 }
 
-// ── Wave 13: signals ───────────────────────────────────────────────────────
+// ── Signals ───────────────────────────────────────────────────────
 
 #define SIGUSR1 10
 #define SIGUSR2 12
@@ -580,7 +580,7 @@ static void stage_signals(void)
     check("signal delivered at an interrupt", cs == 9, "status", cs);
 }
 
-// ── Wave 15 (VI): signals across an exec from a thread that is not the
+// ── VI: signals across an exec from a thread that is not the
 // leader ──────────────────────────────────────────────────────────────────
 //
 // POSIX (and Linux's de_thread): the exec'ing thread goes on as the process,
@@ -734,7 +734,7 @@ static void stage_exec_signals(void)
     check("exec-sig: a thread's exec keeps the PID, its pending signals and mask", code == EXSIG_OK, "status", code);
 }
 
-// ── Wave 15: robust futex lists at a thread's exit ────────────────────────
+// ── Robust futex lists at a thread's exit ────────────────────────
 //
 // Linux's `exit_robust_list`: a thread that ends holding a robust lock has
 // its word marked FUTEX_OWNER_DIED (keeping FUTEX_WAITERS) and one waiter
@@ -834,7 +834,7 @@ static void stage_robust(void)
     check("robust: a thread's exit releases the robust locks it held", code == ROBUST_OK, "status", code);
 }
 
-// ── Wave 15: a process signal pending on a thread that ends ───────────────
+// ── A process signal pending on a thread that ends ───────────────
 //
 // A process-directed signal is the process's, not the thread's it was
 // handed to: Linux keeps it in the shared pending set, so a thread that
@@ -939,7 +939,7 @@ static void bench_read(void)
     lx_sc1(NR_close, fd);
 }
 
-// Wave 13: the signal lanes, the same binary on AzOS (under the
+// The signal lanes, the same binary on AzOS (under the
 // personality) and on Linux (as an initramfs's /init). Under
 // `-icount shift=0` a nanosecond is an instruction: each line reads as
 // instructions per 1000 operations plus the loop.
@@ -964,7 +964,7 @@ static void bench(void)
     put("lx: bench sigprocmask x1000 ns="); putn(b1 - b0); flush();
 }
 
-// Wave 13: an orphan goes to its nearest ancestor marked a child subreaper,
+// An orphan goes to its nearest ancestor marked a child subreaper,
 // as on Linux. A child S marks itself, forks M, M forks C and exits; C waits
 // (clock deadline) for getppid() to name S and exits 0x5A (0x5B if it never
 // does); S reaps M by pid, then C with wait4(-1), and exits with a bit per
@@ -1399,7 +1399,7 @@ static void run(i64 *sp)
         put("lx: exec child argc="); putn(argc); put(" ok"); flush();
         lx_sc1(NR_exit_group, 7);
     }
-    // Wave 13: `lxhello orphan` forks a grandchild of the shell and exits at
+    // `lxhello orphan` forks a grandchild of the shell and exits at
     // once. The grandchild waits (clock deadline) for its parent link to
     // move off this dead task, prints where it went, and exits 90 when it
     // was adopted (91 when its parent became nobody). The shell, a child
@@ -1485,7 +1485,7 @@ static void run(i64 *sp)
     if (mok) { ((volatile u8 *)m)[0] = 7; ((volatile u8 *)m)[16383] = 9; mok = ((volatile u8 *)m)[16383] == 9; }
     check("mmap", mok && lx_sc2(NR_munmap, m, 16384) == 0, "addr", (i64)m);
 
-    // Wave 13 (security): PROT_READ/PROT_WRITE are exact. A store to a
+    // PROT_READ/PROT_WRITE are exact. A store to a
     // PROT_READ page kills the storer with SIGSEGV (wait status 11); mprotect
     // makes a read-write page read-only and back, a PROT_NONE mapping usable,
     // and refuses PROT_EXEC. Canary `mmap-prot-canary`: the stores succeed.
@@ -1517,7 +1517,7 @@ static void run(i64 *sp)
         i64 p3 = (i64)nn > 0 ? lx_sc3(NR_mprotect, nn + 4096, 4096, 3) : -1;
         if (p3 == 0) ((volatile u8 *)nn)[4096 + 1] = 4;
         check("mprot: a PROT_NONE mapping made read-write", p3 == 0 && ((volatile u8 *)nn)[4097] == 4, "rc", p3);
-        // Wave 14 (security): a fork shares a read-only page with its child
+        // A fork shares a read-only page with its child
         // as it is. The child's mprotect(RW) and store must land on a copy of
         // its own: the parent's byte stays, the child reads its write.
         // Canary `mprotect-shared-canary`: the store lands in the parent's
@@ -1536,7 +1536,7 @@ static void run(i64 *sp)
         check("mprot: a fork child's mprotect(RW) write is its own", p4 == 0 && c > 0 && st == 0, "status", st);
         check("mprot: the parent's read-only page is unchanged",
               (i64)sh > 0 && ((volatile u8 *)sh)[0] == 0x5a, "byte", (i64)sh > 0 ? ((volatile u8 *)sh)[0] : -1);
-        // Wave 15 (security): the vDSO page (VDSO_USER_BASE, 0x20000000) is
+        // The vDSO page (VDSO_USER_BASE, 0x20000000) is
         // the kernel's, ONE frame every process maps read-only. mprotect(RW)
         // is refused and a store to it still faults. Canary
         // `vdso-write-canary`: the mprotect is granted (in place while the

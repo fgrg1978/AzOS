@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! K1 (entry/trap review, 2026-10-22): the trap-entry and boot assembly
+//! K1 (entry/trap review): the trap-entry and boot assembly
 //! fixes, pinned on the real sources. Nothing here runs the asm (the boot
 //! rows do); each test reads the shipped file and fails on the old shape.
 

@@ -212,7 +212,7 @@ impl Ipc for AzosAbi {
     /// figure its published IPC numbers describe; a server that replies and then
     /// accepts as two calls pays a whole extra trap per exchange for nothing.
     ///
-    /// **This changed what `ipc-roundtrip` measures on 2026-09-18.** The server
+    /// **This changed what `ipc-roundtrip` measures.** The server
     /// used to reply and accept separately (3,706 instructions per round trip at
     /// one hart, 4,021 before the TID lookup change). Recorded because
     /// a lane that quietly measures a different protocol is how a "win" is born.
@@ -235,7 +235,7 @@ impl Ipc for AzosAbi {
 impl Mem for AzosAbi {
     /// This kernel's `mmap` is anonymous-only: `fd` must be `MAP_ANON_FD` and
     /// `addr`/`flags`/`offset` are ignored -- the mapping always lands at the
-    /// current brk. `prot` is honoured since wave 13 (read-write here, the
+    /// current brk. `prot` is honoured (read-write here, the
     /// Linux side's `PROT_READ | PROT_WRITE`).
     fn map(&self, len: u64) -> Result<u64, i64> {
         match sys::mmap(0, len, sys::PROT_READ | sys::PROT_WRITE, 0, sys::MAP_ANON_FD, 0) {
@@ -275,7 +275,7 @@ impl Proc for AzosAbi {
 
     fn fork_exit(&self) -> Result<(), i64> {
         // The full cycle, the child's exit inside the caller's window: see
-        // `Proc::fork_exit` (wave 14).
+        // `Proc::fork_exit`.
         self.fork_exit_wait()
     }
 
@@ -291,7 +291,7 @@ impl Proc for AzosAbi {
         //
         // `wait` returns the FIRST finished child of this task, so the version
         // of this lane that used it had to consume and discard notices left by
-        // `fork_exit` above (which, until wave 11, forked N_PROC children and reaped none). The
+        // `fork_exit` above (which used to fork N_PROC children and reap none). The
         // Linux side calls `wait4(pid, ..)`, which targets one child. Two
         // different operations timed against each other is the comparison this
         // whole file refuses elsewhere.
@@ -306,10 +306,10 @@ impl Proc for AzosAbi {
                 return Ok(());
             }
             if r == -10 {
-                // Before wave 12, reachable when the notice was evicted:
+                // Once reachable when the notice was evicted:
                 // `note_exit`'s table held 32 entries and dropped the OLDEST
-                // when full, and the lane above left N_PROC unreaped (until
-                // wave 11). Notices are kept until reaped since wave 12, so
+                // when full, and the lane above left N_PROC unreaped.
+                // Notices are kept until reaped, so
                 // this is a real loss and not a slow child.
                 return Err(-2003);
             }
@@ -422,8 +422,8 @@ impl Shell for AzosAbi {
     }
 
     /// The native `dup`: libsys aliases the small fd's handle and the close
-    /// of the alias drops it again, both in user space (no kernel `dup`,
-    /// owner decision 38; only the LAST close of a handle traps).
+    /// of the alias drops it again, both in user space (no kernel `dup`;
+    /// only the LAST close of a handle traps).
     fn file_dup_close(&self, fd: u64) -> Option<Result<(), i64>> {
         let d = sys::dup(fd);
         if d < 0 {
@@ -563,7 +563,7 @@ impl super::bench_core::Uaccess for AzosAbi {
         Ok(())
     }
 }
-/// Wave 15 `file-write`: a FAT32 file on the boot disk.
+/// `file-write`: a FAT32 file on the boot disk.
 const DISK_PATH: &[u8] = b"/fat/VSBW.DAT\0";
 
 /// Poll attempts before `fork_exit_wait` gives up.

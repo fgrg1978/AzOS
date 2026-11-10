@@ -14,9 +14,9 @@
 #[cfg(test)]
 mod signed_tests;
 
-// W2-B5: `pub(crate)` on the module and on `TEST_LOCK` only (no test body
+// `pub(crate)` on the module and on `TEST_LOCK` only (no test body
 // touched) so `signed_tests.rs`'s tests — a separate file, so they don't
-// collide with whoever else edits this `mod tests` block this wave — can
+// collide with other edits to this `mod tests` block — can
 // share the SAME lock instead of racing it: this crate's tests all touch
 // one `static mut` table inside `azos_config`, so two files with two
 // independent locks would let a `signed_tests` test and a `tests` test run
@@ -370,7 +370,7 @@ pub(crate) mod tests {
             "malformed IP must not clobber the previous value");
     }
 
-    // ── Q4.2 (owner decision, 2026-09-25): CONFIG.INI may only LOWER
+    // ── Q4.2: CONFIG.INI may only LOWER
     // sched_hz below the Kconfig compile-time default, never raise it,
     // and never below SCHED_HZ_FLOOR. `resolve_sched_hz` is a pure
     // function (no shared static, no lock needed) so the kernel boot
@@ -470,9 +470,9 @@ pub(crate) mod tests {
         assert!(r.clamped);
     }
 
-    // ── Repeated keys (wave 11, HERM) ──────────────────────────
+    // ── Repeated keys (HERM) ──────────────────────────
 
-    /// A key on two lines is an error and nothing is stored. Until wave 11 the
+    /// A key on two lines is an error and nothing is stored. Previously the
     /// first line won and the second was dropped without a word.
     #[test]
     fn a_repeated_key_is_refused() {

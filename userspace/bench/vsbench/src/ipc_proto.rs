@@ -35,7 +35,7 @@ pub mod port {
     pub const PORT_END: u64 = 0x504F_5254_0000_0002;
 }
 
-/// The shm-ring lanes' protocol (wave 6), for the same reason as the
+/// The shm-ring lanes' protocol, for the same reason as the
 /// sentinel: one definition, two binaries.
 ///
 /// `allow(dead_code)`: the Linux build of `vsbench` compiles this file and has
@@ -65,7 +65,7 @@ pub mod ring {
     pub const fn ring_tag(tag: u64, v: u64) -> u64 { (tag << 56) | (v & ((1 << 56) - 1)) }
 }
 
-/// The frame-stream lane (wave 11, SHMRING): scan-sized frames one way, on
+/// The frame-stream lane (SHMRING): scan-sized frames one way, on
 /// the byte-slot ring a kernel stream uses (`azos_rings::region::SpscBytes`, the
 /// same `BytesProducer`).
 #[allow(dead_code)]

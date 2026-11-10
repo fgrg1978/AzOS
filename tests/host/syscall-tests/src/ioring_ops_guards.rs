@@ -1280,7 +1280,7 @@ unsafe fn poll_call(ring: *mut IoRing, r: u32, ep: u32, words: &[u64]) -> CqEntr
 /// stamped back to the owner, the same entries run: the refusal is the owner
 /// check, not a broken ring.
 ///
-/// **Canary (by hand, 2026-10-02).** In `ioring_ops::file_io`, call
+/// **Canary (by hand).** In `ioring_ops::file_io`, call
 /// `ops.read`/`ops.write` instead of `read_as`/`write_as`: the poller's read
 /// completes 16 with the victim's bytes and the write lands, and this test
 /// fails on "the poller read a descriptor the owner does not own".

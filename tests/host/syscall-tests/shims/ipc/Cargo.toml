@@ -59,7 +59,7 @@ ioring-sync-fsync-canary = []
 ioring-regbuf-leak-canary = []
 # Declared for the pulled `port.rs`'s `cfg(feature = "port-recheck-canary")`.
 port-recheck-canary = []
-# And for its `cfg(feature = "port-revoke-canary")` (wave 11).
+# And for its `cfg(feature = "port-revoke-canary")`.
 port-revoke-canary = []
 # And for its call-source and doorbell canaries.
 port-calls-canary = []

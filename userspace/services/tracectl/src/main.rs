@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! `TRACECTL.ELF`: the kernel tracer's reader (wave 15, TRACE).
+//! `TRACECTL.ELF`: the kernel tracer's reader (TRACE).
 //!
 //! Its topology row is the whole of its authority: `Cap<Trace>` (found with
 //! `SYS_CAP_INFO`, presented to the tracer's ops on every call) and

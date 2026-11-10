@@ -50,7 +50,7 @@ pub const TIMER_HZ: u64 = 10_000_000;
 /// `TIMER_HZ` constant is RISC-V's `time` CSR on QEMU virt. aarch64's
 /// `cntvct_el0` runs at whatever `CNTFRQ_EL0` says — 1 GHz under QEMU
 /// `-cpu max` — and dividing it by RISC-V's 10 MHz made every aarch64 lane
-/// read 100x too high (a 41,300-"instruction" syscall floor on 2026-09-22).
+/// read 100x too high (a 41,300-"instruction" syscall floor).
 /// `CNTFRQ_EL0` is readable at EL0 whenever `cntvct_el0` is, which this
 /// binary already relies on. RISC-V keeps its original expression unchanged.
 #[inline(always)]
@@ -327,7 +327,7 @@ pub trait Abi {
     fn placement(&self) -> fn() -> Option<u64> { || None }
 }
 
-/// The lane filter (`VSBENCH_LANES`, wave 15): a comma list of section keys
+/// The lane filter (`VSBENCH_LANES`): a comma list of section keys
 /// that runs only those sections, on both sides, so one change can be
 /// measured without the whole suite. Empty (the default) runs everything,
 /// exactly as before. The floor, the unloaded yield and the closing floor
@@ -337,7 +337,7 @@ pub trait Abi {
 /// `mem`, `proc`, `thread`, `vdso`, `ioring`, `shell`, `timer`, `net`
 /// (nic-egress, udp-roundtrip), `tcp` (tcp-bulk-tx, tcp-bulk-rx: only with a
 /// host peer, see [`Net::tcp_peer_port`]), `switch` (switch-loaded,
-/// yield-switch), `disk` (file-write, file-wr+fsync; wave 15), `uaccess`
+/// yield-switch), `disk` (file-write, file-wr+fsync), `uaccess`
 /// (the kernel's user-memory accesses, [`Uaccess`]), `scale` (futex calls
 /// on several harts at once, [`Scale`]; run only when named, never by an
 /// empty filter).
@@ -723,11 +723,11 @@ pub trait Proc {
     /// exit (its teardown included), the reap.
     ///
     /// **The child's exit is inside the caller's timed window by
-    /// construction (wave 14).** This returns `Ok` only once a targeted,
+    /// construction.** This returns `Ok` only once a targeted,
     /// non-blocking reap of the child it just made has answered with that
     /// child's id, i.e. after the kernel finished the child's exit; anything
-    /// else is an `Err`, and a failed lane reports no number. Until wave 14
-    /// it polled ONCE for any finished child and returned: the child it had
+    /// else is an `Err`, and a failed lane reports no number. It used to
+    /// poll ONCE for any finished child and returned: the child it had
     /// just made usually ran after the parent's poll, and on a kernel whose
     /// scheduler kept the parent running (the gate's `bench-minimal` build)
     /// the children ran after the timed batch, so the lane read ~68k
@@ -759,7 +759,7 @@ pub trait Proc {
     ///
     /// The poll loop runs until the child has actually died and been reaped,
     /// so this measures fork + the scheduler getting round to the child + exit
-    /// + reap. It is scheduler-dependent on BOTH sides. Since wave 14
+    /// + reap. It is scheduler-dependent on BOTH sides.
     /// [`fork_exit`](Proc::fork_exit) is this same operation (it used to stop
     /// before the child's exit, see there).
     ///
@@ -813,7 +813,7 @@ pub const N_PIPE_OPEN: u64 = 400;
 /// atomic-write bound (AzOS `azos_bytepipe::PIPE_BUF`, Linux `PIPE_BUF`).
 pub const PIPE_MSG: usize = 64;
 
-/// Wave 12: the user shell's two primitives — starting a program by path,
+/// The user shell's two primitives — starting a program by path,
 /// and the pipe between two of them — on both kernels.
 ///
 /// **Process start is posix_spawn's shape on both sides**, not fork's: no
@@ -827,7 +827,7 @@ pub const PIPE_MSG: usize = 64;
 ///
 /// **The pipe** is used within one task (write, then read the same bytes
 /// back), so the lane prices the two syscalls and the copy, not a wake-up.
-/// Threads of one process (wave 13): the primitives the thread lanes are
+/// Threads of one process: the primitives the thread lanes are
 /// built from, the same operations on both sides. AzOS: `SYS_THREAD_CREATE`
 /// / `SYS_THREAD_EXIT` / `SYS_FUTEX_WAIT` / `SYS_FUTEX_WAKE`. Linux: raw
 /// `clone(CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | CLONE_THREAD |
@@ -885,7 +885,7 @@ pub trait Scale {
     fn floor_call();
 }
 
-/// N0 (wave 15): resolve a handle this task already holds, in its own table.
+/// N0: resolve a handle this task already holds, in its own table.
 ///
 /// AzOS: `SYS_CAP_INFO` on the bench endpoint capability, a read of the
 /// task's capability table. Linux: `fcntl(fd, F_GETFD)` on a held file
@@ -926,31 +926,31 @@ pub trait Shell {
     /// Linux `/init`, the same binary in its initramfs, `openat`/`read`/
     /// `close`). The descriptor table's open file description is on this path.
     fn file_open_read_close(&self, buf: &mut [u8]) -> Result<(), i64>;
-    /// Round 48: `dup` a held descriptor and close the duplicate (two
-    /// descriptors on one description). Wave 13: timed on AzOS too, as
+    /// `dup` a held descriptor and close the duplicate (two
+    /// descriptors on one description). Timed on AzOS too, as
     /// the NATIVE `dup` is: libsys aliasing a handle in its small-fd table
-    /// (owner decision 38, no kernel `dup`), with no trap on either call —
+    /// (no kernel `dup`), with no trap on either call —
     /// against Linux's two syscalls. `None` where a side offers no `dup`.
     fn file_dup_close(&self, fd: u64) -> Option<Result<(), i64>>;
     /// The descriptor `file_dup_close` duplicates: the side's executable,
     /// opened read-only; closed with `pipe_close(fd, fd)`'s single half.
     fn file_hold(&self) -> Result<u64, i64>;
     fn file_release(&self, fd: u64);
-    /// Wave 13: create the side's RAM-backed 64-byte file for `tmp-ord`
+    /// Create the side's RAM-backed 64-byte file for `tmp-ord`
     /// (AzOS `/tmp/VSB.TMP`, tmpfs, through the autorun row's `/tmp` tree
     /// grant; Linux `/vsb.tmp` in its initramfs root). Once, untimed.
     fn tmp_setup(&self) -> Result<(), i64>;
-    /// Wave 13: open that file read-only, read its 64 bytes, close it — the
+    /// Open that file read-only, read its 64 bytes, close it — the
     /// open file description's whole life with no disk under it. `file-ord`
     /// reads `/fat` on AzOS (FAT32 over virtio-blk) and the initramfs on
     /// Linux, so its gap is mostly the disk; this lane is RAM on both sides.
     fn tmp_open_read_close(&self, buf: &mut [u8]) -> Result<(), i64>;
-    /// Wave 15: make the side's DISK file system writable (AzOS: `/fat`,
+    /// Make the side's DISK file system writable (AzOS: `/fat`,
     /// FAT32 over virtio-blk, nothing to do; Linux: devtmpfs, then the same
     /// kind of FAT32 image on its own virtio-blk disk mounted `vfat` at
     /// `/mnt`). Once, untimed.
     fn disk_setup(&self) -> Result<(), i64>;
-    /// Wave 15 `file-write`: create-or-truncate the disk file, write `data`,
+    /// `file-write`: create-or-truncate the disk file, write `data`,
     /// `fsync` it when asked, close it.
     fn disk_write_close(&self, data: &[u8], fsync: bool) -> Result<(), i64>;
 }
@@ -1056,7 +1056,7 @@ pub const N_LOAD_WARMUP: u64 = 8;
 
 /// Yields each competitor timestamps (one `u32` tick delta per yield).
 ///
-/// **The instrument behind `yield-switch` (wave 15).** The measurer's own
+/// **The instrument behind `yield-switch`.** The measurer's own
 /// counter says only that IT switched on every yield; how many competitor
 /// yields ran between two of its yields is what decides what one
 /// `switch-loaded` op contains, and the two schedulers need not agree on it.
@@ -1123,7 +1123,7 @@ pub trait Net {
     fn net_echo(&self, n: u64);
 
     /// Stop the echo started by [`Net::net_echo`]: one datagram whose bytes
-    /// are all [`NET_STOP`]. Wave 15: the echo used to outlive the lane,
+    /// are all [`NET_STOP`]. The echo used to outlive the lane,
     /// polling `recv` + yield, and sat in `switch-loaded`'s window as a
     /// sixth runnable task on BOTH kernels (AzOS's `SWITCH_CENSUS` named its
     /// slot; on Linux the measurer's switches outnumbered the competitors'
@@ -1140,7 +1140,7 @@ pub trait Net {
     /// when the kernel refused it (no NIC, or its TX ring was full).
     fn egress_send(&self) -> bool { false }
 
-    /// TCP bulk lanes (wave 15): the TCP port of the host peer
+    /// TCP bulk lanes: the TCP port of the host peer
     /// (`tools/bench/vsbench_tcp_peer.py`), reached at [`TCP_HOST_IP`] through QEMU
     /// user networking. Only the TCP pass of `tools/bench/vsbench_compare.sh` boots
     /// with a NIC and hands one over (AzOS: `/fat/VSBTCP.TXT`, Linux:

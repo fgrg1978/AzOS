@@ -187,7 +187,7 @@ fn a_long_fill_is_split_into_requests() {
     assert_ne!(&next[..], &one[..100], "the second request restarted the stream");
 }
 
-// ── U09-8 persisted seed file (owner decision 2026-09-26 V1.2) ────────────
+// ── U09-8 persisted seed file ────────────
 
 #[test]
 fn seed_file_roundtrips() {
@@ -413,7 +413,7 @@ fn gpt_header(alternate: u64) -> [u8; 512] {
     s
 }
 
-/// **GPT** (audit K2-M1). A GPT laid out to the medium's end keeps its backup
+/// **GPT**. A GPT laid out to the medium's end keeps its backup
 /// entry array and header in the last 33 sectors, past `LastUsableLBA`, so
 /// every partition ends before the tail and the extents alone say `Clear`.
 /// The tail is usable only when the backup header sits below it.

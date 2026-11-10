@@ -3,8 +3,7 @@
 //! Host-side tests for `crates/fs/src/fat32.rs` and `crates/fs/src/vfs.rs`,
 //! driven against hand-built volume images.
 //!
-//! Both files are the REAL ones, pulled with `#[path]`. `vfs.rs` joined them
-//! on 2026-09-24 — see the `vfs` seam note below for what had been blocking
+//! Both files are the REAL ones, pulled with `#[path]`. `vfs.rs` joined them — see the `vfs` seam note below for what had been blocking
 //! it — and with it the open/write/close path over a mounted backend, which
 //! had no test of any kind and was losing the contents of every file reopened
 //! with `O_CREAT|O_APPEND`.
@@ -232,7 +231,7 @@ mod image {
     pub const OFF_SEC_PER_CLUS:  usize = 13;
     pub const OFF_RSVD_SEC_CNT:  usize = 14;
     pub const OFF_NUM_FATS:      usize = 16;
-    /// `BPB_TotSec32`. The builder left this ZERO until 2026-09-21, which no
+    /// `BPB_TotSec32`. The builder used to leave this ZERO, which no
     /// test noticed because nothing read it — the cluster-walk bound came
     /// from `fat_sz32` instead, which is exactly the attacker-controlled
     /// figure the audit found. `mkfs.fat` always writes it.
@@ -387,7 +386,7 @@ fn swap_medium(img: Vec<u8>) {
 }
 
 /// Run the rest of a test with the FAT32 cache in write-through mode, the
-/// pre-wave-15 behaviour (the shim builds with Kconfig `FS_WRITEBACK` on).
+/// earlier behaviour (the shim builds with Kconfig `FS_WRITEBACK` on).
 /// For tests whose property is write-through's: a device write per FAT32
 /// write, in program order, failing where it is issued. Restored on drop.
 #[must_use]
@@ -515,7 +514,7 @@ mod mount_tests {
 
     /// **`num_fats = 0` is not a volume, it is a lever on the cycle bound.**
     ///
-    /// Audit finding 2026-09-21. Every other BPB check passes: with zero FAT
+    /// Every other BPB check passes: with zero FAT
     /// copies `data_start == rsvd`, small and valid, while `fat_sz32` stays
     /// free to inflate `chain_walk_limit` (`fat_sz32 * 128`) toward
     /// `u32::MAX`. A self-cycling FAT entry then spins a chain walker about
@@ -778,7 +777,7 @@ mod mount_tests {
 
     /// **A hostile journal must not move a single FAT byte.**
     ///
-    /// Audit finding 2026-09-21. `fat32_journal_recover` runs automatically
+    /// `fat32_journal_recover` runs automatically
     /// inside the mount and used to honour a PENDING entry with
     /// `op_type == JOURNAL_OP_ALLOC` by writing 0 over that cluster's FAT
     /// entry — in every FAT copy, before userspace exists. LBA 1 is inside
@@ -871,7 +870,7 @@ mod read_path {
         assert!(out[512..].iter().all(|&b| b == 0xBB), "second, in order");
     }
 
-    /// **A contiguous run of clusters is one device read (wave 14).** Sector
+    /// **A contiguous run of clusters is one device read.** Sector
     /// by sector, a file cost one request per 512 bytes (the 8-line cache
     /// holds none of a file being streamed), and that is what every spawn
     /// paid for its image. The run 3..=6 is read at once; the jump to 9 starts
@@ -1057,7 +1056,7 @@ mod read_path {
 
 #[cfg(test)]
 mod write_path {
-    //! Host tests for the write-path audit (2026-09-23): `fat32_alloc_cluster`
+    //! Host tests for the write-path audit: `fat32_alloc_cluster`
     //! and its callers, directory-entry allocation, and the sparse-hole gap
     //! in `fat32_write`. See `fat32.rs` for the fixes these pin.
 
@@ -1257,7 +1256,7 @@ mod write_path {
         );
     }
 
-    /// **The write-path audit's open finding (2026-09-23), closed.**
+    /// **The write-path audit's open finding, closed.**
     ///
     /// `fat32_write_file`'s overwrite path used to free the old chain and
     /// unlink the old dirent BEFORE writing any journal record of the
@@ -1802,7 +1801,7 @@ mod vfs_open_close {
         assert_eq!(vfs::vfs_write(&mut t, fd, b"new\n".as_ptr(), 4), 4);
         assert_eq!(vfs::vfs_close(&mut t, fd), 0);
 
-        // Wave 15: FAT32 writes in place (POSIX): a bare O_CREAT keeps the
+        // FAT32 writes in place (POSIX): a bare O_CREAT keeps the
         // file and the write overwrites its first four bytes.
         assert_eq!(on_disk(b"bare.txt"), b"new\ninal\n");
     }
@@ -1837,7 +1836,7 @@ mod vfs_open_close {
         assert_eq!(on_disk(b"dup.txt"), b"abc");
     }
 
-    /// Wave 15 (PI), owner rule F1: the descriptor operations the kernel's
+    /// The descriptor operations the kernel's
     /// shared table runs without its lock. An open in a private table moves
     /// into the shared one (`fd_adopt`); a lent copy writes and its offset is
     /// published (`fd_lend`/`fd_settle`), but not into a slot closed in
@@ -1874,7 +1873,7 @@ mod vfs_open_close {
         vfs::fd_free(&mut lone, 0);
         assert_eq!(t.off(fd), 5, "the closed slot's offset went nowhere");
         {
-            // Wave 15: FAT32 writes in place, so both writes are in the file
+            // FAT32 writes in place, so both writes are in the file
             // already, whichever descriptor closes last.
             use vfs::FileSystem;
             let key = fat32::FAT32_FS.key_for(b"lend.txt").unwrap();
@@ -1887,7 +1886,7 @@ mod vfs_open_close {
         assert_eq!(on_disk(b"lend.txt"), b"hello!");
     }
 
-    /// Wave 15 (PI): two threads sharing ONE open file description (a dup)
+    /// Two threads sharing ONE open file description (a dup)
     /// read a device-backed streaming file with the table's lock released
     /// (`fd_stream_transfer`); the description's position lock (Linux
     /// `f_pos_lock`) makes every record come out exactly once — no offset
@@ -1995,7 +1994,7 @@ mod vfs_open_close {
             vfs::O_WRONLY | vfs::O_CREAT | vfs::O_TRUNC,
         );
         assert!(fd >= 0);
-        // Wave 15: in place, write-through — the write itself meets the
+        // In place, write-through — the write itself meets the
         // device, so ITS answer reports the failure (a close is no longer a
         // flush; under write-back fsync reports it, `writeback` tests).
         disk_write_fail_after(0);
@@ -2066,7 +2065,7 @@ mod vfs_open_close {
             &mut t, b"/fat/CRASH.LOG",
             vfs::O_WRONLY | vfs::O_CREAT | vfs::O_APPEND,
         );
-        // Wave 15: no proxy load any more — the file opens in place,
+        // No proxy load any more — the file opens in place,
         // whatever its size, and the open itself leaves it untouched.
         assert!(fd >= 0, "an append open of an existing file opens it in place");
         assert_eq!(vfs::vfs_close(&mut t, fd), 0);
@@ -2216,7 +2215,7 @@ mod vfs_open_close {
     /// failure mode (a full volume), not a disk-write-failure injection that
     /// would also have failed the write this test needs to succeed.
     ///
-    /// A full root ALONE stopped being a failure on 2026-09-28 (gate 192):
+    /// A full root ALONE is not a failure:
     /// the whole-file write now extends the root's chain like `dir_insert`
     /// does, which this row used to rely on NOT happening. The one free
     /// cluster is also what the copy's failed create must hand back: the
@@ -2405,7 +2404,7 @@ mod vfs_open_close {
 /// ticket (`kernel/src/boot/seams.rs`, `fsync_request_as`): FAT32 answers
 /// one, since its fsync is the volume's flush; tmpfs has no ticketed flush,
 /// so the seam syncs its file synchronously instead of handing out a FAT32
-/// ticket that says nothing about it (audit K2-M5).
+/// ticket that says nothing about it.
 ///
 /// **Canary.** Make the trait's default `flush_request` answer FAT32's
 /// ticket, as the old seam did for every descriptor: the tmpfs assertion
@@ -2883,8 +2882,7 @@ mod durability {
 /// may persist its pending writes in any order.
 ///
 /// `durability` above cuts only at "everything up to the last flush", which
-/// never reorders, so it cannot see a missing ordering barrier (the wave-5
-/// report said as much). Here each operation's write/flush log (the shim's
+/// never reorders, so it cannot see a missing ordering barrier. Here each operation's write/flush log (the shim's
 /// `disk_take_log`) is replayed onto the pre-operation image as EVERY state
 /// a cut may leave: all writes before flush `k`, plus every subset of the
 /// writes between flush `k` and flush `k + 1`. Each state is mounted — which
@@ -3259,7 +3257,7 @@ mod power_cut {
                 if live.as_deref() == Some(&old[..]) && stage.is_none() {
                     return Err("both names lost the new image".into());
                 }
-                // Wave 15: one RENAME record — never both names on the new
+                // One RENAME record — never both names on the new
                 // image's chain (two names on one chain cross-link it the
                 // moment either is freed).
                 if live.as_deref() == Some(&new[..]) && stage.is_some() {
@@ -3270,7 +3268,7 @@ mod power_cut {
         println!("rename over a file: {f} flushes");
     }
 
-    /// **Wave 15: an in-place rewrite through the VFS (O_TRUNC, write,
+    /// An in-place rewrite through the VFS (O_TRUNC, write,
     /// fsync), cut anywhere**: the old file, an empty one, or the whole new
     /// one — never a size over bytes the device does not hold, never a live
     /// chain through a free cluster. (No atomic replace: that is a temp file
@@ -3319,7 +3317,7 @@ mod power_cut {
         (before, fsync)
     }
 
-    /// **Wave 15 (FD): the fsync of an in-place rewrite is two device
+    /// The fsync of an in-place rewrite is two device
     /// flushes** (it was three): the truncated chain is held, not freed one
     /// epoch after the entry, so the entry, the new chain and the data
     /// share one epoch and the new entry is the second. The held chain is
@@ -3367,7 +3365,7 @@ mod power_cut {
         (opened, dirty, fsync)
     }
 
-    /// **Wave 15 (FW): consecutive writes to one open file share one
+    /// Consecutive writes to one open file share one
     /// epoch.** Eight `write` calls open no epoch; the dirty lines before
     /// the fsync are two epochs (the data, the chain and the truncating
     /// entry; then the entry naming the new size, written once), and the
@@ -3646,7 +3644,7 @@ mod power_cut {
         assert_eq!(read_back(b"/REC.DAT").as_deref(), Some(&v[..]));
     }
 
-    /// **A write of n clusters reads the chain once** (wave 15, FW): one
+    /// **A write of n clusters reads the chain once** (FW): one
     /// 8 KiB `write` to a new file (16 clusters of 512 B) looks up O(n)
     /// sectors in the cache: 80. Walking the chain from its first cluster
     /// for every sector (16 * 15 / 2 = 120 FAT reads), and rewriting each
@@ -3786,7 +3784,7 @@ mod power_cut {
                 if l.is_none() && s.is_none() {
                     return Err("neither name survived".into());
                 }
-                // Wave 15: an in-place rename of the dirent — exactly one.
+                // An in-place rename of the dirent — exactly one.
                 if l.is_some() && s.is_some() {
                     return Err("both names on one chain".into());
                 }
@@ -3829,8 +3827,8 @@ mod power_cut {
     }
 
     /// A device that cannot flush (`Unsupported`) gives no ordering, so a
-    /// journaled operation refuses at its first barrier (owner decision,
-    /// wave 7): nothing it would have ordered is written.
+    /// journaled operation refuses at its first barrier:
+    /// nothing it would have ordered is written.
     #[test]
     fn a_barrier_over_a_device_that_cannot_flush_refuses() {
         let _g = serial();
@@ -5940,7 +5938,7 @@ mod vfs_p2 {
         assert_eq!(vfs::vfs_rename(b"/fat/ONE.TXT", b"/fat/TWO.TXT"), Ok(()));
         assert!(vfs::vfs_stat(b"/fat/ONE.TXT").is_none());
         assert_eq!(vfs::vfs_stat(b"/fat/TWO.TXT").unwrap().size, 5);
-        // Wave 9 (FS2): a non-zero truncate and rmdir are implemented now;
+        // A non-zero truncate and rmdir are implemented now;
         // this line asserted `Unsupported` for both.
         assert_eq!(vfs::vfs_truncate(b"/fat/TWO.TXT", 3), Ok(()));
         assert_eq!(vfs::vfs_stat(b"/fat/TWO.TXT").unwrap().size, 3);
@@ -6165,7 +6163,7 @@ mod full_root_create {
         assert_eq!(fat32::fat32_write_file(&junk(0), b"still writable"), Ok(()));
     }
 
-    // ── Wave 12: one transient I/O error must not leak a cluster ───────────
+    // ── One transient I/O error must not leak a cluster ───────────
     //
     // `disk_write_fail_nth(n)` fails exactly one write and lets the rest
     // through, so the code that runs after the failure (the rollback, the
@@ -6369,7 +6367,7 @@ mod full_root_create {
     }
 }
 
-// ── Concurrent FAT mutators with no lock across I/O (wave 15, FM) ────────────
+// ── Concurrent FAT mutators with no lock across I/O (FM) ────────────
 //
 // Owner rule F1: no mutex is held across a device wait, so two FAT updaters
 // can be inside their device I/O at once. What keeps them correct is the
@@ -6500,7 +6498,7 @@ mod concurrent_fat_mutators {
     }
 }
 
-// ── FAT32 inside a partition (wave 9, FS2) ───────────────────────────────────
+// ── FAT32 inside a partition ───────────────────────────────────
 //
 // A medium with an MBR at LBA 0 and the FAT32 volume at LBA 2048: the driver
 // mounts at the start of the first PUBLISHED partition whose first sector is a
@@ -6608,7 +6606,7 @@ mod partitioned_volume {
     }
 }
 
-// ── FAT32 rmdir, non-zero truncate, statfs's cached free count (wave 9, FS2) ─
+// ── FAT32 rmdir, non-zero truncate, statfs's cached free count ─
 #[cfg(test)]
 mod fat32_round23 {
     use super::{fat32, serial, vfs};
@@ -6712,7 +6710,7 @@ mod fat32_round23 {
     }
 }
 
-/// Wave 10: `INODE_KEY_LEN` 11 -> 64 (owner decision). The generic key now
+/// `INODE_KEY_LEN` 11 -> 64. The generic key now
 /// holds every tmpfs name and FAT32 still uses its first 11 bytes.
 #[cfg(test)]
 mod inode_key_64 {
@@ -6720,7 +6718,7 @@ mod inode_key_64 {
     use vfs::FileSystem as _;
 
     /// **A tmpfs name longer than 11 bytes is reachable through the key.**
-    /// Until wave 10 `TmpFs::key_for` answered `None` for any name past 11
+    /// `TmpFs::key_for` used to answer `None` for any name past 11
     /// bytes. A 40-byte name round-trips through `write_at`/`read_at`, and
     /// two names that share their first 11 bytes stay two files.
     ///
@@ -6760,7 +6758,7 @@ mod inode_key_64 {
     }
 }
 
-/// **Wave 11 (HERM): real errnos from `fat32_rename`, `mkdir`/`unlink` that
+/// Real errnos from `fat32_rename`, `mkdir`/`unlink` that
 /// reach FAT32 through the VFS, and `fsync`/`close` that do not hide a failed
 /// write (fsyncgate).**
 #[cfg(test)]
@@ -6891,7 +6889,7 @@ mod herm_wave11 {
         assert_eq!(fat32::fat32_mount(), Ok(()));
         let src = n83(b"SRC", b"BIN");
         put(&src, b"x");
-        // Wave 15: a rename to a new name reuses the source's own slot, so a
+        // A rename to a new name reuses the source's own slot, so a
         // full directory no longer refuses it.
         let _ = FsErr::NoSpace;
         assert_eq!(fat32::fat32_rename(&src, &n83(b"DST", b"BIN")), Ok(()));
@@ -7074,7 +7072,7 @@ mod herm_wave11 {
         let mut t = vfs::ScratchFds::new();
         let fd = vfs::vfs_open(&mut t, b"/fat/REC.LOG", vfs::O_WRONLY | vfs::O_CREAT);
         assert!(fd >= 0);
-        // Wave 15: the device failure surfaces where the bytes meet it —
+        // The device failure surfaces where the bytes meet it —
         // the write, under write-through (see `a_close_whose_flush_fails_reports_it`).
         fail_writes_now();
         assert_eq!(vfs::vfs_write(&mut t, fd, REC.as_ptr(), REC.len()), -1);
@@ -7130,7 +7128,7 @@ mod herm_wave11 {
                   rename_over={rename_over} unlink={unlink} mkdir={mkdir} append_fsync={append_fsync}");
         assert_eq!(
             (create, overwrite, rename_new, rename_over, unlink, mkdir, append_fsync),
-            // Wave 15: a rename to a new name rewrites the dirent in place (no
+            // A rename to a new name rewrites the dirent in place (no
             // record); over a file it is ONE record (pending, committed, clear).
             (3, 3, 0, 3, 3, 0, 0));
     }
@@ -7168,7 +7166,7 @@ pub mod fuzz_entry {
 
     /// Harness-side precondition for the leak check: the volume the BPB
     /// describes (`BPB_TotSec32` from its base) fits on the medium. Since
-    /// wave 15 (GR4) the mount refuses a larger claim on a bare medium too
+    /// The mount refuses a larger claim on a bare medium too
     /// (it reads the device's capacity), so every volume that mounts here
     /// fits; the check stays as the statement of what the leak check needs.
     /// Before, a larger claim mounted and every write past the end failed
@@ -7397,7 +7395,7 @@ pub mod fuzz_entry {
     }
 }
 
-/// Regressions found by `tests/fuzz/fs-fuzz` (wave 11). Each failed with the
+/// Regressions found by `tests/fuzz/fs-fuzz`. Each failed with the
 /// free-cluster count lower after the call than before it: a create or
 /// overwrite that FAILED had already allocated (part of) its new chain, and
 /// nothing gave it back. Mount-time recovery does not either — it discards a
@@ -7443,7 +7441,7 @@ mod fuzz_regressions {
     }
 
     /// **The root's first cluster is never allocated**, even on a volume
-    /// whose FAT marks it free (fs-fuzz, wave 12: the input in
+    /// whose FAT marks it free (fs-fuzz: the input in
     /// `regressions/fat32_image/root-cluster-free-self-link`). It used to be
     /// the first free entry the allocator found, and a directory extension
     /// then linked the root to itself: a one-cluster cycle every later walk
@@ -7518,7 +7516,7 @@ mod fuzz_regressions {
     }
 
     /// The fuzzer's volume (`regressions/fat32_image/root-fat-entry-reserved`,
-    /// wave 11 gate tag 4b457f6f: "create+unlink changed the free-cluster
+    /// Gate tag 4b457f6f: "create+unlink changed the free-cluster
     /// count", 200 vs 201): the root directory's first FAT entry holds the
     /// reserved value 1. That is not a free entry, so it is not in the free
     /// count, and it ends the root's chain; the rename's dirent extends the
@@ -7544,7 +7542,7 @@ mod fuzz_regressions {
         assert!(fat32::fat32_rename(b"FUZZNEW BIN", b"FUZZMOV BIN").is_ok());
         assert_eq!(fat32::fat32_unlink_path(b"FUZZMOV.BIN"), Ok(()));
         assert!(fat32::fat32_lookup_root(b"FUZZMOV BIN").is_err());
-        // Wave 15: the rename rewrites the dirent in place, so the root no
+        // The rename rewrites the dirent in place, so the root no
         // longer grows for it: the three operations cost nothing.
         assert_eq!(free(), before, "create+rename+unlink must leave the free count as it was");
     }
@@ -7555,7 +7553,7 @@ mod fuzz_regressions {
     /// create's chain (3..=8) takes cluster 5 and, while the file lives, the
     /// root's chain runs through it. The driver's count was right all along:
     /// the harness read the FAT from the medium while the write-back cache
-    /// (Kconfig `FS_WRITEBACK`, wave 15) still held the unlink's freed
+    /// (Kconfig `FS_WRITEBACK`) still held the unlink's freed
     /// entries, saw the root as 2 -> 5 -> 6 -> 7 -> 8, and counted four
     /// clusters of growth. It now syncs before it reads the medium. Pinned
     /// here: the driver's count, and the medium agreeing with it after a sync.
@@ -7757,7 +7755,7 @@ mod pstore_record {
     }
 }
 
-// Wave 14 (FATCACHE): the FAT32 sector cache at a real size (Kconfig
+// The FAT32 sector cache at a real size (Kconfig
 // `FS_BLOCK_CACHE_KB`; the limits shim says 64 KiB, embedded's default) —
 // file data served from RAM on a repeat, and one test per coherence path:
 // FAT32's own writes, writes through the block layer (reserved-tail
@@ -7812,7 +7810,7 @@ mod fatcache {
     /// sector, the FAT sector and all 41 data sectors hit.
     ///
     /// **Canary.** `fatcache-run-bypass-canary` (run reads go to the device
-    /// as before wave 14): every iteration reads the device again.
+    /// every time): every iteration reads the device again.
     #[test]
     fn a_repeated_open_read_close_is_served_from_ram() {
         let _g = serial();
@@ -8075,7 +8073,7 @@ mod fatcache {
     }
 }
 
-// Wave 14 (FATCACHE): `bcache.rs`'s sets and generations, against a
+// `bcache.rs`'s sets and generations, against a
 // recording device.
 #[cfg(test)]
 mod bcache_sets {
@@ -8146,7 +8144,7 @@ mod bcache_sets {
         rd(&mut c, &mut d, 0);
         assert_eq!(d.reads.len(), 66, "block 0 was the victim");
 
-        // Wave 15: write-back is set-associative too (evicting a dirty line
+        // Write-back is set-associative too (evicting a dirty line
         // writes every older epoch first, so the choice need not be global).
         let wb = Big::new(512, Mode::WriteBack);
         assert_eq!((wb.line_count(), wb.ways()), (64, MAX_WAYS));
@@ -8238,7 +8236,7 @@ mod bcache_sets {
     }
 }
 
-// Wave 14 (FATCACHE, second step): read-only opens of a FAT32 file stream
+// Read-only opens of a FAT32 file stream
 // (`vfs.rs` `try_backend_ro_stream_open`, `fat32.rs` `fat32_read_range`)
 // instead of loading the whole file into a heap proxy.
 #[cfg(test)]
@@ -8522,7 +8520,7 @@ mod ro_stream {
     }
 }
 
-/// Wave 14 (SPAWNCACHE): the content stamp the verified-image cache keys by.
+/// The content stamp the verified-image cache keys by.
 /// Equal stamps must mean equal bytes: every way the volume's bytes change
 /// moves it, and the epoch it carries is never one a reader could have read
 /// while the bytes it reports were still landing.
@@ -8650,7 +8648,7 @@ mod content_stamp {
     }
 }
 
-/// Wave 15 (WRITEBACK): the FAT32 cache in `Mode::WriteBack` (Kconfig
+/// The FAT32 cache in `Mode::WriteBack` (Kconfig
 /// `FS_WRITEBACK`). The cache's split write-back API first, against a
 /// recording device; then FAT32 on the shim disk: coalescing, coherence
 /// with other readers and writers of the medium, and power cuts at random
@@ -8675,7 +8673,7 @@ mod writeback {
     /// **Canary.** `wb-no-coalesce-canary`: every run is one block.
     #[test]
     fn an_ahead_line_leaves_after_the_current_epoch_and_a_barrier_closes_both() {
-        // Wave 15 (FW): block 5 written ahead, then block 9 in the current
+        // Block 5 written ahead, then block 9 in the current
         // epoch AFTER it: the write-back takes 9 first, and 5 after a flush.
         let mut c = C::new(512, Mode::WriteBack);
         let e = c.epoch();
@@ -9061,7 +9059,7 @@ mod writeback {
 
     /// **A device that cannot flush mounts write-through**: write-back's
     /// order is made of flushes, so without them every write goes to the
-    /// device at once, as before wave 15, and the journal fails closed.
+    /// device at once, and the journal fails closed.
     #[test]
     fn a_device_that_cannot_flush_mounts_write_through() {
         let _g = serial();
@@ -9279,7 +9277,7 @@ mod writeback {
 
 
 
-/// Wave 15 (GR4): every FAT32 chain walker ends — on a volume that claims
+/// Every FAT32 chain walker ends — on a volume that claims
 /// more than its medium, on a sector it cannot read, and on a cyclic chain.
 /// One test per guard, each red under its own canary feature
 /// (`fat-medium-bound-canary`, `fat-walk-read-error-canary`,

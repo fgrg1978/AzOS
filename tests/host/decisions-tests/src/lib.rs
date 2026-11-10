@@ -393,7 +393,7 @@ mod tests {
         assert_eq!(p.n, [2, 321, 2]);
     }
 
-    /// A record is stamped on TAI (owner decision 16-10): the timebase's
+    /// A record is stamped on TAI: the timebase's
     /// nanoseconds plus the offset the vDSO publishes. Before the offset is
     /// installed the stamp is time since boot. **Canary.** Stamp with
     /// `ticks_to_ns` again (no offset): the second row goes red.

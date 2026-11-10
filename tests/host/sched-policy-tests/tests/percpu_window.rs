@@ -5,7 +5,7 @@
 //! `current_cpu_id()` (or `ARCH.hart_id()`, `percpu_id()`, `this_cpu()`) is one
 //! step, the table read the id indexes is another; with interrupts on, a tick
 //! between them can move the task to another hart and the second step then
-//! answers for the hart the task left (found 2026-10-20 as a kernel page fault
+//! answers for the hart the task left (found as a kernel page fault
 //! copying to a user VA; the front `percpu-hazard-b` audited the rest of the
 //! tree, its table is in the commit that added this file).
 //!

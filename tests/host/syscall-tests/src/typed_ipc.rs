@@ -798,7 +798,7 @@ fn a_typed_bind_refuses_in_its_documented_order() {
     assert_eq!(sys_port_bind_typed(port, PORT_SRC_DOORBELL + 1, irq, 1, 0), errno(Errno::EINVAL), "an unknown source type");
     assert_eq!(sys_port_bind_typed(port, PORT_SRC_RING, irq, 1, 4), errno(Errno::EINVAL), "an offset is a doorbell's");
     assert_eq!(sys_port_bind_typed(port, u64::MAX, irq, 1, 0), errno(Errno::EINVAL));
-    // Wave 11 (PORTWAIT): a ring and an endpoint take their own capability, a
+    // A ring and an endpoint take their own capability, a
     // timer none (its source is a deadline). Type 0 was the channel: no source;
     // type 2 was the IRQ line, which binds from its own side.
     assert_eq!(sys_port_bind_typed(port, 0, irq, 1, 0), errno(Errno::EINVAL), "source type 0");
@@ -978,7 +978,7 @@ fn host_protect(root: usize, va: usize, pages: usize, write: bool) -> usize {
 }
 
 // ═════════════════════════════════════════════════════════════════════════
-// 575 sources and 604 (wave 11, PORTWAIT)
+// 575 sources and 604 (PORTWAIT)
 // ═════════════════════════════════════════════════════════════════════════
 
 /// The 16-byte event at `BUF`: `(key, source type, source id)`.
@@ -1074,7 +1074,7 @@ fn a_typed_wait_wakes_for_an_armed_timer() {
 }
 
 // ═════════════════════════════════════════════════════════════════════════
-// 575 source 4: endpoint notices, and gone sources (wave 15 N5b)
+// 575 source 4: endpoint notices, and gone sources
 // ═════════════════════════════════════════════════════════════════════════
 
 /// The event code at `BUF` (bytes 10..12).
@@ -1461,7 +1461,7 @@ fn every_record_of_a_moved_mapping_is_dropped_by_the_senders_next_look() {
 }
 
 /// **A share outlives the sharer's close, and an explicit revoke takes it back
-/// (delete is not revoke, owner decision 20-10).** A creates an object, shares
+/// (delete is not revoke).** A creates an object, shares
 /// it with B by a DUP entry (the spawn's pipe-region share) and B maps it for
 /// real. A closes its capability (`SYS_CAP_CLOSE`: its reference goes, its slot
 /// goes): B's capability resolves and B's PTEs stay, and B reads what A wrote.

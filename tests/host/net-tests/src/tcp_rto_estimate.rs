@@ -18,13 +18,13 @@
 //!   carried beside the ACK rather than in an option.
 //! - *1 ms floor*: the stack's own samples, with the variance term's floor at
 //!   the clock granularity G = 1 ms, as RFC 6298 §2.3 writes it — this stack's
-//!   formula until 2026-09-14, when the floor became `RTO_VAR_FLOOR_MS`
+//!   formula before the floor became `RTO_VAR_FLOOR_MS`
 //!   (200 ms). It separates what the samples cost from what the formula costs.
 //!
 //! Each has an RFC 6298 §5 timer of its own, never backed off, armed when data
 //! leaves with nothing in flight and restarted whenever an ACK restarts the
-//! stack's (`RttEstimate::timer_start`): an ACK of new data or, since
-//! 2026-09-14, one reporting new SACKed bytes during SACK recovery;
+//! stack's (`RttEstimate::timer_start`): an ACK of new data or
+//! one reporting new SACKed bytes during SACK recovery;
 //! an ACK that arrives after it would have expired is counted, and counted
 //! again as spurious when a copy of the data that was not lost had already
 //! left by then, other than one the stack's own timer resent: that copy would
@@ -105,7 +105,7 @@ const RTO_INITIAL: u64 = 1_000 * TICKS_PER_MS;
 const RTO_MIN: u64 = 200 * TICKS_PER_MS;
 /// `RTO_VAR_FLOOR_MS`: the least the variance term adds to SRTT.
 const VAR_FLOOR: u64 = 200 * TICKS_PER_MS;
-/// The clock granularity G, the variance term's only floor before 2026-09-14.
+/// The clock granularity G, the variance term's only floor before `RTO_VAR_FLOOR_MS`.
 const G: u64 = TICKS_PER_MS;
 const RTO_MAX: u64 = 60_000 * TICKS_PER_MS;
 

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! G1 (2026-10-11): where the e-stop release key may come from
+//! G1: where the e-stop release key may come from
 //! (`estop::operator_key_source`, the decision `kernel/src/main.rs` applies
 //! at boot). The loose `/fat/OPERATOR.PUB` is unsigned: anyone who can write
 //! the FAT could install a key and release a latched e-stop. A release build

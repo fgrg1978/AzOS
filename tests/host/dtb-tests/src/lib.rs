@@ -1115,7 +1115,7 @@ mod tests {
         assert_eq!(info2.imsic_guest_index_bits, 0, "absent property must default to 0, not leak a stale value");
     }
 
-    // ── dtb_pl011_irq: the aarch64 console line (wave 7 CON) ──────────────
+    // ── dtb_pl011_irq: the aarch64 console line ──────────────
 
     fn cells3(a: u32, b: u32, c: u32) -> Vec<u8> {
         let mut v = a.to_be_bytes().to_vec();
@@ -1680,7 +1680,7 @@ mod tests {
         assert_eq!(stdout_device(&b), Some((b"arm,pl011".to_vec(), 0x1000)), "an alias without options");
     }
 
-    // ── dtb_irq_triggers: trigger type per line (wave 9 IRQ4 item 3) ─────
+    // ── dtb_irq_triggers: trigger type per line ─────
     //
     // Shapes from QEMU 11.0's own dumps (`dumpdtb=`): aarch64 `virt` puts
     // `interrupt-parent` on the root only (GIC phandle), virtio-mmio SPIs are
@@ -2808,7 +2808,7 @@ mod device_nodes {
     }
 }
 
-// ── Wave 13: the vDSO hwcap inputs (Zbb, Zbc, Zknh, V) ──────────────────────
+// ── The vDSO hwcap inputs (Zbb, Zbc, Zknh, V) ──────────────────────
 #[cfg(test)]
 mod hwcap_isa {
     use azos_dtb::{isa_prop_has_ext, isa_prop_has_letter};

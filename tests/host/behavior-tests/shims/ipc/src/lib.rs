@@ -22,7 +22,7 @@ pub fn shim_set_level(l: u8) { LEVEL.store(l, Ordering::Relaxed); }
 pub mod cap {
     use super::*;
     pub fn degrade_level() -> u8 { LEVEL.load(Ordering::Relaxed) }
-    // `azos_ipc::cap`'s level numbers (wave 11), which `safety.rs` checks
+    // `azos_ipc::cap`'s level numbers, which `safety.rs` checks
     // against `azos_degrade_policy`'s at compile time.
     pub const DEGRADE_LEVEL_FULL: u8 = 0;
     pub const DEGRADE_LEVEL_CAUTIOUS: u8 = 1;

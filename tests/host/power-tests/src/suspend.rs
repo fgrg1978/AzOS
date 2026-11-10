@@ -14,7 +14,7 @@
 //!   ring, with the numbers the rule names.
 //!
 //! The platform here is a script: it logs each step it is asked for, and every
-//! answer is set by the test. Canaries (run by hand, 2026-10-16): swapping
+//! answer is set by the test. Canaries (run by hand): swapping
 //! `thaw` and `unquiesce` on the way up fails the three tests that read the
 //! full order; dropping the `others > 0` gate fails
 //! `a_second_cpu_online_refuses_before_anything_is_touched`; making `slept_ns`

@@ -5,7 +5,7 @@
 //! (`budget::used_at_least`). The real `zpool.rs` and `swap.rs`; the kernel half
 //! (`pager.rs`'s locks) needs the boot gate.
 //!
-//! Canaries (by hand, 2026-10-16; discriminate / do not / did not compile):
+//! Canaries (by hand; discriminate / do not / did not compile):
 //! * `swap_out_one` holding the swap lock across `dev.write` (the old shape), or
 //!   `swap_in` across `dev.read`: `no_lock_is_held_across_the_device_wait` red (the
 //!   disk asserts both lock depths are zero).

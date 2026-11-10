@@ -6,7 +6,7 @@
 //! `#[cfg(test)]` blocks inside the crate itself works only on
 //! host targets. This excluded crate is the documented entry point.
 
-/// Owner decision 2026-10-23 (Q2): a record that must survive a power cut
+/// A record that must survive a power cut
 /// (the topology and config anti-rollback floors) is durable only when the
 /// device confirmed the flush. A device with no cache control answers
 /// `Unsupported`, which used to count as committed; it fails closed now.
@@ -37,8 +37,7 @@ mod durability_tests {
     }
 }
 
-/// The device-timeout policy (`azos_drv_api::recovery`, owner decision
-/// 2026-10-23): reset once, then latch dead, and say so. Driven by a fake
+/// The device-timeout policy (`azos_drv_api::recovery`): reset once, then latch dead, and say so. Driven by a fake
 /// device that follows the driver contract (stop, confirm, reprogram, tell
 /// `reset_done`); the AHCI driver runs the same policy over its HBA model in
 /// `drivers-tests` (`ahci_tests`).

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! `BEHAVIOR.ELF`: the ring-3 form of the recovery console's `behavior
-//! enable|disable <layer>` and the enabled-layer read (wave 12),
+//! enable|disable <layer>` and the enabled-layer read,
 //! through the kernel-hosted `behavior` endpoint its row grants.
 //!
 //! Usage: `behavior status | enable <layer> | disable <layer>` (layers 1..3).

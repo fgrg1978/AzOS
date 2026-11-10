@@ -8,7 +8,7 @@
 // caller cannot distinguish from a correct answer without reading kernel
 // source.
 //
-// `errno_for_ioring_err` is covered here too, since 2026-09-03: the real
+// `errno_for_ioring_err` is covered here too,: the real
 // `crates/core/ipc/src/io_ring.rs` is now `#[path]`-pulled into the ipc shim.
 // The previously-reported blocker (its embedded test module wanting
 // `azos_mm::shim_*` / `azos_sched::shim_set_current`) does not

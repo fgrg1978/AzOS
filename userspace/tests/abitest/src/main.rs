@@ -4,7 +4,7 @@
 //!
 //! WHY THIS EXISTS
 //!
-//! On 2026-08-21 an audit found `crates/core/libsys` and the kernel handlers
+//! An audit found `crates/core/libsys` and the kernel handlers
 //! disagreeing on the argument shape of a dozen syscalls. `exec` declared
 //! `(entry_addr, stack_addr)` where the kernel read `(elf_ptr, elf_len)`.
 //! `drv_mmap` passed `(phys, size)` where the dispatcher indexes
@@ -198,10 +198,10 @@ fn abitest_main() -> ! {
     check_code_is_read_only();
     check_rodata_not_executable();
     check_mmap_prot();
-    // Wave 13 (THREADS): native threads. They reap their own children.
+    // Native threads. They reap their own children.
     check_thread_storm();
     check_threads();
-    // Wave 15 (plan 4a): after the thread checks (their rows stop reading
+    // After the thread checks (their rows stop reading
     // at the last of them), and reaping only their own children by TID.
     check_thread_objects();
     check_orphans();
@@ -650,7 +650,7 @@ fn check_sse_state_is_per_task() {
 
 /// Map far more than any budget allows, and report what was granted.
 ///
-/// **Owner decision 102 put a frame budget on every task; nothing in the gate
+/// **A frame budget applies to every task; nothing in the gate
 /// had ever seen it REFUSE.** A quota that never refuses anything is
 /// indistinguishable from one that is not wired, and every other assertion in
 /// this program passes either way.
@@ -724,7 +724,7 @@ fn check_endpoint_exchange() {
         return;
     }
 
-    // M1, wave 9: `EPSRV.ELF`'s topology row declares no
+    // M1: `EPSRV.ELF`'s topology row declares no
     // `instances`, so one live instance is all it may have, and the one just
     // spawned is alive until it has served the call below. A second spawn of
     // the same image now must be refused (`-1`, not `EACCES`: the image is
@@ -739,7 +739,7 @@ fn check_endpoint_exchange() {
     // The capability this call MOVES to the server.
     //
     // A `Cap<Socket>`, because `DOMAIN_SOCKET` mints one **into its
-    // creator** — create-only minting, which owner decision 3 never
+    // creator** — create-only minting, which was never
     // restricted — and this program already holds both that call and
     // `SYS_CAP_CLOSE`. The sensor and GPIO capabilities its topology row
     // grants would have needed syscalls outside its seccomp profile to prove
@@ -778,7 +778,7 @@ fn check_endpoint_exchange() {
 
     // **The half that separates a MOVE from a COPY.** `epsrv` closed this very
     // capability, so if it were copied rather than moved this close would also
-    // succeed. Owner decision 38 says the sender's entry is removed in the
+    // succeed. The rule is that the sender's entry is removed in the
     // same step the receiver's is installed; this is that sentence, asserted.
     if answered && moving != 0 {
         let after = sys::close_typed(moving);
@@ -797,7 +797,7 @@ fn check_endpoint_exchange() {
     //
     // SLEEP, not yield, between looks (the child-footprint wait's reason):
     // this task (soft_rt 16) outranks `epsrv` (best_effort 24), and a yield
-    // never hands the hart to a lower priority. Seen on a wave-9 integration
+    // never hands the hart to a lower priority. Seen on an integration
     // boot: `epsrv`, Ready after its reply, printed its last line only after
     // 100 000 yields here had run out. 2 000 x 2 ms bounds the wait at 4 s.
     let mut status: i32 = -12345;
@@ -858,8 +858,8 @@ fn check_console_io() {
 
 fn check_paths_and_nul() {
     // The kernel reads paths with `copy_cstr_from_user`, which scans for a
-    // NUL and never sees the slice length. This is the real bug found on
-    // 2026-08-21 in brain_client.
+    // NUL and never sees the slice length. This is the real bug found
+    // in brain_client.
 
     // A path with no terminator must be rejected BY THE WRAPPER, before the
     // ecall, so the kernel never scans past the literal.
@@ -1293,7 +1293,7 @@ fn sleep_rc(r: sys::SleepResult) -> isize {
 /// `vdso_now_ns` converts ticks back rounding down with the same frequency, so
 /// every return reads at or after its deadline.
 ///
-/// **How late is NOT judged here (wave 13).** This check used to require the
+/// **How late is NOT judged here.** This check used to require the
 /// last wake within two ticks (20 ms) of its deadline. On QEMU the guest clock
 /// is the host's, so a vCPU the host descheduled reads as a late wake: the
 /// aarch64 row read 24.6 ms with the timer heap and 20.3 ms without it, at
@@ -1459,7 +1459,7 @@ fn check_udp_empty_datagram() {
 
 /// Connected UDP + local delivery, from ring 3.
 ///
-/// **These three paths did not exist until 2026-08-30**, and each failed on
+/// **These three paths did not exist at first**, and each failed on
 /// its own:
 ///
 ///   * `ip::send` sent a destination equal to our own IP to the wire, where it
@@ -1524,7 +1524,7 @@ fn check_udp_loopback() {
 
     // ── UNCONNECTED UDP: sendto with destination, recvfrom with sender ──
     //
-    // **This did not exist until 2026-08-30.** `NODE_SENDTO` dispatched to the
+    // **This did not exist at first.** `NODE_SENDTO` dispatched to the
     // same place as `NODE_SEND` and lost the address; `NODE_RECVFROM` likewise
     // with the sender. The UDP machinery below already supported it —
     // `udp::sendto` and `udp::recvfrom` have taken that data all along — and
@@ -1686,7 +1686,7 @@ fn check_udp_loopback() {
 
 /// `wait()` reaps a child that has finished.
 ///
-/// **This could not be checked until 2026-08-30**: `sys_wait` was
+/// **This could not be checked at first**: `sys_wait` was
 /// `pub fn sys_wait() -> i64 { -1 }` and `sys_exit(_code)` discarded the exit
 /// code. A parent had no way to learn whether its child finished, or how.
 ///
@@ -1717,7 +1717,7 @@ fn check_wait_reaps_child() {
 /// A child that faults is killed ALONE, and its parent's wait says how it
 /// died: 128 + the signal Linux would have sent (`crates/core/abi/src/exit_status.rs`).
 ///
-/// Two defects this pins (2026-09-27):
+/// Two defects this pins:
 /// * aarch64 HALTED THE MACHINE, motors included, on any EL0 synchronous
 ///   exception without an arm of its own — an undefined instruction in one
 ///   user program was a power-off. On that kernel this check never reports:
@@ -1839,7 +1839,7 @@ fn touch_exit_reap(pages: usize) -> (isize, isize) {
         if got > 0 { break; }
         sys::sleep(1);
     }
-    // The exit notice follows the child's teardown (wave 11: `note_exit` runs
+    // The exit notice follows the child's teardown (`note_exit` runs
     // after `release_address_space_at_exit` in `task_exit_with_code`), so the
     // pages are back when `waitpid` returns; `check_exit_storm` asserts that
     // at the instant of the reap. The settle loop stays for what this check
@@ -1905,7 +1905,7 @@ fn storm_child(code: i32) -> (isize, isize, i32) {
     (pid, got, status)
 }
 
-/// **A parent's `waitpid` returns only after its child's teardown** (wave 11,
+/// **A parent's `waitpid` returns only after its child's teardown** (
 /// Linux's order: `exit_mm` before `exit_notify`), seen from both ends.
 ///
 /// `EXIT_STORM_SPAWNS` times: start a child that writes two break pages and
@@ -1999,7 +1999,7 @@ fn check_exit_storm() {
 const ZOMBIE_SPAWNS_MAX: usize = 512;
 
 /// **An unreaped child's exit notice is kept until the parent reaps it, as a
-/// Linux zombie is** (wave 12, EXIT2).
+/// Linux zombie is** (EXIT2).
 ///
 /// Start children that exit at once (code `1 + i % 100`) and reap none of
 /// them until a spawn is refused. Every notice queued meanwhile holds the
@@ -2011,7 +2011,7 @@ const ZOMBIE_SPAWNS_MAX: usize = 512;
 /// **Canary** (by hand): make `exit_note::admits` answer `true` — spawns never
 /// stop until `ZOMBIE_SPAWNS_MAX`, the table (one entry per task slot) fills
 /// with live notices, `drops` counts the overflow, and children that exited
-/// are not reaped. Before wave 12 the table held 32 notices and evicted the
+/// are not reaped. The table used to hold 32 notices and evicted the
 /// oldest beyond that.
 fn check_unreaped_children_are_kept() {
     use sys::{EXIT_STAT_NOTICE_DROPS, EXIT_STAT_NOTICE_REFUSALS};
@@ -2142,7 +2142,7 @@ fn check_views() {
     expect_eq(b"views: the child is reaped", got, child);
 }
 
-// ── Wave 13: native threads ─────────────────────────────────────────────────
+// ── Native threads ─────────────────────────────────────────────────
 
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering as AO};
 
@@ -2236,7 +2236,7 @@ extern "C" fn t_exit_now(_z: u64, _stack: u64, _arg: u64) -> ! {
 /// Rounds of [`check_thread_storm`].
 const STORM_ROUNDS: usize = 200;
 
-/// Thread-group exits, many times over, on every hart (CTXHUNT, 2026-10-08).
+/// Thread-group exits, many times over, on every hart (CTXHUNT).
 /// Each round: a child process whose two threads spin on one counter exits 7
 /// (its exit must stop them); a thread exits and is joined; a child process
 /// whose thread faults while the process exits is reaped.
@@ -2321,7 +2321,7 @@ fn t_join(i: usize) -> bool {
     false
 }
 
-/// Native threads (wave 13): two threads and the main thread contend on a
+/// Native threads: two threads and the main thread contend on a
 /// futex lock over shared memory; a thread uses the creator's file handle
 /// and opens one the creator then uses (one capability table, one
 /// descriptor table); the task list shows the thread; `exit` from any thread
@@ -2431,7 +2431,7 @@ fn check_threads() {
     }
 }
 
-// ── What a thread creates (wave 15) ─────────────────────────────────────────
+// ── What a thread creates ─────────────────────────────────────────
 
 /// The port handle a thread created for [`check_thread_objects`]
 /// (`u32::MAX` until it made one).
@@ -2453,7 +2453,7 @@ extern "C" fn x_make_port(_z: u64, _stack: u64, _arg: u64) -> ! {
     sys::thread_exit(0)
 }
 
-/// What a thread creates belongs to its process (wave 15, plan 4a): a port a
+/// What a thread creates belongs to its process (plan 4a): a port a
 /// thread made, and then exited, is still the process's. Before, the thread's
 /// exit freed it (`port_release_all` of the thread's TID) and the handle in
 /// the shared table answered `ECAPSTALE`.
@@ -2474,8 +2474,8 @@ fn check_thread_objects() {
            made && rc == E_EAGAIN, rc);
     if made { let _ = sys::port_destroy_typed(port); }
     check_thread_pointer();
-    // A new thread receives the argument `thread_create` was given (wave 15:
-    // aarch64 started every thread with its registers zeroed, so it read 0;
+    // A new thread receives the argument `thread_create` was given (aarch64
+    // used to start every thread with its registers zeroed, so it read 0;
     // canary `thread-regs-canary`).
     X_ARG.store(0, AO::Release);
     T_CTID[0].store(u32::MAX, AO::Release);
@@ -2556,7 +2556,7 @@ fn check_thread_pointer() {
 /// Code an orphan exits with when it saw itself adopted (`abichild`).
 const ORPHAN_ADOPTED: i32 = 0x5A;
 
-/// Wave 13 (orphans, Linux's model): when a task exits, its children go to
+/// When a task exits, its children go to
 /// the nearest live ancestor marked a child subreaper, else to init — this
 /// image, the autorun row's task — and they are listed under the adopter in
 /// the task list and reaped by its `waitpid`.
@@ -2568,7 +2568,7 @@ const ORPHAN_ADOPTED: i32 = 0x5A;
 ///    that starts a grandchild and exits; the grandchild goes to the marked
 ///    child, not to init. The marked child exits with a bit per failed step.
 ///
-/// Canary: the kernel feature `orphan-reparent-canary` keeps wave 12's
+/// Canary: the kernel feature `orphan-reparent-canary` keeps the old
 /// behaviour (no re-link, notices dropped); every adoption line goes red.
 fn check_orphans() {
     let me = sys::getpid() as u32;
@@ -2618,7 +2618,7 @@ fn check_orphans() {
     outln(b"[ABITEST] orphans: done");
 }
 
-/// W^X (wave 13, security): a process's store to its own code or read-only
+/// W^X (security): a process's store to its own code or read-only
 /// data faults (128 + SIGSEGV) and changes nothing. A copy-on-write copy once
 /// handed a forked child a private WRITABLE copy that kept the execute bit:
 /// writable code (the fork is the Linux personality's now; its row is
@@ -2643,7 +2643,7 @@ fn check_code_is_read_only() {
     expect_true(b"wx: a read() into a process's code is refused", got == pid && st == 0);
 }
 
-/// Read-only data is never executable (wave 15, VI). A page two `PT_LOAD`
+/// Read-only data is never executable (VI). A page two `PT_LOAD`
 /// segments shared took the union of their permissions, so the `.rodata`
 /// on the last `.text` page ran. The loader now maps each page with its own
 /// segment's permissions only (and refuses an image whose segments mapped
@@ -2660,7 +2660,7 @@ fn check_rodata_not_executable() {
     expect_true(b"elfperm: a call into .rodata faults (128+SIGSEGV)", got == pid && st == 139);
 }
 
-/// `mmap`'s `prot` is honoured (wave 13, security): a store to a
+/// `mmap`'s `prot` is honoured (security): a store to a
 /// `PROT_READ` mapping faults (128+SIGSEGV) and a `read()` into it is
 /// refused; a `PROT_READ | PROT_WRITE` mapping takes stores; `0` maps
 /// nothing (a store faults). Canary `mmap-prot-canary`: every mapping is
@@ -2803,8 +2803,7 @@ const E_ACCES: isize = -13;
 ///
 /// This program is granted `endpoint.demo` with `WRITE` by the topology
 /// (`crates/core/topology/src/builder.rs`), and `UHELLO.ELF` the same name with
-/// `READ`, which is what claims it as the server. Until 2026-09-19 no topology
-/// row was named after an image at all, so a spawned process was seeded
+/// `READ`, which is what claims it as the server. Topology rows used not to be named after an image at all, so a spawned process was seeded
 /// nothing and this capability could not have existed.
 ///
 /// **What this deliberately does NOT assert, and why.** It does not call
@@ -2831,7 +2830,7 @@ fn check_endpoint_cap() {
     expect_true(b"cap_lookup(Endpoint, ..) finds the topology-seeded cap", ep >= 0);
 }
 
-/// The kernel-hosted `entropy` endpoint (wave 9 P9, an endpoint op since D6
+/// The kernel-hosted `entropy` endpoint (an endpoint op since D6
 /// part A): the call checks the capability first, and a held endpoint either
 /// draws from the pool or -- on a boot with no entropy device -- answers
 /// `NOT_READY` and writes nothing. Which of the two this boot is, is printed:
@@ -2897,7 +2896,7 @@ fn check_spawn() {
             sys::sleep(1);
         }
         expect_eq(b"waitpid(spawned child) returns its TID", got, child);
-        // V1.8 (owner decision, 2026-09-26): a seccomp denial KILLS the task
+        // V1.8: a seccomp denial KILLS the task
         // (Linux strict, exit code 128+31 = 159) instead of answering -1.
         expect_eq(
             b"spawned uhello is killed by seccomp (exit 159): its profile refused the fast IPC call",
@@ -2911,7 +2910,7 @@ fn check_spawn() {
         sys::spawn_ex(sys::cstr!(b"/fat/CONFIG.INI"), None),
         E_ACCES,
     );
-    // Owner decision 2026-09-28: HELLO.ELF IS bound to an image profile, and
+    // HELLO.ELF IS bound to an image profile, and
     // the topology has no row named after it, so the kernel refuses it before
     // loading anything (console: `[SPAWN] REFUSED: HELLO.ELF has no topology
     // row`). A bound image is refused with EACCES on no other path.
@@ -3247,7 +3246,7 @@ fn issue_nr4(nr: u64, a0: u64, a1: u64, a2: u64, a3: u64) -> isize {
 /// shape of a service: the server **does not know in advance who will speak to
 /// it**, and answers using the return address `recvfrom` gives it.
 ///
-/// If `recvfrom` did not report the sender — as was the case until 2026-08-30
+/// If `recvfrom` did not report the sender — as was once the case
 /// — this test could not be written: the server would receive the datagram and
 /// have nowhere to answer.
 fn check_udp_client_server() {
@@ -3392,8 +3391,8 @@ fn check_socket_release() {
     // The index is the kernel's, shared by every task, so it may land on 1 or
     // 2, which in this process are OPEN fds (the console, libsys's fd table):
     // `close` would then close the console descriptor and answer 0, and the
-    // check below would fail on a collision, not on the property (seen in
-    // wave 12, after a phase that left a kernel socket open meanwhile). Hold
+    // check below would fail on a collision, not on the property (seen once,
+    // after a phase that left a kernel socket open meanwhile). Hold
     // such a socket and take the next one.
     let mut held = [-1isize; 2];
     let mut n_held = 0;
@@ -3570,7 +3569,7 @@ fn check_kernel_stubs() {
 
     // sys_taskinfo is `{ 0 }` too — it reports nothing but is not an error.
     // `taskinfo` was a stub returning 0 with an untouched buffer; it reports
-    // the calling task since 2026-09-11. The tid check is what makes this
+    // the calling task. The tid check is what makes this
     // discriminate: a handler that writes the right BYTE COUNT and garbage
     // passes a length assertion and fails this one.
     {
@@ -3664,7 +3663,7 @@ fn panic(_: &core::panic::PanicInfo) -> ! {
     sys::exit(2);
 }
 
-// ── The foreign-ABI family (D6, `azos_abi::foreign`) ─────────────────────────
+// ── The foreign-ABI family (`azos_abi::foreign`) ─────────────────────────
 //
 // A child process (`abichild`'s `foreign` mode) registers a trap entry and
 // resumes into a tiny "foreign program" (assembly, on a stack of its own)

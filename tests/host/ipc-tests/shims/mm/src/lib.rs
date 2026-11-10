@@ -137,7 +137,7 @@ pub mod pmm {
         Err(())
     }
 
-    /// `n` consecutive zeroed pages (wave 11, SHMRING: `memobj.rs`'s kernel
+    /// `n` consecutive zeroed pages (SHMRING: `memobj.rs`'s kernel
     /// stream regions), first fit, as the real one; freed one page at a time.
     pub fn alloc_contiguous(n: usize) -> Result<PhysAddr, ()> {
         let mut s = state();

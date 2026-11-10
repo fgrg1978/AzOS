@@ -197,7 +197,7 @@ fn ipc_roundtrip(abi: &(impl Abi + Ipc), floor_ns: u64) -> Option<u64> {
     // switching then its number is not comparable with one that did.
     //
     // This lane is where the comparison actually lives. `switch-loaded` cannot
-    // provide it: measured 2026-09-11, AzOS switched on 500 of 500 yields
+    // provide it: measured, AzOS switched on 500 of 500 yields
     // and Linux on 0 of 500, because `sched_yield` re-elects the running task
     // when nothing else is runnable on its CPU. Here both sides must block.
     let ipc_sw_before = abi.ctx_switches();
@@ -288,7 +288,7 @@ fn port_roundtrip(abi: &(impl Abi + Ipc), peer: u64, floor_ns: u64) {
 /// Stop the `ipc-roundtrip` server with the sentinel, so it exits cleanly
 /// rather than being left blocked when this process does.
 ///
-/// **Retried, and a failure is printed (wave 15).** It was one unchecked
+/// **Retried, and a failure is printed.** It was one unchecked
 /// call, and a spurious `-1` (the K-C10 backstop, see [`rt_retry`]) would
 /// have left the server behind without a word. Not what put a sixth task in
 /// `switch-loaded`'s window (that was the UDP echo, see
@@ -389,7 +389,7 @@ fn report_tail(abi: &impl Abi, label: &[u8], t: &Tail) {
 }
 
 /// Heap growth and process life cycle.
-// ── Wave 13: threads ─────────────────────────────────────────────────────────
+// ── Threads ─────────────────────────────────────────────────────────
 
 #[repr(C, align(16))]
 struct ThrStack([u8; 16 * 1024]);
@@ -485,7 +485,7 @@ fn thread_lanes<A: Abi + Threads>(abi: &A, floor_ns: u64) {
     lock_contended_lane::<A>(abi, floor_ns);
 }
 
-// ── N0 (wave 15): a contended lock, both sides ──────────────────────────────
+// ── N0: a contended lock, both sides ──────────────────────────────
 
 /// The lock word: 0 free, 1 held, 2 held with (possible) waiters — the
 /// three-state futex mutex of Drepper's "Futexes Are Tricky", which is what
@@ -1206,9 +1206,9 @@ fn scale_lanes<A: Abi + Threads + Scale>(abi: &A, floor_ns: u64) {
     }
 }
 
-/// Wave 15 (`disk`): the disk file-write lanes.
+/// The disk file-write lanes.
 fn disk_lanes(abi: &(impl Abi + Shell), floor_ns: u64) {
-    // Wave 15: create/truncate + write 4 KiB + close on the DISK file
+    // Create/truncate + write 4 KiB + close on the DISK file
     // system (AzOS FAT32 with its write-back cache; Linux vfat on the same
     // kind of virtio-blk disk), without and with an fsync before the close.
     match abi.disk_setup() {
@@ -1267,7 +1267,7 @@ fn proc_lanes(abi: &(impl Abi + Proc), floor_ns: u64) {
     //    comparison.
     //
     //    **Do NOT read the gap between the two lanes as the cost of reaping.**
-    //    Measured on QEMU 2026-09-07, five runs of the same binary:
+    //    Measured on QEMU, five runs of the same binary:
     //    fork+exit spanned 246,450-332,975 ns/op and fork+exit+wait
     //    271,900-372,775 — about 35% either way — and the SIGN of the
     //    difference flipped run to run (+2,550, +102,900, -2,800, -22,625).
@@ -1276,19 +1276,19 @@ fn proc_lanes(abi: &(impl Abi + Proc), floor_ns: u64) {
     //    absolutes, not the ratio (the "x floor" figures moved 73x-184x across
     //    those same runs, because the floor itself oscillates).
     //    **This lane runs BEFORE `fork+exit`.** The order was load-bearing
-    //    until wave 11, when `fork+exit` started reaping its own children:
-    //    `note_exit`'s table held 32 entries and dropped the OLDEST when full (until wave 12),
+    //    before `fork+exit` started reaping its own children:
+    //    `note_exit`'s table held 32 entries and dropped the OLDEST when full (it no longer does),
     //    and `fork+exit` used to leave N_PROC = 40 children unreaped. Run after
     //    it, this lane's own exit notice could be evicted by a straggler
     //    finishing mid-batch, and `DOMAIN_WAIT` correctly reported that as
-    //    `ECHILD` — measured 2026-09-07 as 2 failures in 40 iterations, always
+    //    `ECHILD` — measured as 2 failures in 40 iterations, always
     //    on the first poll. Draining first was not enough: the drain reaped 32
     //    of 40 and the rest had not been scheduled yet.
     //
     //    That is not a defect in `waitpid`; it is the table's drop-oldest
     //    policy becoming observable from ring 3, which `wait` hid by consuming
     //    a straggler's notice as if it were ours. Reordering removes the
-    //    coupling instead of tolerating it. Since wave 14 neither lane
+    //    coupling instead of tolerating it. Neither lane now
     //    leaves a child behind: each waits for its own.
     let mut wait_err = 0i64;
     let t_life = batch(N_PROC, || {
@@ -1303,10 +1303,10 @@ fn proc_lanes(abi: &(impl Abi + Proc), floor_ns: u64) {
     }
 
     // 3. fork + the child exiting immediately + its reap, the child's exit
-    //    inside the window (wave 14, see `Proc::fork_exit`): each iteration
+    //    inside the window (see `Proc::fork_exit`): each iteration
     //    returns only once THAT child has been reaped, so no child is left
     //    to run after the batch and nothing needs reaping untimed. Until
-    //    wave 14 it reaped at most one finished child per iteration, and on a
+    //    It reaped at most one finished child per iteration, and on a
     //    kernel that kept the parent on the hart the children all exited
     //    after the batch: the number was fork alone there (~68k), fork plus
     //    most exits elsewhere. Now the same operation as the lane above.
@@ -1324,7 +1324,7 @@ fn proc_lanes(abi: &(impl Abi + Proc), floor_ns: u64) {
 
 }
 
-/// Wave 12: process start by path and the pipe (`bench_core::Shell`, which
+/// Process start by path and the pipe (`bench_core::Shell`, which
 /// says what each side runs). `spawn+wait` is start-to-reaped of an
 /// exit-at-once program; `pipe-rw` one `PIPE_MSG`-byte write and its read
 /// back in the same task; `pipe+close` creating a pipe and closing both
@@ -1333,7 +1333,7 @@ fn proc_lanes(abi: &(impl Abi + Proc), floor_ns: u64) {
 const N_PIPE_PP: u64 = 500;
 const N_PIPE_PP_WARM: u64 = 50;
 
-/// `pipe-pingpong` (N0, wave 15): 8 bytes to a FORKED child over one pipe
+/// `pipe-pingpong`: 8 bytes to a FORKED child over one pipe
 /// and its answer back over another, the same code on both kernels. It is
 /// the cross-address-space ping-pong, and it is
 /// exactly what Linux's `ipc-roundtrip` does; on AzOS it puts the pipe path
@@ -1405,7 +1405,7 @@ fn pipe_pingpong_lane(abi: &(impl Abi + Proc + Shell), floor_ns: u64) {
     }
 }
 
-/// `cap-lookup` (N0, wave 15): resolve a handle this task holds, in its own
+/// `cap-lookup`: resolve a handle this task holds, in its own
 /// table, [`N_VDSO`] times — AzOS `SYS_CAP_INFO` on the bench endpoint,
 /// Linux `fcntl(F_GETFD)` on a held descriptor (`bench_core::Handles`).
 /// Under `-icount` the number is the instructions of one lookup INCLUDING
@@ -1501,7 +1501,7 @@ fn shell_lanes(abi: &(impl Abi + Shell), floor_ns: u64) {
     } else {
         report(abi, b"file-ord 64B", t_file, N_FILE, floor_ns);
     }
-    // Wave 13: the same open + read + close on a RAM file on both sides —
+    // The same open + read + close on a RAM file on both sides —
     // the open file description's cost with no disk under it.
     match abi.tmp_setup() {
         Err(e) => {
@@ -1594,10 +1594,10 @@ fn vdso_lanes(abi: &(impl Abi + Vdso), floor_ns: u64) {
     }
 }
 
-// ── Wave 6, front V: the per-task vDSO page and the shm ring ───────────────
+// ── The per-task vDSO page and the shm ring ───────────────
 //
 // The Linux build measures the same work where Linux has the same work
-// (`abi_linux.rs`, "Wave 6 counterparts"): `notify-*` against `futex` on the
+// (`abi_linux.rs`, "Counterparts"): `notify-*` against `futex` on the
 // same shared word, `ring-*` against the same SPSC ring core over a
 // `MAP_SHARED` page and `futex`, `taskinfo [call]` against `getrusage`.
 // `sensor-read-*` and `taskinfo [vdso]` have no Linux object to measure (no
@@ -1703,7 +1703,7 @@ fn vdso_task_lanes(abi: &impl Abi, floor_ns: u64) {
         None => fail_line(abi, b"vdso-task page unreadable", -4),
     }
 
-    // Canary (wave 11): the published slot carries its acquisition stamp,
+    // Canary: the published slot carries its acquisition stamp,
     // on the reader's clock. The interrupt reads the encoder counters itself,
     // so the stamp is that publication's — never 0, never ahead of the
     // reader, and younger than the second this rung has been running.
@@ -1716,7 +1716,7 @@ fn vdso_task_lanes(abi: &impl Abi, floor_ns: u64) {
         }
         None => fail_line(abi, b"vdso-sensor encoder unreadable", -5),
     }
-    // Canary (wave 11): the reading carries its acquisition stamp, on the
+    // Canary: the reading carries its acquisition stamp, on the
     // reader's clock, taken by the odometry task no later than the call and
     // within a second before it, and the encoder's 16 bytes.
     let mut tsbuf = [0u8; 64];
@@ -1965,7 +1965,7 @@ fn frame_report(abi: &impl Abi, t: u64, run: &FrameRun, floor_ns: u64) {
     abi.write(b" frames of 1440 B\n");
 }
 
-/// Wave 11 (SHMRING): `frame-stream`, a LiDAR-scan-sized frame (1440 bytes)
+/// `frame-stream`, a LiDAR-scan-sized frame (1440 bytes)
 /// streamed one way on the byte-slot ring the kernel's sensor streams use
 /// (`SpscBytes` + `BytesProducer`, 16 slots), the consumer draining whatever
 /// is there and sleeping on the doorbell only when the ring is empty.
@@ -2005,7 +2005,7 @@ fn frame_lanes(abi: &(impl Abi + Ipc), peer: u64, floor_ns: u64) {
 /// `[VSBENCH] azos switch-loaded hart: measurer first=2 last=2`.
 ///
 /// The lane is bimodal on AzOS, and this line is what attributed it
-/// (2026-09-13, 20 boots of one frozen binary): the mode is k, the number of
+/// (20 boots of one frozen binary): the mode is k, the number of
 /// peers placed on the measurer's hart. k=1 gave 31-35 k ns/op in 4 boots, k=2
 /// gave 48-53 k in 16, no overlap — two tasks per round against three, the
 /// 1.5x between the modes. A task that only yields never changes hart on
@@ -2154,11 +2154,11 @@ fn yield_peer(abi: &(impl Abi + Proc + Shell), win_r: u64, win_w: u64, back_r: u
 /// genuinely runnable tasks, so every yield is a full selection and a real
 /// context switch.
 ///
-/// **Two numbers, and only the second compares across kernels (wave 15).**
+/// **Two numbers, and only the second compares across kernels.**
 /// `switch-loaded` is the measurer's time per yield: one yield of its own
 /// plus whatever ran before it was picked again. How much ran is the
 /// scheduler's choice, so the op need not be the same amount of work on two
-/// kernels: measured at `-smp 1` under `-icount` (wave 15), AzOS ran all
+/// kernels: measured at `-smp 1` under `-icount`, AzOS ran all
 /// four competitors between two measurer yields and Linux about one (0.50 to
 /// 0.96 across runs), with 323 to 500 of the measurer's 500 yields switching. `ctxsw-loaded` divides the
 /// same window by the context switches inside it — the measurer's own count
@@ -2262,7 +2262,7 @@ fn loaded_switch_lane(abi: &(impl Abi + Proc + Shell), floor_ns: u64, unloaded_y
 
     // **THIS LANE'S NUMBER IS CONDITIONAL, AND NOTHING USED TO CHECK THE
     // CONDITION.** It means "a yield against four runnable competitors" only
-    // if the competitors are competing. Measured 2026-09-10: across nine runs
+    // if the competitors are competing. Measured: across nine runs
     // of the same binary it read 30-60 us eight times and 3.3 us once, and the
     // 3.3 us was reported as a 1.4x win over Linux. Reproduced on demand by
     // making the peers return without yielding (3602 against a 3336 unloaded
@@ -2486,7 +2486,7 @@ fn net_lane(abi: &(impl Abi + Net + Proc), floor_ns: u64) {
 }
 
 /// TCP bulk, both directions, against a host peer over QEMU user networking
-/// (wave 15): `tcp-bulk-tx` (the guest sends [`TCP_BULK_BYTES`]) and
+///: `tcp-bulk-tx` (the guest sends [`TCP_BULK_BYTES`]) and
 /// `tcp-bulk-rx` (the guest receives them). One op is one KiB, so ns/op is
 /// guest nanoseconds per KiB, and under `-icount shift=0` (the TCP pass of
 /// `tools/bench/vsbench_compare.sh` always runs so) instructions per KiB: the
@@ -3288,7 +3288,7 @@ fn run<A: Abi + Handles + Ipc + Mem + Net + Proc + Shell + Vdso + Threads + Uacc
     //    every lane is quoted against the floor of its own run.
     if !lanes.on(b"ipc") {
     } else if let Some(peer) = ipc_roundtrip(abi, floor_ns) {
-        // 3b. Wave 6: notify/wait and the shm ring, against the same peer.
+        // 3b. Notify/wait and the shm ring, against the same peer.
         #[cfg(feature = "azos")]
         ring_lanes(abi, peer, floor_ns);
         #[cfg(feature = "azos")]
@@ -3312,7 +3312,7 @@ fn run<A: Abi + Handles + Ipc + Mem + Net + Proc + Shell + Vdso + Threads + Uacc
     if lanes.on(b"disk") { disk_lanes(abi, floor_ns); }
     // 4a''. Front uaccess-pin: the kernel's reads and writes of user memory.
     if lanes.on(b"uaccess") { uaccess_lanes(abi, floor_ns); }
-    // 4b'. Wave 13: threads of one process, both sides.
+    // 4b'. Threads of one process, both sides.
     if lanes.on(b"thread") { thread_lanes::<A>(abi, floor_ns); }
     // 4b''. Front memobj-multihart: futex calls on several harts at once.
     //      Only when named: it means something only in its own pass at
@@ -3322,7 +3322,7 @@ fn run<A: Abi + Handles + Ipc + Mem + Net + Proc + Shell + Vdso + Threads + Uacc
 
     // 4c. The only lane that measures the cost of NOT entering the kernel.
     if lanes.on(b"vdso") { vdso_lanes(abi, floor_ns); }
-    // 4d. Wave 6: the task's own vDSO page — its sensors and counters.
+    // 4d. The task's own vDSO page — its sensors and counters.
     #[cfg(feature = "azos")]
     if lanes.on(b"vdso") { vdso_task_lanes(abi, floor_ns); }
     // Linux: only `taskinfo [call]` has a counterpart, and it is the very
@@ -3347,17 +3347,17 @@ fn run<A: Abi + Handles + Ipc + Mem + Net + Proc + Shell + Vdso + Threads + Uacc
     #[cfg(feature = "azos")]
     if lanes.on(b"ioring") { ioring_idl_lanes(abi, floor_ns); }
 
-    // 4e. Wave 12: the user shell's primitives (`bench_core::Shell`), both
+    // 4e. The user shell's primitives (`bench_core::Shell`), both
     //     sides. Appended before the closing floor, so no lane above moves.
     if lanes.on(b"shell") { shell_lanes(abi, floor_ns); }
-    // N0 (wave 15): the cross-AS pipe ping-pong and the handle lookup, both
+    // N0: the cross-AS pipe ping-pong and the handle lookup, both
     // sides, appended inside `shell` before the closing floor.
     if lanes.on(b"shell") {
         pipe_pingpong_lane(abi, floor_ns);
         cap_lookup_lane(abi, floor_ns);
     }
 
-    // 4f. Wave 13 (RT7): periodic timer wake jitter, both sides. Appended
+    // 4f. RT7: periodic timer wake jitter, both sides. Appended
     //     before the closing floor, so no lane above moves.
     if lanes.on(b"timer") { timer_periodic_lane(abi); }
 
@@ -3377,7 +3377,7 @@ fn run<A: Abi + Handles + Ipc + Mem + Net + Proc + Shell + Vdso + Threads + Uacc
         nic_egress_lane(abi, floor_ns);
         net_lane(abi, floor_ns);
     }
-    // 6b. Wave 15: TCP bulk against a host peer. Only a boot with a NIC and
+    // 6b. TCP bulk against a host peer. Only a boot with a NIC and
     //     a peer measures it (the TCP pass of tools/bench/vsbench_compare.sh);
     //     every other boot prints one line and moves on.
     if lanes.on(b"tcp") { tcp_bulk_lanes(abi, floor_ns); }
@@ -3434,7 +3434,7 @@ pub extern "C" fn _start() -> ! {
 
 #[cfg(feature = "linux")]
 extern "C" fn linux_main(sp: usize) -> ! {
-    // Wave 12: started by the `spawn+wait` lane as its exit-at-once child.
+    // Started by the `spawn+wait` lane as its exit-at-once child.
     if abi_linux::init_args(sp) {
         abi_linux::exit(0);
     }
@@ -3488,7 +3488,7 @@ const TIMER_PERIODIC_WARM: usize = 20;
 /// The period: 1 ms, rt-motor's.
 const TIMER_PERIODIC_NS: u64 = 1_000_000;
 
-/// Wave 13 (RT7): `timer-periodic` — a task sleeps to absolute deadlines one
+/// `timer-periodic` — a task sleeps to absolute deadlines one
 /// period apart and records how late each wake is (`now - deadline`, ns, on
 /// the clock the sleep is defined on). AzOS: `SYS_SLEEP_UNTIL` against the
 /// vDSO clock; Linux: `clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME)` against

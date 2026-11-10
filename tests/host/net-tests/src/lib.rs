@@ -28,7 +28,7 @@ mod seq;
 //
 // `tcp.rs` reaches for `crate::seq`, `super::ip`, `azos_sync::SpinLock`,
 // `azos_limits::TCP_MAX_CONNS`, `azos_crypto::hkdf::hmac_sha256`
-// (U06-6, `generate_isn`) and the `wcet` attribute -- and nothing else. Only
+// (`generate_isn`) and the `wcet` attribute -- and nothing else. Only
 // `ip` is stood in for, and only so the frames TCP emits can be recorded;
 // everything else here is the code the kernel ships, including the real
 // HMAC-SHA256 (`azos_crypto` is a real dependency below, not a shim).
@@ -841,7 +841,7 @@ mod tcp_rx {
         // the previous test left.
         //
         // `MAX_SOCKETS` is 16 for the whole machine, so a leak makes a LATER
-        // test's `socket_create_owned` return -1. On 2026-09-07 that landed on
+        // test's `socket_create_owned` return -1. That once landed on
         // a socket test that failed inside the suite and passed 5/5 standing
         // alone — the failure
         // attributing itself to whichever test ran next rather than to
@@ -1675,7 +1675,7 @@ mod tcp_window_sites {
     /// it may resume: once the window reaches zero the peer stops sending, so
     /// there is no inbound segment left to piggyback an ACK on.
     ///
-    /// Since wave 15 (N6) it is no longer one pure ACK per read:
+    /// It is no longer one pure ACK per read:
     /// - a read that opens less than one SMSS sends nothing (RFC 1122
     ///   §4.2.3.3 receiver SWS);
     /// - a larger one, while the peer still has most of its window, is held
@@ -1760,7 +1760,7 @@ mod tcp_window_sites {
         );
     }
 
-    /// **TCP deadlines on the kernel timer (wave 15).** `next_deadline` is
+    /// **TCP deadlines on the kernel timer.** `next_deadline` is
     /// exactly when `tcp_tick` retransmits: one tick early nothing leaves,
     /// at the deadline the segment does, and the next deadline is the
     /// backed-off RTO from there. The net poll task sleeps until this value,
@@ -1789,7 +1789,7 @@ mod tcp_window_sites {
         assert_eq!(d2, d + 2 * rto, "the next deadline is the backed-off RTO");
     }
 
-    /// **Delayed ACK on time (wave 15).** A held window update's deadline is
+    /// **Delayed ACK on time.** A held window update's deadline is
     /// at most `TCP_DELACK_MS` away, and `tcp_tick` at that tick sends it.
     /// With the poll task sleeping until `next_deadline`, the ACK leaves at
     /// 40 ms (plus the timer's own latency), not at a 100 ms poll tick.
@@ -1815,7 +1815,7 @@ mod tcp_window_sites {
     static KICKS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     fn count_kick() { KICKS.fetch_add(1, std::sync::atomic::Ordering::SeqCst); }
 
-    /// **A deadline armed while the poll task sleeps wakes it (wave 15).**
+    /// **A deadline armed while the poll task sleeps wakes it.**
     /// The task publishes its wake (`poll_sleep_until`); a `send_data` that
     /// starts an RTO earlier than that kicks it, and the same send while it
     /// runs (`poll_running`) does not. Canary: drop `note_conn` from
@@ -2188,7 +2188,7 @@ mod tcp_fin_retransmit {
 /// buffer)` — a property of the CALLER. Every caller today happens to cap at
 /// 4 KiB because `NODE_RECV` does, but nothing stopped a future one asking for
 /// the full 128 KiB ring, which is over a million RV64 instructions with
-/// `TCP.lock()` held. Since K-C29 step 2 that section is non-preemptible, so
+/// `TCP.lock()` held. That section is non-preemptible, so
 /// the bound became a real-time latency floor chosen by whoever calls `recv`.
 ///
 /// The test asks for MORE than the cap with MORE than the cap available. That
@@ -3097,7 +3097,7 @@ mod tcp_retransmission_slot {
         assert_eq!(reassembled, data, "bytes must arrive in order and unmodified");
     }
 
-    /// `send_all_until` (wave 10): the clock-bounded twin completes the same
+    /// `send_all_until`: the clock-bounded twin completes the same
     /// multi-segment transfer when its wait callback lets the window open.
     #[test]
     fn send_all_until_completes_when_the_wait_opens_the_window() {
@@ -3215,7 +3215,7 @@ mod tcp_reassembly {
     /// same bytes whether or not the repeats took slots. Removing the
     /// duplicate check left it green. What discriminates is a distinct segment
     /// that needs the slot a repeat would take: three distinct held segments,
-    /// the repeats, then a fourth. (Until 2026-09-14 a full queue evicted its
+    /// the repeats, then a fourth. (A full queue used to evict its
     /// farthest entry, and the test held four and repeated one, so that each
     /// repeat evicted a real segment.)
     #[test]
@@ -3265,7 +3265,7 @@ mod tcp_reassembly {
     /// answering it named it in a block. Evicting one is reneging (RFC 2018
     /// §8). With one-MSS slots the sender then holds a whole segment as
     /// delivered that the receiver no longer has, SACK recovery skips it, and
-    /// only a retransmission timeout repairs it (`tcp_throughput`, 2026-09-14).
+    /// only a retransmission timeout repairs it (`tcp_throughput`).
     /// Until then a full queue evicted its farthest entry for any arrival;
     /// that eviction, and the one that evicts only for an arrival nearer than
     /// the farthest entry, are the canaries.
@@ -3341,8 +3341,8 @@ mod tcp_reassembly {
 
     /// An out-of-order segment longer than 256 B, up to one full MSS, is held
     /// whole: once the hole before it is filled, every byte of it comes out,
-    /// in place, and the ACK covers it, with nothing resent. Until 2026-09-14
-    /// a slot was 256 B, so a held segment kept its first 256 bytes and the
+    /// in place, and the ACK covers it, with nothing resent. A slot used to be
+    /// 256 B, so a held segment kept its first 256 bytes and the
     /// peer had to send the rest again.
     ///
     /// Asserted on the bytes delivered, length and content, not on the ACK
@@ -4222,7 +4222,7 @@ mod arp_cache {
         );
     }
 
-    /// NUD-style reachable-time aging (coordinator ask, alongside M26). A
+    /// NUD-style reachable-time aging. A
     /// solicited entry is still USABLE past `ARP_REACHABLE_TICKS` — handed
     /// back rather than refused, since a NIC does not usually change
     /// mid-session — but a caller about to reuse it for a fresh dial fires
@@ -4878,7 +4878,7 @@ mod udp_icmp {
     /// Overrunning the ring depth drops, and says so.
     ///
     /// Which end is dropped used to be an open question; it no longer is
-    /// (owner decision, 2026-09-05: head-drop — see `UdpRxBuf::push` in
+    /// (head-drop — see `UdpRxBuf::push` in
     /// `udp.rs`). This test only pins the counting, which is needed under
     /// either policy and was written before the choice was settled, so it
     /// deliberately does not check which datagrams survive. That is a
@@ -4913,7 +4913,7 @@ mod udp_icmp {
         assert_eq!(delivered, 4, "and the ring still holds exactly its depth");
     }
 
-    /// Head-drop, decided (2026-09-05): when the ring is full the datagram
+    /// Head-drop, decided: when the ring is full the datagram
     /// evicted is the OLDEST one already queued, never the one that just
     /// arrived.
     ///
@@ -5718,7 +5718,7 @@ mod mcast_sockets {
         );
     }
 
-    /// Security audit unit 6, finding F4. `igmp`'s table is machine-wide
+    /// `igmp`'s table is machine-wide
     /// (`igmp::MAX_GROUPS`) and [`MAX_MCAST_PER_SOCKET`] only bounds one
     /// socket, so a task with several sockets could otherwise fill the whole
     /// table by itself. A task holds at most [`MAX_MCAST_GROUPS_PER_TASK`]
@@ -7363,7 +7363,7 @@ mod socket_table {
     /// The table is 16 entries and an exhausted one must report failure, not
     /// hand out a slot it does not have.
     ///
-    /// **Superseded in its means, not its property (2026-09-05).** This used to
+    /// **Superseded in its means, not its property.** This used to
     /// fill the table from ONE task, which the per-task quota now refuses at
     /// half — that behaviour was the bug, not the property. Filled from the
     /// kernel instead, which is exempt from the quota for the reason given at
@@ -8683,7 +8683,7 @@ pub mod fuzz_entry {
     }
 }
 
-/// N7 (wave 15): a task waiting on the network is woken by the segment that
+/// N7: a task waiting on the network is woken by the segment that
 /// changes what it waits for, instead of sleeping 1 ms and looking again.
 ///
 /// The kernel's hooks are replaced by fakes: "block until the deadline" is

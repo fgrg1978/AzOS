@@ -56,7 +56,7 @@ fn hold(tid: u32, kind: CapType, resource: u32, perms: CapPerms) {
 // the real JH7110 part, `(8, shared_control = false)`), where the reach IS
 // the named channel; and `PWM_DOMAIN_VF2_DRIVER` (`(4, true)`), what a `vf2`
 // build gates on because its SiFive-layout driver writes one `PWMCFG` for
-// all four channels (owner decisions 2026-09-26, `pwm_domain.rs`).
+// all four channels (`pwm_domain.rs`).
 
 /// **On an independent-channel domain, a control write named for a free
 /// channel reaches no motor.** Motor 0 is on channel 0, the caller names
@@ -136,7 +136,7 @@ fn with_no_motor_bound_a_control_write_reaches_nothing() {
 }
 
 
-// ── A sample bounds itself (owner decision 100) ────────────────────────────
+// ── A sample bounds itself ────────────────────────────
 
 /// **A sample must not out-write the buffer it is copied into, and must not
 /// carry more than its reply holds.**
@@ -214,8 +214,7 @@ fn devices_hook() { syscall_test_drivers::shim_fwd::note("devices_hook"); }
 
 /// A reboot or power-off that passed its right first (`Power::reboot`,
 /// `Power::shutdown`; the right is `power_guards.rs`'s), and the thermal
-/// trip's, which calls the same function, run in this order (owner decision
-/// 2026-10-23, Q1):
+/// trip's, which calls the same function, run in this order:
 ///
 /// 1. this boot's records (OTA's void, the entropy seed: writes);
 /// 2. every mounted filesystem synced (`FileOps::sync_all`), the records too;

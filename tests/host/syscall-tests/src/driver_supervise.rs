@@ -187,7 +187,7 @@ fn a_successor_that_cannot_be_created_puts_the_entry_down() {
     assert!(!t.respawn_failed(slot), "only a pending restart can fail");
 }
 
-// ── Owner decisions 2026-09-28: a window, and only on failure ─────────────
+// ── A window, and only on failure ─────────────
 
 /// Kill, restart: one full cycle of `slot`'s image, `dead` -> `heir`,
 /// the death at `now`. Returns the restart's `attempt`.
@@ -321,7 +321,7 @@ fn the_burst_is_clamped() {
     assert!(matches!(t.on_exit(tid, 100, FAILED, pbig), ExitVerdict::GiveUp { restarts: 16, .. }));
 }
 
-// ── Wave 11: images the kernel spawns because the system declares them ──────
+// ── Images the kernel spawns because the system declares them ──────
 
 const ML_IMAGE: &[u8] = b"/fat/MLSRV.ELF";
 
@@ -362,7 +362,7 @@ fn a_spawned_images_successor_is_its_entrys_task() {
 /// A crash loop: a spawned image that dies at once (its capability is
 /// missing, its device does not answer) is restarted
 /// `DRIVER_MAX_RESTARTS` times and then given up on, `Down` and waiting to be
-/// recorded. Before wave 11 that image died once, unsupervised and unrecorded.
+/// recorded. Otherwise that image dies once, unsupervised and unrecorded.
 ///
 /// **Canary**: move `SupState::Serving` from `on_exit`'s death arm to its
 /// `NotSupervised` arm: the first death is `NotSupervised` and nothing is ever recorded.
@@ -446,7 +446,7 @@ fn a_spawned_one_shot_that_exits_zero_is_not_restarted() {
     assert_eq!(t.next_due(u64::MAX), (None, None));
 }
 
-/// Wave 11 (DRVPLACE): `restart = always` (the row key): a clean exit is
+/// `restart = always` (the row key): a clean exit is
 /// restarted too, and counts against the same window as a failure, so an
 /// image that exits 0 in a loop still ends `Down` after the burst.
 ///
@@ -537,7 +537,7 @@ fn spawned_entries_share_the_bounded_table() {
     assert_eq!(t.note_started(2701, ML_IMAGE), t.note_started(2701, ML_IMAGE));
 }
 
-/// Wave 13: the host task of a driver placed in the kernel is supervised from
+/// The host task of a driver placed in the kernel is supervised from
 /// the start (`KernelHost`); a contained panic (exit 134, the panic policy's
 /// `CONTAINED_EXIT_STATUS`) restarts it on the same entry, within the burst,
 /// and the burst still gives up.

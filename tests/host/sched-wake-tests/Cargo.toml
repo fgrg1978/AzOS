@@ -25,7 +25,7 @@ azos_limits = { path = "../../../crates/core/limits" }
 # doc for which half is which.
 azos_sync = { path = "shims/sync", package = "sched_wake_test_sync" }
 
-# Owner decision 102 — `task.rs` (pulled below) now holds `budget:
+# `task.rs` (pulled below) now holds `budget:
 # azos_mm::budget::PageBudget`. The real `azos_mm` cannot compile for
 # the host (transitively pulls in `azos_arch`'s asm), so this shim pulls
 # the real `crates/core/mm/src/budget.rs` unmodified — see its own doc.
@@ -50,7 +50,7 @@ kill-reblock-canary = []
 rt-proxy-canary = []
 # The shared rt_core.rs names the CPU-mask canary in a `cfg!`; declared, never enabled.
 rt-mask32-canary = []
-# Wave 15 canary of the pulled-in `stop_policy.rs` (forced-stop accounting).
+# Canary of the pulled-in `stop_policy.rs` (forced-stop accounting).
 forced-seal-skip-canary = []
 # `elf_bounds.rs` (pulled by path): the gate's canary build accepts a page
 # shared by segments mapped differently, and `elf_bounds_tests` must fail.

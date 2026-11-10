@@ -85,7 +85,7 @@ mod tests {
     // (`kernel/src/main.rs`). The release profile is `panic = "abort"` with
     // `overflow-checks = true`, so a panic in here is not a failed parse — it
     // is a board that resets, and on a robot that is a physical-safety event.
-    // Both tests below were written from defects found on 2026-09-19.
+    // Both tests below were written from defects found.
 
     /// **Checked multiply, unchecked add.** `skip_kv`'s array arm computed
     /// `pos + count.checked_mul(esz)?`. `count` is a raw `u64` from the file,
@@ -308,15 +308,15 @@ mod tests {
         assert_eq!(f.n_tensors, 0);
     }
 
-    // ── U11-9: gguf_mlp_infer must refuse a dims mismatch, not misalign ──
+    // ── gguf_mlp_infer must refuse a dims mismatch, not misalign ──
     //
-    // Before the 2026-09-26 fix, `gguf_mlp_infer` never checked `input.len()`
+    // Before the fix, `gguf_mlp_infer` never checked `input.len()`
     // against `w1.dims[0]`, `output.len()` against `w2.dims[1]`, or the two
     // layers' hidden width against each other. `linear_layer` computes its
     // per-row byte stride from the CALLER's slice length, so a mismatch did
     // not panic — it silently dequantised the wrong byte ranges and returned
-    // logits computed from misaligned weights. These are the fuzz-style
-    // dims tests audit unit 11 asked for.
+    // logits computed from misaligned weights. These are fuzz-style
+    // dims tests.
 
     use super::ggml_nano::gguf_mlp_infer;
 

@@ -253,7 +253,7 @@ fn density_admission_holds_for_every_wake_pattern_and_dbf_does_not() {
     assert!(dbf_broken > 0, "no dbf-admitted set was broken by a suspending server");
 }
 
-/// The wave-15 `mixed` pair in ticks: H (5 per 20) at level 4, L (1 per 20,
+/// The `mixed` pair in ticks: H (5 per 20) at level 4, L (1 per 20,
 /// deadline 2) at level 6, 75 % of density.
 fn mixed(h: Arrival, l: Arrival) -> [Srv; 2] {
     [Srv { level: 4, ..srv(5, 20, 20, h) }, Srv { level: 6, ..srv(1, 2, 20, l) }]

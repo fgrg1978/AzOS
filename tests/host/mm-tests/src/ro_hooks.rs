@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! The W^X planner with the `.data.ro_after_init` span carved out of the data
-//! range (`wx::plan_with_ro`, security audit 2026-10-17 finding D).
+//! range (`wx::plan_with_ro`).
 //!
 //! Before the seal the span is RW like the rest of `.data` (the boot installs
 //! the hooks into it); after it, RO. `vmm::enforce_wx`, the seal and every

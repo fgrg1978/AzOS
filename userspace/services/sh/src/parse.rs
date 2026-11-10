@@ -403,7 +403,7 @@ pub fn parse<V: Vars>(line: &[u8], vars: &V, out: &mut Pipeline) -> Result<(), P
                 // A target that expands to nothing (`< $UNSET`, `> ""`) is
                 // refused, as bash's "ambiguous redirect": an empty path names
                 // no file, and the open it led to failed later and less
-                // clearly (found by tests/fuzz/sh-fuzz, wave 12).
+                // clearly (found by tests/fuzz/sh-fuzz).
                 let target = match lx.next(out)? {
                     Tok::Word(w) if w.len > 0 => w,
                     _ => return Err(ParseError::MissingTarget),

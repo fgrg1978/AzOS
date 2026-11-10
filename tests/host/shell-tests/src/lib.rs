@@ -9,7 +9,7 @@
 //! same commands are checked per op by the kernel-hosted interfaces
 //! (`tests/host/syscall-tests`, `power_guards.rs`, `family_guards.rs`).
 //!
-//! Canary (run by hand, 2026-10-02): make `authority_policy::enforced`
+//! Canary (run by hand): make `authority_policy::enforced`
 //! return `row.always` (ignore the lockdown switch). The lockdown tests below
 //! fail; the default-build tests still pass.
 
@@ -67,11 +67,11 @@ mod tests {
         }
     }
 
-    /// Wave 11: the console's `reboot` and `shutdown` need `WRITE` on the
+    /// The console's `reboot` and `shutdown` need `WRITE` on the
     /// `power` endpoint on every build, as ring 3's `power reboot` /
     /// `power shutdown` always did.
     ///
-    /// **Canary (by hand, 2026-10-03).** Delete the `CMD_REBOOT` row from
+    /// **Canary (by hand).** Delete the `CMD_REBOOT` row from
     /// `AUTHORITY_TABLE`: red here on "reboot is not a table row" (and on the
     /// table-length test); set its `always` to `false`: red on "a default
     /// console reboots without the capability".
@@ -99,10 +99,9 @@ mod tests {
     /// Owner round 36: under the lockdown the console is seeded with nothing,
     /// so every row of the table meets a console that holds none of the
     /// endpoints it names and is refused. Off the lockdown it gets every
-    /// endpoint a row names, and nothing else (no task view: owner
-    /// 2026-10-21).
+    /// endpoint a row names, and nothing else (no task view).
     ///
-    /// **Canary (by hand, 2026-10-02).** Make `console_seed_ifaces` ignore
+    /// **Canary (by hand).** Make `console_seed_ifaces` ignore
     /// `lockdown`: red on "the lockdown seeded the console".
     #[test]
     fn under_the_lockdown_the_console_is_seeded_with_nothing() {
