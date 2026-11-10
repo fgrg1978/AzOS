@@ -11,11 +11,11 @@ aarch64-microvm	.rodata	362400
 aarch64-microvm	.data	497352
 aarch64-microvm	.bss	1078824
 aarch64-microvm	reason	robot behaviour engine in ring 3: the kernel behaviour, brain-link and camera tasks, multi-stream and encrypt_link removed; the enforcer, authority frames, relax warrant and UART e-stop claim added
-riscv64-qemu	.text	2913692
+riscv64-qemu	.text	2921120
 riscv64-qemu	.rodata	495016
 riscv64-qemu	.data	521840
 riscv64-qemu	.bss	2277096
-riscv64-qemu	reason	robot behaviour engine in ring 3: the kernel behaviour, brain-link and camera tasks, multi-stream and encrypt_link removed; the enforcer, authority frames, relax warrant and UART e-stop claim added
+riscv64-qemu	reason	floor checks on every native and Linux path op (stat, opendir, getdents64, mkdir, unlink, rmdir, rename, truncate): +7.4 KB .text riscv64-qemu
 x86_64-microvm	.text	2779305
 x86_64-microvm	.rodata	180200
 x86_64-microvm	.data	658880
