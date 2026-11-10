@@ -22054,7 +22054,7 @@ PYEOF
         mkdir -p "$CI_LOG_DIR"
         local log="$CI_LOG_DIR/contained-clear.log"
         local blog="$CI_LOG_DIR/contained-clear-peer.log"
-        local img="$AZOS_OUT/build/disk-containedclear.img"
+        local img="$AZOS_OUT/build/disk-companionlies.img"   # the lying row's image: COMPCLI autorun, the link key
         local keydir="$CI_LOG_DIR/contained-clear-keys"
         rm -f "$log" "$blog" "$img"
         kbuild "qemu,use-robot"
@@ -22089,7 +22089,7 @@ PYEOF
             bad; echo "      the engine lost its session while contained"
             echo "      logs kept: $log $blog"; return
         fi
-        ok; rm -f "$log" "$blog" "$img"; rm -rf "$keydir"
+        ok; rm -f "$log" "$blog"; rm -rf "$keydir"
     }
     par -s "safety: contained, signed clear over the link lifts it" contained_clear_scenario   # the companion peer on a host port of its own
 
