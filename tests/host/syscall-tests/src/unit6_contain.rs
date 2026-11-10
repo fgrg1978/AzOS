@@ -1066,3 +1066,156 @@ fn port_and_ioring_destroy_are_live_while_contained_and_still_need_write() {
         "the contained ring destroy did not reach io_ring_destroy"
     );
 }
+
+// ═════════════════════════════════════════════════════════════════════════
+// The companion link while contained
+// ═════════════════════════════════════════════════════════════════════════
+
+const COMPANION: ([u8; 4], u16) = ([10, 0, 2, 2], 9000);
+const STRANGER: ([u8; 4], u16) = ([10, 0, 2, 3], 9000);
+
+/// Configure the companion peer; the previous value comes back on drop.
+struct ConfiguredPeer(u32, u32);
+
+impl ConfiguredPeer {
+    fn set(peer: ([u8; 4], u16)) -> Self {
+        use azos_config::{BEHAVIOR_SERVER_IP, BEHAVIOR_SERVER_PORT};
+        let old = ConfiguredPeer(
+            BEHAVIOR_SERVER_IP.load(Ordering::SeqCst),
+            BEHAVIOR_SERVER_PORT.load(Ordering::SeqCst),
+        );
+        BEHAVIOR_SERVER_IP.store(u32::from_be_bytes(peer.0), Ordering::SeqCst);
+        BEHAVIOR_SERVER_PORT.store(peer.1 as u32, Ordering::SeqCst);
+        old
+    }
+}
+
+impl Drop for ConfiguredPeer {
+    fn drop(&mut self) {
+        azos_config::BEHAVIOR_SERVER_IP.store(self.0, Ordering::SeqCst);
+        azos_config::BEHAVIOR_SERVER_PORT.store(self.1, Ordering::SeqCst);
+    }
+}
+
+/// A stream socket of the current task, connected (SYN queued) to `peer`.
+fn stream_to(peer: ([u8; 4], u16)) -> u64 {
+    // The SYN asks the NIC stand-in for the interface's address and mask; it answers while armed.
+    azos_net::shim_fwd::arm(azos_net::shim_fwd::Fwd {
+        ip: [10, 0, 2, 15],
+        mask: [255, 255, 255, 0],
+        gateway: [10, 0, 2, 1],
+        ..Default::default()
+    });
+    let fd = sys_socket(
+        azos_net::socket::AF_INET as u64,
+        azos_net::socket::SOCK_STREAM as u64,
+        0,
+    );
+    assert!(fd >= 0, "socket returned {fd}");
+    let addr = azos_net::socket::SockAddr { family: azos_net::socket::AF_INET as u16, port: peer.1, addr: peer.0 };
+    assert_eq!(azos_net::socket::socket_connect(fd as i32, &addr, 0), 0, "connect");
+    fd as u64
+}
+
+fn grant_link(tid: u32) {
+    assert!(
+        azos_ipc::endpoint::kernel_endpoint_cap(tid, CapPerms::WRITE, azos_devif::key::AUTHORITY, 0).is_some(),
+        "no authority grant"
+    );
+}
+
+/// The exemption's predicate: the grant, a destination, and that destination
+/// being the configured peer, all three.
+///
+/// **Canary.** Make `companion_link_exempt` return `true`: the stranger and
+/// no-grant assertions fail.
+#[test]
+fn the_link_exemption_needs_the_grant_and_the_configured_peer() {
+    assert!(companion_link_exempt(true, Some(COMPANION), Some(COMPANION)));
+    assert!(!companion_link_exempt(false, Some(COMPANION), Some(COMPANION)), "no grant");
+    assert!(!companion_link_exempt(true, Some(STRANGER), Some(COMPANION)), "another host");
+    assert!(!companion_link_exempt(true, Some(([10, 0, 2, 2], 9001)), Some(COMPANION)), "another port");
+    assert!(!companion_link_exempt(true, None, Some(COMPANION)), "no destination");
+    assert!(!companion_link_exempt(true, None, None), "nothing configured");
+    assert!(!companion_link_exempt(true, Some(COMPANION), None), "no peer configured");
+}
+
+/// **A contained engine still writes its companion socket, and nothing else.**
+/// The task holding the link grant: its socket connected to the companion
+/// reaches its copy (`-1` on the unmapped buffer) where every other write is
+/// refused with `-EAGAIN`: another stream socket of the same task, a datagram
+/// socket, a connect to another host; and a task without the grant is refused
+/// on a socket connected to the companion itself. The typed calls decide the
+/// same.
+///
+/// **Canary.** Make `contained_send_exempt` return `false` (or drop the
+/// exemption in `sys_send_syscall`): the engine's send reads `-EAGAIN`. Make it
+/// ignore the peer: the same task's other socket reads `-1`.
+#[test]
+fn a_contained_engine_writes_only_its_companion_socket() {
+    use azos_abi::cap::CapPerms;
+    use azos_ipc::cap::targets::Socket;
+    let _g = serial();
+    let _peer = ConfiguredPeer::set(COMPANION);
+    let s = ring3(fresh_tid());
+    grant_link(s.tid);
+    let link = stream_to(COMPANION);
+    let other_stream = stream_to(STRANGER);
+    let datagram = sys_socket(
+        azos_net::socket::AF_INET as u64,
+        azos_net::socket::SOCK_DGRAM as u64,
+        azos_net::socket::IPPROTO_UDP as u64,
+    ) as u64;
+    let link_cap = held::<Socket>(s.tid, CapPerms::RW_DELEGATE, link as u32);
+    let other_cap = held::<Socket>(s.tid, CapPerms::RW_DELEGATE, other_stream as u32);
+
+    azos_ipc::cap::degraded_set(true);
+    assert_eq!(sys_send_syscall(link, UNMAPPED, 4, 0), -1, "the companion socket was refused");
+    assert_eq!(sys_sendto_syscall(link, UNMAPPED, 4, 0), -1, "sendto on the companion socket was refused");
+    assert_eq!(sys_send_typed(link_cap, UNMAPPED, 4), -1, "typed send on the companion socket was refused");
+    assert_eq!(sys_send_syscall(other_stream, UNMAPPED, 4, 0), eagain(), "another stream socket");
+    assert_eq!(sys_send_typed(other_cap, UNMAPPED, 4), eagain(), "typed send, another stream socket");
+    assert_eq!(sys_send_syscall(datagram, UNMAPPED, 4, 0), eagain(), "a datagram socket");
+    // A connect: the address is read, so it must be the companion's.
+    assert_eq!(sys_connect_syscall(other_stream, UNMAPPED, 16), -1, "the holder's connect did not reach its address");
+    assert_eq!(sys_connect_syscall(datagram, UNMAPPED, 16), eagain(), "connect of a datagram socket");
+
+    map_scratch();
+    let put = |peer: ([u8; 4], u16)| {
+        let mut raw = [0u8; 16];
+        raw[..2].copy_from_slice(&(azos_net::socket::AF_INET as u16).to_le_bytes());
+        raw[2..4].copy_from_slice(&peer.1.to_be_bytes());
+        raw[4..8].copy_from_slice(&peer.0);
+        azos_sched::UserSlice::<u8>::new(SCRATCH as u64, 16).write_from(&raw).expect("write");
+    };
+    put(STRANGER);
+    assert_eq!(sys_connect_syscall(other_stream, SCRATCH as u64, 16), eagain(), "a connect to another host");
+    assert_eq!(sys_connect_typed(other_cap, SCRATCH as u64, 16), eagain(), "typed connect to another host");
+
+    // The same companion socket, without the grant: another task.
+    let thief = fresh_tid();
+    let _t = ring3(thief);
+    map_scratch();
+    let theirs = stream_to(COMPANION);
+    assert_eq!(sys_send_syscall(theirs, UNMAPPED, 4, 0), eagain(), "a task without the grant");
+    put(COMPANION);
+    assert_eq!(sys_connect_syscall(theirs, SCRATCH as u64, 16), eagain(), "connect without the grant");
+
+    azos_sched::set_current_task_tid(s.tid);
+    azos_ipc::cap::degraded_set(false);
+    azos_net::shim_fwd::disarm();
+}
+
+/// With no companion configured nothing is exempt, grant or not.
+///
+/// **Canary.** Let `companion_peer` answer `Some` for port 0: this reads `-1`.
+#[test]
+fn an_unconfigured_companion_exempts_nothing() {
+    let _g = serial();
+    let _peer = ConfiguredPeer::set(([0, 0, 0, 0], 0));
+    let s = ring3(fresh_tid());
+    grant_link(s.tid);
+    let fd = stream_to(([0, 0, 0, 0], 0));
+    azos_ipc::cap::degraded_set(true);
+    assert_eq!(sys_send_syscall(fd, UNMAPPED, 4, 0), eagain());
+}

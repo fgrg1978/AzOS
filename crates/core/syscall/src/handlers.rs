@@ -822,6 +822,15 @@ pub(crate) const E_CONTAINED: i64 = azos_abi::error::Errno::EAGAIN.to_syscall_re
 /// containment, does not traverse these handlers (`socket_access_ok`'s doc);
 /// this keeps a refusal off that link if it ever starts to.
 ///
+/// # What containment still lets through
+///
+/// The holder of the companion-link grant (`holds_companion_link_grant`) may
+/// dial and write the socket connected to the configured companion
+/// (`companion_peer`): the operator's signed clear arrives on that link, and
+/// nothing else ends containment. Its other sockets, every other task, and
+/// every other destination stay refused. Typed and untyped calls decide it in
+/// the same handler.
+///
 /// # Where each caller puts it
 ///
 /// After the arguments and the caller's authority are checked, so a task that
@@ -832,6 +841,44 @@ pub(crate) const E_CONTAINED: i64 = azos_abi::error::Errno::EAGAIN.to_syscall_re
 #[inline]
 pub(crate) fn untyped_write_contained() -> bool {
     azos_sched::current_user_pt() != 0 && azos_ipc::cap::degraded_active()
+}
+
+/// An IPv4 address and port.
+type V4Peer = ([u8; 4], u16);
+
+/// The companion the behaviour engine dials: CONFIG.INI
+/// `behavior_server_ip` / `behavior_server_port`. `None` while no port is
+/// configured, so nothing is exempt.
+fn companion_peer() -> Option<V4Peer> {
+    let port = azos_config::BEHAVIOR_SERVER_PORT.load(core::sync::atomic::Ordering::Relaxed);
+    let port = u16::try_from(port).ok().filter(|p| *p != 0)?;
+    Some((azos_config::behavior_server_ip_bytes(), port))
+}
+
+/// Does the caller hold the companion-link grant: the `authority` endpoint,
+/// `WRITE`, which only the behaviour engine's row is seeded with? Asked
+/// without the containment step, as the endpoint's own server does.
+fn holds_companion_link_grant() -> bool {
+    azos_ipc::cap_store::with_table(azos_sched::current_task_tid(), |t| {
+        azos_ipc::endpoint::table_holds_host_badge_right_uncontained(
+            t, azos_devif::key::AUTHORITY, 0, azos_abi::cap::CapPerms::WRITE)
+    })
+    .unwrap_or(false)
+}
+
+/// The one write containment lets through the untyped socket calls: the
+/// holder of the companion-link grant talking to the configured companion, so
+/// the operator's signed clear can still arrive over the link that carries it.
+/// Every other socket of that task, and every other task, stays refused.
+fn companion_link_exempt(holds_grant: bool, dest: Option<V4Peer>, peer: Option<V4Peer>) -> bool {
+    holds_grant && dest.is_some() && dest == peer
+}
+
+/// May the caller write socket `fd` (a stream socket it owns) although
+/// containment is armed? Only to the companion it is connected to.
+fn contained_send_exempt(fd: u64) -> bool {
+    holds_companion_link_grant()
+        && companion_link_exempt(true, azos_net::socket::socket_peer_v4(fd as i32), companion_peer())
 }
 
 /// Permission denied error code.
@@ -2809,8 +2856,12 @@ pub fn sys_connect_syscall(fd: u64, addr_ptr: u64, addrlen: u64) -> i64 {
     // connecting another task's socket redirects its stream to an
     // attacker-chosen peer.
     if !socket_access_ok(fd) { return -1; }
-    // Before the address is read: it is copied from user memory.
-    if untyped_write_contained() { return E_CONTAINED; }
+    // Before the address is read: it is copied from user memory. A holder of
+    // the companion-link grant may still dial the companion's address.
+    let contained = untyped_write_contained();
+    if contained && (!holds_companion_link_grant() || azos_net::socket::socket_is_datagram(fd as i32)) {
+        return E_CONTAINED;
+    }
     // Local port 0: the TCP layer picks a free one from the ephemeral range
     // (`CONFIG_TCP_EPHEMERAL_PORT_*`) under the lock that takes the slot. It
     // was `0xC000 + fd`: a second connect on the same fd named the previous
@@ -2818,7 +2869,17 @@ pub fn sys_connect_syscall(fd: u64, addr_ptr: u64, addrlen: u64) -> i64 {
     // answer with a RST.
     let src_port = 0;
     // A `sockaddr_in`, or a `sockaddr_in6` for an `AF_INET6` socket.
-    match read_sockaddr_wire(addr_ptr, addrlen) {
+    let wire = read_sockaddr_wire(addr_ptr, addrlen);
+    if contained {
+        let dest = match &wire {
+            Some(azos_net::socket::WireAddr::V4(a)) => Some((a.addr, a.port)),
+            _ => None,
+        };
+        if wire.is_some() && !companion_link_exempt(true, dest, companion_peer()) {
+            return E_CONTAINED;
+        }
+    }
+    match wire {
         // Yield-aware: connect must not report success until the handshake
         // completes, and waiting without yielding would burn the hart.
         Some(addr) => azos_net::socket::socket_connect_wire_with_yield(
@@ -2851,7 +2912,7 @@ pub fn sys_sendto_syscall(fd: u64, buf_ptr: u64, len: u64, addr_ptr: u64) -> i64
     if !socket_access_ok(fd) { return -1; }
     let empty = len == 0 && azos_net::socket::socket_is_datagram(fd as i32);
     if (buf_ptr == 0 || len == 0) && !empty { return -1; }
-    if untyped_write_contained() { return E_CONTAINED; }
+    if untyped_write_contained() && !contained_send_exempt(fd) { return E_CONTAINED; }
     // With no address it behaves as `send`: that is what it did before, and a
     // caller passing 0 must not start failing because of this change.
     if addr_ptr == 0 { return sys_send_syscall(fd, buf_ptr, len, 0); }
@@ -2940,7 +3001,7 @@ pub fn sys_send_syscall(fd: u64, buf_ptr: u64, len: u64, _flags: u64) -> i64 {
     // An empty datagram is a message; an empty write to a stream is nothing.
     let empty = len == 0 && azos_net::socket::socket_is_datagram(fd as i32);
     if (buf_ptr == 0 || len == 0) && !empty { return -1; }
-    if untyped_write_contained() { return E_CONTAINED; }
+    if untyped_write_contained() && !contained_send_exempt(fd) { return E_CONTAINED; }
     if empty {
         return azos_net::socket::socket_send(fd as i32, &[]) as i64;
     }
@@ -3093,7 +3154,13 @@ fn socket_fd_for(cap_raw: u64, need: azos_abi::cap::CapPerms, op: u16) -> Result
 
     let cap: Cap<Socket> = Cap::from_raw(CapHandle::from_raw(cap_raw as u32));
     let tid = azos_sched::current_task_tid();
-    match azos_ipc::cap_store::with_table(tid, |t| t.get_op(cap, need, op)) {
+    // The three calls the companion-link exemption reaches resolve without
+    // the containment step: the untyped handler they end in decides it.
+    let link_op = matches!(op, azos_abi::invoke::NODE_CONNECT | azos_abi::invoke::NODE_SEND | azos_abi::invoke::NODE_SENDTO);
+    let resolved = azos_ipc::cap_store::with_table(tid, |t| {
+        if link_op { t.get_op_uncontained(cap, need, op) } else { t.get_op(cap, need, op) }
+    });
+    match resolved {
         Some(Ok(fd)) => Ok(fd as u64),
         Some(Err(e)) => Err(errno_for_socket_err(e)),
         None => Err(Errno::EINVAL.to_syscall_ret()),

@@ -430,6 +430,16 @@ pub fn socket_owner(fd: i32) -> Option<u32> {
     Some(s.owner)
 }
 
+/// The IPv4 peer a stream socket was connected to, `None` for any other socket
+/// or one not connected yet.
+pub fn socket_peer_v4(fd: i32) -> Option<([u8; 4], u16)> {
+    if fd < 0 || fd as usize >= MAX_SOCKETS { return None; }
+    let fd = azos_limits::nospec::array_index_nospec(fd as usize, MAX_SOCKETS) as i32;
+    let t = SOCKS.lock();
+    let s = &t.sockets[fd as usize];
+    (s.kind == SockKind::Tcp && !s.v6 && s.tcp.is_some()).then_some((s.remote.addr, s.remote.port))
+}
+
 /// The TCP connection behind stream socket `fd`, if it has one yet.
 pub fn socket_tcp_conn(fd: i32) -> Option<tcp::TcpHandle> {
     if fd < 0 || fd as usize >= MAX_SOCKETS { return None; }

@@ -208,9 +208,9 @@ pub fn shim_net_polls() -> Option<u64> {
 pub fn net_set_ip(_ip: [u8; 4], _mask: [u8; 4], _gw: [u8; 4]) {
     todo!("NIC stand-in: not reached by any test in this crate")
 }
-/// Default-route stand-in (ip.rs routes off-subnet traffic via the gateway); no test in this crate sends off-subnet.
+/// Default-route stand-in (ip.rs routes off-subnet traffic via the gateway).
 pub fn net_get_gateway() -> [u8; 4] {
-    todo!("NIC stand-in: not reached by any test in this crate")
+    shim_fwd::hit("net_get_gateway".into(), |f| f.gateway)
 }
 pub fn net_get_ip() -> [u8; 4] {
     shim_fwd::hit("net_get_ip".into(), |f| f.ip)
@@ -226,11 +226,11 @@ pub fn net_tx_batch_end(_: TxBatch) {}
 pub fn net_get_mac() -> [u8; 6] {
     shim_fwd::hit("net_get_mac".into(), |f| f.mac)
 }
-pub fn net_raw_send(_frame: &[u8]) -> i32 {
-    todo!("NIC stand-in: not reached by any test in this crate")
+pub fn net_raw_send(frame: &[u8]) -> i32 {
+    shim_fwd::hit(format!("net_raw_send {}", frame.len()), |_| 0)
 }
 pub fn net_get_mask() -> [u8; 4] {
-    todo!("NIC stand-in: not reached by any test in this crate")
+    shim_fwd::hit("net_get_mask".into(), |f| f.mask)
 }
 
 /// `crate::net_random_fill` for the net files pulled in above: the kernel with
@@ -250,6 +250,8 @@ pub mod shim_fwd {
     pub struct Fwd {
         pub ip: [u8; 4],
         pub mac: [u8; 6],
+        pub mask: [u8; 4],
+        pub gateway: [u8; 4],
         pub ping: i32,
         pub log: Vec<String>,
     }
