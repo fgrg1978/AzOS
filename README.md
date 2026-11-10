@@ -15,7 +15,7 @@ tree also builds desktop and server configurations.
 
 ## Status
 
-**Early development. Not for production use.**
+**No stability guarantees for the ABI or the on-disk formats.**
 
 ## What is in the tree
 
@@ -179,8 +179,7 @@ third_party/ vendored crates and pinned external trees
 
 [`Documentation/README.md`](Documentation/README.md) is the index of the
 reference documentation. [`ARCHITECTURE.md`](ARCHITECTURE.md) is the overview
-of how the pieces fit, and [`ROADMAP.md`](ROADMAP.md) states the direction of
-the work. Change history starts at [`CHANGELOG.md`](CHANGELOG.md); the ABI
+of how the pieces fit. Change history starts at [`CHANGELOG.md`](CHANGELOG.md); the ABI
 crate keeps its own in
 [`crates/core/abi/CHANGELOG.md`](crates/core/abi/CHANGELOG.md).
 

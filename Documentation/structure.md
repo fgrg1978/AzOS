@@ -33,7 +33,7 @@ Contents: [Top level](#top-level) | [crates/core](#cratescore) |
 Top-level files: `Cargo.toml` (workspace) and `Cargo.lock`, `Kconfig`, `Makefile`,
 `rust-toolchain.toml`, `deny.toml`, `REUSE.toml`, `LICENSE`,
 `NOTICE`, `README.md`, `CONTRIBUTING.md`, `CLA.md`, `SECURITY.md`, `CHANGELOG.md`,
-`ROADMAP.md`, `ARCHITECTURE.md` (a map, see [../ARCHITECTURE.md](../ARCHITECTURE.md)).
+`ARCHITECTURE.md` (a map, see [../ARCHITECTURE.md](../ARCHITECTURE.md)).
 
 Source: the directories above; `Cargo.toml`, `Makefile`, `Kconfig`.
 
