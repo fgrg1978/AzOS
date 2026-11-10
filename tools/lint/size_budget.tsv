@@ -6,18 +6,18 @@
 # 512 B): a commit that grows the image updates this file with a reason,
 # make size-update REASON=".." (one that shrinks it, to lock the gain in).
 # label	group	bytes   |   label	reason	text
-aarch64-microvm	.text	2926768
+aarch64-microvm	.text	2933472
 aarch64-microvm	.rodata	362400
 aarch64-microvm	.data	497352
 aarch64-microvm	.bss	1078824
-aarch64-microvm	reason	robot behaviour engine in ring 3: the kernel behaviour, brain-link and camera tasks, multi-stream and encrypt_link removed; the enforcer, authority frames, relax warrant and UART e-stop claim added
+aarch64-microvm	reason	floor checks on every native and Linux path op: +7.1 KB .text x86_64-microvm
 riscv64-qemu	.text	2921120
 riscv64-qemu	.rodata	495016
 riscv64-qemu	.data	521840
 riscv64-qemu	.bss	2277096
 riscv64-qemu	reason	floor checks on every native and Linux path op (stat, opendir, getdents64, mkdir, unlink, rmdir, rename, truncate): +7.4 KB .text riscv64-qemu
-x86_64-microvm	.text	2779305
+x86_64-microvm	.text	2786409
 x86_64-microvm	.rodata	180200
-x86_64-microvm	.data	658880
+x86_64-microvm	.data	659264
 x86_64-microvm	.bss	1060944
-x86_64-microvm	reason	robot behaviour engine in ring 3: the kernel behaviour, brain-link and camera tasks, multi-stream and encrypt_link removed; the enforcer, authority frames, relax warrant and UART e-stop claim added
+x86_64-microvm	reason	floor checks on every native and Linux path op: +7.1 KB .text x86_64-microvm
