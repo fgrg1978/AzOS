@@ -9,7 +9,7 @@ use azos_drv_sys::kprintln;
 /// Report the replayed latch, activate the e-stop if it latches, seed the
 /// operator-release nonce floor and the pinned release key, and seed the serial the new session's
 /// `logger_init` will open — all three answers `logger::replay_boot`'s
-/// single scan produces (owner decision, 2026-09-26; the nonce floor and
+/// single scan produces (the nonce floor and
 /// the serial used to not exist, and the latch used to be the only thing
 /// this scan was for). Call before `logger_init`, same ordering the old
 /// latch-only `apply` already required.

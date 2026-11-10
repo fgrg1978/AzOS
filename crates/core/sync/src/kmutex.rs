@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The sleeping adaptive kernel mutex (wave 15 N8), the first client of the
+//! The sleeping adaptive kernel mutex, the first client of the
 //! wait graph (`waitgraph`, N7). It is the kernel's only sleeping lock with
 //! priority inheritance. Its holder is counted per task in [`crate::held`]
 //! (the panic policy's `mutex-held` check).
@@ -19,7 +19,7 @@
 //!   the spinner has no pending reschedule (`preempt::need_resched`). 0, or
 //!   no probes registered, never spins. An RT spinner and an RT owner on
 //!   different CPUs is the F7 case: lockdep `RT_CROSS_CPU` notes it,
-//!   nothing forbids it (owner decision F7: report-only).
+//!   nothing forbids it (report-only).
 //! * **Slow path**: set WAITERS; with the probes
 //!   registered, enter the wait graph behind the owner (`EdgeKind::Mutex`;
 //!   the owner is boosted along the chain); sleep on the mutex's hashed
@@ -34,7 +34,7 @@
 //!   cycle of owners is refused (`waitgraph` writes its `wait-cycle` record
 //!   and undoes the block, in every build). [`Mutex::lock_checked`] returns
 //!   the [`WaitError`] to its caller; [`Mutex::lock`], infallible, panics on
-//!   it (a cycle of kernel mutexes is a kernel bug; owner decision 16-10).
+//!   it (a cycle of kernel mutexes is a kernel bug).
 //!   Both are covered by `tests/host/sync-tests/tests/kmutex_deadlock.rs`.
 //! * **Unlock with WAITERS**: `waitgraph::release` (unboost), wake the
 //!   bucket. With `KMUTEX_STEAL_RULE` y and a waiter still queued in the
@@ -47,13 +47,13 @@
 //! * A newcomer the steal rule holds back joins the graph before it sleeps
 //!   (`waitgraph::block_prepare_ownerless`: the released object has no
 //!   owner yet), so whoever takes the mutex next inherits from it as well
-//!   (owner decision 10-10, N7b).
+//!.
 //! * A graph waiter stays queued across its wake-ups and leaves the graph
 //!   only once it owns the mutex, so the top waiter a stealer is compared
 //!   with is the one that was woken. A task that takes the mutex while
 //!   waiters remain queued records itself as the graph owner at once, so
 //!   the sleepers keep boosting whoever holds it.
-//! * **Owner died (owner decision 10-10)**: a task that exits holding a
+//! * **Owner died**: a task that exits holding a
 //!   Mutex with sleepers queued in the graph is a kernel bug, but the chain
 //!   must not hang on it. The graph calls [`OWNER_DIED_HOOK`] (registered by
 //!   [`register_owner_died`]): under the bucket's graph lock the word loses
@@ -448,7 +448,7 @@ impl<T: ?Sized> Mutex<T> {
     /// A wait the graph refuses (it would close a cycle of owners, or the
     /// caller already owns the mutex) is a kernel bug on this infallible
     /// entry: the `wait-cycle` decision record is already written, and the
-    /// task panics (owner decision 16-10; the panic policy sees it). A
+    /// task panics (the panic policy sees it). A
     /// caller that can answer a refused wait takes [`Mutex::lock_checked`].
     #[track_caller]
     pub fn lock(&self) -> MutexGuard<'_, T> {
@@ -533,7 +533,7 @@ impl<T: ?Sized> Mutex<T> {
                         // The steal rule: a queued waiter goes first. Sleep
                         // until the next unlock (the word keeps WAITERS),
                         // queued in the graph so the taker inherits from
-                        // this task too (owner decision 10-10, N7b).
+                        // this task too.
                         in_graph = queued;
                         if aba {
                             self.canary_window(w);

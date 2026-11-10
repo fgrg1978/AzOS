@@ -8,7 +8,7 @@ use azos_arch::Interrupts;
 use crate::sc::{Class, SlackMode, QOS_LEVELS};
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-// `SCHED_TIMER_HEAP_PER_CPU` (owner decision, wave 15 VW): one heap per
+// `SCHED_TIMER_HEAP_PER_CPU`: one heap per
 // CPU, like Linux's per-CPU hrtimer bases. A sleeper is armed on the
 // heap of the CPU it blocks on, and only that CPU's tick pops it and
 // programs its comparator from it, so each lock below is taken only by
@@ -845,7 +845,7 @@ pub static MISSED_BY: [core::sync::atomic::AtomicU32; 4] =
 /// which read as "asleep, no entry, nothing in flight". So `Lost` is
 /// only returned if the slot is STILL asleep on `d` after `INFLIGHT`
 /// was read as zero; a slot that is not was woken during the check.
-/// (Census builds before wave 8 lacked the re-read: every `unexplained`
+/// (Older census builds lacked the re-read: every `unexplained`
 /// they printed that was followed up was this race.)
 fn sleeper_why(i: usize, d: u64) -> SleeperWhy {
     if INFLIGHT[i].load(Ordering::Acquire) != 0 {

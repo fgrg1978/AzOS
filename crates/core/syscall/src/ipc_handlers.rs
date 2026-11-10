@@ -50,7 +50,7 @@ pub(crate) fn errno_for_port_err(e: azos_ipc::port::PortCapError) -> i64 {
 /// cap handle as `i64` (always > 0) on success, or `-Errno`.
 pub fn sys_port_create_typed() -> i64 {
     use azos_abi::error::Errno;
-    // Wave 15 (plan 4a): booked to the process, not the creating thread,
+    // Booked to the process, not the creating thread,
     // so it outlives the thread (`port_release_all` at the process's exit).
     let tid = if cfg!(feature = "thread-objects-canary") {
         azos_sched::current_task_tid()
@@ -222,7 +222,7 @@ fn errno_for_source_cap(kind: azos_abi::cap::CapType, e: azos_ipc::cap::CapError
 /// port is signalled once here, so a message sent before the bind is not
 /// missed.
 ///
-/// **Tied to the capability (wave 11).** The source records the
+/// **Tied to the capability.** The source records the
 /// binder's cap-table slot, so revoking the capability (or the binder's exit)
 /// removes it and moving it carries it along (`port::port_cap_event`). The
 /// capability was resolved in an earlier hold, so `still_held` re-reads it
@@ -307,7 +307,7 @@ fn doorbell_word(offset: u64, bytes: u64) -> Option<u32> {
 ///   counter; no capability (`port_arm_timer`; a known key re-arms);
 /// - 3: an endpoint's notices: a `Cap<Endpoint>` with `READ`, and the caller
 ///   must serve it (`bind_object`, `endpoint_set_link`, `-EPERM` otherwise);
-///   reports no-senders (wave 15 N5b);
+///   reports no-senders;
 /// - 5: an endpoint's queued calls: the same capability and rule
 ///   (`bind_object`, `endpoint::calls_set_link`);
 /// - 6: a doorbell word: a `Cap<Shm>` with `READ`, `offset` the word's byte
@@ -662,7 +662,7 @@ pub fn sys_shm_create_typed(page_count: u64, creation: u64) -> i64 {
     let Some(c) = decode_shm_create(creation) else {
         return Errno::EINVAL.to_syscall_ret();
     };
-    // Wave 15 (plan 4a): the process owns and holds it, not the thread.
+    // The process owns and holds it, not the thread.
     let tid = azos_sched::current_proc_tid();
     // SUBTREE-POLICY: a clone that does not state its size is asked as the
     // largest object, so a ceiling refuses it.
@@ -713,7 +713,7 @@ pub fn sys_shm_acquire_typed(cap_raw: u64, out_ptr: u64) -> i64 {
         return Errno::EFAULT.to_syscall_ret();
     }
     let cap: Cap<Shm> = Cap::from_raw(CapHandle::from_raw(cap_raw as u32));
-    // Wave 15 (plan 4a): the process owns and holds it, not the thread.
+    // The process owns and holds it, not the thread.
     let tid = azos_sched::current_proc_tid();
     let result = azos_ipc::cap_store::with_table(tid, |table| {
         azos_ipc::memobj::memobj_acquire_cap(tid, table, cap, azos_abi::invoke::MEMOBJ_ACQUIRE)
@@ -817,7 +817,7 @@ pub fn sys_shm_map_typed(cap_raw: u64, op: u64) -> i64 {
     use azos_ipc::cap::{targets::Shm, Cap};
 
     let cap: Cap<Shm> = Cap::from_raw(CapHandle::from_raw(cap_raw as u32));
-    // Wave 15 (plan 4a): the process owns and holds it, not the thread.
+    // The process owns and holds it, not the thread.
     let tid = azos_sched::current_proc_tid();
     if op != 0 {
         // The protect form: the caller's mapping of the object the capability
@@ -1090,7 +1090,7 @@ pub fn sys_shm_release_typed(cap_raw: u64) -> i64 {
     use azos_ipc::cap::{targets::Shm, Cap};
 
     let cap: Cap<Shm> = Cap::from_raw(CapHandle::from_raw(cap_raw as u32));
-    // Wave 15 (plan 4a): the process owns and holds it, not the thread.
+    // The process owns and holds it, not the thread.
     let tid = azos_sched::current_proc_tid();
     // Letting go of the region lets go of any pipe end still held on it (its
     // peers may be woken, so this is outside the table's hold).
@@ -1209,7 +1209,7 @@ pub fn sys_ioring_create_typed(out_ptr: u64) -> i64 {
     if out_ptr == 0 {
         return Errno::EINVAL.to_syscall_ret();
     }
-    // Wave 15 (plan 4a): the process owns and holds it, not the thread.
+    // The process owns and holds it, not the thread.
     let tid = azos_sched::current_proc_tid();
     let (cap, r, phys_addr) = match azos_ipc::io_ring::io_ring_create_cap_ref(tid) {
         Ok(v) => v,
@@ -1276,7 +1276,7 @@ pub fn sys_ioring_submit_typed(cap_raw: u64) -> i64 {
     use azos_ipc::io_ring::IoRingCapError;
 
     let cap: Cap<IoRing> = Cap::from_raw(CapHandle::from_raw(cap_raw as u32));
-    // Wave 15 (plan 4a): the process owns and holds it, not the thread.
+    // The process owns and holds it, not the thread.
     let tid = azos_sched::current_proc_tid();
     let r = match azos_ipc::cap_store::with_table(tid, |table| {
         table.get_op_uncontained(cap, CapPerms::WRITE, class_op(ty::IORING, CLASS_WRITE))
@@ -1304,7 +1304,7 @@ pub fn sys_ioring_submit_typed(cap_raw: u64) -> i64 {
 /// `EBADF` if a submit pass is in flight on the ring (retry), or if the page is
 /// mapped and the caller is not the ring's owner.
 ///
-/// Resolved without containment, as a release (owner decision 2026-09-13).
+/// Resolved without containment, as a release.
 /// Shaped like `SYS_MO_UNMAP`: the capability is resolved in one hold
 /// of the caller's table, the page is unmapped and freed outside it
 /// (`io_ring_destroy_mapped_ref`: unmap first, free after), and the capability
@@ -1318,7 +1318,7 @@ pub fn sys_ioring_destroy_typed(cap_raw: u64) -> i64 {
     use azos_ipc::io_ring::IoRingCapError;
 
     let cap: Cap<IoRing> = Cap::from_raw(CapHandle::from_raw(cap_raw as u32));
-    // Wave 15 (plan 4a): the process owns and holds it, not the thread.
+    // The process owns and holds it, not the thread.
     let tid = azos_sched::current_proc_tid();
     let r = match azos_ipc::cap_store::with_table(tid, |table| {
         table.get_op_uncontained(cap, CapPerms::WRITE, class_op(ty::IORING, CLASS_CTL))

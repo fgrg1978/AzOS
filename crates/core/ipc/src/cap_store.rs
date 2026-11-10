@@ -52,12 +52,12 @@
 //! - Any accessor that observes a table whose recorded owner differs from
 //!   the domain being looked up wipes it first (see above).
 //!
-//! # The warrant tree (owner decision D3/L4)
+//! # The warrant tree
 //!
 //! Every slot records the slot it was derived from (`cap::Warrant`): a dup
 //! transfer ([`move_caps`]) and a badged mint ([`mint_badged`]) derive, with
 //! rights, deadline and quota only narrowing; a move keeps the warrant it
-//! carries. **Delete is not revoke (owner decision 20-10, seL4's rule).** A
+//! carries. **Delete is not revoke (seL4's rule).** A
 //! capability that a task closes, or that goes with the task's exit, frees its
 //! own slot and nothing else: what was derived from it, in any domain, stays
 //! alive and keeps what it maps, hung under the freed slot's own parent (a
@@ -84,7 +84,7 @@
 //! closed). A copy installed while a row stands names the live ancestor, not
 //! the deleted link (`warrant_settle`).
 //!
-//! **Weak warrants (owner decision 16-10).** A warrant with `Warrant::WEAK`
+//! **Weak warrants.** A warrant with `Warrant::WEAK`
 //! and everything derived from it resolves with its rights masked to `READ`
 //! and `MAP` (`slot_word::perms`); a derive or move keeps the bit and nothing
 //! clears it. A weak slot has neither `DUP` nor `TRANSFER` to give, so it
@@ -437,7 +437,7 @@ pub mod kmem_fake {
 /// Bytes a Domain is charged for owning a capability table.
 const KMEM_TABLE_BYTES: u64 = core::mem::size_of::<TableCell>() as u64;
 
-/// What happened to a capability, as the [`CapEventHook`] is told (wave 11).
+/// What happened to a capability, as the [`CapEventHook`] is told.
 /// `slot` is a table's index (its domain's slot), the identity a holder
 /// has here; `resource` is the slot's packed resource as stored.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -644,7 +644,7 @@ pub fn table_slot(tid: u32) -> Option<usize> {
 /// Was split into a side-effect-free lookup half (`resolve_only`) plus this
 /// claiming half so that the former `delegate` path could cross-check a
 /// caller-chosen target TID before either of its two resolutions was allowed
-/// to wipe a table. `delegate` and `SYS_CAP_GRANT` were removed 2026-09-03
+/// to wipe a table. `delegate` and `SYS_CAP_GRANT` were removed
 /// (boot-only caps); every remaining caller here always names a
 /// live TID it already trusts (`current_task_tid()`, or the exiting TID at
 /// hook time), so the split's reason is gone and the two halves are merged
@@ -954,7 +954,7 @@ pub fn get<T: CapTarget>(
 }
 
 /// Run `f` on `tid`'s table **for reading**, without its lock when Kconfig
-/// RCU_QSBR is on (wave 15 N4).
+/// RCU_QSBR is on.
 ///
 /// What makes it safe without the lock: each slot is one atomic word
 /// (`CapTable`), so `f` sees every slot it reads whole, as of some instant
@@ -1247,7 +1247,7 @@ pub fn reset(tid: u32) {
     OWNER[idx].store(NO_OWNER, Ordering::Release);
     drop(table);
     // The task's send capabilities went with the table: an endpoint left
-    // with none tells its server (wave 15 N5b).
+    // with none tells its server.
     notices();
 }
 
@@ -1269,12 +1269,12 @@ pub fn with_table<R>(tid: u32, f: impl FnOnce(&CapTable) -> R) -> Option<R> {
 
 /// Move one capability from `from_tid`'s table into `to_tid`'s.
 ///
-/// Under owner decision 38 (2026-09-15) this is a
+/// This is a
 /// **move, as `zx_handle_replace` is** — the sender's entry is removed in the
 /// same step that installs the receiver's. Nothing here duplicates a
 /// capability.
 ///
-/// # `TRANSFER` gates the move (owner decision 2026-09-26, O3.4; split from `DUP` 2026-10-17)
+/// # `TRANSFER` gates the move (split from `DUP`)
 ///
 /// A capability whose slot permissions do not include `CapPerms::TRANSFER`
 /// cannot be moved to a DIFFERENT task at all — refused with `MissingPerms`
@@ -1354,7 +1354,7 @@ pub fn move_cap(
 }
 
 /// One attempt of [`move_cap`]: `None` when a table it resolved was handed
-/// to another slot before it was locked (wave 15): resolve again.
+/// to another slot before it was locked: resolve again.
 fn move_cap_once(
     from_tid: u32,
     to_tid: u32,
@@ -1719,7 +1719,7 @@ pub fn occupied_at_slot(idx: usize) -> usize {
     CAP_TABLES.get(idx).map_or(0, |c| c.lock().occupied())
 }
 
-// ── Wave 15 N11: the capabilities of one message, all or nothing ────────────
+// ── The capabilities of one message, all or nothing ────────────
 
 /// Kconfig `IPC_MSG_MAX_CAPS`: capabilities one message may carry.
 pub const MSG_MAX_CAPS: usize = azos_limits::IPC_MSG_MAX_CAPS as usize;
@@ -1761,7 +1761,7 @@ impl CapXfer {
 }
 
 /// Transfer every capability `xs` names from `from_tid`'s table to
-/// `to_tid`'s, or none of them (wave 15 N11, the message descriptor's rule).
+/// `to_tid`'s, or none of them (the message descriptor's rule).
 /// The receiver's handles go to `out[..xs.len()]`, in order.
 ///
 /// Everything is checked, under both tables' locks, before the sender loses

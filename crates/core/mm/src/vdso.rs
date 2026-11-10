@@ -358,7 +358,7 @@ pub fn vdso_phys() -> usize {
     VDSO_PHYS.load(Ordering::Acquire) as usize
 }
 
-/// Wave 13: where the riscv64 sigreturn trampoline is mapped in every user
+/// Where the riscv64 sigreturn trampoline is mapped in every user
 /// address space, read-execute: the page after the vDSO's. riscv64 musl has
 /// no `SA_RESTORER`, so a Linux signal handler returns to this address (`ra`)
 /// and its two instructions issue `rt_sigreturn`. aarch64 musl passes its own
@@ -455,9 +455,9 @@ pub fn vdso_update(uptime_ticks: u64, uptime_ms: u64) {
     // If seq is already odd, someone else's write is in flight — drop this
     // tick. If the CAS loses the race, someone else claimed it first —
     // drop this tick too. Either way the page is refreshed on the next tick.
-    // Interrupts masked from the claim to the release (wave 13, RT7). The
+    // Interrupts masked from the claim to the release. The
     // write was written for the timer ISR, where they already are; since
-    // wave 13 (3fcdc041) idle also calls this, with interrupts ON. A tick
+    // Idle also calls this, with interrupts ON. A tick
     // between claim and release preempted idle with `seq` odd, and every
     // ring-3 reader (`vdso_now_ns`, `vdso_read_u64`: retry while odd) then
     // spun on it. On idle's own hart the spinning reader outranks idle, so
@@ -488,7 +488,7 @@ pub fn vdso_update(uptime_ticks: u64, uptime_ms: u64) {
     // We won the claim: we are now the sole writer. The successful CAS used
     // Acquire ordering, so these stores cannot be hoisted above it.
     //
-    // **Verified true (2026-09-06 audit), and the more important half of the
+    // **Verified true, and the more important half of the
     // proof lives elsewhere.** This claim is only about program order on
     // this hart: Acquire on the CAS's success ordering is exactly the
     // language guarantee that no later memory op in this function can be

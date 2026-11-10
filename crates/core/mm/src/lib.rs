@@ -29,13 +29,13 @@ pub mod pte_install;
 /// FX7/FX8: the merged-root roster walk, one `PT_META` hold per root
 /// (host-tested, `#[path]`).
 mod roster;
-/// Per-task frame budget arithmetic (owner decision 102), factored out so it
+/// Per-task frame budget arithmetic, factored out so it
 /// can be host-tested. Held by the task's domain (`crates/core/sched/src/domain.rs`)
 /// — see this module's doc.
 pub mod budget;
 /// The W^X boundary rule, shared by the enforcer and the verifier.
 pub mod wx;
-/// Wave 15: the controlled kernel-text write path (static keys).
+/// The controlled kernel-text write path (static keys).
 pub mod text_poke;
 /// E11 / AQ9 — Copy-on-Write support for `fork()`.
 pub mod cow;
@@ -68,7 +68,7 @@ pub mod memobj;
 /// User-memory access sections: what keeps a frame a kernel copy is using
 /// from being freed or reused under it (host-tested, `#[path]`).
 pub mod uaccess;
-/// Wave 14 (SPAWNCACHE): a verified image's frames, kept for its next spawn.
+/// A verified image's frames, kept for its next spawn.
 pub mod image_frames;
 pub mod kheap;
 pub mod kstack;

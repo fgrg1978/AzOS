@@ -64,7 +64,7 @@ static WDT_FEED: crate::liveness::Feed = crate::liveness::Feed::new();
 const WDT_CONTROL_STALL_LIMIT: u32 = 40;
 /// The same ~400 ms of grace in time, which the tick count only approximates:
 /// timer interrupts are not 100 Hz. Each handler programs the nearest timer
-/// sleeper, and since wave 11 (ONESHOT) a task blocking on a timer deadline
+/// sleeper, and (ONESHOT) a task blocking on a timer deadline
 /// moves the comparator too, so with a 1 ms sleeper on hart 0 forty ticks are
 /// ~40 ms (measured default boot, -smp 1: ~600 handler entries/s on riscv64
 /// before that change). The feed continues while EITHER bound still holds, so

@@ -13,7 +13,7 @@
 //! configuration/capability trust are different authorities, and the secure-boot
 //! design anchors each in its own OTP/eFuse slot on real hardware.
 //!
-//! **No default key in a production build** (wave 11).
+//! **No default key in a production build**.
 //! This used to fall back to `tools/keys/test_pub.bin` whenever
 //! `TOPOLOGY_PUBKEY_PATH` was unset, while OTA's build script falls back to
 //! `prod_pub.bin`: a board build that forgot the variable verified CONFIG.SIG,
@@ -31,8 +31,8 @@
 //!   not been generated (every signature check then fails closed);
 //! * neither: the build FAILS, with one line saying which two to choose from.
 //!
-//! **No TEST key in a release image** (Kconfig `BUILD_TYPE_RELEASE`, owner
-//! decision wave 15): a bare-metal build whose `KCONFIG_CONFIG` selects it
+//! **No TEST key in a release image** (Kconfig `BUILD_TYPE_RELEASE`):
+//! a bare-metal build whose `KCONFIG_CONFIG` selects it
 //! fails when the key it would embed is the TEST key, through the `dev-key`
 //! fallback and also when `TOPOLOGY_PUBKEY_PATH` names it (compared by bytes
 //! against `tools/keys/test_pub.bin`, so a copy under another name is refused

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The kernel tracer's ABI (wave 15, TRACE): the event classes a mask
+//! The kernel tracer's ABI (TRACE): the event classes a mask
 //! selects and the event ids a record carries. The operations are the
 //! `LOG_TRACE_*` ops of [`crate::invoke`], invoked on a `Log` capability of the
 //! tracer class (`ty::TRACE`, resource 0) that only a topology row grants

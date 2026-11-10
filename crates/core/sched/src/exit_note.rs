@@ -42,7 +42,7 @@ pub enum Placed {
 /// slot whose own parent has died. [`Placed::Full`] when neither exists: the
 /// caller counts the drop, which admission ([`admits`]) makes impossible.
 ///
-/// Wave 12 (EXIT2): a live parent's notice is never evicted. It used to be,
+/// A live parent's notice is never evicted. It used to be,
 /// FIFO, once the table (then a 32-entry Kconfig choice) filled — a parent's
 /// `wait` silently missed a child that had exited. Unreaped notices are kept
 /// now, as Linux keeps zombies, until the parent reaps them or exits
@@ -91,7 +91,7 @@ pub fn admits(free_slots: usize, notices: usize) -> bool {
 }
 
 /// Move every notice addressed to `from`, which is exiting, to `to`, its
-/// children's new parent (wave 13, orphan re-parenting): the zombies go with
+/// children's new parent (orphan re-parenting): the zombies go with
 /// the children, as Linux hands them to the reaper. Returns how many moved;
 /// the count of entries in use does not change. `to == 0` moves nothing (the
 /// caller purges instead).
@@ -119,7 +119,7 @@ pub struct Ancestor {
     pub can_adopt: bool,
 }
 
-/// Who adopts the children of `dying`, whose parent is `parent` (wave 13,
+/// Who adopts the children of `dying`, whose parent is `parent` (
 /// Linux's rule): the nearest ancestor marked a child subreaper that can
 /// adopt, within `max` steps; else `init` when it can adopt and is not
 /// `dying` itself; else 0, nobody. `look(tid)` is `None` for a TID with no
@@ -252,7 +252,7 @@ mod tests {
         assert_eq!(orphans_left, 2, "exactly one orphan evicted: {t:?}");
     }
 
-    /// Wave 12: a table full of live parents' notices refuses the insert and
+    /// A table full of live parents' notices refuses the insert and
     /// keeps every notice — it used to evict the oldest (FIFO).
     ///
     /// **Canary.** Restore the FIFO fallback: `insert` places the notice and

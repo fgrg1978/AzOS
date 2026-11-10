@@ -4,7 +4,7 @@
 #![forbid(unsafe_code)]
 
 //! The authority over irreversible effects that every domain with an
-//! actuator shares (owner decision, wave 11: safety is cross-cutting).
+//! actuator shares (safety is cross-cutting).
 //!
 //! - [`estop`]: the emergency-stop latch, its signed release authority, safe
 //!   mode.

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The kernel tracer's control (wave 15, TRACE): the `LOG_TRACE_*` ops of
+//! The kernel tracer's control (TRACE): the `LOG_TRACE_*` ops of
 //! `SYS_INVOKE` on the tracer's `Log` handle, used by the `TRACECTL.ELF` tool.
 //!
 //! The authority is `Cap<Trace>`, granted only by a topology row
@@ -78,7 +78,7 @@ pub fn trace_op(cap_raw: u64, op: u16, arg: u64) -> i64 {
             }
             azos_ipc::trace::set_mask(arg as u32) as i64
         }
-        // Booked to the process, as every shared-memory mapping is (wave 15).
+        // Booked to the process, as every shared-memory mapping is.
         LOG_TRACE_MAP => crate::ipc_handlers::map_region_ref(azos_sched::current_proc_tid(), region, true, true),
         _ => Errno::EINVAL.to_syscall_ret(),
     }

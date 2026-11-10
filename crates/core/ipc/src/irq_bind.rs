@@ -529,7 +529,7 @@ fn sc_throttle(tid: u32, throttled: bool, overrun: bool) {
 /// enable — either that binding was stored first (and this line is not
 /// released) or its enable follows this release.
 ///
-/// A binding tells its port (wave 15 N5b): after the hold, the port gets one
+/// A binding tells its port: after the hold, the port gets one
 /// `PORT_EVENT_SOURCE_GONE` (code `EPEERDIED`, the binding's key, the line)
 /// through `port::port_post_gone`, so a task waiting there for the line is not
 /// left waiting for a source that no longer exists.
@@ -924,7 +924,7 @@ fn msi_take(owner: u32, slot: u32, cpu: u32) -> Result<(Msi, bool), BindError> {
 /// * riscv64: a PLIC/APLIC source, `1..MAX_IRQS` (source 0 means "none").
 /// * aarch64 kernel: an SPI, INTID 32..=1019 — exactly
 ///   `azos_arch::irq::gic::user_spi_in_range`, the test the bind applies
-///   (wave 9 IRQ4 item 5). The placeholder bound this replaced was 1024 with
+///   . The placeholder bound this replaced was 1024 with
 ///   a floor of 1, so it minted capabilities for the SGIs/PPIs (1..=31, the
 ///   kernel's IPI and timer) and for the special INTIDs 1020..=1023, all of
 ///   which the bind refuses.

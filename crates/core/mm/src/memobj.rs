@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! MemObj: the one kernel object for memory that is named, charged,
-//! transferred or shared (owner decision D4/L6).
+//! transferred or shared.
 //!
 //! It absorbed `shm.rs` (the region table), the tracer's private regions, the
 //! demand reservation of the old allocation call. A buffer travels to another
@@ -1894,7 +1894,7 @@ fn take_mapping_root_locked(region: &mut MemObj, tid: u32) -> Option<(usize, usi
 /// covers `va` (or covers it with a page of a Paged object that is not in the
 /// cache, or of an [`ATTR_NO_KERNEL_MAP`] object: no word the kernel may read).
 ///
-/// For `crate::notify` (wave 6) and the futex calls, whose key is (region,
+/// For `crate::notify` and the futex calls, whose key is (region,
 /// offset) and never an address. A mapping is recorded only by `SYS_MO_MAP`,
 /// which demands `READ` and `MAP` on a `Cap<Shm>`, so resolving through it asks
 /// the same authority question — without needing the handle, which the creator
@@ -2517,7 +2517,7 @@ fn drop_refs_locked(region: &mut MemObj, idx: usize, n: u32) -> Reclaim {
 /// `cow::page_decref` first for a frame a clone shares) is most of a release:
 /// the last release of an object held `MEMOBJS`, interrupts masked on that
 /// hart, for 13 to 14 us of `-icount` time on riscv64 and aarch64 (the lat
-/// smoke's `memobj_release_holder_ref`, 2026-10-24), about 0.2 us a frame.
+/// smoke's `memobj_release_holder_ref`), about 0.2 us a frame.
 /// A frame taken here is named by no object any more (its page slot is
 /// cleared under the lock) and every path that takes one has removed the
 /// PTEs to it first, so nothing reaches it between the unlock and the free.
@@ -2592,7 +2592,7 @@ pub fn memobj_release_all(tid: u32) {
     // file or `EPIPE` the moment it is gone, and the record of them lives in
     // the holder this function is about to clear.
     pipe_drop_all(tid);
-    // One look under the lock for the regions that exist at all (wave 13): a
+    // One look under the lock for the regions that exist at all: a
     // task with nothing to release used to take the lock twice per region,
     // ~2,800 instructions on every exit. A region created after the look is
     // not this exiting task's.
@@ -5018,7 +5018,7 @@ mod tests {
     /// the table's lock is held. The word read is the one written through the
     /// region's own page, and an offset past the region answers `None`.
     ///
-    /// **Canary (by hand, 2026-10-02).** In `memobj_with_word_ref`, `drop(regions)`
+    /// **Canary (by hand).** In `memobj_with_word_ref`, `drop(regions)`
     /// before calling `f` (the old shape: address under the lock, load after):
     /// red on "the region table was unlocked during the load".
     #[test]
@@ -5114,7 +5114,7 @@ mod tests {
         assert_eq!(memobj_with_span_ref(r, 8, |_| ()), Err(STALE), "a released region is never an address");
     }
 
-    /// **The notify word is the word the mapping shows (wave 11 fix).** For
+    /// **The notify word is the word the mapping shows.** For
     /// every 4-aligned offset of a multi-page region, at the start, middle and
     /// end of each page: a word written through the mapped address
     /// (`memobj_with_mapped_word`, the futex paths' access) is the word
@@ -5127,7 +5127,7 @@ mod tests {
     /// the old code there. At 16 KiB (`tests/host/ipc-tests`, `cargo
     /// test --release --features page-16k --lib`) this one is red on the old
     /// code too ("offset 0x2004: the notify word is not the mapped word",
-    /// run by hand 2026-10-03).
+    /// run by hand).
     #[test]
     fn the_notify_word_is_the_word_the_mapping_shows_on_every_page() {
         let _g = setup();
@@ -5198,7 +5198,7 @@ mod tests {
     /// value, so both mask it after the bounds check (Spectre v1, Kconfig
     /// `MITIGATION_SPECTRE_V1_INDEX`). A speculative load is invisible to any
     /// host test, so the mask's presence is asserted in the source.
-    /// **Canary (wave 12).** Delete the `array_index_nospec` line from
+    /// **Canary.** Delete the `array_index_nospec` line from
     /// `memobj_with_word_ref`: red, naming it.
     #[test]
     fn no_fixed_page_size_in_the_offset_split() {
@@ -5841,7 +5841,7 @@ mod tests {
         assert_eq!(refs(LAYOUT.idx(rc)), None);
     }
 
-    /// (6) U03-1 / U04-1's fix, owner decision 2026-09-26: a slot that reaches
+    /// (6) The fix: a slot that reaches
     /// `LAYOUT.gen_max()` is swept **at its own index only**
     /// (`objref::sweep_index`) and reused from generation 1 — instead of the
     /// old design's pool-wide counter, whose exhaustion swept every `Cap<Shm>`
@@ -6028,7 +6028,7 @@ mod tests {
     /// create that does not fit the budget is refused before any frame is
     /// taken.
     ///
-    /// **Canaries** (run by hand 2026-09-28): drop the `mm_discharge_tid` in
+    /// **Canaries** (run by hand): drop the `mm_discharge_tid` in
     /// `drop_refs_locked` — "freed by B, discharged to A" fails, 4 != 0; drop
     /// the pre-charge in `create_core` — "create charged the creator" fails,
     /// 0 != 4.
@@ -6952,7 +6952,7 @@ mod tests {
     /// is zero after the file's last byte, and a read stops at the end of the
     /// file. A failed fill takes no frame and leaves the page out.
     ///
-    /// **Canary (by hand, 2026-10-16).** `paged_page_in` filling without the
+    /// **Canary (by hand).** `paged_page_in` filling without the
     /// resident-slot early return: "a hit read the file again" red.
     #[test]
     fn a_paged_object_reads_through_the_cache_and_fills_each_page_once() {
@@ -7002,7 +7002,7 @@ mod tests {
     /// second time. A write that fails leaves the page dirty. A read-only object
     /// refuses writes.
     ///
-    /// **Canary (by hand, 2026-10-16).** `write_back_page` writing all of
+    /// **Canary (by hand).** `write_back_page` writing all of
     /// `src`: the fake file's "lengthened the file" assert fires.
     #[test]
     fn a_dirty_page_is_written_back_once_and_only_its_valid_part() {
@@ -7050,7 +7050,7 @@ mod tests {
     /// read goes to the file again; a dirty page stays until it is written
     /// back, and then goes.
     ///
-    /// **Canary (by hand, 2026-10-16).** `memobj_paged_drop_clean` without the
+    /// **Canary (by hand).** `memobj_paged_drop_clean` without the
     /// `must_flush` test: "dropped a dirty page" red.
     #[test]
     fn a_clean_page_is_dropped_under_pressure_and_a_dirty_one_is_not() {
@@ -7085,7 +7085,7 @@ mod tests {
     /// (the dirty one only because it was written first); a failing file leaves
     /// its dirty page resident and counts the object, and the clean pages go.
     ///
-    /// **Canary (by hand, 2026-10-16).** `memobj_paged_reclaim` dropping before
+    /// **Canary (by hand).** `memobj_paged_reclaim` dropping before
     /// it writes back: "the dirty page was not dropped in the same pass" red.
     #[test]
     fn the_reclaim_pass_writes_back_before_it_drops() {
@@ -7120,7 +7120,7 @@ mod tests {
     /// WRITABLE mapping makes its pages count as dirty: they are written back
     /// (every pass) and never dropped until the mapping goes.
     ///
-    /// **Canary (by hand, 2026-10-16).** `writable_mapped` returning false:
+    /// **Canary (by hand).** `writable_mapped` returning false:
     /// "dropped a page under a writable mapping" red.
     #[test]
     fn a_mapping_shares_the_cache_frame_and_a_drop_unmaps_it() {
@@ -7230,7 +7230,7 @@ mod tests {
     /// drop leaves the page alone and a kernel write to it is refused; once the
     /// write-back ends both work.
     ///
-    /// **Canary (by hand, 2026-10-16).** `memobj_paged_drop_clean` without its
+    /// **Canary (by hand).** `memobj_paged_drop_clean` without its
     /// `flushing` test: "dropped a page that is being written back" red.
     #[test]
     fn a_page_being_written_back_is_neither_dropped_nor_written() {
@@ -7270,7 +7270,7 @@ mod tests {
     /// shorter one loses every page; the dirty pages are written back at the
     /// OLD size before any of it, and the same size does nothing.
     ///
-    /// **Canaries (by hand, 2026-10-17).** `memobj_paged_set_size_ref` keeping
+    /// **Canaries (by hand).** `memobj_paged_set_size_ref` keeping
     /// the old-end page: the "zeros that are bytes now" read red. Dropping
     /// every page on growth: "a growth refilled the whole file" red. Skipping
     /// the write-back: "dirty bytes reached the file" red. Not clearing on
@@ -7355,7 +7355,7 @@ mod tests {
     /// mapping is unmapped first. The pages before it stay. A pinned holder or
     /// a page being written back refuses it (`Busy`) and nothing is dropped.
     ///
-    /// **Canary (by hand, 2026-10-17).** `memobj_paged_forget_ref` writing back
+    /// **Canary (by hand).** `memobj_paged_forget_ref` writing back
     /// first: "a forgotten page was written" red. Not clearing the dirty bit:
     /// the info row red.
     #[test]
@@ -7437,7 +7437,7 @@ mod tests {
     /// the rest of that page none, a write across a dirty page and a clean one
     /// counts the clean one; a flushed page is clean again.
     ///
-    /// **Canary (by hand, 2026-10-17).** Counting every page a write touches:
+    /// **Canary (by hand).** Counting every page a write touches:
     /// the second and third asserts red.
     #[test]
     fn a_write_counts_the_pages_it_made_dirty() {
@@ -7485,7 +7485,7 @@ mod tests {
     /// memory takes the attribute; an object without it, and a task that only
     /// shares the object, cannot be made volatile. A fresh object is Held.
     ///
-    /// **Canary (by hand, 2026-10-20).** Dropping the `owner_task` test in
+    /// **Canary (by hand).** Dropping the `owner_task` test in
     /// `memobj_set_volatile_ref`: the sharer's refusal goes red.
     #[test]
     fn a_volatile_object_is_toggled_by_its_owner_only() {
@@ -7515,7 +7515,7 @@ mod tests {
     /// and the bytes. The state is final: the map, the clone and both toggles
     /// say so, and a second pass finds nothing.
     ///
-    /// **Canary (by hand, 2026-10-20).** `purge_locked` not clearing
+    /// **Canary (by hand).** `purge_locked` not clearing
     /// `charge_key`: "the charge went back twice" red. Not unmapping: the
     /// unmap assertions red.
     #[test]
@@ -7586,7 +7586,7 @@ mod tests {
     /// `mem = "locked"` row (real-time memory). Each is taken the moment the
     /// reason goes, which shows the object was volatile all along.
     ///
-    /// **Canaries** (`--features`, by hand 2026-10-20; each must fail this
+    /// **Canaries** (`--features`, by hand; each must fail this
     /// test): `memobj-purge-held-canary` (the in-use object is taken),
     /// `memobj-purge-kernel-held-canary` (the pinned one), and
     /// `memobj-purge-locked-canary` (the locked Domain's).
@@ -7645,7 +7645,7 @@ mod tests {
     /// stops the purge, and a purged object cannot be pinned at all. An object
     /// that is not volatile needs no pin.
     ///
-    /// **Canary (by hand, 2026-10-20).** `memobj_pin_for_map` answering `Ok(false)`
+    /// **Canary (by hand).** `memobj_pin_for_map` answering `Ok(false)`
     /// for a volatile object: the purge assertion red.
     #[test]
     fn a_mapping_in_flight_keeps_a_volatile_object_from_being_purged() {
@@ -7667,7 +7667,7 @@ mod tests {
     /// whole machine as subject, the bytes dropped; nothing for a pass that
     /// dropped nothing.
     ///
-    /// **Canary (by hand, 2026-10-20).** Removing `record_purge` from
+    /// **Canary (by hand).** Removing `record_purge` from
     /// `memobj_paged_drop_clean`: red.
     #[test]
     fn dropping_clean_cache_pages_writes_a_purge_record() {

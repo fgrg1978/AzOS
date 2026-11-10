@@ -39,7 +39,7 @@ use azos_crypto::sig::{key_array, Rsig, KEY_LEN, RSIG_FILE_MAX};
 /// Length of the public key (bytes): the configured algorithm's.
 pub const SECURE_BOOT_PUBKEY_LEN: usize = KEY_LEN;
 
-/// Historical note (U09-14, closed): this crate used to hold a whole image
+/// Historical note (closed): this crate used to hold a whole image
 /// in a 2 MiB `.bss` buffer (`SECURE_BOOT_MAX_IMAGE_SIZE`) to verify it,
 /// because pure Ed25519 signs the raw message and needs it contiguous. That
 /// ceiling was smaller than and disconnected from `OTA_MAX_IMAGE_SIZE`
@@ -141,7 +141,7 @@ pub const SECURE_BOOT_SIG_FILE_MAX: usize = RSIG_FILE_MAX + 16;
 /// SHA-256 hasher (see `hash_image_file`). The manifest scheme signs
 /// `sha256(image)`, not the image itself (`crates/core/crypto/src/sig.rs`,
 /// `RSIG`), so this bounds a stack-local chunk buffer only — there is
-/// no whole-image buffer to size any more (U09-14). 4 KiB matches the chunk
+/// no whole-image buffer to size any more. 4 KiB matches the chunk
 /// size already used by the OTA receive path (`OTA_CHUNK` in
 /// `crates/core/shell/src/lib.rs`).
 pub const SECURE_BOOT_READ_CHUNK_SIZE: usize = 4096;
@@ -357,7 +357,7 @@ fn read_sig_file(path: &[u8], out: &mut [u8]) -> usize {
 ///
 /// Returns `(digest, total_len)`, or `None` if the file could not be opened
 /// or nothing could be read from it. Unlike the pre-manifest scheme
-/// (U09-14), this never needs the whole image resident: the manifest
+///, this never needs the whole image resident: the manifest
 /// signs `sha256(image)`, not the image itself, so a fixed 4 KiB chunk
 /// buffer (stack-local — small enough not to need `.bss`, unlike the old
 /// 2 MiB `IMG_BUF`) is all streaming a hash ever needs, at any image size
@@ -432,7 +432,7 @@ pub fn secure_boot_verify_slot_detailed(slot: u8) -> (BootTrust, BootTrustReason
 /// `BootTrust::Verified`, the `fw_version` bound into the signed manifest
 /// (0 otherwise). Callers MUST use this returned version — never the
 /// unsigned `fw_version` from the OTA wire header — to decide the
-/// anti-rollback floor (U09-4 / U11-4 / security finding #10): the wire
+/// anti-rollback floor: the wire
 /// header is sender-chosen and unauthenticated; this value is not.
 #[must_use]
 pub fn secure_boot_verify_staged_detailed(slot: u8) -> (BootTrust, BootTrustReason, u32) {
@@ -460,7 +460,7 @@ pub fn secure_boot_verify_image_detailed(
 /// from the signed manifest (0 when the result is not `Verified`).
 ///
 /// There is no longer an `image_size` parameter (removed with
-/// `SECURE_BOOT_MAX_IMAGE_SIZE`/`ImageTooLargeToVerify`, U09-14): the actual
+/// `SECURE_BOOT_MAX_IMAGE_SIZE`/`ImageTooLargeToVerify`): the actual
 /// on-disk length is measured while streaming the hash, and checked against
 /// the signed `payload_size` field itself (`PayloadSizeMismatch`) — so the
 /// caller no longer needs to separately supply or trust a size from BOOTMETA.
@@ -516,7 +516,7 @@ fn secure_boot_verify_image_detailed_ex(
 }
 
 /// Verify every slot the board is **not** running, so a slot that fails can be
-/// recorded and never selected. Owner decision, 2026-09-19.
+/// recorded and never selected.
 ///
 /// Returns one entry per slot, indexed by `SLOT_A`/`SLOT_B`/`SLOT_R`:
 /// * `None` for the active slot — the caller already has that verdict and
@@ -547,7 +547,7 @@ fn secure_boot_verify_image_detailed_ex(
 /// halt, the extra work buys nothing).
 ///
 /// Same single-hart, pre-SMP context as the rest of the boot gate. No shared
-/// mutable buffer to reason about any more (U09-14): `hash_image_file`
+/// mutable buffer to reason about any more: `hash_image_file`
 /// streams through a stack-local chunk buffer.
 #[must_use]
 pub fn secure_boot_verify_other_slots(
@@ -571,7 +571,7 @@ pub fn secure_boot_verify_other_slots(
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// OT04 / owner decision 99 — fall to the recovery slot instead of bricking.
+// Fall to the recovery slot instead of bricking.
 // ───────────────────────────────────────────────────────────────────────────
 
 /// What [`secure_boot_steer_to_recovery`] was able to do about a slot that
@@ -617,7 +617,7 @@ pub enum RecoverySteer {
 /// Not via `ota_verify_slot(SLOT_R)` (the CRC path used by the OT04 block
 /// earlier in boot): a CRC says the file is intact, not that it is ours. On
 /// an enforced build the question is authenticity. This function's
-/// `image_size`-free verification (U09-14) also means an attacker-written
+/// `image_size`-free verification also means an attacker-written
 /// `image_size_r` in BOOTMETA — previously usable to force
 /// `ImageTooLargeToVerify` and deny recovery — has no verification-side
 /// effect left to have.
@@ -625,7 +625,7 @@ pub enum RecoverySteer {
 /// # Context
 ///
 /// Single-hart, pre-SMP, pre-`task_create` — same call context as the boot
-/// gate itself. No shared buffer to reason about (U09-14): this adds a
+/// gate itself. No shared buffer to reason about: this adds a
 /// second sequential streaming-hash pass, nothing concurrent.
 #[cfg(feature = "boot-slots")]
 #[must_use]

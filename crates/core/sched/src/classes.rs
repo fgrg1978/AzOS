@@ -489,7 +489,7 @@ static PI_PRIO: [AtomicU32; MAX_TASKS] = [const { AtomicU32::new(u32::MAX) }; MA
 
 /// Per slot: the absolute deadline (µs) of the DL waiter the wait graph boosts
 /// the task by, `u64::MAX` for none. A DL-boosted task competes in the DL step
-/// with its donor's deadline (owner decision D4), not only at the band's top
+/// with its donor's deadline, not only at the band's top
 /// level, where any reservation out-ranks it (`formal/tla/pi_graph.tla`,
 /// EdfInheritance).
 static DL_BOOST: [AtomicU64; MAX_TASKS] = [const { AtomicU64::new(u64::MAX) }; MAX_TASKS];
@@ -646,7 +646,7 @@ impl ClassPi {
     }
 }
 
-/// The ring-3 floor on a graph boost (owner decision 10-10): `p`, the
+/// The ring-3 floor on a graph boost: `p`, the
 /// floor the graph asks for `idx`, never goes more urgent than the ring-3
 /// floor ([`super::ring3_floor_at`]:
 /// `RT_PRIORITY_THRESHOLD` for a ring-3 task, none for a kernel task), so

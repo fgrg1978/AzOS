@@ -16,7 +16,7 @@
 //!    parent (`azos_sched::spawn::spawn_prepare`). `EXEC_BOUNCE` is
 //!    released here.
 //! 3a. An image the signed topology has no row for is refused with `EACCES`
-//!    (owner decision 2026-09-28), with a console line and a
+//!, with a console line and a
 //!    `SAFETY_EXEC_REFUSED` record (action [`SPAWN_REFUSED_ACTION_NO_ROW`]),
 //!    before any address space exists. A spawned process is admitted, budgeted,
 //!    counted and granted by its row; one without a row used to start with no
@@ -79,7 +79,7 @@ pub fn spawn_path_hooked(path: &[u8], before_release: &mut dyn FnMut(u32)) -> i6
 pub(crate) struct ImageRead {
     pub total: usize,
     pub digest: [u8; 32],
-    /// Wave 14 (SPAWNCACHE): the digest came from the verified-image cache.
+    /// The digest came from the verified-image cache.
     pub hit: bool,
     /// The content stamp the bytes were read under, when it held across the
     /// read: what a kept image of them is keyed by.
@@ -92,7 +92,7 @@ pub(crate) struct ImageRead {
 /// is larger, hash it through a descriptor and keep its
 /// first [`STREAM_HDR_BYTES`] at the start of `buf`.
 ///
-/// Wave 14 (SPAWNCACHE): an image that fits is read by
+/// An image that fits is read by
 /// `image_cache::read_verified` (cached digest, or hashed in the same pass).
 /// A streamed image whose digest is cached is not hashed here: its load
 /// hashes every byte it copies and refuses unless they hash to that digest.
@@ -218,7 +218,7 @@ impl Drop for ImageFile {
     }
 }
 
-/// Where a spawn's image comes from (wave 14, SPAWNCACHE).
+/// Where a spawn's image comes from (SPAWNCACHE).
 enum Source {
     /// Frames an earlier spawn of the same, unchanged bytes kept.
     Kept(crate::image_cache::Pinned),
@@ -258,7 +258,7 @@ pub fn spawn_path_ex(
     // The bytes hashed are the bytes loaded: both happen under one hold of
     // the buffer. The hold ends with the block, before any capability table is
     // touched.
-    // Wave 14 (SPAWNCACHE): bytes a spawn already verified and loaded,
+    // Bytes a spawn already verified and loaded,
     // unchanged since (same stamp), start from the frames that spawn kept:
     // nothing is read or hashed.
     let stamp = if crate::image_cache::FRAME_BUDGET != 0 { ops.content_stamp(path) } else { None };
@@ -295,7 +295,7 @@ pub fn spawn_path_ex(
                 return SpawnEx::Failed(errno.to_syscall_ret());
             }
         };
-        // Owner decision 2026-09-28: no row, no process. Checked before any
+        // No row, no process. Checked before any
         // address space exists, on the key the caps, class and budget below
         // are all looked up by.
         if !has_row(plan.topology_key) {
@@ -315,9 +315,9 @@ pub fn spawn_path_ex(
         if !authorize(plan.profile.image, &digest) {
             return SpawnEx::Refused;
         }
-        // Wave 7: the child is CREATED in its row's class and priority, so it
+        // The child is CREATED in its row's class and priority, so it
         // is never runnable at the default first. Same key as its caps.
-        // Wave 11 SCHED-RT (owner decision): a row in the real-time band with
+        // A row in the real-time band with
         // a reservation must also be `mem = "locked"`. Refused before any
         // child exists.
         if crate::topo_sched::row_band_entry(plan.topology_key.as_bytes())
@@ -331,7 +331,7 @@ pub fn spawn_path_ex(
             return SpawnEx::Failed(azos_abi::error::Errno::EACCES.to_syscall_ret());
         }
         let sched = crate::topo_sched::resolve(plan.topology_key.as_bytes());
-        // Wave 11 SCHED-RT: a row with a real-time profile needs its EDF + CBS
+        // A row with a real-time profile needs its EDF + CBS
         // reservation admitted. Decided before any child exists, so a refusal
         // is an errno and not a half-made task; the child is created at the
         // ring-3 floor and enters the band only once the reservation is its.

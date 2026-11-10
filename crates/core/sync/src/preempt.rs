@@ -13,7 +13,7 @@
 //!
 //! **This used to end "and it is the cause of K-C26". That claim is
 //! withdrawn** — it was inference, and the experiment that tests it directly
-//! says otherwise. On 2026-09-08, 20 runs of the `userspace: IPC` scenario
+//! says otherwise. In an experiment, 20 runs of the `userspace: IPC` scenario
 //! with `depth()` forced to return 0 — the counter still maintained, nothing
 //! consulting it, which is precisely the pre-K-C29 scheduler behaviour — did
 //! not wedge once, all 20 completing the full 1600-exchange phase A. If
@@ -36,8 +36,8 @@
 //!
 //! Left uncorrected it is worse than untidy. A reader deciding whether some
 //! path may yield would conclude preemption is never off, and that is exactly
-//! the reasoning that picks the wrong locking primitive — it nearly did on
-//! 2026-09-07, when a sleeping lock was chosen for the I2C bus lock because its
+//! the reasoning that picks the wrong locking primitive — it nearly did once,
+//! when a sleeping lock was chosen for the I2C bus lock because its
 //! acquire path yields, under the belief that no `SpinLockGuard` was live
 //! above it.
 //!

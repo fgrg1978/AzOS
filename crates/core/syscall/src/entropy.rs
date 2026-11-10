@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! The `Entropy` interface the kernel hosts: ring-3 read of the kernel entropy
-//! pool (wave 9, owner decision P9; an endpoint op since D6 part A).
+//! pool (an endpoint op since D6 part A).
 //!
 //! ## What it is for
 //!
@@ -15,7 +15,7 @@
 //!
 //! ## The refusal rule
 //!
-//! Unseeded means refused, on every build (owner decision 2026-09-26 V1.2).
+//! Unseeded means refused, on every build.
 //! This interface has no fallback: the pool's `fill` writes nothing while
 //! unseeded, and handing out counter-derived bytes under the name "entropy" is
 //! exactly what V1.2 refused. The brain link's handshake draws its ephemeral

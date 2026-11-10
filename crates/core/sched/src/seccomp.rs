@@ -48,7 +48,7 @@ const _: () = assert!(
 // this crate importing it would close a cycle — but `azos_abi` has no
 // dependencies at all, so the number can come from the same place the kernel
 // and ring 3 now get it from (`crates/core/syscall/src/numbers.rs` and
-// `crates/core/libsys` both re-export it as of 2026-09-06).
+// `crates/core/libsys` both re-export it).
 //
 // The failure this removes: renumber a syscall on one side and the profile
 // silently whitelists a DIFFERENT call — a seccomp filter that permits what it
@@ -86,7 +86,7 @@ const COMMON: &[u16] = &[
 // so no profile lists them; the image row's `ifaces` word is the gate.
 //
 // THE RULE FOR ADDING A TYPED CALL HERE IS ENFORCED, NOT JUST DESCRIBED
-// (owner decision, 2026-09-08). The check lives in `tests/host/seccomp-tests`:
+//. The check lives in `tests/host/seccomp-tests`:
 //
 //   * `TYPED_GRANTS` there is the single table of "this typed call is in a
 //     profile, and here is why": `NarrowerTwin(untyped)` for one whose
@@ -188,7 +188,7 @@ pub fn activate_profile(profile_id: u64) -> i64 {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-//  IMAGE PROFILES — one per shipped ring-3 binary (owner decision, 2026-09-14)
+//  IMAGE PROFILES — one per shipped ring-3 binary
 // ════════════════════════════════════════════════════════════════════════════
 //
 // Every ring-3 binary the disk image ships runs under a profile of its own:
@@ -198,7 +198,7 @@ pub fn activate_profile(profile_id: u64) -> i64 {
 // none has to cooperate for that to be true, and an image bound to no row does
 // not run.
 //
-// BOUND TO THE BYTES, NOT THE NAME (owner decision 2026-09-14). A row keyed by
+// BOUND TO THE BYTES, NOT THE NAME. A row keyed by
 // file name followed whatever was copied under that name: another binary copied
 // over ABITEST.ELF ran under ABITEST.ELF's row. So each row is bound to the
 // SHA-256 of one ELF. `make $AZOS_OUT/build/image_hashes.rs` hashes the files the disk-image
@@ -251,7 +251,7 @@ pub fn activate_profile(profile_id: u64) -> i64 {
 // WHAT A CALL OUTSIDE A ROW DOES. The dispatcher (`crates/core/syscall/src/dispatch.rs`,
 // `syscall_dispatch_out`) asks `scheduler::current_syscall_verdict`; `invoke`
 // asks `scheduler::current_op_verdict` for the op's class. Refused, the task is
-// KILLED (owner decision V1.8): `seccomp_deny_kill` / `seccomp_deny_op_kill`
+// KILLED: `seccomp_deny_kill` / `seccomp_deny_op_kill`
 // (`crates/core/syscall/src/handlers.rs`) write
 // `trace_event(TRACE_SYSCALL, num, 0xDEAD, ..)` into the trace ring (not
 // durable), say so on the console and end the task with exit code 159. In a
@@ -288,7 +288,7 @@ pub struct ImageProfile {
     pub image: &'static str,
     /// Every named syscall the binary issues.
     pub syscalls: &'static [u16],
-    /// Allow-and-record (owner decision 2026-09-14): a syscall outside
+    /// Allow-and-record: a syscall outside
     /// `syscalls` goes through and is written to the flight recorder as
     /// `SAFETY_SECCOMP_AUDIT`, bounded per task, instead of being refused.
     /// Only the two test binaries whose job is to probe the kernel with calls
@@ -536,7 +536,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             // `SYS_IPC_CALL` on two kernel-hosted endpoints: `link_key_init`
             // reads the brain-link PSK from `linkkey` (U06-9), and each
             // Handshake draws the randomness for its ephemeral key and
-            // record nonce seed from `entropy` (wave 9, P3/P9). Without it the
+            // record nonce seed from `entropy`. Without it the
             // encrypted link cannot start and the client refuses to run.
             SYS_IPC_CALL,
             // The inference call: a helper thread makes it (a blocked call has
@@ -562,7 +562,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             SYS_EXIT, SYS_INVOKE, SYS_MO_UNMAP, SYS_MO_CREATE,
             SYS_IPC_CALL,
             SYS_CAP_INFO, SYS_CAP_CLOSE,
-            // The ring-3 IRQ section, both ISAs since wave 9 (RTC alarm bound
+            // The ring-3 IRQ section, both ISAs (RTC alarm bound
             // to a port, polled with a sleep between tries, then ACKed; then
             // bound to the task itself and waited for), and the vDSO clock the
             // sensor stamps are checked against (SENSORTS).
@@ -615,12 +615,12 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             SYS_CAP_INFO, SYS_CAP_CLOSE,
             // The CALL half only: `abitest` addresses `endpoint.demo` by
             // capability, both forms (the register form, and the descriptor
-            // form of `check_entropy_read`, wave 9, P9, on the kernel-hosted
+            // form of `check_entropy_read`, on the kernel-hosted
             // `entropy` endpoint).
             SYS_IPC_CALL,
-            // `check_threads` and the FP-state checks (wave 13, THREADS).
+            // `check_threads` and the FP-state checks (THREADS).
             SYS_THREAD_CREATE, SYS_THREAD_EXIT, SYS_FUTEX_WAIT, SYS_FUTEX_WAKE,
-            // `check_mmap_prot` (wave 13, security).
+            // `check_mmap_prot` (security).
             SYS_MO_MAP,
         ],
         audit: true,
@@ -706,7 +706,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             // complete refused.
             SYS_RING_SETUP, SYS_RING_ENTER, SYS_CAP_CLOSE,
             SYS_SLEEP_UNTIL,
-            // The shell lanes (wave 12): `spawn+wait` (TOOLBOX.ELF as `true`,
+            // The shell lanes: `spawn+wait` (TOOLBOX.ELF as `true`,
             // reaped with `DOMAIN_WAIT`), `pipe-rw` and `pipe+close`.
             SYS_SPAWN_EX,
             // The thread lanes (`thread create+join`, `futex wake+wait rt`).
@@ -799,7 +799,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         ops: inv_ops![MEMOBJ_ACQUIRE, LOG_CONSOLE_WRITE, DOMAIN_UPTIME, DOMAIN_WAIT, DOMAIN_SUP_GIVE_UP],
         ifaces: NO_IFACES,
     },
-    // Wave 11: the user shell. The profile that lists
+    // The user shell. The profile that lists
     // `SYS_SPAWN_EX` and `SYS_ALERT` besides the test images that start or
     // stop processes (`tests/host/seccomp-tests` holds the list). Since the
     // Terminal object it does NOT list the console `WAIT` op: console input is
@@ -882,7 +882,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         ops: inv_ops![MEMOBJ_ACQUIRE, LOG_CONSOLE_WRITE, DOMAIN_UPTIME],
         ifaces: NO_IFACES,
     },
-    // Wave 11: the shell's multicall tool image. Reads and writes
+    // The shell's multicall tool image. Reads and writes
     // the fds it was moved (`NODE_READ` and `NODE_WRITE` on a `Cap<File>`,
     // `SYS_CAP_CLOSE`), opens files read-only, lists directories,
     // sleeps. `inspect` (Kconfig INSPECT) reads the kernel's introspection
@@ -990,7 +990,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         ops: inv_ops![LOG_CONSOLE_WRITE, NODE_WRITE, MEMOBJ_ACQUIRE],
         ifaces: &[azos_devif::key::POWER, azos_devif::key::SENSOR],
     },
-    // Wave 12: the other privileged families' tools, the POWER.ELF shape:
+    // The other privileged families' tools, the POWER.ELF shape:
     // each the ONLY profile whose interfaces list its family's endpoint,
     // `SYS_CAP_INFO` for the capability its row grants, `SYS_IPC_CALL` to
     // call it, and `NODE_WRITE` for a redirected stdout.
@@ -1038,7 +1038,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         ops: inv_ops![LOG_CONSOLE_WRITE, NODE_WRITE, MEMOBJ_ACQUIRE],
         ifaces: &[azos_devif::key::OTA],
     },
-    // Wave 15 (TRACE): the tracer's reader, the POWER.ELF shape. The ONLY
+    // The tracer's reader, the POWER.ELF shape. The ONLY
     // profile that lists the tracer's ops (`LOG_TRACE_*`); `SYS_CAP_INFO` finds
     // the `Cap<Trace>` its row grants; `SYS_SLEEP_UNTIL` between drains (the
     // rings are polled: the producer rings no doorbell); `NODE_OPENAT`,
@@ -1577,7 +1577,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
         ops: inv_ops![LOG_CONSOLE_WRITE, NODE_OPENAT, NODE_READ, DOMAIN_UPTIME, DOMAIN_MODULE_VERIFY],
         ifaces: &[azos_devif::key::ENTROPY],
     },
-    // Wave 12: the Linux personality's test binary, a static
+    // The Linux personality's test binary, a static
     // Linux ELF (`userspace/tests/lxhello/lxhello.c`). It traps with LINUX
     // numbers; seccomp runs after translation, so this row lists the NATIVE
     // calls its Linux calls reach (`azos_linux_abi::TABLE`), derived from
@@ -1590,16 +1590,16 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
             // Stage 3: `clone` in the fork shape (`SYS_FOREIGN_FORK`) and
             // `execve` of itself.
             SYS_FOREIGN_FORK,
-            // Wave 13: `kill` of a child (the stop call's ancestry), and
+            // `kill` of a child (the stop call's ancestry), and
             // `read` of a console lent to it.
             SYS_ALERT,
-            // Wave 13: `clone` also reaches the thread create (derived from
+            // `clone` also reaches the thread create (derived from
             // the personality's table: LXHELLO itself forks only).
             SYS_THREAD_CREATE,
             // C2-11: the runtime ends a thread (`exit`) and starts an image
             // for `execve`.
             SYS_THREAD_EXIT, SYS_SPAWN_EX,
-            // Wave 15: `futex` (a robust lock's waiter, a parked thread).
+            // `futex` (a robust lock's waiter, a parked thread).
             SYS_FUTEX_WAIT, SYS_FUTEX_WAKE,
             // The ring-3 runtime's own calls (Kconfig LINUX_RUNTIME,
             // `azos_linux_rt::RUNTIME_NATIVE`).
@@ -1649,7 +1649,7 @@ pub const IMAGE_PROFILES: &[ImageProfile] = &[
 // `tests/host/seccomp-tests` — never gains a row that recipe does not itself
 // copy; see that Makefile variable's own comment on the invariant.
 //
-// **Board builds bind their own table** (wave 11 BOARDIMG). The board volume
+// **Board builds bind their own table**. The board volume
 // carries its own ML service (named key, no `dev-key`), so a kernel built by
 // `make vf2`/`k1`/`build-fleet` passes `--features board-image` and binds
 // `$AZOS_OUT/build/board/image_hashes.rs`, whose MLSRV.ELF row is that service's digest;
@@ -1763,7 +1763,7 @@ pub const THIRDPARTY_PROFILES: &[ImageProfile] = &[
             SYS_EXIT, SYS_INVOKE, SYS_MO_CREATE, SYS_MO_MAP, SYS_MO_UNMAP, SYS_SLEEP_UNTIL, SYS_YIELD,
             SYS_CAP_CLOSE,
             SYS_FOREIGN_FORK,
-            // Wave 13: `kill` (ash's builtin, its children only) and the
+            // `kill` (ash's builtin, its children only) and the
             // console the shell lends its foreground job (interactive `sh`).
             SYS_ALERT,
             // x86_64 under the ring-3 runtime: musl's start sets its TLS with
@@ -1780,7 +1780,7 @@ pub const THIRDPARTY_PROFILES: &[ImageProfile] = &[
         ops: LINUX_RT_OPS,
         ifaces: NO_IFACES,
     },
-    // Wave 13 (THREADS): `LXTHR.ELF` (`make lxthreads`), our own C linked
+    // `LXTHR.ELF` (`make lxthreads`), our own C linked
     // statically with musl by zig cc, built only beside the third-party
     // images for the same reason (an external toolchain). pthreads: `clone`
     // (thread shape), `futex`, `mmap`/`munmap` for the stacks, a `/tmp` file

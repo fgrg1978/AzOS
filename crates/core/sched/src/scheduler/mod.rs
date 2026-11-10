@@ -37,7 +37,7 @@
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU16, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 // The cross-ISA interrupt contract. In scope for the method calls on
 // `azos_arch::ARCH`, which replaced 37 hand-written reads and writes of
-// `sstatus.SIE` in this file on 2026-09-21 — see `arch/api`.
+// `sstatus.SIE` in this file — see `arch/api`.
 use azos_arch::Interrupts;
 use crate::task::{
     Task, TaskContext, TaskState, CtxReg, MAX_TASKS, STACK_SIZE,
@@ -92,7 +92,7 @@ pub(crate) fn ncpu() -> usize {
     azos_percpu::nr_cpu_ids()
 }
 
-/// Pure O(`NUM_PRIORITIES`) resident-placement histogram (U02-3, task
+/// Pure O(`NUM_PRIORITIES`) resident-placement histogram (task
 /// 3a), in its own file only so the host test runner
 /// (`tests/host/sched-wake-tests`) can compile it — the rest of this module
 /// cannot leave the target. Same pattern as `exit_note` / `tid_alloc` /
@@ -106,7 +106,7 @@ pub mod resident_histogram;
 #[path = "../ipc_direct.rs"]
 pub mod ipc_direct;
 
-/// Wave 11 SCHED-RT: the per-hart RT-band budget and EDF + CBS on this
+/// The per-hart RT-band budget and EDF + CBS on this
 /// dispatch path. A child module so it reaches the
 /// ready queues without widening their visibility.
 #[path = "../rt.rs"]
@@ -629,7 +629,7 @@ unsafe fn alloc_tid() -> u32 {
 /// Four times `MAX_TASKS` (rounded up to a power of two) keeps two live tasks
 /// from sharing a cell unless their TIDs differ by a multiple of that, which
 /// long-lived tasks under heavy fork churn can still do. Then the older one takes
-/// the scan, correctly, and (wave 13) the scan writes the cell back for it, so
+/// the scan, correctly, and the scan writes the cell back for it, so
 /// it pays the scan once and not on every lookup for the rest of its life: a
 /// short-lived task that took the cell leaves it pointing at a slot that soon
 /// stops matching. Two writers then, issue and repair; both only ever cost time.
@@ -668,7 +668,7 @@ static POOL_LOCK: AtomicBool = AtomicBool::new(false);
 /// (`boost_ready_task`) a per-field AMO does not make a multi-field
 /// mutation atomic anyway.
 ///
-/// **Lists, not rings** (wave 15, NRCPUS-FLEET-AREA): see `ready_list`. The
+/// **Lists, not rings** (NRCPUS-FLEET-AREA): see `ready_list`. The
 /// queues were `MAX_TASKS`-slot rings, 32 per CPU; they are now intrusive
 /// lists threaded through [`RQ_LINKS`], one link per task slot for every queue
 /// of every CPU, so a CPU's 32 queues are 512 bytes in every profile instead
@@ -763,7 +763,7 @@ const EMPTY_CPU: PerCpuSched = PerCpuSched {
 /// pool stores a null filter, which [`current_syscall_verdict`] reads as
 /// `Allow` — the same answer the bounds check it replaces used to give.
 ///
-/// Two invariants hold this up, both checked by hand on 2026-09-18 and worth
+/// Two invariants hold this up, both checked by hand and worth
 /// re-checking before adding a third caller:
 ///
 ///  * **Every switch comes through here.** `context_switch` has exactly two
@@ -836,7 +836,7 @@ unsafe fn set_current_task(cpu: usize, next_idx: usize) {
 /// `current_cpu_id()` followed by `PER_CPU[cpu].field` is two steps, and with
 /// interrupts on a tick can land between them and move the task to another
 /// hart: the second read then returns what the FIRST hart is running. Found
-/// 2026-10-20 as a kernel page fault copying to a user VA (`current_user_pt`
+/// as a kernel page fault copying to a user VA (`current_user_pt`
 /// returned another hart's `user_pt`); the same two steps stood in every
 /// `current_*` accessor and in the two writers that act through the slot
 /// (`set_current_user_info`, `set_current_task_satp`).
@@ -909,7 +909,7 @@ fn publish_filter_word(idx: usize) {
     if idx >= MAX_TASKS {
         return;
     }
-    // Wave 13: a new occupant has not been signalled.
+    // A new occupant has not been signalled.
     signal::clear_slot_signalled(idx);
     // A new occupant has registered no foreign entry and has nothing pending.
     crate::foreign::clear_slot(idx);
@@ -961,7 +961,7 @@ pub(crate) fn set_current_foreign_mode(foreign: bool) {
 /// Per-CPU ready queues and current task index.
 static mut PER_CPU: [PerCpuSched; MAX_CPUS] = [const { EMPTY_CPU }; MAX_CPUS];
 
-/// The ready queues, split out of `PerCpuSched` (2026-09-16; measured with
+/// The ready queues, split out of `PerCpuSched` (measured with
 /// `tools/bench/vsbench_compare.sh VSBENCH_ICOUNT=1`).
 ///
 /// `current_idx` is read on every syscall (`current_syscall_verdict`, the
@@ -980,7 +980,7 @@ static mut PER_CPU: [PerCpuSched; MAX_CPUS] = [const { EMPTY_CPU }; MAX_CPUS];
 /// one did before, and re-merging them would undo the point of the split
 /// for no gain.
 ///
-/// **In the per-CPU areas** (wave 15, NRCPUS): `NUM_PRIORITIES` list heads
+/// **In the per-CPU areas** (NRCPUS): `NUM_PRIORITIES` list heads
 /// of 16 bytes per CPU, the same in every profile (the links are in
 /// [`RQ_LINKS`]). Allocated at boot for the possible CPUs only (all-zero is the
 /// empty list) and reached through [`cpu_queues`].
@@ -1019,7 +1019,7 @@ pub(crate) fn cpu_queues(cpu: usize) -> &'static [PrioQueue; NUM_PRIORITIES] {
 /// donation lock -> `CPU_LOCKS[cpu]`. Never take a donation lock while
 /// holding a CPU lock.
 ///
-/// Words, not `AtomicBool` (wave 15, SWITCH): RV64 has no sub-word AMO, so
+/// Words, not `AtomicBool` (SWITCH): RV64 has no sub-word AMO, so
 /// a byte lock's compare-and-swap compiled to a masked `amoor.w` sequence
 /// (nine instructions); a word lock is one `amoswap.w.aq` to take and one
 /// store to give back. Two of these per context switch.
@@ -1641,7 +1641,7 @@ unsafe fn ring_doorbell(cpu: usize, idx: usize, appended: bool) {
 
 // ── Deferred remote wakes (`SCHED_REMOTE_WAKE_DEFER`) ──────────────────────
 //
-// Owner decision (wave 15, VW): a wake of a task on ANOTHER CPU never spins
+// A wake of a task on ANOTHER CPU never spins
 // on that CPU's queue lock. The waker tries the lock once; if it is held it
 // pushes the slot onto the target's lock-free list (`wake_list`) and rings
 // the doorbell, and the target queues it under its own lock in the
@@ -1702,7 +1702,7 @@ unsafe fn remote_wake_try(cpu: usize, idx: usize) -> Option<bool> {
 }
 
 /// Queue this CPU's deferred wakes, oldest first. Called only from the
-/// doorbell's interrupt arm on each ISA (owner decision: not at
+/// doorbell's interrupt arm on each ISA (not at
 /// `do_schedule` entry, which every context switch would pay). No wake is
 /// lost before idle: every push is followed by the doorbell, and a pending
 /// doorbell both ends `wfi` and is taken as soon as interrupts are
@@ -1759,7 +1759,7 @@ unsafe fn remote_wake_drain_slow(cpu: usize) {
 #[inline]
 unsafe fn wake_enqueue_locked(cpu: usize, idx: usize) -> bool {
     let appended = enqueue_remote_aware(cpu, idx);
-    // Wave 15 (TRACE): every wake that queues a task passes here.
+    // Every wake that queues a task passes here.
     if azos_trace::sched_on() {
         azos_trace::raw::sched_wakeup(task_ref(idx).tid, cpu as u32, current_task_tid());
     }
@@ -1913,7 +1913,7 @@ static PREV_CLAIM_NO_ENTRY: [core::sync::atomic::AtomicU64; SLOT_WORDS] =
 /// makes the increment unable to overflow; `wrapping_add` on top means the
 /// no-panic property can be seen locally without having to trust the clamp
 /// (`crate::task::ring_walk_bounds`, host-tested against `usize::MAX`).
-/// (Wave 15: the queues are lists now; the walk is `ReadyList::iter`, bounded
+/// (the queues are lists now; the walk is `ReadyList::iter`, bounded
 /// by `count` and `MAX_TASKS`, every link range-checked before it is used, no
 /// arithmetic on a raced value — the same no-panic property, host-tested in
 /// `sched-wake-tests` against garbage links.)
@@ -2000,7 +2000,7 @@ pub fn ring_claim_audit() -> (u32, u32, u32, u32) {
             // This walk runs from the timer ISR (`ipc-census`), and the first
             // tick can land before `setup_per_cpu_areas`: interrupts are on
             // from "[IRQ] Traps + interrupts active", the areas come after.
-            // A CPU with no area yet holds POISON (gate, wave 15 integration:
+            // A CPU with no area yet holds POISON (gate:
             // `mem quota: refusals>0 (N)` took a kernel load fault at
             // 0xdeadc0de00000000 on its first census dump). Skip it, as
             // `azos_trace` does for its producers.
@@ -2419,7 +2419,7 @@ pub unsafe extern "C" fn task_entry_wrapper() {
 
 unsafe fn do_schedule(why: SwitchReason) {
     // The hart is read HERE, with interrupts off, never taken from the
-    // caller (CTXHUNT, 2026-10-08). `task_exit_with_code` read its `cpu` on
+    // caller (CTXHUNT). `task_exit_with_code` read its `cpu` on
     // entry, then waited in `group_exit` (a leader waits for its threads)
     // and could be woken on another hart: its `do_schedule(cpu)` then ran
     // there with the old hart's id, read that hart's `current_idx` as `old`,
@@ -2513,7 +2513,7 @@ unsafe fn do_schedule(why: SwitchReason) {
 
     crate::swcensus::picked();
     let old_idx = PER_CPU[cpu].current_idx.load(Ordering::Relaxed);
-    // Wave 15 (SWITCH): each task's slot is computed once for the whole
+    // Each task's slot is computed once for the whole
     // switch (bounds check and index arithmetic), not at every use. Raw
     // pointers: `next` and `old` may be the same slot until the self-pick
     // test below, and the Zombie arm frees `old`'s slot (`old_slot_freed`).
@@ -2705,7 +2705,7 @@ unsafe fn do_schedule(why: SwitchReason) {
         // The clock is read once per 256 spins: `get_time` on the CLINT is a
         // device read, and putting one in a tight retry loop would make the
         // gate expensive in the common case, which is the case that matters.
-        // Wave 15 (SWITCH): and not at all when the flag is already clear,
+        // And not at all when the flag is already clear,
         // which is every switch on one hart — the wait is out of line.
         let expired = next.context_saving.load(Ordering::Acquire)
             && !wait_context_saved(next);
@@ -2775,7 +2775,7 @@ unsafe fn do_schedule(why: SwitchReason) {
             // hart: two harts on one stack) panics at once, by name. Waiting
             // for a corruption to fault instead made the canary a race: on
             // aarch64 `-smp 2` it left the kernel working in 2 of 3 quiet
-            // boots (FX6, gate 8cd61b5a).
+            // boots (gate 8cd61b5a).
             if cfg!(feature = "reap-window-canary") {
                 reap_zombie_on_switch(old_idx);
                 let until = azos_drv_sys::timebase::now() + azos_drv_sys::timebase::TIMER_FREQ / 500;
@@ -2832,7 +2832,7 @@ unsafe fn do_schedule(why: SwitchReason) {
                     if !cpu_enqueue_locked(cpu, old_idx) {
                         SCHED_ENQ_REFUSED.fetch_add(1, Ordering::Relaxed);
                     } else {
-                        // Wave 13 (RT7): the enqueue's "self-enqueue needs no
+                        // The enqueue's "self-enqueue needs no
                         // doorbell" premise does not hold HERE. This hart
                         // picked `next` above, before the rescue — with an
                         // empty queue that is idle, which goes back to `wfi`
@@ -2860,7 +2860,7 @@ unsafe fn do_schedule(why: SwitchReason) {
     next.set_state(TaskState::Running);
     set_current_task(cpu, next_idx);
     // The hart that dispatches a task records itself in the task's saved
-    // `tp` (wave 13, RT7), the CPU the task last ran on, which the wake and
+    // `tp`, the CPU the task last ran on, which the wake and
     // balance paths read as its home. Every enqueue path is meant to have set
     // it already (`context.tp = target_cpu`), but a store made while the
     // task's previous hart was still saving it is overwritten by that save
@@ -2990,7 +2990,7 @@ unsafe fn do_schedule(why: SwitchReason) {
             ctx_probe::fail(ctx_probe::TAIL, cpu, old_idx, on, "tail_not_on_old_stack", ctx_probe::sp_now());
         }
     }
-    // Wave 15 (TRACE): the sched class's switch record (Kconfig
+    // The sched class's switch record (Kconfig
     // `KTRACE_CLASS_SCHED`; no instruction when compiled out).
     if azos_trace::sched_on() {
         let (prev, prev_state) = if old_ptr.is_null() { (0, 0) } else { ((*old_ptr).tid, (*old_ptr).state() as u32) };
@@ -3053,7 +3053,7 @@ pub fn set_current_user_info(task_satp: u64, aspace: Option<azos_mm::aspace::Spa
             // A new image starts from nothing: new PAC keys (installed by
             // `take_current_task_exec_slots` when the hand-off is consumed).
             crate::pac::draw(idx);
-            // Owner decision 102 — a new address space starts from zero. Both
+            // A new address space starts from zero. Both
             // writers of this budget are "this task now has that page
             // table", so both reset here (see `set_task_user_info` below for
             // the other writer, fork's and spawn's).
@@ -3067,7 +3067,7 @@ pub fn set_current_user_info(task_satp: u64, aspace: Option<azos_mm::aspace::Spa
 }
 
 /// Give the CURRENT task the class and base priority its topology row asks
-/// for (wave 7). Returns the base priority it had before.
+/// for. Returns the base priority it had before.
 ///
 /// Called by the autorun loader once the image it is about to run is known —
 /// the loader task becomes the ring-3 process, so this is that process's
@@ -3165,7 +3165,7 @@ pub fn update_user_mmap_low(addr: u64) -> u64 {
     update_group_word(addr, |t| &mut t.user_mmap_low)
 }
 
-/// The word `pick` names in the current thread group's slot (wave 13: one
+/// The word `pick` names in the current thread group's slot (one
 /// break and one mmap cursor per group, on the leader's slot): `addr == 0`
 /// reads it, anything else stores it; the value is returned either way.
 fn update_group_word(addr: u64, pick: fn(&mut Task) -> &mut u64) -> u64 {
@@ -3190,7 +3190,7 @@ pub fn set_task_user_info(idx: usize, task_satp: u64, aspace: Option<azos_mm::as
             (*TASKS.get_mut(idx)).aspace.set(aspace);
             (*TASKS.get_mut(idx)).user_brk  = brk;
             (*TASKS.get_mut(idx)).user_mmap_low = mmap_low;
-            // Owner decision 102 — a new address space starts from zero. Both
+            // A new address space starts from zero. Both
             // writers of this budget are "this task now has that page
             // table", so both reset here (see `set_current_user_info` above
             // for the other writer, exec's).
@@ -3338,7 +3338,7 @@ pub(crate) fn set_current_task_exec_slots(
 }
 
 /// Exec hand-offs published and not yet consumed or discarded, all tasks
-/// (wave 15, SWITCH). Every syscall's return path tests for a pending
+/// (SWITCH). Every syscall's return path tests for a pending
 /// hand-off; this one global load answers "none anywhere" for all of them
 /// but a successful exec's, instead of the per-task lookup (current slot,
 /// bounds check, `TASKS` index, flag: 13 instructions on every syscall).
@@ -3398,7 +3398,7 @@ pub(crate) fn take_current_task_exec_slots() -> Option<(u64, u64, u64, u64, Opti
     }
 }
 
-/// One donation lock per task slot (wave 9). Serialises every boost and
+/// One donation lock per task slot. Serialises every boost and
 /// restore of that slot's `donation_count` + `priority` pair — see
 /// `donation::DonationCell` for the race it closes. Taken with interrupts
 /// masked and held across `cpu_remove_anywhere`/`cpu_enqueue_locked`, so the
@@ -3832,7 +3832,7 @@ pub mod ipc_placement;
 mod reap_pending;
 
 /// K-C24 rescues that rang this hart's own doorbell (`do_schedule`'s Blocked
-/// arm, wave 13). Diagnostic: shows the path is exercised.
+/// arm). Diagnostic: shows the path is exercised.
 pub static KC24_RESCUE_KICKS: AtomicU32 = AtomicU32::new(0);
 
 /// Ring `cpu`'s scheduler doorbell (the software IPI `cpu_enqueue_locked`

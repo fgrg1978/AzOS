@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! The privileged families the recovery console used to own, as interfaces
-//! (wave 12; endpoint ops since D6 part A): `Flight`, `Behavior`,
+//! (endpoint ops since D6 part A): `Flight`, `Behavior`,
 //! `Config` and `Ota`. Each has a tool image (`FLIGHT.ELF`, `BEHAVIOR.ELF`,
 //! `CONFIG.ELF`, `OTA.ELF`) that holds the endpoint its signed row grants, and
 //! runs the console's own command bodies.

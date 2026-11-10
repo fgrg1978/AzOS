@@ -119,12 +119,12 @@ fn cmd_ota_rollback() {
 ///   - BOOTMETA NOT updated yet → kernel still boots from the other slot
 /// So a torn promotion is recoverable without operator action.
 ///
-/// U11-3 (partially closed, 2026-09-26): a FAILED promotion here — the
+/// U11-3 (partially closed): a FAILED promotion here — the
 /// return-`false` paths below — no longer causes the CALLER
 /// (`cmd_ota_recv`) to also delete `tmp_path`. Before this, a copy failure
 /// (typically the volume too full to hold the live BIN, the staged TMP,
 /// AND this copy simultaneously) emptied the rollback slot (`bin_path`,
-/// via the `O_TRUNC` open below — see U09-13) AND destroyed the only
+/// via the `O_TRUNC` open below) AND destroyed the only
 /// verified copy of the image in the same operation. The verified bytes in
 /// `tmp_path` now survive a failed promotion for a retry. What this
 /// function still cannot do without a real FAT32 rename primitive: avoid
@@ -183,8 +183,8 @@ fn ota_promote_tmp_to_bin(tmp_path: &[u8], bin_path: &[u8]) -> bool {
 /// live but whose application sends nothing (valid header, then silence)
 /// must not pin this listener indefinitely: the stack's own keepalive only
 /// reaps a genuinely DEAD peer (`crates/net/stack/src/tcp.rs`, 30 s x 3 probes),
-/// and until 2026-09-26 nothing else bounded an application-silent one.
-/// TIMER_FREQ-derived, never a raw tick literal — see U06-13/U11-6 for why
+/// and nothing else bounds an application-silent one.
+/// TIMER_FREQ-derived, never a raw tick literal
 /// a hard-coded 10 MHz assumption is wrong on VF2 (4 MHz), K1 (24 MHz) and
 /// aarch64 (1 GHz).
 const OTA_PAYLOAD_IDLE_TIMEOUT_S: u64 = 30;
@@ -367,7 +367,7 @@ fn cmd_ota_recv(port: u16) {
     let mut idle_iters: u32 = 0;
     // U11-2 — idle deadline, reset on every byte received. See
     // `OTA_PAYLOAD_IDLE_TIMEOUT_S`. `now()`/`TIMER_FREQ`, never a raw tick
-    // literal (U06-13/U11-6: TIMER_FREQ is per-board).
+    // literal (TIMER_FREQ is per-board).
     let mut idle_deadline = azos_drv_sys::timebase::now()
         + azos_drv_sys::timebase::TIMER_FREQ * OTA_PAYLOAD_IDLE_TIMEOUT_S;
     while remaining > 0 {
@@ -493,7 +493,7 @@ fn cmd_ota_recv(port: u16) {
     // decides whether unauthenticated code gets to run.
     let _ = azos_fs::fat32_sync();
 
-    // U09-4/U11-4/security finding #10 — the `.SIG` now signs a MANIFEST
+    // The `.SIG` now signs a MANIFEST
     // `{fw_version, payload_size, sha256(image)}` (see
     // `crates/core/crypto/src/ed25519.rs` module docs), so `secure_boot_*`
     // returns the AUTHENTICATED `fw_version` alongside the trust verdict
@@ -556,7 +556,7 @@ fn cmd_ota_recv(port: u16) {
             "[OTA] ##### Do NOT ship a build in this state: install a prod key \
              (tools/sign/gen_prod_key.py) and build --features secure-boot-enforced.");
     } else {
-        // U09-4 — the AUTHORITATIVE anti-rollback check. The one in the
+        // The AUTHORITATIVE anti-rollback check. The one in the
         // accept loop above is advisory (it reads the unsigned wire
         // header); this is the real gate, run against the version that was
         // actually bound into the verified signature. A validly-signed OLD
@@ -585,7 +585,7 @@ fn cmd_ota_recv(port: u16) {
     // the already-verified staged bytes survive for a retry. What remains
     // open, and needs the fs owner: `fat32_open(..., O_TRUNC)` itself frees
     // the target's cluster chain before the first byte of the copy is
-    // written (U09-13), so `.BIN` can still end up empty if the copy fails
+    // written, so `.BIN` can still end up empty if the copy fails
     // partway — closing that needs a real rename (or write-then-swap)
     // primitive in the FAT32 driver, not something achievable from the
     // shell side of this seam.
@@ -620,7 +620,7 @@ fn cmd_ota_recv(port: u16) {
     }
     // `fw_version` is DISPLAY ONLY (sender-reported); the authenticated version
     // is what `ota_mark_boot_good_pure` reads to advance the anti-rollback
-    // floor (U09-4/U11-4). Only a `Verified` install sets it; an
+    // floor. Only a `Verified` install sets it; an
     // `Unverified`/dev install leaves the slot's as whatever it last verified
     // to (0 if never), so it can NEVER pin the floor no matter what
     // `header.fw_version` claims.

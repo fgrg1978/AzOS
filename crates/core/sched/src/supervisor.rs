@@ -11,14 +11,14 @@
 //! request or a plain exit) the kernel keeps its named endpoints and its
 //! service names, re-creates the task, and hands those to the new task.
 //!
-//! # When it restarts (owner decision 2026-09-28: systemd's model)
+//! # When it restarts (systemd's model)
 //!
 //! * **Only on failure** (`Restart=on-failure`, the default): a task killed
 //!   by a fault, a seccomp kill or a kernel stop request, or one that exits
 //!   with a code other than 0. A driver that exits 0 finished on purpose: its
 //!   entry goes [`SupState::Exited`] and everything is released as for any
 //!   task.
-//! * **Per row** (wave 11, DRVPLACE): the signed topology's `restart` key
+//! * **Per row** (DRVPLACE): the signed topology's `restart` key
 //!   ([`SupRestart`], set by the kernel with [`sup_set_restart`] before the
 //!   task runs) may say `always` (a clean exit is restarted too, against the
 //!   same window) or `no` (no end is restarted: the entry goes `Exited` at
@@ -129,7 +129,7 @@ pub enum SupOrigin {
     /// supervised from the start; restarted by spawning the path again.
     Spawned,
     /// A driver placed in the kernel (Kconfig `DRV_*_PLACEMENT = kernel`),
-    /// whose host is a kernel task ([`SupTable::note_kernel_host`], wave 13):
+    /// whose host is a kernel task ([`SupTable::note_kernel_host`]):
     /// supervised from the start, like `Spawned`. It can only die through a
     /// contained kernel panic (the panic policy's exit status 134); its
     /// successor is a new kernel task on the same entry point. The "image" is

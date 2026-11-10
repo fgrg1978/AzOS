@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Real-time band budget and EDF + CBS on the dispatch path (wave 11
-//! SCHED-RT). A child module of `scheduler.rs` (pulled in
+//! Real-time band budget and EDF + CBS on the dispatch path.
+//! A child module of `scheduler.rs` (pulled in
 //! with `#[path]`), so it reaches the ready queues and the task pool without
 //! widening their visibility; the arithmetic it applies is `rt_core.rs`, which
 //! the host suite tests.
@@ -14,7 +14,7 @@
 //!   `RT_BAND_WINDOW_MS` window. Past it the pick skips the band levels until
 //!   the window ends. With nothing else ready the band keeps the hart. The
 //!   kernel safety loops (rt-motor, imu, flight-ctrl, sys-wdt) are exempt
-//!   (owner decision): never skipped, never charged ([`exempt_from_band_cap`],
+//!: never skipped, never charged ([`exempt_from_band_cap`],
 //!   kernel-only).
 //! * **EDF + CBS, per hart.** A task with a reservation (`Task::rt`, admitted
 //!   by [`reserve`]) is pinned to the hart admission placed it on and listed
@@ -109,7 +109,7 @@ const EDF_ON: bool = !cfg!(feature = "rt-edf-canary");
 const ADMIT_ON: bool = !cfg!(feature = "rt-admit-canary");
 
 static FLAGS: [AtomicU32; MAX_CPUS] = [const { AtomicU32::new(0) }; MAX_CPUS];
-/// One hart's reservation state, in its per-CPU area (wave 15, NRCPUS:
+/// One hart's reservation state, in its per-CPU area (NRCPUS:
 /// about 1 KiB a CPU, which a `[_; MAX_CPUS]` static charged for every CPU of
 /// the Kconfig ceiling). Touched only after `FLAGS[cpu]` says the hart has a
 /// reservation, or by admission under [`ADMIT`] for a CPU below `ncpu()`.
@@ -230,7 +230,7 @@ static ADMITTED: AtomicU32 = AtomicU32::new(0);
 static ARM_WRITES: AtomicU32 = AtomicU32::new(0);
 static ARM_CALLS: AtomicU32 = AtomicU32::new(0);
 
-/// Kernel safety loops exempt from the band budget (owner decision, wave 11):
+/// Kernel safety loops exempt from the band budget:
 /// rt-motor, flight-ctrl, imu and sys-wdt are never throttled when the band
 /// runs out, and their run time is not charged to it. Set only by
 /// [`exempt_from_band_cap`], which the kernel calls for those tasks right
@@ -703,7 +703,7 @@ pub(super) fn prev_is_exempt(prev: usize) -> bool {
 }
 
 /// The stop class's step: the exempt band loops (actuation, e-stop,
-/// watchdog) run above DL and the rest of the band (owner decision 10-10).
+/// watchdog) run above DL and the rest of the band.
 /// Between two of them the more urgent level wins; a tie keeps the running one.
 pub(super) unsafe fn step_stop(ctx: &mut PickCtx) -> Step {
     if !ctx.active {
@@ -1254,7 +1254,7 @@ pub(super) fn release(idx: usize) {
     // Only the CPUs this boot has: admission sets `F_RESV` below `ncpu()`
     // alone. Walking all `MAX_CPUS` (the Kconfig ceiling, 64 by default) on
     // every slot free and reuse cost thread create+join ~+700 instructions
-    // at `-smp 1` when NR_CPUS replaced the fixed 8 (wave 15).
+    // at `-smp 1` when NR_CPUS replaced the fixed 8.
     if FLAGS[..ncpu().min(MAX_CPUS)].iter().all(|f| f.load(Ordering::Relaxed) & F_RESV == 0) {
         return;
     }

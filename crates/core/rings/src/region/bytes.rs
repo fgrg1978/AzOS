@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Byte-slot rings: fixed-size slots, variable-length payloads (wave 11,
+//! Byte-slot rings: fixed-size slots, variable-length payloads (
 //! SHMRING). The stream form a kernel producer publishes camera frames and
 //! LiDAR scans into.
 //!
@@ -42,7 +42,7 @@
 //! * nothing the producer reads from the region is used as an address,
 //!   length or count for any memory outside it.
 //!
-//! Under the owner's decision of 2026-10-03 (wave 11), holding the stream's
+//! Holding the stream's
 //! `Cap<Shm>` IS the authority to read it: no per-frame capability check
 //! runs, unlike the `Sensor` interface, which checks its endpoint capability on
 //! every call. The check happens once, when the capability is granted.

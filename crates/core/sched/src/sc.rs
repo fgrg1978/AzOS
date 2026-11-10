@@ -5,13 +5,13 @@
 //! A [`SchedContext`] is what a task runs *on*: its class, its time
 //! parameters, and the attributes the wait graph, mixed criticality and the
 //! RT cluster need. Its layout is **frozen** here, once, with every field the
-//! later steps read (owner decision): the size is a
+//! later steps read: the size is a
 //! compile-time assertion, so adding a field is a build error, not a review
 //! comment. Later steps give the reserved fields their writers; none of them
 //! reshapes the object.
 //!
 //! [`Class`] is the dispatch class, with a fixed precedence
-//! `stop > DL > RT > fair > idle` (owner decision). It is not the budget-class
+//! `stop > DL > RT > fair > idle`. It is not the budget-class
 //! [`SchedClass`](crate::class::SchedClass) (`class.rs`): that one names the
 //! Adaptive Partitioning budget classes of the topology (`[class.<name>]`)
 //! and, by the same decision, survives as the fair class's group weights; this one decides
@@ -43,7 +43,7 @@ pub enum Class {
 impl Class {
     /// Number of classes.
     pub const COUNT: usize = 5;
-    /// The fixed precedence, highest first (owner decision).
+    /// The fixed precedence, highest first.
     pub const PRECEDENCE: [Class; Class::COUNT] =
         [Class::Stop, Class::Dl, Class::Rt, Class::Fair, Class::Idle];
 

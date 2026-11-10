@@ -15,7 +15,7 @@ use azos_arch::{PAGE_SIZE, PAGE_SHIFT};
 // used to write `pa as *mut T` directly, which was only correct while
 // PA == VA for kernel memory.
 //
-// **The flip has happened (2026-09-24).** On an aarch64 KERNEL build
+// **The flip has happened.** On an aarch64 KERNEL build
 // `KERNEL_PHYS_TO_VIRT_OFFSET` is `KERNEL_VA_OFFSET`, not `0`:
 // `arch/aarch64/boot/linker-aarch64.ld` links the kernel in the upper half with a
 // VMA/LMA split, `boot.S` jumps the PC there, and `TTBR0_EL1` keeps only
@@ -43,7 +43,7 @@ use azos_arch::{PAGE_SIZE, PAGE_SHIFT};
 // The two offsets, per KERNEL build (riscv64 and every host test build keep
 // the identity; `target_os = "none"` is load-bearing: a bare
 // `target_arch = "aarch64"` also matches this Mac, and setting the offset
-// for host test builds broke `mm-tests`/`syscall-tests` on 2026-09-23):
+// for host test builds broke `mm-tests`/`syscall-tests`):
 //   - `KERNEL_PHYS_TO_VIRT_OFFSET`, where RAM is reached: aarch64's
 //     `KERNEL_VA_OFFSET` (TTBR1); x86_64's direct map `DIRECT_MAP_BASE`.
 //   - `KERNEL_IMAGE_OFFSET`, how far the image links above its load address:

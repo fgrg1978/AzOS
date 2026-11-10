@@ -24,7 +24,7 @@ const PI_HELD_OVERFLOW_SLOTS: usize = 16;
 /// containment predicate: a task that panics while
 /// it holds a lock nobody else would release cannot be parked. One table
 /// for the `Mutex`es ([`held_by`]), one for the claims
-/// (`crate::claim::held_by`, owner rule F1: what is held across a device
+/// (`crate::claim::held_by`, what is held across a device
 /// wait).
 ///
 /// Keyed by the exact TID: each entry packs `tid << 32 | count`, and an entry
@@ -32,7 +32,7 @@ const PI_HELD_OVERFLOW_SLOTS: usize = 16;
 /// probes from `tid % PI_HELD_SLOTS` and raises the first entry that is its
 /// own, or claims the first free one; a release lowers the first entry that
 /// is its own. Both are one compare-and-swap on the packed word, so a claim,
-/// a raise and a drop to zero cannot interleave. Before wave 13 the table was
+/// a raise and a drop to zero cannot interleave. The table used to be
 /// `count[tid % 64]`: two live tasks 64 TIDs apart shared a word, and TIDs
 /// only grow, so after enough task churn a culprit that held nothing read as
 /// holding its neighbour's lock and a containable panic became a reset.

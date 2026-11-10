@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! The machine without the Robot domain, as the syscall layer sees it.
 //!
-//! Built only without the `use-robot` feature (wave 11, DOMAIN), when the
+//! Built only without the `use-robot` feature (DOMAIN), when the
 //! robot crate (`azos_robot`) is not linked. The files that call it import
 //! this module under the crate's name instead
 //! (`use crate::no_robot::robot as azos_robot;`), so the motor syscalls and

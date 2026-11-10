@@ -364,7 +364,7 @@ pub fn wake_port_waiter(tid: u32, port_ref: u32) {
 }
 
 /// Wake one registered waiter of an event port that blocks with a deadline,
-/// addressed by its TID (wave 11, PORTWAIT).
+/// addressed by its TID (PORTWAIT).
 ///
 /// A port wait with a deadline (`SYS_PORT_WAIT`), or on a
 /// port with an armed timer source, blocks on `WaitReason::Timer(until)` so

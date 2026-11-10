@@ -11,7 +11,7 @@ pub mod cap_store;
 pub mod kpipe;
 pub mod io_ring;
 pub mod port;
-// The link a bound io_ring keeps to its port (wave 11, PORTWAIT).
+// The link a bound io_ring keeps to its port (PORTWAIT).
 pub mod port_link;
 pub mod trace;
 pub mod irq_bind;
@@ -28,7 +28,7 @@ pub mod kregion;
 pub mod ep_queue;
 pub mod fastcall;
 pub mod endpoint;
-// `zerocopy.rs` deleted (U04-7, owner-directed 2026-09-26): 628 lines, a
+// `zerocopy.rs` deleted: 628 lines, a
 // 2 MiB `static mut BUF_POOL`, no caller anywhere in the tree
 // (`pipeline_acquire`/`_submit`/`_receive` matched only this module's own
 // re-export) and a double-free class the shm holder-count fix (`memobj.rs`)
@@ -43,10 +43,10 @@ pub mod mmio_cap;
 pub mod dma_bind;
 // `Cap<Device>` over a range of I/O ports (x86_64's port space).
 pub mod ioport_cap;
-// Wave 10: `Cap<File>` naming a directory tree, the authority for the calls
+// `Cap<File>` naming a directory tree, the authority for the calls
 // that change the tree (mkdir, unlink, rmdir, rename, truncate).
 pub mod file_cap;
-// Wave 11: `Cap<Launch>`, the right to start one image with
+// `Cap<Launch>`, the right to start one image with
 // `SYS_SPAWN_EX`, seeded from the topology word `"launch"`.
 pub mod launch_cap;
 
@@ -217,7 +217,7 @@ fn release_all(tid: u32, keep_named_endpoints: bool) {
 /// table and miss the inheritance.
 ///
 /// Only ever adds capabilities, into free slots, after the fork's own setup
-/// of the child (wave 13: a native child's inherited descriptors at the
+/// of the child (a native child's inherited descriptors at the
 /// parent's handles and its row's capabilities, `azos_syscall::natfork`;
 /// a Linux child's row) into a table that started the fork with none
 /// (`try_task_create_affinity` allocates a fresh pool slot, and a fresh or

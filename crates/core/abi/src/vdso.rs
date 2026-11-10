@@ -144,7 +144,7 @@ pub const VTP_SENSOR_DATA_MAX: usize = 32;
 pub const VTP_SENSOR_SLOTS: usize = 10;
 /// `u32` at offset 4: the per-task page's layout version.
 pub const VTP_VERSION: usize = 4;
-/// Layout version the kernel writes. Version 2 (wave 11) adds
+/// Layout version the kernel writes. Version 2 adds
 /// [`VTP_SENSOR_ACQ_NS`] in what was the slot's padding; every version-1
 /// offset is unchanged, so a version-1 reader keeps working.
 pub const VDSO_TASK_VERSION: u32 = 2;
@@ -156,7 +156,7 @@ pub const VTP_SENSOR_ACQ_NS: usize = 48;
 
 // ── Hardware capabilities (`VdsoData::hwcap`, byte offset 40) ───────────────
 //
-// The AT_HWCAP analogue (wave 13): what the CPU implements AND ring 3 may
+// The AT_HWCAP analogue: what the CPU implements AND ring 3 may
 // execute, detected at boot from the ID registers (aarch64), CPUID (x86_64)
 // or the device tree's `riscv,isa` / `riscv,isa-extensions` of cpu@0
 // (riscv64), never from build flags. A bit is set only when the extension's

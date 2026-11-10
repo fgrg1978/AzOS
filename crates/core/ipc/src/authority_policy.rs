@@ -61,9 +61,9 @@ pub fn enforced(row: &AuthorityRow, lockdown: bool) -> bool {
 /// The kernel-hosted endpoints (host keys) the console is seeded with at boot
 /// (`authority::seed_console_authority`), `WRITE` on each: the interfaces of
 /// its consequential commands. It holds no task view: no command of it lists
-/// tasks (owner 2026-10-21; the kernel keeps no `/proc` to list them from).
+/// tasks (the kernel keeps no `/proc` to list them from).
 ///
-/// **None under the console lockdown** (owner round 36, wave 11). The lockdown
+/// **None under the console lockdown** (owner round 36). The lockdown
 /// used to add four checked rows while still handing the console its
 /// capabilities, so every checked command — `flight arm` and `pm suspend`
 /// included — still passed its check. Withheld, the console holds no

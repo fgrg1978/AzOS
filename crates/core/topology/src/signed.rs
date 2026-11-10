@@ -3,7 +3,7 @@
 //! The signed topology on the volume, and which topology a boot installs.
 //!
 //! `CAPS.TOM` + `CAPS.SIG` and `SCHED.TOM` ([`crate::paths`]). ONE signature
-//! covers both (wave 15 follow-up): `CAPS.SIG` is verified against the
+//! covers both: `CAPS.SIG` is verified against the
 //! embedded key before any byte is interpreted; the verified `CAPS.TOM`'s
 //! top-level [`Binding`] then names the SHA-256 of the one `SCHED.TOM` it was
 //! signed with, this device's id and a counter. Only after the hash, the

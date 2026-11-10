@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Lockdep-lite (wave 15, N1 part a).
+//! Lockdep-lite (N1 part a).
 //!
 //! # Classes
 //!
@@ -71,12 +71,12 @@
 //! * [`scope_per_cpu`]: a `PerCpu` reached with preemption on (a token that
 //!   was assumed, not earned).
 //!
-//! # Real-time tasks on two CPUs (owner rule F7, Kconfig LOCKDEP_RT_CROSS_CPU)
+//! # Real-time tasks on two CPUs (Kconfig LOCKDEP_RT_CROSS_CPU)
 //!
 //! Until proxy execution, RT tasks on different CPUs should share only a
 //! SpinLock. A sleeping lock keeps its holder's CPU and RT-ness
 //! ([`holder_word`]); its contended path ([`contended`]) notes an RT
-//! contender on another CPU. Report-only (owner decision 10-10):
+//! contender on another CPU. Report-only:
 //! a note, counted apart
 //! ([`Stats::rt_cross_cpu`], every hit, not only the first of a pair), that
 //! fails nothing. RT-ness comes from the scheduler ([`set_rt_probe`]).
@@ -378,7 +378,7 @@ pub enum What {
     SameClass = 10,
     /// Note, not a failure (yet): a device wait (`note`) with the Mutex
     /// `held` held, which lends the device's latency to every waiter it
-    /// boosts (owner rule F1; what must exclude
+    /// boosts (what must exclude
     /// across one is a `Claim`, which holds no Mutex).
     MutexAcrossDeviceWait = 11,
     /// The class of `held` was taken in interrupt context (at `held.site`)
@@ -391,9 +391,9 @@ pub enum What {
     ScopeRemoteFromIrq = 14,
     /// A `PerCpu` reached with preemption on (CPU `value2`).
     ScopeNoPreemptOff = 15,
-    /// Note, not a failure (owner decision 10-10, report-only): the
+    /// Note, not a failure (report-only): the
     /// sleeping lock `taken` is held by a real-time task on CPU `value` and
-    /// contended by one on CPU `value2` (owner rule F7).
+    /// contended by one on CPU `value2`.
     RtCrossCpu = 16,
     /// An `Object` of level `value2` (`taken`) taken while `held`, of level
     /// `value`, is held.
@@ -1275,7 +1275,7 @@ fn scope_slow(scope: Scope, site: &'static Location<'static>) {
     });
 }
 
-// ── RT tasks on two CPUs (owner rule F7) ─────────────────────────────────
+// ── RT tasks on two CPUs ─────────────────────────────────
 
 /// The word a Mutex keeps for its holder while held: CPU + 1
 /// in the low bits, the top bit if the holder is real-time. 0 when the

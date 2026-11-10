@@ -150,7 +150,7 @@ pub use pure::{
 ///
 /// NOTE: secure-boot verification used to have a separate, smaller ceiling
 /// (`SECURE_BOOT_MAX_IMAGE_SIZE`, a 2 MiB `.bss` buffer for holding a whole
-/// image contiguously). Closed 2026-09-26 (U09-14): the signed manifest
+/// image contiguously). The signed manifest
 /// binds `sha256(image)` rather than the image itself, so verification now
 /// streams the hash and this is the only size ceiling in the OTA path.
 pub const OTA_MAX_IMAGE_SIZE: usize = azos_limits::OTA_MAX_IMAGE_SIZE_BYTES;

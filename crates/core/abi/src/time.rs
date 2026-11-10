@@ -51,7 +51,7 @@ pub const fn ticks_to_ns(ticks: u64, freq_hz: u64) -> u64 {
 /// `VCPU` are reserved numbers so a caller can name them and be refused
 /// (`Unsupported`) instead of silently read on the wrong clock.
 ///
-/// Owner decision 16-10: records and deadlines use TAI-based monotonic time,
+/// Records and deadlines use TAI-based monotonic time,
 /// TAI taken from PTP or NTP plus the leap-second row of the topology
 /// (`[clock]`, [`tai_minus_utc`]). Until a time source has set it, `REAL` and
 /// `TAI` read like `MONO` (time since boot, as Linux's `CLOCK_TAI` does before

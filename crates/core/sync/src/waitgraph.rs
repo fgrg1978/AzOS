@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The wait graph (wave 15 N7): one priority-inheritance core for every
+//! The wait graph: one priority-inheritance core for every
 //! object a task can block on while another task owns it.
 //!
 //! Stage 1, implemented by N7 ([`Graph`]). The graph is always built into
@@ -44,7 +44,7 @@
 //!   decision record (`azos_decision::Rule::WaitCycle`, a refusal: durable
 //!   with `DECISION_REFUSALS_DURABLE`, y on every preset) is written after
 //!   the undo, with the graph lock dropped.
-//! * **Depth cap** reached: boosting stops there (owner decision: at max
+//! * **Depth cap** reached: boosting stops there (at max
 //!   depth stop boosting, no `EDEADLK`); the block itself succeeds and the
 //!   cap is counted ([`stats`]).
 //!
@@ -96,7 +96,7 @@ pub enum EdgeKind {
     Mutex = 1,
     /// A PI futex's `pi_state` (N10).
     FutexPi = 2,
-    /// A call blocked on an endpoint's server (L9; today PIFAST donation).
+    /// A call blocked on an endpoint's server (today PIFAST donation).
     IpcCall = 3,
     // 4 and 5 are not reused: the code is recorded in the `wait-cycle`
     // decision (`kind`), so a recorded value keeps its meaning.
@@ -289,7 +289,7 @@ pub enum UnblockReason {
     /// The object went away (owner died with `FUTEX_OWNER_DIED` handled by
     /// the client, endpoint revoked).
     ObjectGone,
-    /// The owner exited still owning the object (owner decision 10-10, the
+    /// The owner exited still owning the object (the
     /// `EOWNERDEAD` equivalent): the graph detached it and called the
     /// kind's [`OwnerDiedHook`], which wakes the waiters; the one that takes
     /// the object next leaves with this reason.
@@ -297,7 +297,7 @@ pub enum UnblockReason {
 }
 
 /// A client's answer to an owner that exits still owning one of its objects
-/// with waiters (owner decision 10-10). Registered per [`EdgeKind`] with
+/// with waiters. Registered per [`EdgeKind`] with
 /// [`register_owner_died`]; a kind with no hook keeps the pre-10-10 rule:
 /// the object is detached, counted in [`WalkStats::orphaned`], and its
 /// waiters stay queued until the client wakes them (robust list, revoke).
@@ -939,7 +939,7 @@ impl<const N: usize> Graph<N> {
         // still owned (it has waiters) is detached one at a time under the
         // lock, then handed to its kind's OwnerDiedHook with the lock
         // DROPPED: a hook takes the client's lock, which orders before the
-        // graph lock (owner decision 10-10, EOWNERDEAD). Without a hook the
+        // graph lock (EOWNERDEAD). Without a hook the
         // waiters stay queued (robust list, revoke) and the next
         // `set_owner` re-links the object and walks. Boost flows waiter ->
         // owner, so nothing the waiters hold changes here. The object stays
@@ -1185,7 +1185,7 @@ impl<const N: usize> State<N> {
     /// Would `waiter`, now enqueued on `obj`, close a cycle? Follows owner
     /// -> blocked_on for at most [`PI_MAX_DEPTH`] links: a cycle is the walk
     /// reaching `waiter` or an object already visited. Beyond the cap no
-    /// cycle is reported (the block succeeds; owner decision). The
+    /// cycle is reported (the block succeeds). The
     /// answer names the task that closes the cycle and the links followed.
     fn closes_cycle(&self, h: &dyn SchedPi, waiter: TaskId, obj: WaitObj) -> Option<Cycle> {
         if CANARY_NO_CYCLE_CHECK.load(Ordering::Relaxed) {
@@ -1254,7 +1254,7 @@ pub fn block_on(waiter: TaskId, obj: &PiWaiters) -> Result<(), WaitError> {
     block_commit(pending)
 }
 
-/// [`block_on`] without the graph lock in the common case (wave 15 GIPC,
+/// [`block_on`] without the graph lock in the common case (
 /// the `IpcCall` edge): when the waiter carries no boost, the owner is not
 /// blocked on anything, and the waiter's base attribute is not more urgent
 /// than the owner's base (neither of them `Dl`: [`quiet_le`] over

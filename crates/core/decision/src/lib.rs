@@ -299,7 +299,7 @@ pub enum Rule {
     Thermal = 65,
     /// A record that must survive a power cut (an anti-rollback floor) was
     /// written, but the device has no cache control, so the kernel does not
-    /// claim it durable (owner decision 2026-10-23, Q2).
+    /// claim it durable.
     Durability = 66,
     /// A NIC's transmit ring held frames past its budget with the device
     /// taking none, and the driver reset the device or latched it dead

@@ -131,7 +131,7 @@ pub fn fork_copy(child: usize) {
     }
 }
 
-/// Wave 13: the current Linux task's live F/D file, for its signal frame;
+/// The current Linux task's live F/D file, for its signal frame;
 /// `None` when it has not used the file (riscv64 only).
 pub fn frame_save() -> Option<[u64; 33]> {
     if !azos_limits::LINUX_ABI || !cfg!(all(target_arch = "riscv64", target_os = "none")) {
@@ -148,7 +148,7 @@ pub fn frame_save() -> Option<[u64; 33]> {
     Some(a)
 }
 
-/// Wave 13: `rt_sigreturn` puts back the F/D file a signal frame saved, for a
+/// `rt_sigreturn` puts back the F/D file a signal frame saved, for a
 /// task that uses the file (riscv64 only; anything else is ignored).
 pub fn frame_load(a: &[u64; 33]) {
     if !azos_limits::LINUX_ABI || !cfg!(all(target_arch = "riscv64", target_os = "none")) {

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Wave 6, front V: the per-task vDSO page (`DOMAIN_VDSO_MAP` 594,
+//! The per-task vDSO page (`DOMAIN_VDSO_MAP` 594,
 //! the sensor bind of the `Sensor` interface) and its timer-interrupt
 //! publisher; and the native futex calls (`SYS_FUTEX_WAIT`, `SYS_FUTEX_WAKE`).
 //!

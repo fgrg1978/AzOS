@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The one controlled write path into kernel text (wave 15, TRACE: static
+//! The one controlled write path into kernel text (TRACE: static
 //! keys; Kconfig `KTRACE_STATIC_KEYS`). Linux's `text_poke`, for single
 //! aligned 32-bit instructions.
 //!
@@ -192,7 +192,7 @@ pub fn write_words(words: &[(usize, u32)]) -> Result<usize, PokeError> {
     write_impl(words, false)
 }
 
-/// [`write_words`] for boot-once sites (wave 15, N2b: the `SpinWait` probe
+/// [`write_words`] for boot-once sites (N2b: the `SpinWait` probe
 /// sites), which may also sit at 2 mod 4 on riscv64 (a 4-byte instruction
 /// in compressed code, where the alignment padding a 4-aligned site needs
 /// would cost a `c.nop` on every pass). Such a word is written as its two

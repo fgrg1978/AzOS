@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! PI futexes on the wait graph (wave 15 N10): the seam between the futex
+//! PI futexes on the wait graph: the seam between the futex
 //! table's per-bucket `pi_state` slot (N9) and the graph (N7).
 //!
 //! N10 implements [`PiFutexOps`] ([`PI_FUTEX`]) over a static pool of
@@ -34,13 +34,13 @@
 //! * `UNLOCK_PI`: caller must own the word (`EPERM` otherwise). No waiters
 //!   -> word = 0. Waiters -> ownership passes to the top waiter **in the
 //!   kernel**: word = `new TID | FUTEX_WAITERS`, the bit ALWAYS set, even
-//!   for the last waiter (as Linux; owner decision 10-10): the new owner's
+//!   for the last waiter (as Linux): the new owner's
 //!   release then enters `UNLOCK_PI`, which finds no waiter and frees the
 //!   word. The graph unboosts the caller, the new owner wakes already
 //!   holding the lock.
 //! * `WAIT_REQUEUE_PI` (cond var wait, `uaddr` -> PI `uaddr2`) and
 //!   `CMP_REQUEUE_PI` (`nr_wake` must be 1, `uaddr != uaddr2`, else
-//!   `EINVAL`; wave 15 N10d): the waker atomically tries to take `uaddr2`
+//!   `EINVAL`): the waker atomically tries to take `uaddr2`
 //!   for the top waiter ([`proxy_lock`]; it wakes owning it). The rest wake
 //!   marked requeued and each runs its own `LOCK_PI` on `uaddr2`, with no
 //!   bucket lock held (`waitgraph::block_prepare` enqueues only the
@@ -133,7 +133,7 @@ pub trait PiBucket {
     fn cmpxchg_word(&mut self, expected: u32, new: u32) -> Result<u32, UserFault>;
     /// The TID of a live task in the caller's futex namespace, as a
     /// scheduler slot, or `None` (`ESRCH`). A task mid-exit is not live
-    /// (owner decision 10-10): a PI word never gets it as its owner.
+    ///: a PI word never gets it as its owner.
     fn task_of_tid(&self, tid: u32) -> Option<TaskId>;
     /// Is `tid` a task mid-exit ([`Self::task_of_tid`] says `None` for it)?
     /// Its word is about to be handed over (robust walk or exit hook): a
@@ -162,7 +162,7 @@ pub enum LockPiStep {
     /// Return `-errno` (EAGAIN for TRYLOCK_PI owned, EDEADLK, ESRCH,
     /// EFAULT, EINVAL).
     Err(i32),
-    /// The word's owner is mid-exit (owner decision 10-10, Linux
+    /// The word's owner is mid-exit (Linux
     /// `handle_exit_race`'s EAGAIN/EBUSY): N9 drops the bucket lock, lets
     /// the exit run (a sleep of Kconfig `FUTEX_PI_EXIT_RETRY_US`, so a
     /// higher-priority locker cannot starve it), then prepares again; never
@@ -198,7 +198,7 @@ pub trait PiFutexOps: Sync {
     /// order). `cmpval` is checked against `from`'s word first (`EAGAIN`).
     /// Returns (woken-and-owning, requeued) counts, or `-errno`. Unused:
     /// the table runs requeue-PI itself (`PiBucket` cannot reach `from`'s
-    /// rows) with [`proxy_lock`] (wave 15 N10d); this one answers `ENOSYS`.
+    /// rows) with [`proxy_lock`]; this one answers `ENOSYS`.
     fn cmp_requeue_pi(
         &self,
         from: &mut dyn PiBucket,
@@ -624,7 +624,7 @@ impl PiFutex {
 
 /// The word the heir of an exited owner writes over `w`, the word it saw:
 /// `TID | FUTEX_WAITERS`, with `FUTEX_OWNER_DIED` only when `w` carries it
-/// (owner decision 10-10, Linux `fixup_pi_state_owner`: `OWNER_DIED` comes
+/// (Linux `fixup_pi_state_owner`: `OWNER_DIED` comes
 /// from the robust list alone; a non-robust owner's exit hands the word
 /// over plain, and a robust walk that marked the word keeps the mark).
 pub const fn heir_word(w: u32, my_tid: u32) -> u32 {
@@ -725,7 +725,7 @@ fn attach(b: &mut dyn PiBucket, me: TaskId, owner: TaskId, w: u32, marked: u32) 
     }
 }
 
-/// `FUTEX_CMP_REQUEUE_PI`'s proxy enqueue (owner decision 10-10, Linux
+/// `FUTEX_CMP_REQUEUE_PI`'s proxy enqueue (Linux
 /// `rt_mutex_start_proxy_lock`), under the table lock, on the PI word `to`
 /// (`b`): enqueue the sleeping requeue-PI waiter `waiter_tid` on the word's
 /// graph object on its behalf and walk (boost the owner chain) at once;

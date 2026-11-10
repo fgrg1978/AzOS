@@ -91,7 +91,7 @@ pub fn page_getref(phys: usize) -> u32 {
 }
 
 /// Is the caller this frame's only holder (count 0 or 1)? `false` for a
-/// frame the table does not manage: there is no count to trust (wave 14,
+/// frame the table does not manage: there is no count to trust (
 /// the copy-on-write reuse in `handle_cow_fault`).
 #[inline(always)]
 pub fn page_is_sole(phys: usize) -> bool {

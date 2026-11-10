@@ -27,7 +27,7 @@
 //! not blocked yet: an event between the poll and the block is not lost.
 //! [`port_wait_end_at`] deregisters on every exit.
 //!
-//! # Sources (wave 11, PORTWAIT)
+//! # Sources (PORTWAIT)
 //!
 //! A port reports these kinds of source; the 16-byte event carries the key the
 //! source was bound with and its type (`PORT_EVENT_*`):
@@ -107,7 +107,7 @@ const _: () = assert!(PORT_MAX_SOURCES >= 2 && PORT_MAX_SOURCES <= 64);
 
 // `PortEvent::source_type` values (`azos_abi::syscall_nr`, their one home):
 // an io_ring, an IRQ (the value `irq_bind` writes), a timer, an
-// endpoint's no-senders and call notices, a source that is gone (wave 15 N5b), a
+// endpoint's no-senders and call notices, a source that is gone, a
 // Domain's change of memory pressure.
 pub use azos_abi::syscall_nr::{
     PORT_EVENT_CALLS, PORT_EVENT_CALL_NOTICE, PORT_EVENT_DOORBELL, PORT_EVENT_IRQ, PORT_EVENT_NO_SENDERS,
@@ -142,7 +142,7 @@ pub enum PortSourceKind {
     /// An absolute deadline, in nanoseconds on the time counter.
     Timer(u64),
     /// An endpoint's notices, by its packed `(index, generation)` reference
-    /// (wave 15 N5b): pending when no send capability to it is left.
+    ///: pending when no send capability to it is left.
     Endpoint(u32),
     /// The calls queued on an endpoint, by its packed reference: pending
     /// when a call found its queue empty.
@@ -178,12 +178,12 @@ pub struct PortSource {
     /// The capability handle the source was bound with, reported as the
     /// event's `source_id` (0 for a timer).
     pub handle: u32,
-    /// Whose capability made this binding (wave 11): the holder's
+    /// Whose capability made this binding: the holder's
     /// cap-table slot + 1, `0` for none (a timer, an untyped or kernel bind).
     /// The binding dies when that capability is revoked or its table wiped,
     /// and follows it when it moves ([`port_cap_event`]).
     pub binder: u16,
-    /// Not 0: the source is gone (wave 15 N5b) — destroyed (`EREVOKED`) or
+    /// Not 0: the source is gone — destroyed (`EREVOKED`) or
     /// its owner died (`EPEERDIED`) — and this is the code its one
     /// `PORT_EVENT_SOURCE_GONE` event carries. The slot is ready until that
     /// event is taken, then freed; no producer reaches it meanwhile
@@ -227,7 +227,7 @@ pub struct Port {
     /// per-slot, so this index's generation only ever grows
     /// *between wraps*. Within one wrap cycle no two incarnations at this
     /// index share a generation, but a wrap (this slot's own targeted sweep,
-    /// `objref::sweep_index`, owner decision 2026-09-26) resets it to 1 —
+    /// `objref::sweep_index`) resets it to 1 —
     /// deliberately, so the slot is reused rather than lost — which is why
     /// `epoch` below still exists, scoped to this one slot now instead of the
     /// whole pool.
@@ -376,8 +376,8 @@ impl PortWaiter {
 struct PortTable {
     ports: [Port; MAX_PORTS],
     waiters: [PortWaiter; MAX_TASKS],
-    /// Per-slot generation source (owner decision
-    /// 2026-09-26): entry `i` is the generation index `i`'s *next* create
+    /// Per-slot generation source: decision
+    /// entry `i` is the generation index `i`'s *next* create
     /// will stamp. Starts at 1 (`0` doubles as "mid-sweep"), never reset by an
     /// ordinary destroy — only by that slot's own targeted wrap sweep. See
     /// `objref`'s module doc ("Per-slot generations...").
@@ -788,7 +788,7 @@ pub fn port_bind_object(r: u32, kind: PortSourceKind, handle: u32, user_key: u64
 }
 
 /// [`port_bind_object`] made through the capability held in cap-table slot
-/// `binder` (wave 11): the binding is removed when that capability is
+/// `binder`: the binding is removed when that capability is
 /// revoked or the table wiped, and follows it when it moves
 /// ([`port_cap_event`]). The caller re-checks its capability after the bind
 /// (a revoke between its resolve and this store found no binding to remove).
@@ -838,7 +838,7 @@ pub fn port_bind_object_as(
 ///    and its revoke or move leaves the table's bindings alone. A server
 ///    that holds a send capability (`WRITE` only) to its own endpoint and
 ///    revokes it keeps the binding its receive capability made, so the
-///    no-senders notice reaches its port (wave 15 N5b).
+///    no-senders notice reaches its port.
 ///  * `Wiped` (the exit reset, a reused slot): every source bound from that
 ///    table is freed.
 ///
@@ -976,7 +976,7 @@ pub fn port_signal_ring(link: PortLink, ring_ref: u32) -> bool {
     port_signal(link, PortSourceKind::Ring(ring_ref))
 }
 
-/// The source `link` names (holding `kind`) is gone (wave 15 N5b): its
+/// The source `link` names (holding `kind`) is gone: its
 /// object was destroyed (`code` = `EREVOKED`) or its owner died
 /// (`EPEERDIED`). The slot is marked gone, so the next poll or wait takes
 /// one `PORT_EVENT_SOURCE_GONE` event with the binding's key and handle and
@@ -1732,7 +1732,7 @@ impl From<crate::cap::CapError> for PortCapError {
 /// `objref::grant_packed`. Must not be called with a cap-table lock held.
 pub fn port_create_cap(tid: u32) -> Option<crate::cap::Cap<crate::cap::targets::Port>> {
     let (r, _epoch) = create_core(tid as usize)?;
-    // `RW_DELEGATE` (owner decision 2026-09-26, O3.4): the creator may copy and
+    // `RW_DELEGATE` (O3.4): the creator may copy and
     // gift its own port.
     match objref::grant_packed::<crate::cap::targets::Port>(tid, CapPerms::RW_DELEGATE, r) {
         Some(cap) => Some(cap),
@@ -1780,8 +1780,8 @@ pub fn port_poll_cap_at(
 ///
 /// **Not contained.** Destroying is a release, so it resolves through
 /// `CapTable::get_op_uncontained`: it still needs `WRITE`, and it stays live
-/// while degraded-mode containment is armed, the way closing a socket does (owner
-/// decision 2026-09-13). The untyped `SYS_PORT_UNBIND` it paired with was
+/// while degraded-mode containment is armed, the way closing a socket does.
+/// The untyped `SYS_PORT_UNBIND` it paired with was
 /// retired with the move to generation-stamped handles. `op` is the op the call performs
 /// (`PORT_DESTROY`): it discharges an `OP_MASK` caveat.
 pub fn port_destroy_cap(
@@ -2107,7 +2107,7 @@ mod tests {
         assert_eq!(poll(B, in_b).map(|e| e.key), Err(STALE));
     }
 
-    /// (6) U03-1 / U04-1's fix, owner decision 2026-09-26: a slot that reaches `LAYOUT.gen_max()` is swept **at
+    /// (6) The fix: a slot that reaches `LAYOUT.gen_max()` is swept **at
     /// its own index only** (`objref::sweep_index`) and reused from
     /// generation 1 — instead of the old design's pool-wide counter, whose
     /// exhaustion swept every `Cap<Port>` in every table, live or not (one
@@ -2568,7 +2568,7 @@ mod tests {
         assert_eq!(port_wait_end(s, B, q).err(), Some(PortCapError::Empty));
     }
 
-    // ── Wave 11 (PORTWAIT): channel, io_ring and timer sources ─────────────
+    // ── Channel, io_ring and timer sources ─────────────
 
     fn timed_wakes() -> Vec<u32> {
         azos_sched::shim_port_timed_wakes()
@@ -2876,7 +2876,7 @@ mod tests {
         }
     }
 
-    // ── Wave 11: a binding dies with its capability ─────────────
+    // ── A binding dies with its capability ─────────────
 
     /// A channel binding made through a capability follows that capability
     /// when it MOVES (events still arrive, and the binding now belongs to the
@@ -2942,7 +2942,7 @@ mod tests {
     /// `READ`): a server that also holds a send capability (`WRITE` only)
     /// to its own endpoint keeps its binding when it revokes or moves that
     /// one; revoking the receive capability the bind was made through, or
-    /// moving it without `READ`, still frees it (wave 15 N5b: the no-senders
+    /// moving it without `READ`, still frees it (the no-senders
     /// notice must reach the port).
     ///
     /// **Canary.** Drop the `READ` guard in `port_cap_event`: the revoke of

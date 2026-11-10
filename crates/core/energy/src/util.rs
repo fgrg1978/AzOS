@@ -12,7 +12,7 @@
 //!
 //! # The two variants
 //!
-//! * **Window** (default, an owner decision): busy time is
+//! * **Window** (default): busy time is
 //!   counted per fixed window; the last [`HISTORY`] closed windows are kept
 //!   and the signal is `max(most recent, mean)`, the WALT demand policy. A
 //!   step to fully busy shows after one window; a task that stops reads zero

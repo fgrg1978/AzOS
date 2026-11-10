@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Demand paging for `mmap` through pagers (wave 14, DEMANDPAGE).
+//! Demand paging for `mmap` through pagers (DEMANDPAGE).
 //!
 //! The kernel owns the address space; a pager owns what is *in* a page. `mmap`
 //! records a reserved range (a [`Mapping`] of an object) instead of committing
@@ -3314,7 +3314,7 @@ fn clone_batch(
         // SAFETY: entry `idx` of the child's leaf table for this span, a table
         // of a root no CPU runs on yet.
         let cw = unsafe { &*(cl.add(idx) as *const AtomicU64) };
-        // From the empty word only (N12h, `crate::pte_install`): the child's
+        // From the empty word only (`crate::pte_install`): the child's
         // root is in the merged roster, and a word there is nobody's to replace.
         if crate::pte_install::install(cw, ARCH.pte_empty(), leaf).is_err() {
             return Err((k, MapError::Invalid));

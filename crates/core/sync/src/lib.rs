@@ -6,7 +6,7 @@ pub mod spinlock;
 pub mod qspinlock;
 /// Per-task counts of the sleeping locks held (the panic policy's check).
 pub mod held;
-/// Ownership of a resource across a device wait (owner rule F1).
+/// Ownership of a resource across a device wait.
 pub mod claim;
 pub mod once_obj;
 pub mod waitqueue;
@@ -17,10 +17,10 @@ pub mod preempt_core;
 pub mod preempt;
 /// Per-hart interrupt-context depth — see the module docs.
 pub mod isr_depth;
-/// Lockdep-lite (Kconfig LOCKDEP, wave 15 N1) — see the module docs.
+/// Lockdep-lite (Kconfig LOCKDEP) — see the module docs.
 pub mod lockdep;
 pub mod scope;
-/// QSBR read-copy-update (Kconfig RCU_QSBR, wave 15 N4) — see the module docs.
+/// QSBR read-copy-update (Kconfig RCU_QSBR) — see the module docs.
 pub mod qsbr;
 /// Pure logic behind `qsbr`. Host-tested in `tests/host/sync-tests`.
 pub mod qsbr_core;

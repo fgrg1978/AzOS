@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! `SWITCH_CENSUS` (Kconfig; cargo `switch-census`, wave 15): where the
+//! `SWITCH_CENSUS` (Kconfig; cargo `switch-census`): where the
 //! instructions of a yield that switches go, phase by phase. Off by default;
 //! every hook compiles to nothing without the feature, so the census-off cost
 //! is zero.

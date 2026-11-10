@@ -10,7 +10,7 @@
 //! [`sectors`](azos_devif::Block::sectors); the data moves through the
 //! io_ring's `OP_BLOCK_READ` / `OP_BLOCK_WRITE` (a sector is 512 bytes, a reply
 //! 64), whose op-table entry is [`block_io`]. The caller names sectors
-//! RELATIVE to its partition (owner decision, round 23): the kernel adds the
+//! RELATIVE to its partition: the kernel adds the
 //! partition's start, so a sector outside it cannot even be spelled, and a run
 //! past its end, or one that overflows, is **refused and recorded**.
 
@@ -64,7 +64,7 @@ impl azos_devif::Block for BlockServer {
 /// overwritten between the DMA and the copy (A's sectors landed, B overwrote
 /// the whole buffer, A copied B's data to its caller; on the write side B's
 /// bytes reached A's sector, and the sectors below the partition table are the
-/// flight recorder and the boot image: the 2026-09-19 user-pointer audit). A
+/// flight recorder and the boot image: the user-pointer audit). A
 /// buffer per call has no such race, needs no lock, and takes no `.bss` while
 /// no block call is in flight.
 pub(crate) fn bounce(len: usize) -> Option<alloc::vec::Vec<u8>> {

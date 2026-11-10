@@ -5,8 +5,8 @@
 //!
 //! Every decision here is a function of the image's SHA-256 alone. The path
 //! the caller named and the caller's own filter are not inputs: the profile
-//! and the capabilities belong to the image, as they do for autorun and exec
-//! (owner decisions 59 and 73). `tests/host/seccomp-tests` includes this file with
+//! and the capabilities belong to the image, as they do for autorun and exec.
+//! `tests/host/seccomp-tests` includes this file with
 //! the real `seccomp.rs` and its generated digest table.
 
 use crate::filter::SyscallFilter;

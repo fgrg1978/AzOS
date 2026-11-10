@@ -16,7 +16,7 @@
 //! It also counts accessor reads (`scheduler::on_this_hart`: every `current_*`
 //! reader of the running task) that finished on a hart other than the one
 //! whose slot they loaded (a lie, or a migration between the id read and the
-//! load: the one the 2026-09-25 reading needed; the window now masks
+//! load: the one an earlier reading needed; the window now masks
 //! interrupts, so only a lie counts). Nothing here
 //! prints from the hot path: a mismatch only bumps counters and keeps its
 //! first sample, read back by [`snapshot`].

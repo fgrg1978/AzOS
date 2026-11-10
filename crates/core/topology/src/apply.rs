@@ -4,7 +4,7 @@
 //! task named by that row runs at.
 //!
 //! Every user-space task takes its scheduler class from the
-//! topology. Until wave 7 nothing read `TaskSpec::priority` or `class_name`
+//! topology. Nothing used to read `TaskSpec::priority` or `class_name`
 //! outside admission; the loader and `SYS_SPAWN_EX` created every ring-3 task at
 //! the scheduler's default. This is the pure half of applying it — the lookup
 //! and the clamp — so a host test can pin it; the kernel side maps the class
@@ -66,7 +66,7 @@ impl<'a> Topology<'a> {
 ///
 /// `floor` is the scheduler's `RT_PRIORITY_THRESHOLD` (12): below it the tick
 /// never preempts, so a ring-3 task there could starve `net-poll`/`sys-wdt`
-/// (owner decision 2026-09-28). `ceil` is `IDLE_PRIORITY - 1` (31 is how the
+///. `ceil` is `IDLE_PRIORITY - 1` (31 is how the
 /// scheduler recognises idle). Pure, so the host suite pins it.
 pub const fn ring3_priority(priority: u32, floor: u32, ceil: u32) -> (u32, bool) {
     if priority < floor {
@@ -133,8 +133,8 @@ impl<'a> Topology<'a> {
     /// number equal to or larger than the client's, as
     /// [`row_sched`](Self::row_sched) applies it), or `None`.
     ///
-    /// Every server strictly outranks every client it serves (owner decision
-    /// 2026-10-23): a client never preempts the request it is waiting on, a
+    /// Every server strictly outranks every client it serves:
+    /// a client never preempts the request it is waiting on, a
     /// request is never served below its caller, and a server never competes
     /// with its clients in their own bucket. A row whose class the topology
     /// does not declare is skipped: `admission_check` refuses it first.

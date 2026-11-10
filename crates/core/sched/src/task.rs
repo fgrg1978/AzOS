@@ -65,7 +65,7 @@ pub const NET_POLL_PRIORITY: u32 = azos_limits::TASK_NET_POLL_PRIORITY as u32;
 /// Priority for the system watchdog task.
 ///
 /// **Was 20, and at 20 with default placement the task never ran under load.**
-/// Measured 2026-09-10, probe verified present in the binary: on an idle boot
+/// Measured, probe verified present in the binary: on an idle boot
 /// `sys-wdt` entered and iterated; with the brain link, a disk and a NIC
 /// attached it did not execute one instruction in 50 s. The six things it
 /// carries — stack canaries, timer liveness, the physical kill-switch poll,
@@ -162,7 +162,7 @@ pub type CtxReg = u64;
 /// or size.** riscv64: `s0..s11` (unchanged from before this struct grew a
 /// second ISA). aarch64: `x19..x28` + `x29` (frame pointer; AAPCS64 also
 /// makes it callee-saved) as the integer set, plus `d8..d15` — this kernel
-/// is hard-float (owner decision 97), so a task's FP/vector state in the
+/// is hard-float, so a task's FP/vector state in the
 /// callee-saved half of v8-v15 must survive an ordinary function-call-shaped
 /// switch exactly like its GPRs do. This is a narrower save than the trap
 /// path's (`entry::aarch64::TrapFrame`, V0-V31 + FPSR/FPCR): a trap can
@@ -320,7 +320,7 @@ const _: () = {
     assert_adjacent!(d14, d15);
 };
 
-/// [`Task::queued`]: an `AtomicBool`'s interface over a word (wave 15,
+/// [`Task::queued`]: an `AtomicBool`'s interface over a word (
 /// SWITCH). RV64 has no sub-word AMO, so a byte flag's `swap` compiled to an
 /// aligned-word `amoor`/`amoand` with shift and mask (eight instructions);
 /// the claim runs on every enqueue, twice per context switch counting the
@@ -603,7 +603,7 @@ pub mod sched_word {
     /// consumed, no switch), and the next tick's re-enqueue arm only saves
     /// `Running` currents — the task is left `Ready` in no queue, forever.
     /// Measured: the phase-A server (`autorun`) starved exactly this way,
-    /// and the 2026-08-22 "Replied + client asleep" residue is the same
+    /// and the "Replied + client asleep" residue is the same
     /// mechanism hitting a client. So: `Blocked` + matching reason + NOT
     /// saved ⇒ **stamp, never dispatch** — the target is still running, and
     /// [`take_back_unswitched`] or the switch-away sweep takes the stamp. If
@@ -617,7 +617,7 @@ pub mod sched_word {
     /// precedes the Release commit in program order, so a waker that READS
     /// THE FLAG AFTER seeing `Blocked` sees the true flag — which is why
     /// `saved` is a closure, called here only once `Blocked` has been
-    /// observed. Wave 13 (RT7): it was a `bool` the callers read before the
+    /// observed. It used to be a `bool` the callers read before the
     /// state; a waker that read `context_saving` before the blocker set it and
     /// `Blocked` after the commit dispatched a task still running on its
     /// hart. The dispatch gate kept its registers safe, but the waker's
@@ -753,7 +753,7 @@ pub mod sched_word {
     /// commit will consume (not running), no sweep will convert (not
     /// switching), and no wake will dispatch (none is coming). Measured on
     /// QEMU `-icount`: phase A of `ipctest` wedges with the reply deposited
-    /// and the client in exactly this state (2026-08-24).
+    /// and the client in exactly this state.
     ///
     /// This transition is the missing consumer: `Blocked + WAKE_STAMP` →
     /// `Ready` (stamp cleared) in one CAS against `seen`, the word the caller
@@ -766,7 +766,7 @@ pub mod sched_word {
     /// the task has not left that block since, because every later block is
     /// another generation. Re-reading the word here instead would apply the
     /// check to whichever block the task is in by now: a running task, and
-    /// that is the ABA this signature exists to close (measured 2026-08-24:
+    /// that is the ABA this signature exists to close (measured:
     /// the first reaper version enqueued the still-executing phase-A server,
     /// which then parked `Ready` in no queue).
     ///
@@ -796,7 +796,7 @@ pub mod sched_word {
     pub fn set_state(w: &AtomicU32, s: TaskState) {
         // `Ready` packs to 0, so its transition is `cur & WAKE_STAMP`: one
         // atomic AND (`amoand.w` / `ldclr`) instead of a load and a CAS loop
-        // — wave 15 (SWITCH), once per context switch. Exact: the word holds
+        // — once per context switch. Exact: the word holds
         // the state bits, the stamp and the generation.
         const _: () = assert!(pack(TaskState::Ready) == 0 && STATE_MASK | WAKE_STAMP | GEN_MASK == u32::MAX);
         if s == TaskState::Ready {
@@ -959,7 +959,7 @@ pub struct Task {
     /// would have moved the UB sideways rather than removed it. Written at
     /// task creation (`task.base_priority = priority` in
     /// `try_task_create_init`, under `POOL_LOCK`, before the slot is
-    /// published) and, since wave 7, once more by the task ITSELF when the
+    /// published) and,, once more by the task ITSELF when the
     /// autorun loader applies its topology row
     /// (`scheduler::set_current_sched_params`, interrupts off). Neither write
     /// has a concurrent writer: the donation paths only READ this field.
@@ -999,8 +999,8 @@ pub struct Task {
     pub user_mmap_low: u64,
 
     /// The domain this task belongs to (`crate::domain`): the owner of its
-    /// capability table and of the frame budget (owner decision 102, scan
-    /// unit 3 finding 3: CPU had quotas and memory had none) that its
+    /// capability table and of the frame budget (CPU had quotas and memory had none)
+    /// that its
     /// threads share. Set at creation under `POOL_LOCK`, before the task is
     /// runnable; [`crate::domain::NONE`] once the task has left it.
     ///
@@ -1184,7 +1184,7 @@ pub struct Task {
     // would let two harts donating to the same task concurrently lose an
     // increment, and an undercounted task restores early — reintroducing the
     // exact clobber this field exists to prevent. It stays atomic (readers
-    // outside the donation lock), but since wave 9 its read-modify-write
+    // outside the donation lock), but its read-modify-write
     // happens under the slot's donation lock, together with `priority`'s.
     //
     // `priority` is `AtomicU32` too (see its own doc), which closes the DATA
@@ -1194,7 +1194,7 @@ pub struct Task {
     //
     // The window that used to stay open — a boost racing the LAST restore,
     // landing between the restore's count-to-0 and its base-priority store
-    // and being overwritten by the base — is closed since wave 9: every boost
+    // and being overwritten by the base — is closed: every boost
     // and restore of this pair (proxy and Mutex donors alike) runs
     // under the slot's donation lock (`scheduler::DONATION_LOCKS`, protocol in
     // `donation::boost_locked`/`restore_locked`), held across the run-queue
@@ -1204,7 +1204,7 @@ pub struct Task {
     // Declared last by convention, not by necessity — and the difference
     // matters, because the version of this note that said "everything above
     // `task_satp` is layout-frozen against `TASK_SATP_OFFSET` in
-    // context_switch.S" was FALSE and caused a wrong fix on 2026-09-07. The
+    // context_switch.S" was FALSE and caused a wrong fix. The
     // assembly is handed that offset by `offset_of!` at the injection site
     // (the `global_asm!` blocks in `kernel/src/main.rs`), so it cannot go stale. What the assert
     // at the bottom of this file does is make a layout change deliberate.
@@ -1248,7 +1248,7 @@ pub struct Task {
     /// Zero-init via `mem::zeroed()` gives `false`, which is correct: a fresh
     /// task is in no queue. Declared after `donation_count` for the same
     /// layout-freeze reason documented there. A word ([`QueuedFlag`]) since
-    /// wave 15: the claim is one `amoswap.w` instead of a masked byte AMO.
+    /// The claim is one `amoswap.w` instead of a masked byte AMO.
     pub queued: QueuedFlag,
 
     /// K-C26 provenance: who last set this task `Ready`, and on which hart.
@@ -1279,7 +1279,7 @@ pub struct Task {
     /// Context switches the timer took from it.
     pub switches_preempted: core::sync::atomic::AtomicU64,
 
-    /// Wave 8: the memory state beside `budget` that the
+    /// The memory state beside `budget` that the
     /// charging paths and the locked-row policy need. Appended at the end so
     /// `TASK_SATP_OFFSET` stays stable; all-zero is its initial state.
     pub mem: TaskMem,
@@ -1342,7 +1342,7 @@ pub struct TaskMem {
     /// Page faults resolved for this task in user mode (COW breaks and
     /// demand faults). A `locked` task must end with 0; the gate reads it.
     pub faults: u32,
-    /// Wave 9: the topology row whose live-instance count this
+    /// The topology row whose live-instance count this
     /// task holds one of, as row index + 1; `0` holds none (a kernel task, or
     /// a program with no row of its own, a fork child). Released once, at
     /// exit (`scheduler::task_exit_with_code`).
@@ -1498,7 +1498,7 @@ pub struct CpuLoad {
 /// priority without aging, and adding aging changes the dispatch guarantees
 /// the RT and Mutex scenarios depend on. It belongs in its own pass.
 ///
-/// **K-C27 (2026-09-03): the saturation itself was the workload's defect,
+/// **K-C27: the saturation itself was the workload's defect,
 /// and is fixed at the workload.** The daemons that made harts 0, 1 and 3
 /// permanently hostile (`rt-motor`, `flight-ctrl`, `sensor-ahrs`,
 /// `net-poll`, plus the best-effort spinners `io-ring-worker` (since
@@ -1796,13 +1796,13 @@ const _: () = assert!(
 // rounded up to `task_satp`'s 8-byte alignment (232 + 276 = 508 -> 512 with
 // 96 entries). The history that follows is of
 // `task_satp`'s offset with the 96-entry filter.
-// 512 as of wave 11 (SCHED-RT): -32 when the dead EDF path's
+// 512 (SCHED-RT): -32 when the dead EDF path's
 // `DeadlineParams` (4 x u64) left the TCB; reservations live per hart now
 // (`scheduler::rt`).
-// 544 as of wave 9: +64 when `SYSCALL_FILTER_MAX` went from 64 to 96 entries
+// 544: +64 when `SYSCALL_FILTER_MAX` went from 64 to 96 entries
 // of `u16` (filter 212 -> 276 bytes).
-// 480 as of wave 7: +80 for the 640-bit seccomp bitmap `SyscallFilter::bits` (filter
-// 132 -> 212 bytes). 400 as of 2026-09-07: was 336, +64 when `SYSCALL_FILTER_MAX` went from 32
+// 480: +80 for the 640-bit seccomp bitmap `SyscallFilter::bits` (filter
+// 132 -> 212 bytes). 400: was 336, +64 when `SYSCALL_FILTER_MAX` went from 32
 // to 64 entries of `u16`. riscv64 only — see the three-way split below for
 // why aarch64 (bare metal) and the host each need their own number: every
 // field from `tid` onward is unmoved, so the whole delta between targets is

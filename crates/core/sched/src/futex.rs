@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Futex wait, wake and requeue (wave 13, THREADS; wave 15 N9): the kernel
+//! Futex wait, wake and requeue (THREADS): the kernel
 //! side of the table in [`crate::futex_table`].
 //!
 //! The native calls (`SYS_FUTEX_WAIT`/`WAKE`) and the Linux `futex` with
@@ -122,7 +122,7 @@ pub fn wait(look: Look, settle: Settle, expected: u32, deadline: Option<u64>) ->
 
 /// Wake at most `n` waiters on `key`. Returns how many were woken, or
 /// `-EINVAL` with nobody woken when a `FUTEX_WAIT_REQUEUE_PI` waiter is
-/// among them (owner decision 10-10, as Linux; never with Kconfig
+/// among them (as Linux; never with Kconfig
 /// `FUTEX_PI` n).
 pub fn wake_key(key: Key, n: u32) -> i64 {
     // Gate canary only: a wake that wakes nobody (the joins and the contended
@@ -142,14 +142,14 @@ pub fn wake_key(key: Key, n: u32) -> i64 {
 
 /// [`wake_key`] for process `proc_id` (the exit path's clear-tid wake, which runs
 /// as the exiting member). A word of a shm region wakes its region's key
-/// (owner decision 10-10, Linux `mm_release` keys it shared): the lookup in
+/// (Linux `mm_release` keys it shared): the lookup in
 /// [`robust_key`] runs here, before `wake_key` takes the table lock.
 pub fn wake_in(proc_id: u32, addr: u64, n: u32) -> i64 {
     wake_key(robust_key(proc_id, addr), n)
 }
 
 azos_common::ro_hook! {
-    /// The sched -> ipc lookup (owner decision 10-10): `(region, offset)` of
+    /// The sched -> ipc lookup: `(region, offset)` of
     /// the word at `addr` when process `proc_id` maps it from a shm region
     /// (`azos_ipc::memobj::memobj_resolve_mapped`). Boot registers it; unset = none.
     static SHM_WORD_OF: fn(u32, u64) -> Option<(u32, u32)>;
@@ -164,7 +164,7 @@ pub fn register_shm_word_of(f: fn(u32, u64) -> Option<(u32, u32)>) {
 }
 
 /// The key the exit wakes (robust walk, clear-tid) use for a word at `addr` (process
-/// `proc_id`; owner decision 10-10, Linux `handle_futex_death` keys the
+/// `proc_id`; Linux `handle_futex_death` keys the
 /// word shared): a word of a shm region is `Key::Shared { region, offset }`
 /// (Kconfig `FUTEX_SHARED`), the key N9's shared waiters and N10b's shared
 /// PI words sleep on; any other word is the process's private key.
@@ -249,7 +249,7 @@ impl PiBucket for PiKeyGuard<'_> {
     fn cmpxchg_word(&mut self, expected: u32, new: u32) -> Result<u32, UserFault> {
         self.word.cmpxchg(expected, new)
     }
-    // Owner decision 10-10: a slot mid-exit (`TASK_EXITING`) never becomes
+    // A slot mid-exit (`TASK_EXITING`) never becomes
     // a PI word's owner; the locker retries (`LockPiStep::Retry`).
     fn task_of_tid(&self, tid: u32) -> Option<TaskId> {
         crate::scheduler::live_idx_for_tid(tid).map(|i| i as TaskId)
@@ -414,8 +414,8 @@ pub fn canary_requeue_pi_plain() {
 
 /// Runtime canary `canary=futex-requeue-pi-no-proxy`: `FUTEX_CMP_REQUEUE_PI`
 /// enqueues nobody on the PI word's graph object; every waiter but a
-/// proxy-locking top wakes requeued and runs its own `LOCK_PI` (wave 15
-/// N10d), so the owner is not boosted while they sleep.
+/// proxy-locking top wakes requeued and runs its own `LOCK_PI`,
+/// so the owner is not boosted while they sleep.
 static CANARY_REQUEUE_PI_NO_PROXY: AtomicBool = AtomicBool::new(false);
 
 /// Arm the `futex-requeue-pi-no-proxy` canary (boot only).
@@ -423,11 +423,11 @@ pub fn canary_requeue_pi_no_proxy() {
     CANARY_REQUEUE_PI_NO_PROXY.store(true, Ordering::Relaxed);
 }
 
-/// Linux `FUTEX_WAIT_REQUEUE_PI` (wave 15 N10d, Kconfig `FUTEX_PI`): wait
+/// Linux `FUTEX_WAIT_REQUEUE_PI` (Kconfig `FUTEX_PI`): wait
 /// on the word `look` names (`from`) while it holds `expected`, as a waiter that only
 /// `FUTEX_CMP_REQUEUE_PI` to the PI word `to` (`to_word`) takes. Returns 0
 /// owning `to`: the requeuer gave it the free word; or it enqueued it on
-/// `to`'s graph object by proxy and it slept on until the handover (N10e;
+/// `to`'s graph object by proxy and it slept on until the handover (
 /// it finishes the lock, Linux `rt_mutex_wait_proxy_lock`); or, woken
 /// requeued or spuriously, it ran its own `LOCK_PI` on `to` with the same
 /// absolute `deadline`. Otherwise `-EAGAIN` (the word differs, or a wake that was not a
@@ -472,13 +472,13 @@ pub fn wait_requeue_pi(
     }
 }
 
-/// Linux `FUTEX_CMP_REQUEUE_PI` (wave 15 N10d, Kconfig `FUTEX_PI`): when
+/// Linux `FUTEX_CMP_REQUEUE_PI` (Kconfig `FUTEX_PI`): when
 /// the word `look` names (`from`) holds `cmpval`, take the top waiter and up
 /// to `nr_requeue` more from `from`, every one a `FUTEX_WAIT_REQUEUE_PI` waiter bound for
 /// the PI word `to` (`to_word`): the top wakes owning `to` if it was free
 /// (`pi_futex::proxy_lock`, under the table lock); the rest are enqueued
 /// on `to`'s graph object on their behalf, unwoken, boosting its owner at
-/// once (`pi_futex::proxy_enqueue`, owner decision 10-10, Linux
+/// once (`pi_futex::proxy_enqueue`, Linux
 /// `rt_mutex_start_proxy_lock`; [`ft::requeue_pi_key`]). Returns how many
 /// were taken (Linux: woken + requeued), `-EAGAIN` (cmpval), `-EINVAL`
 /// (a waiter is plain or bound elsewhere; `from == to`), `-EFAULT`,
@@ -529,7 +529,7 @@ pub fn cmp_requeue_pi(look: Look, settle: Settle, to: Key, nr_requeue: u32, cmpv
     }
 }
 
-/// The futex table's [`azos_sync::pi_futex::PiTable`] (wave 15 N9/N10):
+/// The futex table's [`azos_sync::pi_futex::PiTable`]:
 /// the Linux personality's private PI calls keyed by the caller's process
 /// (a shm word without `FUTEX_PRIVATE_FLAG` is keyed by its region in
 /// `azos_syscall::linux`), and the robust exit's PI words ([`robust_key`]).
@@ -554,7 +554,7 @@ impl azos_sync::pi_futex::PiTable for FutexPiTable {
     fn owner_died(&self, proc_id: u32, uaddr: u64, dead: TaskId) -> Option<bool> {
         let ops = azos_sync::pi_futex::ops()?;
         let word = UserWord(uaddr);
-        // A shm word is keyed by its region (owner decision 10-10), resolved
+        // A shm word is keyed by its region, resolved
         // here, before the table lock: TABLE is never held over MEMOBJS
         // here. The walk runs in the dying task's space, so the word is
         // still reached through `uaddr`, faulted in here: its accesses under
@@ -591,8 +591,8 @@ impl PiWord for NoWord {
     }
 }
 
-/// The graph's owner-exit hook for `EdgeKind::FutexPi` (owner decision
-/// 10-10, Linux `exit_pi_state_list`): a task exits owning a PI word with
+/// The graph's owner-exit hook for `EdgeKind::FutexPi` (Linux
+/// `exit_pi_state_list`): a task exits owning a PI word with
 /// waiters that the robust walk did not hand over (no robust list, or the
 /// word was not on it). Under the key the `pi_state` recorded, its top
 /// waiter becomes the owner and is woken; it writes `TID | FUTEX_WAITERS`

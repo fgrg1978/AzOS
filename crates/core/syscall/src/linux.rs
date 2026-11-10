@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The Linux personality (owner decisions P1-P6): in-kernel
+//! The Linux personality: in-kernel
 //! translation of Linux syscalls for the tasks whose signed topology row says
 //! `abi = "linux"`, behind Kconfig `LINUX_ABI`.
 //!
@@ -52,7 +52,7 @@
 //! `clone` in the fork and vfork shapes ([`sys_clone`]: the child is seeded
 //! from its row and shares the parent's open descriptions) and `execve` of
 //! an image of the caller's own row ([`sys_execve`]) are answered. Since
-//! wave 13 `clone` also makes threads ([`clone_thread`]), with `futex`,
+//! `clone` also makes threads ([`clone_thread`]), with `futex`,
 //! `set_tid_address`, `exit` (the thread) and `exit_group` (the process):
 //! the personality entry is the process's, keyed by its id (the group
 //! leader's TID), and every thread reaches it.
@@ -62,7 +62,7 @@
 //! `posix_spawn`'s `CLONE_VM | CLONE_VFORK` child with a stack, requeue and
 //! priority-inheritance futexes, and everything outside
 //! `azos_linux_abi::TABLE`, which answers `-ENOSYS` and is reported.
-//! (`mprotect`, signal delivery and console input are answered since wave 13.)
+//! (`mprotect`, signal delivery and console input are answered.)
 
 use azos_abi::cap::{ty, CapHandle};
 use azos_linux_abi as lx;
@@ -190,7 +190,7 @@ fn arch() -> lx::Arch {
 /// Run `f` on the current task's entry. `None` when it has none (a Linux
 /// task always has one: a spawn that cannot give it one is refused).
 fn with_me<R>(f: impl FnOnce(&mut Proc) -> R) -> Option<R> {
-    // Wave 13: one entry per process; every thread of it reaches it.
+    // One entry per process; every thread of it reaches it.
     let me = azos_sched::current_proc_tid();
     let mut t = TABLE.lock();
     t.iter_mut().find(|p| p.tid == me && me != 0).map(f)
@@ -220,7 +220,7 @@ pub fn proc_init(tid: u32, row: &str, exe: &[u8]) -> bool {
     p.row_len = row.len() as u8;
     p.exe[..exe.len()].copy_from_slice(exe);
     p.exe_len = exe.len() as u8;
-    // Wave 13: its signal words, every disposition the default.
+    // Its signal words, every disposition the default.
     sigst::attach(tid, 0, ignored_of(&p.act));
     true
 }
@@ -443,7 +443,7 @@ pub fn dispatch(
 ) -> i64 {
     let _ = out;
     match num {
-        // Wave 13: a process is a thread group; its id is its leader's TID.
+        // A process is a thread group; its id is its leader's TID.
         nr::GETPID => azos_sched::current_proc_tid() as i64,
         nr::GETTID => azos_sched::current_task_tid() as i64,
         // The word this thread's exit clears and wakes (musl points it at its
@@ -457,12 +457,12 @@ pub fn dispatch(
         nr::GETUID | nr::GETEUID | nr::GETGID | nr::GETEGID => 0,
         nr::CLONE => sys_clone(a0, a1, a2, a3, a4, sepc, user_sp, regs),
         nr::RT_SIGRETURN => sys_rt_sigreturn(user_sp),
-        // Wave 13: out of the big `match`, for the reason the identity calls
+        // Out of the big `match`, for the reason the identity calls
         // are (a mask change is the cheapest signal call, and the most made).
         nr::RT_SIGPROCMASK => sys_rt_sigprocmask(a0, a1, a2, a3),
         _ => {
             let r = dispatch_slow(num, a0, a1, a2, a3, a4, a5);
-            // Wave 13: a restartable call a signal interrupted remembers its
+            // A restartable call a signal interrupted remembers its
             // first argument; the delivery at this same return decides
             // between `-EINTR` and running the call again (`SA_RESTART`).
             if r == -le::EINTR && matches!(num, nr::READ | nr::READV | nr::WRITE | nr::WRITEV | nr::WAIT4)
@@ -514,7 +514,7 @@ fn dispatch_slow(num: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64)
         }
         nr::MMAP => sys_mmap(a0, a1, a2, a3, a4, a5),
         nr::MPROTECT => {
-            // Wave 13 (security): exactly PROT_READ/PROT_WRITE; PROT_EXEC refused.
+            // Exactly PROT_READ/PROT_WRITE; PROT_EXEC refused.
             reach(k::SYS_MO_MAP);
             lx::errno_from_native(crate::handlers::sys_mprotect(a0, a1, a2), le::ENOMEM)
         }
@@ -552,7 +552,7 @@ fn dispatch_slow(num: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64)
         })
         .unwrap_or(0o022),
         nr::GETPPID => azos_sched::scheduler::current_task_parent_tid() as i64,
-        // Wave 15: the head of this thread's robust futex list, walked at its
+        // The head of this thread's robust futex list, walked at its
         // exit (`scheduler::robust_list_exit`). Linux's only length, else
         // `-EINVAL`; the address is checked when it is walked.
         nr::SET_ROBUST_LIST => {
@@ -580,7 +580,7 @@ fn dispatch_slow(num: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64)
             // PR_SET_NAME, PR_GET_NAME: the task's name is its image's.
             15 => 0,
             16 => if put_user(a1, &[0u8; 16]) { 0 } else { neg(le::EFAULT) },
-            // PR_SET_CHILD_SUBREAPER, PR_GET_CHILD_SUBREAPER (wave 13): the
+            // PR_SET_CHILD_SUBREAPER, PR_GET_CHILD_SUBREAPER: the
             // same mark as the native `DOMAIN_SUBREAPER`.
             36 => {
                 azos_sched::scheduler::task_subreaper(Some(a1 != 0));
@@ -650,7 +650,7 @@ fn sys_read(fd: u64, buf: u64, count: u64) -> i64 {
     };
     let n = count.min(IO_MAX as u64);
     match e.kind {
-        // Console input belongs to `SH.ELF` (one owner); wave 13:
+        // Console input belongs to `SH.ELF` (one owner);
         // the shell lends it to its foreground Linux job, which reads it
         // through the line discipline. Anyone else sees end of file.
         Kind::Console => console_read(buf, n),
@@ -696,7 +696,7 @@ fn console_lent_to_me() -> bool {
     lendee != 0 && (lendee == me || azos_sched::scheduler::task_is_ancestor(lendee, me))
 }
 
-/// Wave 13: `read` on a console descriptor. Without the lend, end of file
+/// `read` on a console descriptor. Without the lend, end of file
 /// (as before). With it: complete lines from the canonical line discipline,
 /// typed bytes echoed; blocks on the RX interrupt (a clock ceiling bounds a
 /// lost wake) and ends with `-EINTR` when a signal is to be delivered.
@@ -1471,7 +1471,7 @@ fn sys_chdir(path_ptr: u64) -> i64 {
 fn sys_exit_group(code: u64) -> i64 {
     // The entry goes first: the native exit closes the task's descriptors and
     // never returns here. Not while other threads of the process still run
-    // Wave 13: they are being stopped, and an entry whose process is gone is
+    // They are being stopped, and an entry whose process is gone is
     // reclaimed by the next `proc_init` anyway.
     let me = azos_sched::current_proc_tid();
     if azos_sched::group::live_members(me) <= 1 {
@@ -1484,7 +1484,7 @@ fn sys_exit_group(code: u64) -> i64 {
     crate::handlers::sys_exit(code & 0xff)
 }
 
-/// `exit(code)` (wave 13): ends only the calling thread while its process
+/// `exit(code)`: ends only the calling thread while its process
 /// has others; the process's last thread ends the process.
 fn sys_exit_thread(code: u64) -> i64 {
     if azos_sched::group::live_members(azos_sched::current_proc_tid()) > 1 {
@@ -1515,7 +1515,7 @@ fn abs_deadline_ticks(ns: u64, realtime: bool) -> u64 {
     azos_abi::time::ns_to_ticks_ceil(mono, azos_drv_sys::timebase::TIMER_FREQ)
 }
 
-/// `futex(uaddr, op, val, timeout, uaddr2, val3)` (wave 13; wave 15 N9):
+/// `futex(uaddr, op, val, timeout, uaddr2, val3)`:
 /// `FUTEX_WAIT`, `FUTEX_WAKE` and their `_BITSET` forms with the full mask,
 /// `FUTEX_REQUEUE` and `FUTEX_CMP_REQUEUE` (Kconfig `FUTEX_REQUEUE`).
 /// With `FUTEX_PRIVATE_FLAG` the key is the process's; without it, a word of
@@ -1524,7 +1524,7 @@ fn abs_deadline_ticks(ns: u64, realtime: bool) -> u64 {
 /// process's, as Linux keys a shared futex on private memory by its mm.
 /// `FUTEX_WAIT`'s timeout is relative, `FUTEX_WAIT_BITSET`'s absolute on
 /// the monotonic clock, or on the real one with `FUTEX_CLOCK_REALTIME`. With
-/// Kconfig `FUTEX_PI` (wave 15 N10),
+/// Kconfig `FUTEX_PI`,
 /// `FUTEX_LOCK_PI`, `FUTEX_LOCK_PI2`, `FUTEX_TRYLOCK_PI` and
 /// `FUTEX_UNLOCK_PI` too, through `azos_sync::pi_futex`, keyed as the
 /// plain calls (a shm word without the flag by its region), and (N10d)
@@ -1616,7 +1616,7 @@ fn sys_futex(uaddr: u64, op: u64, val: u64, timeout: u64, uaddr2: u64, val3: u64
                 Err(e) => e,
             }
         }
-        // Wave 15 N10d, Kconfig FUTEX_PI (n: ENOSYS below, as before): the
+        // N10d, Kconfig FUTEX_PI (n: ENOSYS below, as before): the
         // condition variable half of a PI mutex. `uaddr2` is the PI word.
         FUTEX_WAIT_REQUEUE_PI | FUTEX_CMP_REQUEUE_PI if azos_sync::pi_futex::ENABLED => {
             if uaddr & 3 != 0 || uaddr2 & 3 != 0 || uaddr == uaddr2 {
@@ -1654,7 +1654,7 @@ fn sys_futex(uaddr: u64, op: u64, val: u64, timeout: u64, uaddr2: u64, val3: u64
             reach(k::SYS_FUTEX_WAKE);
             azos_sched::futex::cmp_requeue_pi(&look, &settle, to, nr_requeue as u32, val3 as u32, &word)
         }
-        // Wave 15 N10, Kconfig FUTEX_PI: n answers ENOSYS (below) as before.
+        // N10, Kconfig FUTEX_PI: n answers ENOSYS (below) as before.
         FUTEX_LOCK_PI | FUTEX_LOCK_PI2 | FUTEX_TRYLOCK_PI | FUTEX_UNLOCK_PI if azos_sync::pi_futex::ENABLED => {
             use azos_sync::pi_futex::PiCmd;
             if uaddr & 3 != 0 {
@@ -1771,7 +1771,7 @@ fn sys_wait4(pid: u64, status_ptr: u64, options: u64, rusage: u64) -> i64 {
         // Process groups do not exist here.
         return neg(le::EINVAL);
     }
-    // Wave 13: the children are the process's, whichever thread waits.
+    // The children are the process's, whichever thread waits.
     let me = azos_sched::current_proc_tid();
     loop {
         let (got, code) = if pid > 0 {
@@ -1790,7 +1790,7 @@ fn sys_wait4(pid: u64, status_ptr: u64, options: u64, rusage: u64) -> i64 {
             }
         };
         if got > 0 {
-            // Wave 13: a child a signal ended is reported killed by it
+            // A child a signal ended is reported killed by it
             // (`WIFSIGNALED`), as Linux does; its native code stays 128 + n
             // for native waiters.
             let killed = if cfg!(feature = "linux-wait-exited-canary") { None } else { sigst::take_killed(got as u32) };
@@ -1835,7 +1835,7 @@ fn sys_mmap(addr: u64, len: u64, prot: u64, flags: u64, fd: u64, off: u64) -> i6
     };
     reach(k::SYS_MO_MAP);
     // The hint and `MAP_FIXED_NOREPLACE` are the kernel's to honour
-    // (`handlers::mmap_place`); the pre-commit bits travel too (wave 14).
+    // (`handlers::mmap_place`); the pre-commit bits travel too.
     let r = crate::handlers::sys_mmap(addr, len, prot, flags, u64::MAX, 0);
     lx::errno_from_native(r, le::ENOMEM)
 }
@@ -2231,7 +2231,7 @@ fn sys_rt_sigreturn(user_sp: u64) -> i64 {
     0
 }
 
-/// Wave 13: the current task returns to user mode with signal work counted
+/// The current task returns to user mode with signal work counted
 /// (the scheduler's one-load check). `ctx` is its user context as the trap
 /// path holds it; `from_syscall` says it returns from a call (`a0`/`x0` is
 /// that call's result). Applies a pending `rt_sigreturn`, then delivers the
@@ -2285,7 +2285,7 @@ pub fn on_return_to_user(
         // Gate canary only: nothing is ever delivered.
         return changed;
     }
-    // Wave 15: a task a forced stop is ending (`SIGKILL`, an `exit_group` or
+    // A task a forced stop is ending (`SIGKILL`, an `exit_group` or
     // exec of a sibling) runs no handler, as Linux's `fatal_signal_pending`:
     // its signals stay pending, so a process-directed one goes back to the
     // process at its exit (`signal_state::detach`) instead of being taken
@@ -2401,12 +2401,12 @@ pub fn on_return_to_user(
 /// `clone(flags, newsp, ptid, tls, ctid)` in the shape `fork` and `vfork`
 /// take: an exit signal in the low byte, optionally `CLONE_VM | CLONE_VFORK`
 /// with no new stack (served as a fork: the child gets a copy-on-write copy,
-/// which a vfork child may not tell apart); or a thread (wave 13,
+/// which a vfork child may not tell apart); or a thread (
 /// [`clone_thread`]). `posix_spawn`'s shared-memory child (`CLONE_VM |
 /// CLONE_VFORK` with a stack) is not answered.
 ///
 /// The child is reseeded from the parent's row, never from the parent's
-/// table (owner decision, round 47): it holds what the row declares and the
+/// table: it holds what the row declares and the
 /// descriptors it inherits, nothing the parent acquired otherwise.
 #[allow(clippy::too_many_arguments)]
 fn sys_clone(
@@ -2416,7 +2416,7 @@ fn sys_clone(
     use lx::clone::*;
     let rest = flags & !CSIGNAL;
     let vfork = CLONE_VM | CLONE_VFORK;
-    // Wave 13: a thread.
+    // A thread.
     let thread = CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | CLONE_THREAD;
     let optional = CLONE_SYSVSEM | CLONE_SETTLS | CLONE_PARENT_SETTID | CLONE_CHILD_CLEARTID
         | CLONE_DETACHED | CLONE_CHILD_SETTID;
@@ -2427,7 +2427,7 @@ fn sys_clone(
         return unanswered(nr::CLONE);
     }
     reach(k::SYS_FOREIGN_FORK);
-    // Wave 13: a fork from a thread is the process's; its descriptors are
+    // A fork from a thread is the process's; its descriptors are
     // the process's to duplicate.
     let _mm = azos_sched::group::mm_lock();
     let parent = azos_sched::current_proc_tid();
@@ -2437,7 +2437,7 @@ fn sys_clone(
     if r < 0 { neg(le::EAGAIN) } else { r }
 }
 
-/// A thread of the caller's process (wave 13): it resumes after the `clone`
+/// A thread of the caller's process: it resumes after the `clone`
 /// with a 0 return on stack `newsp`, its thread pointer `tls`
 /// (`CLONE_SETTLS`), its TID stored at `ptid` (`CLONE_PARENT_SETTID`) and at
 /// `ctid` (`CLONE_CHILD_SETTID`) before it runs, and `ctid` cleared and woken
@@ -2475,7 +2475,7 @@ fn clone_thread(
 /// and a copy of the parent's personality state. In the parent's context,
 /// before the child can run.
 ///
-/// Wave 13 (DEBTS): only the descriptor slots (192 B), the row and the image
+/// Only the descriptor slots (192 B), the row and the image
 /// path are read onto the stack. The rest of the parent's entry — 64 signal
 /// actions (2 KiB), the open directories, the working directory — is copied
 /// entry to entry under `TABLE` at the end. The old body took the whole
@@ -2641,7 +2641,7 @@ fn user_strv(ptr: u64, out: &mut [u8]) -> Result<(usize, usize), i64> {
 /// close-on-exec, the working directory, the mask and the ignored signals,
 /// as Linux does.
 ///
-/// Wave 13: the image may be another Linux row's. It then runs with THAT
+/// The image may be another Linux row's. It then runs with THAT
 /// row's authority, never the caller's: the caller must hold a launch grant
 /// (`Cap<Launch>` `EXEC`) for it, as `SYS_SPAWN_EX` requires, and the new
 /// image's capability table is the target row's seed plus only the handles
@@ -2741,7 +2741,7 @@ fn exec_image(path_ptr: u64, argv_ptr: u64, envp_ptr: u64) -> Result<[usize; FDS
     });
     drop(buf);
     let Some(prepared) = prepared else { return Err(neg(le::ENOMEM)) };
-    // Wave 15 (plan 4a): every check has passed and the new image is built;
+    // Every check has passed and the new image is built;
     // only now do the other threads end (`handlers::exec_end_other_threads`:
     // a refused execve leaves them running; before, they ran on across it).
     // A thread that was not the leader holds the process's TID after it.
@@ -2783,7 +2783,7 @@ fn exec_image(path_ptr: u64, argv_ptr: u64, envp_ptr: u64) -> Result<[usize; FDS
     Ok(closing)
 }
 
-/// Wave 13: the current task (`me`, a Linux task that has just exec'd an
+/// The current task (`me`, a Linux task that has just exec'd an
 /// image of row `profile.image`) takes that row's authority instead of its
 /// own row's (`own`): every capability goes but the pipe regions and open files
 /// its inherited descriptors stand on, the row's grants are seeded, its

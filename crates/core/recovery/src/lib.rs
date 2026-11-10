@@ -31,7 +31,7 @@ mod ota;
 pub use ota::ota_recv_task_entry;
 #[cfg(feature = "boot-slots")]
 use ota::cmd_ota;
-/// Wave 12: the flight/behavior/config/OTA bodies, shared with ring 3.
+/// The flight/behavior/config/OTA bodies, shared with ring 3.
 pub mod families;
 /// The minidump of a ring-3 task a fault killed: layout, file ring, report
 /// (`kernel/src/trap/crash.rs` writes it, `why crash` reads it).
@@ -85,7 +85,7 @@ fn readline(buf: &mut [u8; MAX_LINE]) -> usize {
             // after it finds the TID armed. If the wake reaches this task
             // before it has committed to `Blocked`, `block_current` consumes
             // the stamp and returns at once — the loop re-tests either way.
-            // Both ISAs since wave 11: riscv64's PLIC arm wakes
+            // Both ISAs: riscv64's PLIC arm wakes
             // the waiter too.
             if azos_drv_sys::uart::rx_wake_wired() {
                 azos_drv_sys::uart::rx_waiter_arm(azos_sched::current_task_tid());
@@ -497,7 +497,7 @@ fn cmd_reboot() {
 /// number — it is a kernel abort, i.e. a board reset, from someone typing a
 /// long number at the console.
 ///
-/// Three copies of this loop carried exactly that bug until 2026-09-18:
+/// Three copies of this loop carried exactly that bug:
 /// `parse_u8` and `parse_u16` accumulated in `u32` (overflow at 10 digits)
 /// and `parse_u32` in `u64` (20 digits), each clamping only AFTER the loop,
 /// by which point the multiply had already aborted. A fourth copy,

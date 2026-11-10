@@ -8,7 +8,7 @@
 //! [`azos_crypto::sig`]: a magic, the algorithm id and the signature's length
 //! before the signature, so the sidecar says which algorithm made it and a
 //! post-quantum signature fits without a format change. `SCHED.TOM` has none
-//! since wave 15: the signed `CAPS.TOM` binds it by its SHA-256
+//!: the signed `CAPS.TOM` binds it by its SHA-256
 //! (`crate::signed`). Not `<file>.SIG`: a two-dot name is not a FAT 8.3 short
 //! name and the kernel's FAT32 driver cannot open it — see [`crate::paths`].
 //!
@@ -72,7 +72,7 @@ pub enum VerifyError {
 ///
 /// This function is **real** verification, not a stub: `sig_verify_message`
 /// of `crates/core/crypto/src/sig.rs` runs the configured algorithm's strict
-/// verification against the supplied key. The loader is `crate::signed::fill_signed` (wave 15), which
+/// verification against the supplied key. The loader is `crate::signed::fill_signed`, which
 /// the kernel calls at boot under Kconfig `TOPOLOGY_SOURCE`.
 ///
 /// The loader MUST call `verify_signature` on the raw bytes **before**
@@ -104,7 +104,7 @@ fn verify_raw(message: &[u8], signature: &[u8], trusted_pubkey: &[u8]) -> Result
     // No size bound here: every caller reads into a bounded buffer (the
     // topology's Kconfig `TOPOLOGY_*_MAX_KB`, CONFIG.INI's 1 KiB, the ML
     // service's), and the 4 KiB bound of the raw primitive refused a valid
-    // CAPS.TOM of 4.6 KB (wave 15).
+    // CAPS.TOM of 4.6 KB.
     if SigAlg::CONFIGURED.verify(trusted_pubkey, message, signature) {
         Ok(())
     } else {

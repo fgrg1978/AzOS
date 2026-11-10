@@ -21,7 +21,7 @@ pub const SPAWN_F_DIE_WITH_PARENT: u32 = 1;
 /// `SpawnReq::flags`: reserved for mapping the per-task vDSO page
 /// (the stop word) before release. Not implemented: refused with `-EINVAL`.
 pub const SPAWN_F_MAP_TASK_PAGE: u32 = 2;
-/// `SpawnReq::flags` (wave 13): the caller, the console's input owner (or a
+/// `SpawnReq::flags`: the caller, the console's input owner (or a
 /// client of the owner over a call capability on an endpoint it serves: the
 /// shell of a terminal server), lends
 /// console input to this child for the child's life when the child is a Linux

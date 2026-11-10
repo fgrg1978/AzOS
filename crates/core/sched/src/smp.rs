@@ -285,7 +285,7 @@ pub unsafe fn wake_harts(num_cpus: usize) -> usize {
 ///
 /// **aarch64:** `TPIDR_EL1`, which is only writable at EL1 — so the K-C16
 /// apparatus has no aarch64 counterpart, and the boot asm's `msr TPIDR_EL1` is
-/// the only writer. Added 2026-09-19: this function was `mv {}, tp`
+/// the only writer. Added: this function was `mv {}, tp`
 /// unconditionally, so the whole scheduler was riscv-only at its most basic
 /// call.
 #[inline(always)]

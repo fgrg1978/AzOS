@@ -36,7 +36,7 @@
 //! recognisable address instead of reading another CPU's state; [`PerCpuRemote::get`]
 //! is the checked form that answers `None` and counts it ([`oor_count`]).
 //!
-//! **Scopes (owner decision 09-10, survey F6).** [`PerCpuRemote`] is the
+//! **Scopes (survey F6).** [`PerCpuRemote`] is the
 //! storage: any CPU id reaches any CPU's instance, and what that access may
 //! do is the user's contract. New code does not use it directly: the scope
 //! types in `azos_sync::scope` wrap it — `PerCpu<T>` (this CPU only,

@@ -16,7 +16,7 @@
 //! (verdict admit) or could not be done (refuse: no such op for the kind, or
 //! the kind's driver says no).
 //!
-//! # The hold (owner decision 16-10)
+//! # The hold
 //!
 //! From the drive on the device is **held**: a further reversible effect is
 //! refused with a receipt, and only stops pass. A stop does NOT lift the

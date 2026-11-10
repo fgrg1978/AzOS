@@ -20,7 +20,7 @@ use core_impl::Block;
 use blocks::rv;
 
 // ---------------------------------------------------------------------------
-// Block dispatch (wave 13): the CPU's SHA-2 instructions when it has them
+// Block dispatch: the CPU's SHA-2 instructions when it has them
 // ---------------------------------------------------------------------------
 //
 // `select_*` runs once at boot on what the CPU reports (ID registers, device

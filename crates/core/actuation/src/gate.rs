@@ -5,7 +5,7 @@
 //! (capability-denial and audit recorders, the ring-3 e-stop). The one
 //! latch-and-stop sequence is `crate::estop::latch_and_stop`, re-exported here.
 //!
-//! Moved out of `crates/domains/robot/safety-core/src/actuation.rs` (wave 11,
+//! Moved out of `crates/domains/robot/safety-core/src/actuation.rs` (
 //! DOMAIN). What stays there is the robot's own part: the motor gate and
 //! halt query, the motor-command record, the flight-arm gate, and the
 //! registration of the robot's stop work into the tables below.
@@ -114,7 +114,7 @@ pub fn install() {
     // through and recorded here, `detail` the syscall number. A ring-3
     // `SYS_SPAWN_EX` or Linux `execve` of an image no profile is bound to is
     // refused and recorded here, `detail` the digest's first four bytes. Both go the way the
-    // denials above go (owner decision 2026-09-14): ring only, through the same
+    // denials above go: ring only, through the same
     // per-task entry, window and summary with a budget of their own per class
     // (so the denials cannot starve them, nor they the denials), onto the disk
     // with the watchdog's flush, and never a synchronous write on the caller's
@@ -135,7 +135,7 @@ pub fn install() {
         );
     }
     azos_syscall::handlers::set_exec_refused_recorder(record_exec_refused);
-    // Wave 7: a topology row naming a scheduling class this build lacks, so a
+    // A topology row naming a scheduling class this build lacks, so a
     // ring-3 task runs at a priority its signed topology does not declare.
     // Ring only, like the refusals above: `SYS_SPAWN_EX` is a syscall path.
     fn record_topo_class_refused(site: u8, tid: u32) {
@@ -146,7 +146,7 @@ pub fn install() {
         );
     }
     azos_syscall::topo_sched::set_refusal_recorder(record_topo_class_refused);
-    // Wave 9: a wait-graph boost of a ring-3 task held at the ring-3 floor,
+    // A wait-graph boost of a ring-3 task held at the ring-3 floor,
     // under the topology floor's code with its own site. Once per target task.
     fn record_donation_floored(tid: u32) {
         azos_syscall::topo_sched::record_refusal(

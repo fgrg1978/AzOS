@@ -283,7 +283,7 @@ pub fn block_current(cpu: usize, reason: WaitReason) {
             //    exactly "wait() returned because we were woken".
             //
             //    That last clause used to say "every caller", and it was not
-            //    true. An enumeration of all 22 production call sites (2026-09-04)
+            //    true. An enumeration of all 22 production call sites
             //    found three shapes, not one: eighteen loop on a real condition
             //    or on a deadline and are safe; two re-poll but cannot tell a
             //    spurious wake from an empty queue, so they answer -1 after a
@@ -322,7 +322,7 @@ pub fn block_current(cpu: usize, reason: WaitReason) {
                     armed_at = Some(timer_sleepers::arm(idx, deadline));
                 }
             }
-            // Wave 11 ONESHOT: a timer sleeper moves this
+            // A timer sleeper moves this
             // hart's comparator when its deadline is earlier than what is
             // programmed. Without it a hart that switches to another busy
             // task kept the next scheduler tick programmed, and the deadline
@@ -988,7 +988,7 @@ fn reap_sweep() {
     }
 }
 
-/// The safety net behind the tick's flag gate (owner decision, w14): a full
+/// The safety net behind the tick's flag gate (w14): a full
 /// K-C25 walk run by the idle task, never by the tick, so a stamp whose waker
 /// forgot `note_unsaved_stamp` is still delivered once the hart has nothing
 /// else to do, and the tick never pays the walk.
@@ -1096,7 +1096,7 @@ fn note_unsaved_stamp(idx: usize, saved: bool, wt: crate::task::sched_word::Wake
 /// reaped it yet (K-C25). Only a timer interrupt runs the reaper, so while
 /// this is set an idle hart must not sleep to its ceiling: the kernel's
 /// idle-poll hook (`timebase::set_idle_poll_hook`) reads [`stamp_pending`].
-/// Before wave 13 hart 0's fixed 100 ms keepalive was the reaper's last
+/// Hart 0's fixed 100 ms keepalive used to be the reaper's last
 /// resort on an idle machine; the keepalive now runs only while a hardware
 /// watchdog is armed.
 static STAMP_PENDING: AtomicBool = AtomicBool::new(false);
@@ -1131,13 +1131,7 @@ pub(super) unsafe fn reap_one(i: usize) -> Reap {
             if w & WAKE_STAMP == 0 || state_of(w) != TaskState::Blocked {
                 return Reap::Done;
             }
-            // K-C24 gate, same read the wakers use. Stale note removed
-            // 2026-09-26: this used to claim `rvv` never maintained the
-            // flag, from when `context_switch_rvv.S` never cleared
-            // `context_saving` — see the fix note a few hundred lines up
-            // at the `do_schedule` gate. `Cargo.toml` dropped the `rvv`
-            // feature entirely on 2026-09-24, so there is no such build
-            // left to describe either way.
+            // Gate, same read the wakers use.
             if task.context_saving.load(Ordering::Acquire) {
                 return Reap::Again;
             }
@@ -1393,7 +1387,7 @@ pub(super) unsafe fn dispatched(i: usize, task: &mut Task, ipc: bool, claim_cpu:
                     claim_cpu, prio, task_ref(cur).priority.load(Ordering::Relaxed)),
             }) {
                 task.context.tp = claim_cpu as CtxReg;
-                // Wave 15 (TRACE): a claimed wake never queues.
+                // A claimed wake never queues.
                 if azos_trace::sched_on() {
                     azos_trace::raw::sched_wakeup(task.tid, claim_cpu as u32, current_task_tid());
                 }

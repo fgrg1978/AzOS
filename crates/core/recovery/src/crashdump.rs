@@ -12,7 +12,7 @@
 //! key the symbol file of that exact build is stored under. A kernel panic is
 //! not a dump: it keeps `/fat/CRASH.LOG` (`crates/fs/src/crash_log.rs`).
 //!
-//! **Where it goes.** The Log and a file (owner decision 16-10). The Log: a
+//! **Where it goes.** The Log and a file. The Log: a
 //! record of task and status on the flight recorder's ring, and the dump
 //! itself in the crash ring in the kernel (`kernel/src/trap/crash.rs`, left at
 //! once, with no I/O on the fault path). The file: beneath the faulting

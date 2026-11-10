@@ -8,7 +8,7 @@
 //! `AtomicUsize` words in writable `.bss`/`.data` at link-time addresses, set
 //! by a plain `store` and `transmute`d back to a `fn` at every call: a single
 //! kernel write anywhere turned one of them into a code-execution primitive
-//! with no information leak needed (security audit 2026-10-17, finding D).
+//! with no information leak needed.
 //!
 //! [`Hook`] closes that in two steps.
 //!

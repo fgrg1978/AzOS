@@ -55,7 +55,7 @@ pub(crate) fn park_until(deadline: u64) {
 
 /// Should an interruptible wait end with `-EINTR` now? A stop request
 /// (`SYS_ALERT`), or, for a Linux task, a signal its mask does not block
-/// (wave 13: it is delivered at this call's return to user mode).
+/// (it is delivered at this call's return to user mode).
 pub(crate) fn stop_requested() -> bool {
     azos_sched::scheduler::current_stop_request().is_some()
         || (azos_limits::LINUX_ABI && azos_sched::scheduler::signal::current_deliverable())
@@ -103,7 +103,7 @@ pub fn sys_console_wait(buf: u64, len: u64, timeout_ns: u64, a3: u64) -> i64 {
             Claim::Already => {}
         }
     }
-    // Wave 13: input lent to the foreground Linux job is its own; the owner
+    // Input lent to the foreground Linux job is its own; the owner
     // reads none of it (one reader of the ring at a time) and waits only for
     // exit notices and stop requests until the lend ends with that job.
     if uart::CONSOLE_RX.lendee() != 0 {
@@ -403,7 +403,7 @@ pub fn sys_spawn_ex(path_ptr: u64, req_ptr: u64) -> i64 {
                 }
                 None => (&argv[..], al, req.argc as usize, &cwd[..cl]),
             };
-            // Wave 13: a Linux child the console is lent to reads it on
+            // A Linux child the console is lent to reads it on
             // descriptor 0 when the request left that closed (no pipe, no
             // redirection: a terminal's foreground job).
             if child.is_linux() && flags & SPAWN_F_CONSOLE_IN != 0 && fds[0].kind == FD_CLOSED_KIND {
@@ -456,7 +456,7 @@ pub fn sys_spawn_ex(path_ptr: u64, req_ptr: u64) -> i64 {
                 let _ = azos_drv_sys::uart::CONSOLE_RX.claim(ctid);
                 let _ = azos_drv_sys::uart::CONSOLE_RX.lend(ctid, ctid);
             }
-            // Wave 13: the foreground Linux job reads the console the caller
+            // The foreground Linux job reads the console the caller
             // owns, for its life (a native child has no console read).
             if flags & SPAWN_F_CONSOLE_IN != 0 && child.is_linux() {
                 if let Some(owner) = console_lender(me) {

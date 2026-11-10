@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The verified-image digest cache (wave 14, SPAWNCACHE).
+//! The verified-image digest cache (SPAWNCACHE).
 //!
 //! Every spawn and exec by path hashes the whole image (SHA-256) to pick its
 //! seccomp profile and topology row: about 750k instructions for a 20 KiB

@@ -36,9 +36,9 @@ pub fn install() {
 /// `try_task_create_affinity`, which is fallible and is also what `fork` uses
 /// from a syscall.
 ///
-/// A poller sharing its owner's hart only takes turns with it: measured in
-/// wave 6, SQPOLL on one hart cost 2126/2394 instructions per op at x1 against
-/// ~1000 for a plain submit. So (owner decision 2026-09-28) a machine with ONE
+/// A poller sharing its owner's hart only takes turns with it: measured:
+/// SQPOLL on one hart cost 2126/2394 instructions per op at x1 against
+/// ~1000 for a plain submit. So a machine with ONE
 /// online hart refuses the poller — the ring keeps working by submit — and the
 /// refusal is recorded (`SAFETY_TOPO_CLASS_REFUSED`, site
 /// `topo_sched::SITE_SQPOLL_SHARED_HART`); with more harts the poller is pinned

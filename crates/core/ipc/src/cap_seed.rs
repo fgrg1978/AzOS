@@ -35,7 +35,7 @@
 //! autorun task, i.e. strictly after that task's own pool slot was claimed
 //! by the scheduler's spawn path.
 //!
-//! **Verified true (2026-09-06 audit), by reading the call site rather than
+//! **Verified true, by reading the call site rather than
 //! trusting the sentence above it.** `kernel/src/tasks/loader.rs` reads
 //! `let tid = azos_sched::current_task_tid();` from directly inside the
 //! P1 migration block quoted in that function's own doc, which executes
@@ -63,7 +63,7 @@
 //! each a one-line `cap_store::grant` wrapper. There used to be a delegation
 //! producer, ring-3 `SYS_CAP_GRANT`/`cap_store::delegate`, with its own
 //! inbound-quota bookkeeping this module deliberately never touched; it was
-//! removed 2026-09-03 (boot-only caps). `cap_store::grant` is NOT
+//! removed (boot-only caps). `cap_store::grant` is NOT
 //! otherwise this module's alone, though: `DOMAIN_CREATE_PORT`,
 //! `SYS_MO_CREATE` and `SYS_RING_SETUP` (`crates/core/ipc/src/
 //! port.rs`, `memobj.rs`, `io_ring.rs`) call it too, at runtime, from ring 3.
@@ -92,7 +92,7 @@ use crate::cap::{CapHandle, CapKind, CapPerms};
 ///     `"sensor.3"` the rangefinder...):
 ///     the interface says what the resource spelling means, and the rights
 ///     are its op classes.
-///   - `Trace`: the bare word `"trace"` — one tracer per kernel (wave 15),
+///   - `Trace`: the bare word `"trace"` — one tracer per kernel,
 ///     `READ`/`WRITE` only.
 ///
 /// Returns `None` if the kind has no typed minter yet, if `target` does not
@@ -107,11 +107,11 @@ use crate::cap::{CapHandle, CapKind, CapPerms};
 ///
 ///   - (`MmioRegion` was here until native spawn landed; it now has a minter — see
 ///     `crates/core/ipc/src/mmio_cap.rs`.)
-///   - (`Irq` was here until U03-2; it now has a minter — see the
+///   - (`Irq` was here once; it now has a minter — see the
 ///     `CapKind::Device` arm below. This bullet used to still list it after
 ///     that landed; caught reading the code, not trusting this comment.)
 ///   - `IoRing`, `Port` — no minter and no typed syscall. (`Task` was here
-///     until wave 12; it now mints the one target `"tasks"`, the full
+///     once; it now mints the one target `"tasks"`, the full
 ///     task view — see the `CapKind::Domain` arm.) (`Shm` was here
 ///     until the introspection regions: `inspect.<public|admin>` now mints
 ///     through the hook below — see the `CapKind::MemObj` arm. Any other
@@ -121,7 +121,7 @@ use crate::cap::{CapHandle, CapKind, CapPerms};
 ///     socket index, so seeding one would mean the kernel opening a socket on
 ///     the task's behalf before it runs. A task mints its own by creating the
 ///     object — "mint what you create". A `File` naming a DESCRIPTOR is the
-///     same; a `File` naming a directory TREE (wave 10, the authority for
+///     same; a `File` naming a directory TREE (the authority for
 ///     mkdir/unlink/rmdir/rename/truncate) is minted here — see the
 ///     `CapKind::Node` arm and `crate::file_cap`.
 ///
@@ -186,7 +186,7 @@ pub fn seed_one_cap_ops(
     // it (a device kind holds an interrupt line, an MMIO region or a driver
     // slot, a node of the name space a directory tree or an image to start).
     done(match kind {
-        // Wave 15 (TRACE): the kernel tracer, the bare word `"trace"`, READ
+        // The kernel tracer, the bare word `"trace"`, READ
         // and WRITE only (mapping the rings and setting the mask).
         CapKind::Log if CapPerms::RW.contains(perms) => parse_bare_name(target, "trace")
             .and_then(|()| crate::cap::trace_grant_cap(tid, perms))
@@ -195,11 +195,11 @@ pub fn seed_one_cap_ops(
         // The class is the target's prefix, and a target in none of them is
         // refused.
         CapKind::Device => device_seed(tid, perms, target),
-        // Wave 10: a directory tree, target its absolute root path
+        // A directory tree, target its absolute root path
         // (`crate::file_cap`). Never a descriptor: those are minted by the
         // task that opens the file. A target that is relative, has a `.`/`..`
         // component or is too long is refused, not guessed at.
-        // Otherwise (wave 11) the target is an image name
+        // Otherwise the target is an image name
         // (`"TOOLBOX.ELF"`), interned by `crate::launch_cap`; only `EXEC` is
         // granted, anything else is refused rather than trimmed.
         CapKind::Node if target.starts_with('/') => crate::file_cap::file_tree_grant_cap(tid, target, perms)
@@ -688,7 +688,7 @@ mod tests {
         assert!(holds(key::PWM, 2, CapPerms::WRITE) && !holds(key::PWM, 2, CapPerms::READ));
     }
 
-    /// M40 (audit U10-6, owner-confirmed 2026-09-26): the drivetrain's
+    /// The drivetrain's
     /// endpoints have no live minting path in a build without
     /// `profile-actuation` -- the parser refuses the target and the builder
     /// cannot declare a row for it, and now the seeder refuses it too, so a
@@ -747,11 +747,11 @@ mod tests {
         assert!(seed_one_cap(tid, CapKind::Endpoint, CapPerms::READ, "sensor").is_none());
         assert!(seed_one_cap(tid, CapKind::Endpoint, CapPerms::READ, "sensor.imu").is_none());
         assert!(seed_one_cap(tid, CapKind::Endpoint, CapPerms::READ, "sensor.10").is_none());
-        // `Task` mints only `"tasks"` (wave 12): the bare kind name is not it.
+        // `Task` mints only `"tasks"`: the bare kind name is not it.
         assert!(seed_one_cap(tid, CapKind::Domain, CapPerms::READ, "task").is_none());
     }
 
-    /// Wave 12 (owner round 48): `Cap<Task>` mints the full task view
+    /// `Cap<Task>` mints the full task view
     /// for the one target `"tasks"` with `READ`, as resource 0, and refuses
     /// (not skips) every other shape: a per-task target, and any permission
     /// beyond `READ`.
@@ -777,11 +777,10 @@ mod tests {
         }).unwrap_or(false));
     }
 
-    /// U03-2: `Cap<Irq>` gained a minter (the "irq.<N>" convention
+    /// `Cap<Irq>` gained a minter (the "irq.<N>" convention
     /// `crates/core/topology`'s parser already accepted). A well-formed line
     /// mints; line 0 (never a real PLIC source — SBI/M-mode reserved) and a
-    /// line at or past `MAX_IRQS` are refused, the PLIC-range check U03-8
-    /// asked for.
+    /// line at or past `MAX_IRQS` are refused (the PLIC-range check).
     #[test]
     fn irq_cap_mints_within_the_plic_range_and_refuses_outside_it() {
         let tid = tests_support::fresh_tid();

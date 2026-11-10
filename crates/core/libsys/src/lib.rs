@@ -212,7 +212,7 @@ use azos_abi::vdso::VDSO_USER_BASE;
 /// Read the monotonic uptime tick counter from the vDSO page without issuing
 /// an ecall.
 ///
-/// **U07-4: "falls back to 0" is true only if the page exists and reads bad
+/// **"falls back to 0" is true only if the page exists and reads bad
 /// magic.** `vdso_read_u64` checks the magic word before trusting the rest of
 /// the page and returns 0 on a mismatch — but that check is itself a read of
 /// byte 0, through the same raw pointer at [`VDSO_USER_BASE`]. If the kernel
@@ -226,7 +226,7 @@ use azos_abi::vdso::VDSO_USER_BASE;
 /// same page unconditionally) on a board that has not itself proven the vDSO
 /// page is mapped this run; [`uptime`] is the one caller in this file for
 /// which that matters and it is not proven safe either (see its own doc).
-/// The real fix is on the kernel side (audit U07-4 Q4): always map a page at
+/// The real fix is on the kernel side: always map a page at
 /// `VDSO_USER_BASE`, zero-filled (magic 0) when the real one cannot be
 /// placed, so the read this function does is always into mapped memory and
 /// "falls back to 0" becomes true again.
@@ -526,7 +526,7 @@ unsafe fn vdso_read_u32(offset: usize) -> u32 {
 }
 
 // ---------------------------------------------------------------------------
-// Wave 6: the per-task vDSO page, futex waits on ring words, and SPSC rings over shm
+// The per-task vDSO page, futex waits on ring words, and SPSC rings over shm
 // ---------------------------------------------------------------------------
 
 use azos_abi::vdso::{
@@ -923,7 +923,7 @@ pub const E_PIPE: isize = -32;
 /// writing `sys::open_at(dir, b"CONFIG.INI", 0)` therefore hands the kernel a
 /// pointer into `.rodata` and lets it walk past the literal into whatever the
 /// linker placed next. That is exactly the bug that was found in
-/// `userspace/services/brain_client` on 2026-08-21.
+/// `userspace/services/brain_client`.
 ///
 /// `cstr!` removes the possibility instead of documenting it:
 ///
@@ -1369,12 +1369,12 @@ pub fn sleep_until_ns(deadline_ns: u64) -> SleepResult {
     }
 }
 
-/// A thread's entry (wave 13, [`thread_create`]): it is called with
+/// A thread's entry ([`thread_create`]): it is called with
 /// `(0, stack, arg)` and must end with [`thread_exit`] (or [`exit`], which
 /// ends the whole process).
 pub type ThreadEntry = extern "C" fn(u64, u64, u64) -> !;
 
-/// Start a thread of this process (`SYS_THREAD_CREATE`, wave 13): it runs
+/// Start a thread of this process (`SYS_THREAD_CREATE`): it runs
 /// `entry(0, stack_top, arg)` on the stack whose (16-byte aligned) top is
 /// `stack_top`, sharing this process's memory, capabilities and descriptors.
 /// Its exit clears the 32-bit word at `ctid` (if not null) and wakes one
@@ -1397,7 +1397,7 @@ pub fn thread_create_with_tls(entry: ThreadEntry, stack_top: usize, arg: u64, ct
     }
 }
 
-/// End the calling thread only (`SYS_THREAD_EXIT`, wave 13). The last
+/// End the calling thread only (`SYS_THREAD_EXIT`). The last
 /// thread ending ends the process; [`exit`] from any thread ends it at once.
 pub fn thread_exit(code: i32) -> ! {
     unsafe {
@@ -1414,7 +1414,7 @@ pub fn futex_wait(addr: &core::sync::atomic::AtomicU32, expected: u32, timeout_n
 }
 
 /// Wake at most `n` threads of this process waiting on `addr`
-/// (`SYS_FUTEX_WAKE`, wave 13). How many were woken.
+/// (`SYS_FUTEX_WAKE`). How many were woken.
 pub fn futex_wake(addr: &core::sync::atomic::AtomicU32, n: u32) -> isize {
     unsafe { syscall2(SYS_FUTEX_WAKE, addr.as_ptr() as u64, n as u64) }
 }
@@ -1427,11 +1427,11 @@ pub use azos_abi::sensor_sample::{sample_is_fresh_ns, SENSOR_SAMPLE_FLAG_SYNTHET
 /// "no child has finished yet", not "error" and not "you have no children" —
 /// the caller polls, typically with [`yield_now`] in between.
 ///
-/// **The doc that stood here until 2026-09-06 was false.** It read
+/// **The doc that stood here was false.** It read
 /// "Unimplemented in the kernel. `sys_wait` (`handlers.rs::sys_wait`) is
 /// `-1  // Phase 8+`. Always returns `-1`." Every part of that was wrong: the
 /// handler (`handlers.rs::sys_wait`) calls `azos_sched::take_exit_note`,
-/// and it returns the finished child's TID. It was implemented on 2026-08-30
+/// and it returns the finished child's TID. It was implemented earlier
 /// and this comment — the one a ring-3 programmer actually reads — was left
 /// describing the stub. `userspace/bench/vsbench/src/bench_core.rs` still carries
 /// the same stale claim in `fork_exit`'s doc, and says the lane should take
@@ -1976,8 +1976,6 @@ pub use azos_abi::syscall_nr::TASKINFO_BYTES;
 /// sides count SWITCHES, not calls: a yield that found nothing better to run
 /// did not switch and is in neither number. Without that a benchmark cannot
 /// tell "we switch slowly" from "they never switched".
-///
-/// Was a stub returning 0 with an untouched buffer until 2026-09-11.
 pub fn taskinfo(out: &mut [u8]) -> isize {
     invoke(invoke_abi::DOMAIN_SELF.as_raw(), invoke_abi::DOMAIN_TASKINFO, [out.as_mut_ptr() as u64, out.len() as u64, 0, 0]).0
 }
@@ -2139,7 +2137,7 @@ pub fn mcast_leave_typed(cap: u32, group: [u8; 4]) -> isize {
 /// ignored, and the mapping is placed at the current brk, except with
 /// [`MAP_FIXED_NOREPLACE`] in `flags`: exactly at `addr`, inside a Linux
 /// driver server's module window (`SYS_MO_MAP`). `prot` is
-/// honoured (wave 13): [`PROT_READ`] maps read-only pages (a store faults),
+/// honoured: [`PROT_READ`] maps read-only pages (a store faults),
 /// [`PROT_READ`]` | `[`PROT_WRITE`] read-write ones, `0` reserves the range
 /// and maps nothing, `PROT_EXEC` is refused. `len` is capped at
 /// `azos_mm::pager::MAX_MAP_BYTES`.
@@ -2639,7 +2637,7 @@ pub const NO_CAP_TO_MOVE: u32 = 0;
 
 /// [`fast_ipc_call_ep_full`] that also **moves** a capability to the server.
 ///
-/// Under owner decision 38: a move, never a copy. The
+/// A move, never a copy. The
 /// sender's entry is removed in the same step the server's is installed, so
 /// this handle stops resolving for the caller the instant the call returns
 /// successfully. A call that moves a capability is a descriptor-form call
@@ -2660,7 +2658,7 @@ pub fn fast_ipc_call_ep_moving(
 /// `Err(-1)` for a refused or abandoned call, and the completion codes
 /// `-EPEERDIED` (the serving task died with this call queued or in service)
 /// and `-EREVOKED` (the endpoint was destroyed meanwhile) of
-/// `azos_abi::error::Errno` (wave 15 N5).
+/// `azos_abi::error::Errno`.
 pub fn fast_ipc_call_ep_status(
     endpoint: u32,
     words: [u64; FAST_IPC_MAX_WORDS],
@@ -3137,7 +3135,7 @@ pub fn port_create_typed() -> isize {
 ///
 /// The endpoint this returns is reachable by nobody else until its WRITE half
 /// is handed over. There are now TWO ways that happens, and the second one
-/// arrived with the fork-time bootstrap grant (2026-09-25):
+/// arrived with the fork-time bootstrap grant:
 ///
 /// 1. **MOVE the capability** (`fast_ipc_call_ep_moving`) — an explicit
 ///    hand-off to one named callee.
@@ -3587,7 +3585,7 @@ pub fn task_kill(tid: u32, how: u64, signo: u64, flags: u64) -> isize {
 /// The power family's operations and limits (`POWER_OP_*`).
 pub use azos_abi::power;
 
-/// The kernel tracer's operations, classes and event ids (wave 15).
+/// The kernel tracer's operations, classes and event ids.
 pub use azos_abi::trace as trace_abi;
 
 /// Set task `tid`'s dispatch class (`SYS_SCHEDCTL`, N6b; `tid` 0 = the
@@ -3614,7 +3612,7 @@ pub fn qos_hint(level: u32) -> i64 {
     schedctl(0, SCHEDCTL_HINT_QOS, level, 0, 0, 0)
 }
 
-/// The kernel tracer's control (wave 15): operation `op`
+/// The kernel tracer's control: operation `op`
 /// (`azos_abi::invoke::LOG_TRACE_*`) with argument `arg`, on the `Log` handle
 /// `cap` of the tracer. The operation's value (`LOG_TRACE_MAP`: the region's
 /// address), else a negative errno (`-ENOSYS` with the tracer compiled out,
@@ -3623,10 +3621,10 @@ pub fn trace_ctl(cap: u32, op: u16, arg: u64) -> isize {
     invoke(cap, op, [arg, 0, 0, 0]).0
 }
 
-/// The descriptor of the call family's descriptor form (wave 15 N11).
+/// The descriptor of the call family's descriptor form.
 pub use azos_abi::ipc_msg::{self as ipc_msg_abi, CapDesc, MsgDesc};
 
-/// The descriptor-form call (`SYS_IPC_CALL`, wave 15 N11b): call through the endpoint
+/// The descriptor-form call (`SYS_IPC_CALL`): call through the endpoint
 /// capability `ep` with the request in `*msg`; blocks until it is answered
 /// and writes the answer over `*msg`. 0 when answered, else a negative
 /// code (`-EPEERDIED`, `-EREVOKED`, `-EINVAL`, `-EFAULT`, -1 refused).
@@ -3767,7 +3765,7 @@ pub struct CapInfo {
 }
 
 /// The flight, behavior, config and OTA families' operations and limits
-/// (wave 12).
+///.
 pub use azos_abi::families;
 
 /// `DOMAIN_MODULE_VERIFY`: ask the kernel to check the module

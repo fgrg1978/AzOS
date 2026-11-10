@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! The arithmetic of the real-time band budget and of EDF + CBS, with no
-//! scheduler state in it (wave 11 SCHED-RT).
+//! scheduler state in it.
 //!
 //! `scheduler.rs` cannot be compiled for the host (static task pool, CSRs,
 //! assembly context switch), so everything that decides *when* a budget runs
@@ -106,7 +106,7 @@ impl Band {
 
 /// Is a ready task of priority `prio` skipped by the pick while the band is
 /// throttled (`skip_band`)? Band tasks are, except the kernel safety loops
-/// exempt from the cap (owner decision, wave 11): those are never throttled.
+/// exempt from the cap: those are never throttled.
 #[inline]
 pub const fn band_throttled(prio: u32, threshold: u32, exempt: bool, skip_band: bool) -> bool {
     skip_band && prio < threshold && !exempt
@@ -206,7 +206,7 @@ impl Cbs {
     /// bandwidth `q / t`: a new period's deadline is `now + d`, so with
     /// `q / t` a server whose `d < t` that sleeps briefly with budget left
     /// took a full budget and a deadline `d` away at every wake, and ran
-    /// above its density at the head of the hart's EDF order (wave 15: a
+    /// above its density at the head of the hart's EDF order (a
     /// 50 % server that computes 400 us and sleeps 20 us made a 40 %
     /// neighbour miss every job). With `q / d` the work it gets between a
     /// release and the deadline it holds never exceeds its density times
@@ -298,7 +298,7 @@ pub const fn edf_before(prio_a: u32, deadline_a: u64, prio_b: u32, deadline_b: u
 /// The rank a reservation at priority `level` competes with in the RT pick
 /// and tick. `classes` (the dispatch order; false only under the
 /// `sched-dl-in-level` canary): 0, so it runs before every RT band level
-/// (the precedence DL > RT, owner decision 10-10), and [`edf_before`] on two
+/// (the precedence DL > RT), and [`edf_before`] on two
 /// ranks orders reservations by absolute deadline alone. Otherwise its level,
 /// so a reservation runs first only inside its own level. Ordering only: band
 /// accounting keeps the real level.
@@ -311,7 +311,7 @@ pub const fn dl_rank(classes: bool, level: u32) -> u32 {
 /// the best eligible reservation (`best_rank`, `None`: there is none)?
 /// `classes` false (the canary): when its level is at least as urgent.
 /// Otherwise always, since the exempt loops are the stop class, above DL
-/// (owner decision 10-10).
+///.
 #[inline(always)]
 pub const fn exempt_first(classes: bool, level: u32, best_rank: Option<u32>) -> bool {
     match best_rank {

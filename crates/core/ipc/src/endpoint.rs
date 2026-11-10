@@ -34,7 +34,7 @@
 //!   TID, which is exactly the coupling this removes. `ty::TASK` is also
 //!   the cautionary tale: it was declared, `CAPS.TOML` accepted the name
 //!   `"task"`, and `seed_one_cap` dropped it on `_ => None`, so a topology
-//!   could ask for one and silently receive nothing (until wave 12, which
+//!   could ask for one and silently receive nothing (no longer: it
 //!   mints the one target `"tasks"`). This module is minted and seeded from
 //!   its first commit for that reason.
 //!
@@ -113,7 +113,7 @@ pub struct Endpoint {
     /// Whether the slot holds a live endpoint.
     pub active: bool,
     /// The port source the serving task bound this endpoint's notices to
-    /// (`PORT_BIND`, source 3; wave 15 N5b), `PortLink::NONE` for
+    /// (`PORT_BIND`, source 3), `PortLink::NONE` for
     /// none.
     pub link: crate::port_link::PortLink,
     /// Live update: `0` for none; [`SWAP_OPEN`] while the supervisor has
@@ -310,7 +310,7 @@ pub fn provision() -> bool {
 pub fn array_sealed() -> bool { EP_CACHE.is_sealed() }
 
 /// Per slot, the endpoint's identity in one word for a lookup that takes no
-/// lock (wave 15 N5): `generation << 32 | owner_tid` while the slot is
+/// lock: `generation << 32 | owner_tid` while the slot is
 /// active, 0 otherwise. Written under `ENDPOINTS` by [`publish`] wherever
 /// the slot's activity, generation or owner changes; read by
 /// [`endpoint_dest_for`] in a QSBR read section. A reader sees one store
@@ -337,7 +337,7 @@ pub fn is_proxy(d: &Dest) -> bool {
 /// read section, can never meet a new endpoint in the same slot.
 static HELD: [AtomicBool; MAX_ENDPOINTS] = [const { AtomicBool::new(false) }; MAX_ENDPOINTS];
 
-/// Per slot, the send capabilities to the live endpoint there (wave 15 N5b,
+/// Per slot, the send capabilities to the live endpoint there (
 /// Kconfig `IPC_PORT_NOTICES`; `cap::senders` says what one is):
 /// `generation << 32 | count`, written `(generation, 0)` at create and 0 at
 /// destroy. [`sender_delta`] changes the count only while the generation
@@ -672,7 +672,7 @@ mod glue {
     }
 
     /// Give slot `i` back to the pool after a grace period (the first
-    /// `call_rcu` user, wave 15 N5). With Kconfig `RCU_QSBR` off it is
+    /// `call_rcu` user). With Kconfig `RCU_QSBR` off it is
     /// given back at once.
     pub fn retire(i: usize) {
         if let Some(h) = HEADS.get(i) {
@@ -891,7 +891,7 @@ pub fn endpoint_create_cap(
     perms: CapPerms,
 ) -> Option<crate::cap::Cap<crate::cap::targets::Endpoint>> {
     let r = create_core(tid, None, true)?;
-    // `DELEGATE` (owner decision 2026-09-26, O3.4): the creator of an anonymous
+    // `DELEGATE` (O3.4): the creator of an anonymous
     // endpoint may copy and gift it. This is distinct from
     // `endpoint_inherit_at_fork` (never `TRANSFER`) and from a NAMED
     // endpoint's grant (`endpoint_named_cap`, topology-controlled — see
@@ -1667,7 +1667,7 @@ pub fn endpoint_release_all(tid: u32) {
         return;
     }
     label::forget(tid);
-    // One endpoint a hold (wave 15 N5b): each one's notice link is posted
+    // One endpoint a hold: each one's notice link is posted
     // after its own hold, so nothing is buffered per endpoint.
     let mut from = 0usize;
     while from < MAX_ENDPOINTS {
@@ -1683,7 +1683,7 @@ pub fn endpoint_release_all(tid: u32) {
                 }
             }
         }
-        // The server died: its callers' calls end PEER_DIED (wave 15 N5), and
+        // The server died: its callers' calls end PEER_DIED, and
         // a port its notices were bound to hears that the endpoint is gone.
         if let Some((i, r, link)) = hit {
             retire_after_drain(i, PEER_DIED, tid);
@@ -1714,7 +1714,7 @@ pub fn endpoint_orphan_all(tid: u32) -> usize {
     }
     label::forget(tid);
     let mut kept = 0usize;
-    // One endpoint a hold (wave 15 N5b), as `endpoint_release_all`.
+    // One endpoint a hold, as `endpoint_release_all`.
     let mut from = 0usize;
     while from < MAX_ENDPOINTS {
         let mut hit = None;
@@ -2072,7 +2072,7 @@ fn wake_after_abort(old: u32) {
 /// itself **owns**, at `fork()`.
 ///
 /// **The relation, not the class.** An earlier fork-inheritance design was
-/// reverted on 2026-09-21 for filtering by capability CLASS ("inherit every
+/// reverted for filtering by capability CLASS ("inherit every
 /// `Endpoint` cap the parent holds"), which hands the child every endpoint
 /// the parent merely holds `WRITE` on — including ones a THIRD PARTY owns.
 /// The property that makes inheritance safe is `owner_tid == parent_tid`:
@@ -2141,7 +2141,7 @@ pub fn endpoint_inherit_at_fork(parent_tid: u32, child_tid: u32) -> usize {
     }
     let mut minted = 0usize;
     for &r in &matches[..n] {
-        // `WRITE` only, no `TRANSFER` (owner decision 2026-09-26, O3.4): the
+        // `WRITE` only, no `TRANSFER` (O3.4): the
         // child may send to its parent, but may not hand that right to a
         // third party via `move_cap`, which refuses any cap lacking
         // `TRANSFER`. See the struct-level doc above for why `WRITE` alone is
@@ -2480,7 +2480,7 @@ mod tests {
     }
 
     /// **Send capabilities (`WRITE` without `READ`) are counted exactly
-    /// through every way a table changes** (wave 15 N5b): a grant, a move that
+    /// through every way a table changes**: a grant, a move that
     /// keeps or lowers the rights (`RW` lowered to `WRITE` becomes a sender),
     /// a kind-erased grant and slot clear under `with_table` (the fork copy's
     /// path), a revoke, and the exit wipe (`cap_store::reset`). The server's
@@ -3080,8 +3080,8 @@ mod tests {
         crate::cap_store::reset(HEIR);
     }
 
-    /// A refused quota must not consume a slot's generation (owner
-    /// decision 2026-09-26: the source is per-slot now, not
+    /// A refused quota must not consume a slot's generation:
+    /// the source is per-slot now, not
     /// pool-wide, so a refusal never reaching `take_slot_gen` at all is the
     /// property — a task spinning on a refusal cannot walk ANY slot's
     /// generation toward its own wrap, let alone force one).

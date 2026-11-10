@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The frames of a verified image, kept for its next spawn (wave 14,
+//! The frames of a verified image, kept for its next spawn (
 //! SPAWNCACHE).
 //!
 //! [`capture`] runs once, on the address space the loader has just built for

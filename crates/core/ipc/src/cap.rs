@@ -74,7 +74,7 @@ use wcet_macro::wcet;
 // mapping is motor policy and stays in the robot domain's dep-free leaf
 // `azos_degrade_policy` (crates/domains/robot/degrade-policy), which declares the
 // same five numbers for its own mapping; `azos_behavior::safety` asserts
-// at compile time that the two agree. Wave 11 (DOMAIN): until then this file
+// at compile time that the two agree. Formerly this file
 // re-exported the levels and the speed ceilings from that leaf, so every image
 // linked a robot crate for five constants.
 //
@@ -256,13 +256,13 @@ pub mod targets {
     // Unlike the five above, this one is minted
     // from the start (`crate::endpoint`): an endpoint capability that nothing
     // can hold would close no hole, and a kind declared but never minted is
-    // exactly the trap `ty::TASK` fell into until wave 12 — nameable in
+    // exactly the trap `ty::TASK` fell into — nameable in
     // `CAPS.TOML`, silently granting nothing.
     target!(Endpoint,   ENDPOINT,   "Fast-IPC endpoint: the right to send a request to the service listening on it.");
-    // Wave 11. Seeded from the topology word `"launch"`; the
+    // Seeded from the topology word `"launch"`; the
     // resource is an interned image name (`crate::launch_cap`).
     target!(Launch,     LAUNCH,     "The right to start one image with SYS_SPAWN_EX.");
-    // Wave 15 (TRACE). Seeded from the topology word `"trace"`; resource 0.
+    // Seeded from the topology word `"trace"`; resource 0.
     target!(Trace,      TRACE,      "The kernel tracer: map its rings, read and set its class mask.");
     // D6. Seeded into every task at admission (`cap_seed::seed_console`), never
     // by a topology row; resource 0.
@@ -270,10 +270,10 @@ pub mod targets {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Trace minter — wave 3 (2026-09-26)
+// Trace minter
 // ──────────────────────────────────────────────────────────────────────────
 //
-// Owner decision (2026-09-26): one authority per irreversible effect. Each of
+// One authority per irreversible effect. Each of
 // these is the one-function-over-`cap_store::grant` shape every typed kind uses
 // (compare `motor_cap::motor_grant_cap`). Single-resource, not pair-wide: there is
 // one tracer, one time warrant and one AI-inference-session slot to name, so
@@ -285,7 +285,7 @@ pub fn console_grant_cap(tid: u32) -> Option<Cap<targets::Console>> {
     crate::cap_store::grant::<targets::Console>(tid, CapPerms::RW, 0)
 }
 
-/// Mint a `Cap<Trace>` for `tid` (wave 15). `resource` is always `0`: one
+/// Mint a `Cap<Trace>` for `tid`. `resource` is always `0`: one
 /// tracer per kernel.
 pub fn trace_grant_cap(tid: u32, perms: CapPerms) -> Option<Cap<targets::Trace>> {
     crate::cap_store::grant::<targets::Trace>(tid, perms, 0)
@@ -298,7 +298,7 @@ pub fn trace_grant_cap(tid: u32, perms: CapPerms) -> Option<Cap<targets::Trace>>
 /// Maximum cap-table slots per task. The signed topology (`SCHED.TOML`) sets this
 /// per partition; the build-time constant is the *upper bound*.
 ///
-/// **Imported, not restated (2026-09-18).** This was `= 256`, hardcoded,
+/// **Imported, not restated.** This was `= 256`, hardcoded,
 /// while `config/limits/Kconfig.limits` declared the same name with per-profile values
 /// (32 embedded / 256 edge / 512 fleet) and generated it into
 /// `azos_limits`. So building any profile other than edge left the cap
@@ -487,7 +487,7 @@ impl CapSlotCell {
     }
 }
 
-// ── The second word of a slot (wave 15 N11, owner Q9) ───────────────────────
+// ── The second word of a slot (owner Q9) ───────────────────────
 //
 // A slot is 128 bits, CHERI-representable: the hot word above (kind 8 |
 // permissions 8 | generation 16 | resource 32, unchanged) and this extension
@@ -514,7 +514,7 @@ impl CapSlotCell {
 /// Kconfig `CAP_SLOT_EXT`: slots carry the extension word.
 pub const SLOT_EXT: bool = azos_limits::CAP_SLOT_EXT;
 
-/// Canary (wave 15 N11b): [`CapTable::install_at`], the fork copy, leaves
+/// Canary: [`CapTable::install_at`], the fork copy, leaves
 /// the slot's extension word as the table's previous owner left it, so a
 /// fork child can read a stranger's badge.
 static CANARY_INSTALL_KEEPS_EXT: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
@@ -558,7 +558,7 @@ const _: () = assert!(
     "a capability slot is 128 bits"
 );
 
-// ── The warrant of a slot (owner decision D3/L4) ────────────────────────────
+// ── The warrant of a slot ────────────────────────────
 //
 // Every capability slot records where it came from: its PARENT, the slot of
 // any domain it was derived from (a dup transfer, a badged mint), by domain
@@ -603,7 +603,7 @@ const _: () = assert!(
 // gate flag ([`CapSlotCell::EXPIRES`]) set, the same single test a deadline
 // has always cost, and answers from the full resolve only.
 //
-// WEAK (owner decision 16-10, `Warrant::flags`): a weak warrant, and every
+// WEAK (`Warrant::flags`): a weak warrant, and every
 // warrant derived from it, resolves with its rights masked to READ. A derive
 // and a move carry the bit; nothing in a [`DeriveSpec`] can clear it, so a
 // weak chain is read-only for good. The hot word mirrors it (bit 13) so the
@@ -1275,7 +1275,7 @@ pub fn sweep_owed() {
     SWEEP_PENDING.store(true, core::sync::atomic::Ordering::Release);
 }
 
-/// The lazy-revocation window (owner decision D3/L4, closed here).
+/// The lazy-revocation window (closed here).
 ///
 /// Revoking a slot something was derived from revokes its subtree, but the
 /// subtree is found and freed by `cap_store`'s sweep, after the clear and with
@@ -1367,7 +1367,7 @@ pub(crate) mod between_loads {
     }
 }
 
-// ── Delete is not revoke (owner decision 20-10) ─────────────────────────────
+// ── Delete is not revoke ─────────────────────────────
 //
 // Deleting a capability (a close, an exit, a spawn's undo) frees its own slot
 // and nothing else: what was derived from it stays alive and keeps what it
@@ -1585,8 +1585,8 @@ const _: () = {
     }
 };
 
-/// Send capabilities to endpoints, counted where the slots change (wave 15
-/// N5b, Kconfig `IPC_PORT_NOTICES`): the count behind an endpoint's
+/// Send capabilities to endpoints, counted where the slots change (Kconfig
+/// `IPC_PORT_NOTICES`): the count behind an endpoint's
 /// no-senders notice.
 ///
 /// A **send capability** is a `Cap<Endpoint>` with `WRITE` and without
@@ -1687,7 +1687,7 @@ pub mod senders {
 /// Per-task cap table.
 ///
 /// Every method takes `&self`: the slots are atomic words, so a reader that
-/// holds no lock sees each slot whole (wave 15 N4, `cap_store`'s QSBR
+/// holds no lock sees each slot whole (`cap_store`'s QSBR
 /// reads). Writers serialise on the lock `cap_store` keeps beside each
 /// table; a `CapTable` on its own (a host test, a Kani proof) is a plain
 /// single-owner value.
@@ -2122,7 +2122,7 @@ impl CapTable {
     /// Kind-erased `grant`.
     ///
     /// **WHY kind-erased.** This used to also serve the ring-3 delegation
-    /// path (`SYS_CAP_GRANT`, removed 2026-09-03 — boot-only caps,
+    /// path (`SYS_CAP_GRANT`, removed — boot-only caps,
     /// capability IPC), which read a runtime `CapKind` out of a grantor's slot and
     /// had no `T` to be generic over. That caller is gone, but `grant<T>`
     /// above still shares this allocation path on purpose: the generation
@@ -2200,7 +2200,7 @@ impl CapTable {
     ///
     /// A capability minted at boot lands in the task's `CapTable` and the task
     /// has no way to learn the handle. `SYS_CAP_GRANT` was removed (owner
-    /// decision, 2026-09-03, boot-only caps) and nothing replaced it with a
+    /// decision, boot-only caps) and nothing replaced it with a
     /// *read* path, so of the thirty typed syscalls (528-557) only three
     /// return a handle they mint (`PORT_CREATE`, `SHM_CREATE`,
     /// `IORING_CREATE`) and six more are reachable through those. The other
@@ -2353,7 +2353,7 @@ impl CapTable {
     /// kind and permission checks in the same order, and nothing else.
     ///
     /// **Who may call it.** Operations containment is not meant to stop, by
-    /// owner decision 2026-09-13:
+    /// design:
     ///
     /// * releasing an object the caller holds — `io_ring_destroy_cap`, and
     ///   `port_destroy_cap`, which names its op and so resolves through
@@ -2879,7 +2879,7 @@ impl CapTable {
     }
 
     /// Delete every occupied slot for which `pred(kind, resource)` is true;
-    /// how many. Wave 13: a Linux `execve` into another topology row drops
+    /// how many. A Linux `execve` into another topology row drops
     /// the old row's authority (everything but the handles its inherited
     /// descriptors stand on) before the new row's is seeded.
     pub fn delete_where(&self, mut pred: impl FnMut(CapType, u32) -> bool) -> usize {
@@ -2900,7 +2900,7 @@ impl CapTable {
     /// Install a capability at exactly `handle`: its slot, its generation,
     /// and the kind packed in it, with `perms`, naming `resource`.
     ///
-    /// **Why a fork needs the exact handle (wave 13, NATFORK).** A native
+    /// **Why a fork needs the exact handle (NATFORK).** A native
     /// program names a file or pipe by the raw handle, and keeps those names
     /// in its own memory (libsys's small-fd table). A forked child gets a
     /// copy-on-write copy of that memory, so a descriptor it inherits is only
@@ -2926,7 +2926,7 @@ impl CapTable {
         if CapSlotCell::w_occupied(w) || CapSlotCell::w_generation(w) >= gen {
             return false;
         }
-        // Wave 15 N11b: the slot's extension word is written too, NONE: the
+        // The slot's extension word is written too, NONE: the
         // fork copy (the only caller) never carries a badge, and a wiped
         // table keeps the previous owner's extension words, so without this
         // store the child's capability would read a stranger's badge.
@@ -3006,7 +3006,7 @@ impl CapTable {
     /// Can this table take one more capability?
     ///
     /// A move must answer this on the RECEIVER **before** the sender's entry
-    /// is removed: owner decision 38 makes the move a single step, so there is
+    /// is removed: the move is a single step, so there is
     /// no half-moved state to roll back from, and the only way to keep that
     /// promise is to refuse before touching the sender.
     pub fn has_free_slot(&self) -> bool {
@@ -3025,7 +3025,7 @@ impl CapTable {
             .count()
     }
 
-    /// The extension word of the capability `handle` names (wave 15 N11), or
+    /// The extension word of the capability `handle` names, or
     /// `None` when the handle is stale. Lock-free: the hot word is read
     /// before and after the extension word, and a slot's generation never
     /// repeats, so equal hot words mean the extension word belongs to them.
@@ -3111,7 +3111,7 @@ impl CapTable {
     }
 
     /// Mint, in this table, a badged copy of the unbadged endpoint
-    /// capability `handle` (wave 15 N11): the copy carries `badge`, the
+    /// capability `handle`: the copy carries `badge`, the
     /// rights `rights` (a subset of the source's, never more), and the source
     /// as its warrant parent ([`derive_warrant`]; `owner_key` is this table's
     /// domain key, which the parent reference names). A server mints one per
@@ -3811,7 +3811,7 @@ mod tests {
     /// it never sets the level: `get` and `holds_kind_resource_with` refuse
     /// WRITE while a sibling holds the level at CONTAINED.
     /// `holds_kind_resource_with_is_resource_specific` did not, and read red
-    /// once in 1000 full-binary runs at 32 threads (2026-09-14).
+    /// once in 1000 full-binary runs at 32 threads.
     static DEGRADE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn degrade_guard() -> std::sync::MutexGuard<'static, ()> {
@@ -4278,7 +4278,7 @@ mod tests {
         assert_eq!(t.get(a, CapPerms::READ), Err(CapError::Stale), "the old handle stays stale");
     }
 
-    /// Wave 13 (NATFORK): a fork child's table answers to the parent's exact
+    /// A fork child's table answers to the parent's exact
     /// handles, and only through `install_at`'s rules.
     #[test]
     fn install_at_reproduces_a_handle_and_never_lowers_a_generation() {
@@ -4312,7 +4312,7 @@ mod tests {
     // These 6 tests have moved to crates/domains/robot/degrade-policy/src/lib.rs where
     // they live next to the mapping function (level_cap_pct) and run via
     // `cargo test` from that crate's directory. The cap-tests host runner
-    // no longer needs to cover them. Since wave 11 this file no longer
+    // no longer needs to cover them. This file no longer
     // re-exports the function (the robot domain calls the leaf directly).
 
     /// N4: a grant takes the lowest free slot (the search starts at the

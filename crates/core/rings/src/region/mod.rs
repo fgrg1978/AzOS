@@ -31,7 +31,7 @@
 //! kernel is told so (`RingStep::DoneWake`, `RingSleep::Wait`).
 
 // ---------------------------------------------------------------------------
-// SPSC ring over shared memory (wave 6, rung 3)
+// SPSC ring over shared memory (rung 3)
 // ---------------------------------------------------------------------------
 //
 // One producer task, one consumer task, one shared-memory region both have

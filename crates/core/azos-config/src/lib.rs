@@ -661,7 +661,7 @@ mod tests {
         // A top-level switch is always written: never filled in.
         assert!(!hidden.iter().any(|n| n == "CONTROL_TXN_TICKS"));
         assert!(!hidden.iter().any(|n| n == "USE_GENERIC"));
-        // Wave 11 (DOMAIN): the brain-link enforcement switch exists only in
+        // The brain-link enforcement switch exists only in
         // the Robot domain, so a Generic .config leaves it out and limits
         // must fill it as n; the domain choice itself is always written
         // (kernel/src/main.rs reads USE_ROBOT in its build guard).

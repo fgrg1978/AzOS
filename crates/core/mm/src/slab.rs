@@ -77,7 +77,7 @@ pub const NO_CLASS: usize = usize::MAX;
 /// `NR_CPUS`. A CPU id at or above it is served from the slabs directly,
 /// correct but locked.
 ///
-/// **Static, not in a per-CPU area** (wave 15, NRCPUS). The magazines serve
+/// **Static, not in a per-CPU area** (NRCPUS). The magazines serve
 /// the kernel heap from `kheap::init` on, before the per-CPU areas exist, and
 /// the fast path is `cpu < MAX_CPUS` plus a shift: an area pointer would add
 /// a load and a null test to every allocation and every free. The price is

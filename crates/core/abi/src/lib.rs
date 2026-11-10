@@ -51,15 +51,15 @@ pub mod io_ring;
 pub mod ipc_msg;
 pub mod nic_queue;
 pub mod power;
-/// Wave 15: the cross-level admission rule boot and run-time admission share.
+/// The cross-level admission rule boot and run-time admission share.
 pub mod rt_levels;
-/// Wave 12: the flight, behavior, config and OTA typed calls (615..=618).
+/// The flight, behavior, config and OTA typed calls (615..=618).
 pub mod families;
 pub mod fault;
 pub mod sensor_sample;
 pub mod syscall_nr;
 pub mod time;
-/// Wave 15: the kernel tracer's control call (632), classes and event ids.
+/// The kernel tracer's control call (632), classes and event ids.
 pub mod trace;
 pub mod types;
 pub mod ushell;

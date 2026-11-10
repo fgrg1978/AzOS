@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! A claim: exclusive ownership of one resource that its owner keeps across
-//! a wait for a device (owner rule F1).
+//! a wait for a device.
 //!
 //! # Why this is not a lock
 //!
@@ -57,7 +57,7 @@ pub fn held_by(tid: u32) -> u32 {
 /// Task `tid` exited (scheduler exit paths, beside
 /// [`crate::held::held_forget`]): its claims leave the table, so the panic
 /// path's containment predicate never counts a dead owner and stale entries
-/// never fill the table (owner decision 10-10). A claim it died owning
+/// never fill the table. A claim it died owning
 /// stays taken; only the count is dropped. O(`PI_HELD_SLOTS`). Runtime
 /// canary `canary=claim-held-keeps-dead` skips it.
 pub fn held_forget(tid: u32) {

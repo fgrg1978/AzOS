@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Wave 12: the bodies of the console's `flight arm|disarm`,
+//! The bodies of the console's `flight arm|disarm`,
 //! `behavior enable|disable|status`, `config get|set` and `ota
 //! status|rollback`, shared by the recovery console's commands and by the
 //! ring-3 interfaces (`azos_devif::{Flight, Behavior, Config, Ota}`, which reach them

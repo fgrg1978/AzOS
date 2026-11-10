@@ -75,7 +75,7 @@ pub const SLOT_B: u8 = 1;
 ///   `image_size_r`/`image_crc_r` populated in BOOTMETA and nothing writes
 ///   them (R is factory-flashed), so `ota_verify_slot(SLOT_R)` answers
 ///   `false` every time.
-/// * The **secure-boot** fall (owner decision 99,
+/// * The **secure-boot** fall (
 ///   `secure_boot_steer_to_recovery`), which is NOT dormant: it verifies R by
 ///   Ed25519 signature rather than by BOOTMETA CRC, precisely so it does not
 ///   depend on the `_r` fields nobody populates — and so an attacker cannot
@@ -87,7 +87,7 @@ pub const SLOT_R: u8 = 2;
 
 /// One-character slot label for console lines: `'A'`, `'B'`, `'R'`, `'?'`.
 ///
-/// Owner decision 99 made `SLOT_R` reachable as the **active** slot — secure
+/// `SLOT_R` is reachable as the **active** slot — secure
 /// boot steers the next boot at recovery when the running slot fails
 /// verification — and every log site in the tree spelled the label as
 /// `if slot == SLOT_A { 'A' } else { 'B' }`, so a board genuinely running R
@@ -218,7 +218,7 @@ pub struct BootMeta {
     /// last installed without a verified signature.
     ///
     /// **Why this exists separately from `fw_version_a`/`fw_version_b`**
-    /// (U09-4 / U11-4 / security finding #10): those fields used to be set
+    /// Those fields used to be set
     /// straight from the OTA wire header's `fw_version` — sender-chosen,
     /// UNSIGNED — and `ota_mark_boot_good_pure` bumped `min_fw_version`
     /// from them. A peer sending `fw_version = 0xFFFFFFFF` on an install
@@ -247,7 +247,7 @@ pub struct BootMeta {
     /// booted well must not pin the floor, or one bad update that was rolled
     /// back would also forbid the good one that follows it.
     pub min_sec_epoch: u32,
-    /// Owner decision, 2026-09-19 — slots that failed **secure-boot
+    /// Slots that failed **secure-boot
     /// verification** and must therefore never be *selected*. One bit per
     /// slot, `1 << SLOT_x`.
     ///
@@ -414,8 +414,8 @@ pub fn ota_inactive_slot_pure(active: u8) -> u8 {
 
 // ── Boot validation FSM (pure) ─────────────────────────────────────────────
 //
-// The whole sequence, with the default `max_attempts` of 3 (owner decision
-// 2026-09-28). `boot_count` is the running slot's consecutive boots that were
+// The whole sequence, with the default `max_attempts` of 3.
+// `boot_count` is the running slot's consecutive boots that were
 // never confirmed (`ota_mark_boot_good`, after 30 s of uptime); each boot
 // writes its own +1 before anything can crash.
 //
@@ -439,7 +439,7 @@ pub fn ota_inactive_slot_pure(active: u8) -> u8 {
 // `sys_shutdown`, the shell's `reboot`/`shutdown`) voids its own boot's +1
 // ([`ota_void_boot_pure`]) instead of counting as a crash, in safe mode too.
 //
-// Before 2026-09-28 the "rollback" of boot 4 with last_good == active reset
+// Formerly the "rollback" of boot 4 with last_good == active reset
 // the count to 1 onto the same slot, forever: the device crash-looped with
 // the recovery decision armed one boot in four and nothing acting on it.
 
@@ -497,7 +497,7 @@ pub fn ota_boot_validate_pure(meta: &mut BootMeta, max_attempts: u32) -> BootVal
     // times" and the one that actually restores the device.
     meta.boot_count = meta.boot_count.saturating_add(1);
     if meta.boot_count > max_attempts {
-        // Owner decision, 2026-09-19: a rollback must not SELECT a slot that
+        // A rollback must not SELECT a slot that
         // failed secure-boot verification.
         //
         // This branch used to be unconditional, and that is the concrete hole:
@@ -516,7 +516,7 @@ pub fn ota_boot_validate_pure(meta: &mut BootMeta, max_attempts: u32) -> BootVal
         if meta.slot_is_bad(meta.last_good) {
             return BootValidateOutcome::RollbackRefused;
         }
-        // Owner decision 2026-09-28: rolling back onto the slot that is
+        // Rolling back onto the slot that is
         // already running is not a rollback. Resetting the count here made a
         // single-image device (or one already rolled back) crash-loop forever.
         if meta.last_good == meta.active_slot {
@@ -576,7 +576,7 @@ pub fn ota_boot_exhausted(meta: &BootMeta, max_attempts: u32) -> bool {
 }
 
 /// Void one boot's own unconfirmed mark — pure form. For an ORDERLY reboot or
-/// power-off before the boot was confirmed (owner decision 2026-09-28): a
+/// power-off before the boot was confirmed: a
 /// deliberate shutdown is not a crash, so it must not count toward the
 /// rollback or safe mode. It does not CONFIRM the boot either — that would
 /// move `last_good` and the anti-rollback floor for an image that has not
@@ -606,7 +606,7 @@ pub fn ota_mark_boot_good_pure(meta: &mut BootMeta) {
     meta.boot_count = 0;
     meta.last_good = meta.active_slot;
     // `slot_auth_version`, NOT `slot_version` — see `authenticated_fw_version_a`
-    // doc comment (U09-4/U11-4/security finding #10). Reads 0 for a slot that
+    // doc comment. Reads 0 for a slot that
     // was never signature-verified, so an unauthenticated install can never
     // advance the floor, no matter what version it claimed on the wire.
     let active_ver = meta.slot_auth_version(meta.active_slot);

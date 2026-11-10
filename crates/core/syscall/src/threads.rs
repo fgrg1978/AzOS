@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The native thread calls (wave 13, THREADS): `SYS_THREAD_CREATE`,
+//! The native thread calls (THREADS): `SYS_THREAD_CREATE`,
 //! `SYS_THREAD_EXIT`. The futex calls are `crate::vdso_notify`'s.
 //! See `azos_abi::syscall_nr` for the ABI and `azos_sched::group` for
 //! what a thread group shares. The Linux personality's `clone` (thread

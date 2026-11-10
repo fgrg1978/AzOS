@@ -146,7 +146,7 @@ pub fn set_boot_good_hook(delay_s: u32, mark: fn()) {
 ///
 /// 1. **Stack canaries** — `stack_canary_check()`; if any canary was
 ///    overwritten, latches the e-stop, records it durably, stops both
-///    motors and disarms the ESC (U08-1, owner decision 2026-09-26 — before
+///    motors and disarms the ESC (before
 ///    then this stopped the motors without latching, and `rt_motor_task`'s
 ///    next tick undid it).
 ///
@@ -154,7 +154,7 @@ pub fn set_boot_good_hook(delay_s: u32, mark: fn()) {
 ///    on which it did not advance is a stall; when the consecutive stall count
 ///    reaches `WDT_FROZEN_THRESHOLD` — 200 under `feature = "qemu"`, 3
 ///    otherwise — latches the e-stop, records it durably, stops both motors
-///    and disarms the ESC (same U08-1 decision as section 1).
+///    and disarms the ESC (same decision as section 1).
 ///
 /// 3. (The GPIO kill switch was a sample of `estop_gpio_pin` here, once per
 ///    pass: up to 500 ms to the stop. It is its own task now, woken by the
@@ -187,7 +187,7 @@ pub fn system_wdt_task(_: usize) {
     //     global, so `elapsed_ticks / sched_hz` on a 4-hart board reported
     //     four seconds per elapsed second. riscv64 was marking the boot good
     //     after ~7.5 s of a 30 s delay.
-    //   * On aarch64 it was not incremented at all until 2026-09-24: that
+    //   * On aarch64 it was not incremented at all: that
     //     ISA's timer ISR keeps its own `TICK_COUNT` and did not call
     //     `watchdog::tick()`, so the quotient was a constant 0 and the boot
     //     would never have been marked good however long it ran. That ISR
@@ -210,7 +210,7 @@ pub fn system_wdt_task(_: usize) {
     // 60 iterations ≈ 30 s — long enough not to spam UART, short enough
     // that a 40 s bench scenario sees at least one report.
     // The auto-report originally lived here in `system_wdt_task`, but
-    // empirical observation (2026-05-29 bench) showed sys-wdt never reaches its
+    // empirical observation showed sys-wdt never reaches its
     // loop body under QEMU TCG — only the early-boot "[WDT] crash counter reset"
     // line emits, then nothing.  Moved the auto-report to `behavior_task` which
     // demonstrably runs (visible via [BRAIN] log entries throughout bench).
@@ -266,7 +266,7 @@ pub fn system_wdt_task(_: usize) {
         // ── 1. Stack canary check ─────────────────────────────────────────
         let (ok, total) = azos_sched::stack_canary_check();
         if ok < total {
-            // Owner decision, 2026-09-26 (U08-1): LATCH, not just stop. This
+            // LATCH, not just stop. This
             // used to call `motor_stop(0)`/`motor_stop(1)` directly and
             // nothing else — no `estop_activate()`, so the stop lasted
             // exactly until `rt_motor_task`'s next tick (≤1 ms) rewrote both
@@ -308,7 +308,7 @@ pub fn system_wdt_task(_: usize) {
         // interrupt is preempting somebody, so a genuinely frozen timer here
         // leaves `now_tick` at whatever it had already reached, never at 0.
         //
-        // Measured, and the reason this arm was written: until 2026-09-24
+        // Measured, and the reason this arm was written: until the fix
         // aarch64's timer ISR incremented only its OWN `TICK_COUNT` and never
         // called `watchdog::tick()`, so the counter this section reads was fed
         // by nothing on that ISA. Without this arm, `sys-wdt` on ARM would
@@ -354,7 +354,7 @@ pub fn system_wdt_task(_: usize) {
                     azos_drv_sys::kwarn!("[WDT] Timer stall starting (tick_count={})", now_tick);
                 }
                 if frozen_count == WDT_FROZEN_THRESHOLD {
-                    // Owner decision, 2026-09-26 (U08-1): same fix as the
+                    // Same fix as the
                     // stack-canary branch above — LATCH through the e-stop,
                     // not a bare `motor_stop` the next command undoes within
                     // one control tick. A timer that just resumed stalling
@@ -392,7 +392,7 @@ pub fn system_wdt_task(_: usize) {
         // A flood that stopped has no further denial to close its window;
         // write its count now, so this pass's flush carries it to disk.
         azos_syscall::handlers::cap_denial_flush_pending();
-        // This task is RT (11): it never does block I/O (owner rule, wave
+        // This task is RT (11): it never does block I/O (wave
         // 15). The `log-flush` task writes the ring; this only wakes it.
         crate::logger::logger_request_flush();
 
@@ -430,7 +430,7 @@ pub fn system_wdt_task(_: usize) {
             if let Some(mark_boot_good) = BOOT_GOOD_HOOK.get() {
                 let boot_good_delay_s = BOOT_GOOD_DELAY_S.load(core::sync::atomic::Ordering::Relaxed);
                 // The mark writes BOOTMETA: block I/O, which this RT task
-                // hands to the `log-flush` task (owner rule, wave 15). A full
+                // hands to the `log-flush` task. A full
                 // job table is retried on the next pass.
                 if elapsed_s >= boot_good_delay_s as u64
                     && crate::logger::logger_defer_io(mark_boot_good)

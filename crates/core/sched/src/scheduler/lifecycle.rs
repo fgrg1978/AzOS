@@ -256,7 +256,7 @@ fn run_placement_probe(fill: usize) {
 /// measuring: the printer competes for CPU and is not comparable with a
 /// vsbench run.
 #[cfg(feature = "bench-minimal")]
-/// `fs-wb` (wave 15) is the FAT32 write-back cache's own flusher: parked, a
+/// `fs-wb` is the FAT32 write-back cache's own flusher: parked, a
 /// disk lane's writer would do every write-back itself, which is not the
 /// file system being measured (Linux's flusher threads run on its side).
 const BENCH_MINIMAL_KEEP: [&str; 4] = ["idle", "autorun", "ipc-census", "fs-wb"];
@@ -284,7 +284,7 @@ static BENCH_MINIMAL_ANNOUNCED: core::sync::atomic::AtomicBool =
 /// of a `Timer` deadline in this tree either compares it (`now >= deadline`,
 /// `wait.rs`) or folds it with `min` (`nearest_timer_deadline`, and
 /// `set_next_tick_smart`, where `u64::MAX.min(tick)` yields the ordinary
-/// periodic tick). None of them adds to it. Audited 2026-08-28 — a panic here
+/// periodic tick). None of them adds to it. Audited — a panic here
 /// would reset the board.
 #[cfg(feature = "bench-minimal")]
 fn bench_minimal_park(_: usize) {
@@ -472,8 +472,8 @@ pub fn try_task_create_init(
     // kernel task has no creator and is a root. Taken before interrupts go
     // off, under the Domain table's own lock only: a fresh Domain is a scan
     // of the table and a reset of its entries, 2.3 us of the 9.7 us this
-    // function held interrupts masked (riscv64 `-icount`, lat smoke,
-    // 2026-10-24). A creation refused below gives it back after interrupts
+    // function held interrupts masked (riscv64 `-icount`, lat smoke).
+    // A creation refused below gives it back after interrupts
     // are on again (`refused_dom`).
     let dom = if let Some(k) = init.domain {
         crate::domain::join(k).then_some(k)
@@ -515,7 +515,7 @@ pub fn try_task_create_init(
                 }
             }
 
-            // Wave 12 (EXIT2): a child whose exit will be reported needs room
+            // A child whose exit will be reported needs room
             // for its notice — see `exit_note::admits`. One atomic load when
             // no notice is queued; a slot count only while some are.
             let admitted = init.parent == 0 || {
@@ -633,7 +633,7 @@ pub fn try_task_create_init(
                     rt::release(idx);
                     // N6: the slot's SC starts over in its priority's class.
                     classes::on_slot_reset(idx, priority);
-                    // Wave 13: a reused slot is in no thread group.
+                    // A reused slot is in no thread group.
                     crate::group::slot_reset(idx);
                     // The slot reset installs `disabled()` — which means
                     // ALLOW EVERYTHING. A caller that wants this task
@@ -748,7 +748,7 @@ pub fn try_task_create_init(
                         stale_space    = task.aspace.take();
                         task.user_brk  = 0;
                         task.user_mmap_low = 0;
-                        // Owner decision 102 / D2 — the frame budget is the
+                        // The frame budget is the
                         // domain's, and a new domain starts from zero (limit
                         // included: every path that gives a task a budget sets
                         // it), so a slot cannot hand its next tenant the
@@ -835,7 +835,7 @@ pub fn try_task_create_init(
     if let Some(idx) = result {
         view_note(idx);
     }
-    // Wave 15 (TRACE): the proc class's spawn record (every task, kernel or
+    // The proc class's spawn record (every task, kernel or
     // user, fork or spawn, is created here).
     if azos_trace::proc_on() {
         if let Some(idx) = result {
@@ -934,7 +934,7 @@ pub fn idx_for_tid(tid: u32) -> Option<usize> {
                 // to 64 slots and this path is on every cap operation.
                 core::sync::atomic::fence(Ordering::Acquire);
                 if TASK_VALID[i].load(Ordering::Relaxed) && TASKS[i].tid == tid {
-                    // Re-publish the hint (wave 13). A later TID sharing this
+                    // Re-publish the hint. A later TID sharing this
                     // bucket overwrote it at its creation, and nothing put it
                     // back when that task exited: every lookup of this TID
                     // then walked the table (measured: +156 instructions on
@@ -1073,7 +1073,7 @@ pub(crate) fn invoke_task_exec_hook(tid: u32) {
 }
 
 azos_common::ro_hook! {
-    /// Wave 15 (plan 4a): called when an exec'ing thread takes its process's
+    /// Called when an exec'ing thread takes its process's
     /// identity from the leader (`exec_take_over`) with `(from_idx, to_idx, tid)`:
     /// what other crates keep per pool slot for the process (`azos_ipc`'s
     /// capability table, the seed row `natfork` recorded) moves from the
@@ -1116,7 +1116,7 @@ pub(crate) fn view_note(idx: usize) {
 azos_common::ro_hook! {
     /// Called with the exiting task's TID after its address space is torn down
     /// (`release_address_space_at_exit`) and before its exit notice: for what
-    /// must not happen while the dying task still holds memory (wave 12: the
+    /// must not happen while the dying task still holds memory (the
     /// driver supervisor's wake). Registered by the kernel at boot, as
     /// [`TASK_EXIT_HOOK`].
     static TASK_EXIT_LATE_HOOK: fn(u32);
@@ -1129,7 +1129,7 @@ pub fn set_task_exit_late_hook(f: fn(u32)) {
 
 /// Does the live task `tid` still hold a user address space? `false` for a
 /// kernel task, for a task whose exit has torn its space down, and for a TID
-/// with no slot. For ordering checks on the exit path (wave 12).
+/// with no slot. For ordering checks on the exit path.
 pub fn tid_holds_address_space(tid: u32) -> bool {
     match idx_for_tid(tid) {
         // SAFETY: a valid slot index; one word read, as `note_exit` does.
@@ -1308,7 +1308,7 @@ pub fn exit_stat(which: u64) -> Option<u32> {
 /// Never returns.
 pub fn task_exit() -> ! { task_exit_with_code(0) }
 
-/// Wave 13: end the current task by a signal: exit code `code` (`128 + n`,
+/// End the current task by a signal: exit code `code` (`128 + n`,
 /// what native waiters read, unchanged), and the signal recorded so a Linux
 /// parent's `wait4` reports the child killed by `n` (`WIFSIGNALED`), as
 /// Linux does. A code outside `129..=192` is an ordinary exit.
@@ -1337,7 +1337,7 @@ pub enum ExecDethreadError {
     Ending,
 }
 
-/// Wave 15 (plan 4a): the first half of an exec's commit from a process with
+/// The first half of an exec's commit from a process with
 /// threads, POSIX's "all other threads are terminated" (Linux `de_thread`).
 /// Called once the new image is admitted (`process::exec_prepare_*`): an
 /// exec that fails before this point leaves every thread running.
@@ -1433,7 +1433,7 @@ fn stop_slot(idx: usize) {
     wake_stopped(tid, true);
 }
 
-/// Wave 15 (plan 4a): the leader's half of an exec by another of its
+/// The leader's half of an exec by another of its
 /// threads. Called on the leader's exit path (`group_exit`, slot `idx`,
 /// TID `lead`) while its group is exec'ing by thread `by`: the two slots
 /// swap TIDs, and the process's state on the leader's slot moves to the
@@ -1493,7 +1493,7 @@ unsafe fn exec_take_over(idx: usize, lead: u32) -> Option<u32> {
     Some(by)
 }
 
-/// Wave 13 (THREADS): the thread-group half of an exit, run first.
+/// The thread-group half of an exit, run first.
 ///
 /// A whole-process exit (anything but [`thread_exit`]) marks the group ending
 /// with `code` and stops every other member. A member (not the leader) then
@@ -1545,7 +1545,7 @@ unsafe fn group_exit(idx: usize, tid: u32, code: i32) -> i32 {
     // deadline is a backstop against a wake that found it not yet asleep and
     // a stamp already consumed.
     while crate::group::live_members(lead) > 1 {
-        // Wave 15 (plan 4a): another thread is exec'ing. The leader hands
+        // Another thread is exec'ing. The leader hands
         // it the process and ends as a thread under its old TID.
         if let Some(t) = unsafe { exec_take_over(idx, lead) } {
             member_exit(idx, t, lead, code);
@@ -1562,7 +1562,7 @@ unsafe fn group_exit(idx: usize, tid: u32, code: i32) -> i32 {
 /// Clear and wake the clear-tid word of the task in slot `idx` (process
 /// `proc_id`), while its address space is installed. Best effort: a word
 /// that cannot be written is skipped. A word of a shm region wakes its
-/// region's key (owner decision 10-10, Linux `mm_release`; `futex::wake_in`).
+/// region's key (Linux `mm_release`; `futex::wake_in`).
 unsafe fn clear_tid_word(idx: usize, proc_id: u32) {
     let addr = crate::group::take_clear_tid(idx);
     // Gate canary only: the word is never cleared (a join never returns).
@@ -1606,11 +1606,11 @@ fn robust_list_exit(idx: usize, tid: u32, proc_id: u32) {
         fn cas_u32(&mut self, addr: u64, old: u32, new: u32) -> Result<(), Option<u32>> {
             crate::UserPtr::<u32>::new(addr).cas(old, new)
         }
-        // A shm word wakes its region's key (owner decision 10-10).
+        // A shm word wakes its region's key.
         fn wake_one(&mut self, addr: u64) {
             let _ = crate::futex::wake_key(crate::futex::robust_key(self.0, addr), 1);
         }
-        // Wave 15 N10: a PI word goes to the PI futex code (Kconfig FUTEX_PI).
+        // A PI word goes to the PI futex code (Kconfig FUTEX_PI).
         fn pi_owner_died(&mut self, addr: u64) -> Option<bool> {
             azos_sync::pi_futex::robust_owner_died(self.0, addr, self.1 as u32)
         }
@@ -1670,7 +1670,7 @@ unsafe fn member_exit(idx: usize, tid: u32, lead: u32, code: i32) -> ! {
     // N7d: after the graph's owner-died hand-over, the held table forgets
     // the locks this task dies holding (the panic policy's `mutex-held`).
     azos_sync::held::held_forget(tid);
-    // Owner decision 10-10: and the claim table (rule F1) the same way.
+    // And the claim table (rule F1) the same way.
     azos_sync::claim::held_forget(tid);
     {
         let _pool = PoolGuard::acquire();
@@ -1710,7 +1710,7 @@ pub fn task_exit_with_code(code: i32) -> ! {
         azos_sync::preempt::force_zero_depth();
     }
     let t_exit = crate::prof::t();
-    // Wave 15 (TRACE): the proc class's exit record.
+    // The proc class's exit record.
     if azos_trace::proc_on() {
         azos_trace::raw::proc_exit(current_task_tid(), code);
     }
@@ -1721,7 +1721,7 @@ pub fn task_exit_with_code(code: i32) -> ! {
         stale_hart_canary::arm(cpu, idx);
         #[cfg(not(feature = "exit-stale-hart-canary"))]
         let _ = cpu;
-        // Wave 13: a thread group's member ends here alone; its leader
+        // A thread group's member ends here alone; its leader
         // waits to be the last and exits with the group's code. So the
         // re-parenting below (`note_exit`) runs once, for the whole process,
         // when its last thread is gone: a member never re-parents (it posts
@@ -1736,7 +1736,7 @@ pub fn task_exit_with_code(code: i32) -> ! {
         // is not a safe "OK to newly target this tid" answer during that
         // window.
         if idx != usize::MAX {
-            // Wave 13: whether `note_exit` re-parents this task's children,
+            // Whether `note_exit` re-parents this task's children,
             // published with (before) the exiting mark that readers pair it with.
             EXIT_REPARENTS[idx].store(
                 task_ref(idx).aspace.is_some() && !cfg!(feature = "orphan-reparent-canary"),
@@ -1744,7 +1744,7 @@ pub fn task_exit_with_code(code: i32) -> ! {
             );
             TASK_EXITING[idx].store(true, Ordering::Release);
         }
-        // Wave 9: give back the row instance this task held,
+        // Give back the row instance this task held,
         // BEFORE the exit notice: a parent woken by `note_exit` may spawn
         // again at once, and must find the count already returned.
         // Taken to 0 first, so it is returned exactly once.
@@ -1800,7 +1800,7 @@ pub fn task_exit_with_code(code: i32) -> ! {
             crate::prof::add(13, t_ph);
             let t_ph = crate::prof::t();
 
-            // Wave 12 (EXIT2): the post-teardown hook — the kernel wakes the
+            // The post-teardown hook — the kernel wakes the
             // driver supervisor here, not from `TASK_EXIT_HOOK`, so a restart
             // it decides never runs beside the dead driver's address space.
             // Same place in the sequence as the exit notice just below.
@@ -1822,7 +1822,7 @@ pub fn task_exit_with_code(code: i32) -> ! {
             // polling `wait` with `yield` at a HIGHER priority than this task,
             // on this hart, never lets it run again once a tick preempts it,
             // and every instruction before the notice was a window for that
-            // stall (tried in wave 9: abitest's `waitpid(epsrv)` gave up in 5
+            // stall (tried: abitest's `waitpid(epsrv)` gave up in 5
             // of 9 `-smp 4` boots). The cure is on the waiting side: a poll
             // SLEEPS between looks, so the hart goes to whatever is ready.
             // `note_exit` counts a notice published while this task still
@@ -1884,7 +1884,7 @@ pub fn task_yield() {
 /// (`tick_admit`'s `Defer` arm, the only caller of `set_need_resched`), and
 /// the outermost guard's drop pays it here. That switch is the timer taking
 /// the CPU, so it counts as `Preempted`, as Linux counts a preemption taken
-/// on the way out of a syscall in `nivcsw`. Wave 13: it was `task_yield` and
+/// on the way out of a syscall in `nivcsw`. It used to be `task_yield` and
 /// counted `Voluntary`, so `DOMAIN_TASKINFO`'s preempted count missed every tick
 /// that landed in a lock — vsbench's retired `drvring-batch8` saw an extra round
 /// (65+64 / 64+65) with "preempted 0" on both sides.
@@ -1954,7 +1954,7 @@ pub fn schedule() {
             let task = task_mut(current_idx);
             task.total_runtime += 1;
 
-            // Wave 11 SCHED-RT: band budget, CBS budget and EDF order. A
+            // Band budget, CBS budget and EDF order. A
             // hart with none of them pays one per-hart load here.
             if rt::active(cpu) && rt::tick(cpu, current_idx) {
                 RT_TICK_PREEMPTS.fetch_add(1, Ordering::Relaxed);
@@ -2434,8 +2434,8 @@ pub(super) static TASK_EXITING: [core::sync::atomic::AtomicBool; MAX_TASKS] =
 /// The code the task in this slot is exiting with, stored by
 /// [`task_exit_with_code`] before the exit hook runs, so the hook (a
 /// `fn(u32)`) can tell a clean `exit(0)` from a failure: the supervisor
-/// restarts a driver only on the second (owner decision
-/// 2026-09-28). Written only by the exiting task, for its own slot.
+/// restarts a driver only on the second.
+/// Written only by the exiting task, for its own slot.
 static TASK_EXIT_CODE: [core::sync::atomic::AtomicI32; MAX_TASKS] =
     [const { core::sync::atomic::AtomicI32::new(0) }; MAX_TASKS];
 
@@ -2448,7 +2448,7 @@ pub fn current_exit_code() -> i32 {
 }
 
 /// [`idx_for_tid`] for a task that is not mid-exit (`TASK_EXITING`): the
-/// PI futex owner lookup (owner decision 10-10) never resolves an exiting
+/// PI futex owner lookup never resolves an exiting
 /// slot, so a locker cannot make a dying task a word's owner after its
 /// exit's handover ran.
 pub fn live_idx_for_tid(tid: u32) -> Option<usize> {
@@ -2485,14 +2485,14 @@ pub fn tid_is_exiting(tid: u32) -> bool {
 /// lived. The notice outlives the slot, so the parent finds out without
 /// anything in the scheduler changing.
 ///
-/// **Kept until reaped, as Linux keeps zombies** (wave 12, EXIT2). One entry
+/// **Kept until reaped, as Linux keeps zombies** (EXIT2). One entry
 /// per task slot, and the creation of a child with a parent is refused while
 /// the queued notices could use up the slots still free
 /// (`exit_note::admits`, under `POOL_LOCK`): the notice a child leaves holds
 /// the place its slot would have held. So the table never fills with live
 /// parents' notices and none is dropped; a parent that never waits makes its
 /// own `fork`/`spawn` fail instead. A parent's exit releases its notices
-/// (`exit_note::purge_parent` in [`note_exit`]). Until wave 12 this was a
+/// (`exit_note::purge_parent` in [`note_exit`]). This used to be a
 /// 32-entry Kconfig table (`SCHED_EXIT_NOTES`) that evicted the oldest live
 /// notice when full.
 const EXIT_NOTES: usize = MAX_TASKS;
@@ -2515,14 +2515,14 @@ pub static EXIT_NOTICE_REFUSALS: AtomicU32 = AtomicU32::new(0);
 #[path = "../exit_note.rs"]
 pub mod exit_note;
 
-/// Wave 13 (orphans): the slot's task is a child subreaper — Linux's
+/// The slot's task is a child subreaper — Linux's
 /// `PR_SET_CHILD_SUBREAPER` — so orphaned descendants are re-parented to it
 /// rather than to [`INIT_TID`]. Written only by the task itself
 /// ([`task_subreaper`]); cleared when its slot is claimed.
 pub(super) static SUBREAPER: [core::sync::atomic::AtomicBool; MAX_TASKS] =
     [const { core::sync::atomic::AtomicBool::new(false) }; MAX_TASKS];
 
-/// Wave 13 (orphans): the reaper of last resort, Linux's init — the task the
+/// The reaper of last resort, Linux's init — the task the
 /// autorun row's image runs as (`set_init_tid`, called by the kernel's
 /// autorun loader at its exec). 0: none,
 /// and an orphan with no subreaper ancestor is left with no parent.
@@ -2546,7 +2546,7 @@ pub fn task_subreaper(set: Option<bool>) -> bool {
     if idx >= MAX_TASKS {
         return false;
     }
-    // Wave 13: the mark is the process's (its group leader's slot), as on
+    // The mark is the process's (its group leader's slot), as on
     // Linux, whichever thread sets it: a process's children name the leader.
     let idx = proc_slot(idx);
     if let Some(on) = set {
@@ -2579,7 +2579,7 @@ fn reaper_of(idx: usize, dying: u32) -> u32 {
     )
 }
 
-/// Wave 13 (orphans): the slot's task, now exiting, will re-parent its
+/// The slot's task, now exiting, will re-parent its
 /// children in [`note_exit`]: it ran a user address space and the canary is
 /// off. Written by the exiting task just before it publishes
 /// [`TASK_EXITING`] (so a reader that sees the latter sees this); only a
@@ -2631,16 +2631,16 @@ pub fn note_exit(idx: usize, code: i32) {
     // `take_exit_note_for`, which does its own parent-link check under the
     // same lock.
     let mut t = EXIT_NOTE.lock();
-    // Wave 13 (orphans, Linux's model): this task's children go to the
+    // This task's children go to the
     // nearest live ancestor marked a child subreaper, else to init
     // (`reaper_of`), and the notices of its children that exited unreaped go
     // with them. With nobody to adopt them they are left with no parent and
-    // the notices are dropped, as wave 12 dropped them all: nothing would
+    // the notices are dropped: nothing would
     // ever reap them (TIDs are never reused). Under this lock, which every
     // exit takes: after it no live task names this one as its parent, so a
     // child that still reads this task in its link (below, under the same
     // lock) does so before this point, and its notice is moved here.
-    // A kernel task's children, and `orphan-reparent-canary`, keep wave 12's
+    // A kernel task's children, and `orphan-reparent-canary`, keep the plain
     // purge with no re-link (`EXIT_REPARENTS`).
     let reparent = EXIT_REPARENTS[idx].load(Ordering::Relaxed);
     let reaper = if reparent { reaper_of(idx, child) } else { 0 };
@@ -2665,7 +2665,7 @@ pub fn note_exit(idx: usize, code: i32) {
         }
     }
     let parent = PARENT_TID[idx].swap(0, Ordering::Relaxed);
-    // Wave 13: how the child ended (a signal, for a Linux parent's `wait4`),
+    // How the child ended (a signal, for a Linux parent's `wait4`),
     // recorded BEFORE its notice can be taken: a parent polling `wait4` on
     // another hart takes the notice the instant it is queued below.
     if azos_limits::LINUX_ABI {
@@ -2686,7 +2686,7 @@ pub fn note_exit(idx: usize, code: i32) {
     // A parent mid-exit that re-parents (`EXIT_REPARENTS`) has not done so
     // yet, or this task would no longer name it: it will move this notice
     // to its reaper, so it counts as alive. One that does not re-parent
-    // counts as gone, as in wave 12: its purge may already have run.
+    // counts as gone: its purge may already have run.
     let parent_alive = |tid: u32| match idx_for_tid(tid) {
         Some(p) => !TASK_EXITING[p].load(Ordering::Acquire) || EXIT_REPARENTS[p].load(Ordering::Relaxed),
         None => false,
@@ -2710,7 +2710,7 @@ pub fn note_exit(idx: usize, code: i32) {
     if adopted > 0 {
         wake_child_waiter(reaper);
     }
-    // Wave 13: `SIGCHLD` to a Linux parent (a native parent has no signal
+    // `SIGCHLD` to a Linux parent (a native parent has no signal
     // state: `NotLinux`, nothing done). Discarded unless it set a handler.
     if azos_limits::LINUX_ABI && !cfg!(feature = "linux-sigchld-canary") {
         let _ = signal::post(parent, 17, child);
@@ -2868,7 +2868,7 @@ pub(super) static FORCED_ACCT: [core::sync::atomic::AtomicU64; MAX_TASKS] =
 #[path = "../stop_policy.rs"]
 pub mod stop_policy;
 
-/// Wave 13: the per-task signal words of Linux tasks.
+/// The per-task signal words of Linux tasks.
 #[path = "../signal_state.rs"]
 pub mod signal;
 
@@ -2961,7 +2961,7 @@ pub fn task_abandon_unstarted(tid: u32) {
 /// syscall. Returns `false` for a TID with no live task.
 pub fn task_stop(tid: u32, force: bool, signo: u8) -> bool {
     let Some(idx) = idx_for_tid(tid) else { return false };
-    // Wave 13: a Linux task is asked by its signal, not by the sticky stop
+    // A Linux task is asked by its signal, not by the sticky stop
     // word: its handler (or default action) answers it, and a task that
     // handles `SIGINT` (an interactive shell) must not find every later
     // wait interrupted. A forced stop stays the forced path for both ABIs.
@@ -3078,7 +3078,7 @@ pub fn forced_stop_pending() -> bool {
 /// (a return to user mode, a timer interrupt taken from user mode).
 pub fn exit_if_forced() {
     if let Some(code) = take_current_forced_exit() {
-        // Wave 13: a thread group's member stopped because its group is
+        // A thread group's member stopped because its group is
         // ending (`exit_group`, a fault) is not news.
         if !crate::group::current_group_ending() {
             azos_drv_sys::kprintln!(
@@ -3621,7 +3621,7 @@ pub(super) unsafe fn redraw_past_stuck(
 }
 
 
-/// Gate-only probe (`ctx-probe`, CTXHUNT 2026-10-08): the invariants a
+/// Gate-only probe (`ctx-probe`): the invariants a
 /// switch relies on, checked where they must hold. The first violation is
 /// printed (`[CTXPROBE]`, both task ids, the hart, the site) and the kernel
 /// panics; a second hart that fails meanwhile spins, so the line is whole.
@@ -3647,7 +3647,7 @@ pub(crate) mod ctx_probe;
 pub(super) mod stale_hart_canary;
 
 /// **A Zombie's slot is freed only after the switch away from it**
-/// (CTXHUNT, 2026-10-08), by the task switched to, on its own stack: the
+/// (CTXHUNT), by the task switched to, on its own stack: the
 /// hart that switches from the Zombie stores the slot in the next task's
 /// `reap_on_resume`, and that task frees it first thing when it runs
 /// (`finish_switch`, after every `context_switch` that resumes a task and at
@@ -3688,7 +3688,7 @@ unsafe fn finish_switch_slow(me: *mut Task, idx: usize) {
 }
 
 /// `do_schedule`'s reap of a Zombie it is switching away from, out of line
-/// (wave 15, SWITCH): a rare arm with a lock, two prints and a TTBR1 probe,
+/// (SWITCH): a rare arm with a lock, two prints and a TTBR1 probe,
 /// inline it made every switch's prologue save registers only it needs.
 /// The slot is free when this returns; the caller must not touch it again.
 /// Called from [`finish_switch`], once this hart is off the Zombie's stack

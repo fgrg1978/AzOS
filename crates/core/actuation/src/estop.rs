@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! The emergency-stop latch, its release authority and safe mode.
 //!
-//! Moved out of `crates/domains/robot/behavior/src/safety.rs` (wave 11, DOMAIN): the
+//! Moved out of `crates/domains/robot/behavior/src/safety.rs` (DOMAIN): the
 //! latch is cross-cutting. Every domain with an actuator needs it, and the
 //! paths that arm it are not robot code: the ring-3 `motor.estop`, the
 //! GPIO kill switch and the stack/timer checks of `sys_wdt`, and the boot
@@ -59,7 +59,6 @@ pub fn estop_activate() {
     // say it undid a clear that was still in effect (`ring3_estop_record`);
     // left standing across an arming, it also marked stops that merely
     // happened within 10 s of a clear ANOTHER source had already answered.
-    // Owner decision, 2026-09-16.
     //
     // Ordering with the ring-3 record: `actuation.rs` latches first and builds
     // the record afterwards, so the record must read the stamp from before
@@ -71,7 +70,7 @@ pub fn estop_activate() {
 /// Latch the envelope and stop everything that can move. **The one copy.**
 ///
 /// Every emergency stop in this kernel ends in these four calls, in this
-/// order. There were four hand-written copies of them until 2026-09-18 —
+/// order. There used to be four hand-written copies of them —
 /// ring 3 (`actuation::ring3_estop`), the GPIO kill switch
 /// (`sys_wdt`), and the two `PKT_ESTOP` handlers in `crates/domains/robot/safety-core/src/frames.rs`
 /// (TCP and UART) — and the cost of that is on the record: the GPIO copy
@@ -134,10 +133,10 @@ pub fn note_refused_estop_clear() -> Option<u32> {
 }
 
 /// Deactivate remote emergency stop. **Not `pub`** — see
-/// [`estop_release`]/[`ReleaseAuthority`] below, added by the owner decision
-/// of 2026-09-25: the brain may REQUEST a release, it may never CLEAR the
+/// [`estop_release`]/[`ReleaseAuthority`] below:
+/// the brain may REQUEST a release, it may never CLEAR the
 /// latch, so the unchecked clear itself must not be reachable from outside
-/// this module. Body unchanged from the pre-2026-09-25 `pub fn
+/// this module. Body unchanged from the earlier `pub fn
 /// estop_deactivate`.
 fn estop_deactivate_unchecked() {
     ESTOP_ACTIVE.store(false, Ordering::Release);
@@ -160,7 +159,7 @@ pub fn estop_cleared_at() -> u64 {
 }
 
 // ---------------------------------------------------------------------------
-// Release authority (owner decision, 2026-09-25)
+// Release authority
 // ---------------------------------------------------------------------------
 //
 // **The finding.** `MODE_ID_ESTOP_RESET` over TCP/UART and the geofence probe
@@ -255,7 +254,7 @@ pub const RELEASE_CONTEXT: &[u8] = b"AZOS-RELEASE-v2";
 pub enum ReleaseTarget {
     /// The e-stop latch ([`estop_release`]).
     Latch,
-    /// A device the kernel holds in its safe state (B2,
+    /// A device the kernel holds in its safe state (
     /// `safe_state::release`): its kind and subject.
     Hold { kind: u8, subject: u16 },
 }
@@ -508,8 +507,8 @@ fn operator_pubkey() -> Option<[u8; 32]> {
 /// also arrive over a path that has none (the UART bridge), and must not trust
 /// a counter it does not own.
 ///
-/// **Persisted, not just in-memory (owner decision, 2026-09-26).** Found by
-/// the wave-1 coordinator: a captured signed release replays after a reset,
+/// **Persisted, not just in-memory.**
+/// A captured signed release replays after a reset,
 /// because this was a plain process-lifetime counter — a reboot put it back
 /// to 0, and any proof an attacker had ever observed on the wire (over a
 /// plaintext link, or leaked some other way) would verify again. There is no
@@ -671,11 +670,11 @@ pub const ESTOP_ACTION_REFUSED_MIRROR: u8 = 4;
 /// [`ReleaseAuthority`] to clear the latch with.
 ///
 /// Fails closed on every path — no key provisioned, bad signature, a nonce
-/// that is not strictly newer than the last one accepted, or (2026-09-26) a
+/// that is not strictly newer than the last one accepted, or a
 /// durable record of this nonce that could not be written while a recorder
 /// IS active, are all a [`ReleaseDenial`], never a proof.
 ///
-/// **Order, and why it changed on 2026-09-26.** Signature checked BEFORE the
+/// **Order.** Signature checked BEFORE the
 /// nonce floor is even READ: an attacker without the private key cannot burn nonces to deny a
 /// legitimate operator's next release. But between the floor check and the
 /// floor actually MOVING, this now inserts a durable write
@@ -701,7 +700,7 @@ pub const ESTOP_ACTION_REFUSED_MIRROR: u8 = 4;
 /// build (Kconfig `BUILD_TYPE_DEV`, `azos_limits::BUILD_TYPE_DEV`): with
 /// nowhere to write the floor, a captured release proof would verify again
 /// after a reset, so a release or certifiable build holds the latch until
-/// storage is provisioned (owner decision 2026-10-17; before it, that build
+/// storage is provisioned (before it, that build
 /// proceeded un-persisted and the gap was only documented). A development
 /// build (QEMU, a bench board without a disk) keeps proceeding: it has no
 /// recorder by default and its operator needs the release path to work.
@@ -828,7 +827,7 @@ pub const ESTOP_ACTION_RING3: u8 = 6;
 pub const ESTOP_ACTION_GEOFENCE: u8 = 8;
 
 /// `SAFETY_ESTOP` action code of a stop latched by `sys-wdt`'s stack-canary
-/// check (U08-1, owner decision 2026-09-26). Before this decision the two
+/// check. Before this decision the two
 /// `sys_wdt.rs` "SAFE STOP"s called `azos_robot::motor_stop` directly and
 /// nothing else — no latch, so `rt_motor_task` rewrote both wheels from the
 /// next `MotorCmd` within one control tick (`motor_envelope`'s `estop_is_
@@ -839,7 +838,7 @@ pub const ESTOP_ACTION_STACK_OVERFLOW: u8 = 9;
 
 /// `SAFETY_ESTOP` action code of a stop latched by `sys-wdt`'s timer-liveness
 /// check finding the timer frozen for `WDT_FROZEN_THRESHOLD` consecutive
-/// passes (U08-1, same decision as [`ESTOP_ACTION_STACK_OVERFLOW`]).
+/// passes (same decision as [`ESTOP_ACTION_STACK_OVERFLOW`]).
 /// `detail` carries the stall count at the moment it latched.
 pub const ESTOP_ACTION_TIMER_FROZEN: u8 = 10;
 
@@ -853,7 +852,7 @@ pub const ESTOP_ACTION_TIMER_FROZEN: u8 = 10;
 /// releases it — fixing the files alone does not move it.
 pub const ESTOP_ACTION_CONFIG_AUTHORITY: u8 = 11;
 
-/// `SAFETY_ESTOP` action code of a stop latched by RC link loss (wave 15,
+/// `SAFETY_ESTOP` action code of a stop latched by RC link loss (
 /// `kernel/src/tasks/rc_safety.rs`): the receiver's own failsafe bit, or no
 /// fresh frame for Kconfig `RC_LINK_TIMEOUT_MS` after a link was established.
 /// `detail` is 0 for the receiver's bit, else the frame age in ms. Latches
@@ -866,7 +865,7 @@ pub const ESTOP_ACTION_RC_LINK_LOSS: u8 = 12;
 pub const ESTOP_ACTION_RC_KILL: u8 = 13;
 
 /// `SAFETY_ESTOP` action code of the SAFE STOP a dead motor commander's
-/// exit makes (wave 15, owner decision; Kconfig `MOTOR_COMMANDER_EXIT_STOP`,
+/// exit makes (Kconfig `MOTOR_COMMANDER_EXIT_STOP`,
 /// `crates/core/syscall/src/motor_commander.rs`): the wheels a ring-3 task
 /// left at a non-zero duty are set to duty 0 when it exits or dies.
 /// `detail` is [`commander_lost_detail`]. It does NOT latch
@@ -922,7 +921,7 @@ pub fn estop_is_active() -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// Safe mode (owner decision, 2026-09-28)
+// Safe mode
 // ---------------------------------------------------------------------------
 
 /// The boot's attempts are exhausted (`azos_ota::recovery`, armed by
@@ -945,7 +944,7 @@ pub fn safe_mode_active() -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// Pure halves of the records above (moved from `brain_protocol.rs`, wave 11)
+// Pure halves of the records above (moved from `brain_protocol.rs`)
 // ---------------------------------------------------------------------------
 
 /// Is this refused e-stop clear worth a flight-recorder entry?

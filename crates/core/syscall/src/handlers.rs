@@ -300,7 +300,6 @@ pub(crate) fn note_typed_denial_recorded(tid: u32, kind: azos_abi::cap::CapType,
 // one record per syscall, and between two watchdog flushes (~0.5 s) that is
 // enough to evict the ring-only records next to it — degrade-level changes,
 // sys-wdt events, `SAFETY_UNKNOWN_PKT`. Only the e-stop, which flushes as it
-// records, was out of reach. Audit finding, 2026-09-13.
 //
 // So a task may put at most `DENIAL_RECORDS_PER_WINDOW` records of each class
 // into the ring per window (capability denials, seccomp audit records, ring-3
@@ -678,7 +677,7 @@ pub fn record_seccomp_audit_for(tid: u32, syscall_nr: u16) {
     }
 }
 
-/// V1.8 (owner decision, 2026-09-26): what `dispatch.rs`'s `FilterVerdict::
+/// V1.8: what `dispatch.rs`'s `FilterVerdict::
 /// Deny` arm does — Linux strict-mode `SECCOMP_RET_KILL_PROCESS` semantics
 /// for an unlisted syscall from a confined task, in place of the old `-1`
 /// (`E_PERM`) return. U07-6 named that `-1` as indistinguishable from a
@@ -775,7 +774,7 @@ pub(crate) fn seccomp_deny_op_kill(op: u16) -> ! {
 /// with the code the stop asked for, and say who did it.
 #[inline(never)]
 fn forced_stop_exit(num: u64, code: i32) -> ! {
-    // Wave 13: a member of an ending thread group is stopped by its own
+    // A member of an ending thread group is stopped by its own
     // process, not by an ancestor; nothing to say.
     if azos_sched::group::current_group_ending() {
         azos_sched::task_exit_with_code(code)
@@ -807,7 +806,7 @@ pub(crate) const E_CONTAINED: i64 = azos_abi::error::Errno::EAGAIN.to_syscall_re
 /// `cap_check`'s uncontained presence test, a socket's owner stamp or a
 /// descriptor table, and none of those consults degraded mode — so while
 /// contained, a task whose `send_typed` was refused sent the same bytes with
-/// `send` on the same socket. Owner decision 2026-09-13: containment refuses
+/// `send` on the same socket. Containment refuses
 /// every WRITE through a capability, files and sockets included.
 /// Receiving and closing stay live, and so does releasing — destroying a port
 /// or an io_ring, unregistering a driver, all on the typed side — which still
@@ -880,7 +879,7 @@ const EXEC_MAX_BYTES: usize = 128 * 1024;
 /// streamed), never read as a prefix.
 ///
 /// A [`Claim`](azos_sync::claim::Claim), not a lock held across a device wait
-/// (owner rule F1): the Linux `execve` and `SYS_SPAWN_EX` own it across the file
+///: the Linux `execve` and `SYS_SPAWN_EX` own it across the file
 /// read that fills it, a device wait, and a `Mutex` held there boosts a task
 /// that is waiting on the disk. A claim's exchange mutex is held for the
 /// instant of taking and giving it; a contender sleeps with nothing held.
@@ -909,7 +908,7 @@ const EXEC_MAX_BYTES: usize = 128 * 1024;
 /// Bounded rather than unbounded — but bounded at 128 KiB of copying plus a page-table build is not a bound worth
 /// having on a hart that also runs a 1 kHz loop.
 ///
-/// 8-aligned (wave 14): the image is hashed in place, and SHA-256 takes word
+/// 8-aligned: the image is hashed in place, and SHA-256 takes word
 /// loads only from an aligned start (Zbb: ~190 instructions a block fewer
 /// than byte loads). As a bare `[u8; N]` inside the mutex its start had no
 /// alignment, and the spawn census measured the odd-start rate.
@@ -1002,7 +1001,7 @@ pub fn sys_exit(code: u64) -> i64 {
 
 #[inline]
 pub fn sys_getpid() -> i64 {
-    // Wave 13: a thread's process id is its group leader's TID.
+    // A thread's process id is its group leader's TID.
     azos_sched::current_proc_tid() as i64
 }
 
@@ -1013,20 +1012,20 @@ pub fn sys_yield() -> i64 {
 
 pub fn sys_fork(sepc: u64, user_sp: u64, regs: &azos_sched::UserRegs) -> i64 {
     // **The child inherits descriptors and is seeded from its own row**
-    // (owner decision, round 49). Its files
+    //. Its files
     // and pipe ends are duplicates sharing the parent's open descriptions, at
     // the parent's exact handles; its other capabilities are minted from the
     // topology row its parent was seeded from, never copied from the
     // parent's table. See `crate::natfork`.
     //
-    // A verbatim copy of the parent's table was built here on 2026-09-21 and
-    // reverted the same day: `userspace/tests/ipctest` phase C caught a child
+    // A verbatim copy of the parent's table was built here and
+    // reverted: `userspace/tests/ipctest` phase C caught a child
     // resolving its parent's runtime port and destroying it. Runtime objects
     // (ports, shared memory, rings, channels, sockets) are still not
     // inherited; a parent's handle on one is stale in the child. The
     // parent-owned endpoint bootstrap (`endpoint_inherit_at_fork`) is
     // unchanged and runs after this.
-    // Wave 13: a fork from a thread group copies its shared address space
+    // A fork from a thread group copies its shared address space
     // with no other member changing its layout meanwhile, and the
     // descriptors it duplicates are owned by the process, not the thread.
     let _mm = azos_sched::group::mm_lock();
@@ -1067,7 +1066,7 @@ pub fn sys_waitpid(child_tid: u64, status_ptr: u64) -> i64 {
         // Cannot name a TID, so it cannot be one of ours.
         return Errno::ECHILD.to_syscall_ret();
     }
-    let me = azos_sched::current_proc_tid(); // wave 13: the process's children
+    let me = azos_sched::current_proc_tid(); // The process's children
     let (reaped, code) =
         match azos_sched::take_exit_note_for(me, child_tid as u32) {
             Ok(v) => v,
@@ -1151,7 +1150,7 @@ pub fn sys_exit_stats(which: u64) -> i64 {
 /// finished", which is a lie the caller cannot detect.
 pub fn sys_wait_status(status_ptr: u64) -> i64 {
     use azos_abi::error::Errno;
-    let me = azos_sched::current_proc_tid(); // wave 13: the process's children
+    let me = azos_sched::current_proc_tid(); // The process's children
     let (child_tid, code) = match azos_sched::take_exit_note(me) {
         Some(v) => v,
         None => return -1,
@@ -1170,7 +1169,7 @@ pub fn sys_wait_status(status_ptr: u64) -> i64 {
 // ── Exec: only images a seccomp profile is bound to ───────────────────────
 //
 // The seccomp image table (`crates/core/sched/src/seccomp.rs`, `IMAGE_SHA256`) is a
-// whitelist of user images (owner decision 2026-09-14): an image whose SHA-256
+// whitelist of user images: an image whose SHA-256
 // no profile is bound to is not started on any path. The autorun loader and the
 // shell refuse it in the kernel; `SYS_SPAWN_EX` and the Linux `execve` refuse it
 // for ring 3, with `EACCES`.
@@ -1255,7 +1254,7 @@ pub(crate) fn exec_forget_resolves() {
     azos_ipc::endpoint::resolve_cache::clear_task(azos_sched::current_task_tid());
 }
 
-/// Wave 15 (plan 4a): an exec from a process with threads ends every other
+/// An exec from a process with threads ends every other
 /// thread and waits until they have gone (`scheduler::exec_end_other_threads`),
 /// so none runs on the image being replaced; the exec'ing thread goes on as
 /// the whole process, under the process's TID when it was not the leader.
@@ -1291,7 +1290,7 @@ const OPEN_TRUNC: u64 = 0x200;
 /// guard? `open` creates the file on `O_CREAT` and truncates it on `O_TRUNC`
 /// inside the open itself, and a descriptor opened for writing rewrites the
 /// file's bytes: all three need write authority over the result (security
-/// survey, 2026-09-29; Storage L12). Linux closed the same gap in Landlock ABI
+/// survey; Storage L12). Linux closed the same gap in Landlock ABI
 /// v3 (`LANDLOCK_ACCESS_FS_TRUNCATE`, 6.2): an open-time truncate had bypassed
 /// a sandbox that forbade `truncate`.
 const fn open_changes_tree(flags: u64) -> bool {
@@ -1372,7 +1371,7 @@ fn endpoint_dest_miss(caller_idx: usize, caller_tid: u32, cap_raw: u32) -> Optio
     Some(d)
 }
 
-/// `SYS_CAP_DERIVE`'s capability step (wave 15 N11b): mint, in
+/// `SYS_CAP_DERIVE`'s capability step: mint, in
 /// `tid`'s table, a copy of the unbadged endpoint capability `cap_raw`
 /// carrying `badge` with `rights` (`CapTable::mint_badged`'s rules, and only
 /// of an endpoint a task serves: `azos_ipc::endpoint::mint_badged`). A
@@ -1481,7 +1480,7 @@ pub fn sys_file_openat_typed(dir_raw: u64, rel_ptr: u64, flags: u64) -> i64 {
 
 /// Write authority for an open that changes the tree: a held tree
 /// `Cap<File>` with `WRITE` that covers the path the join of `root` and `rel`
-/// names, whichever directory the open was made through. This is the wave 10
+/// names, whichever directory the open was made through. This is the
 /// rule (a tree grant is the authority for the calls that change the tree)
 /// applied to the open, so a directory handle that only NAMES a wide
 /// directory (the root `Cap<Dir>`, read-only) lets a task write exactly where
@@ -1671,7 +1670,7 @@ pub(crate) fn file_fd_for(cap_raw: u64, need: azos_abi::cap::CapPerms, op: u16) 
     let cap: Cap<File> = Cap::from_raw(CapHandle::from_raw(cap_raw as u32));
     let tid = azos_sched::current_task_tid();
     match azos_ipc::cap_store::with_table(tid, |t| t.get_op(cap, need, op)) {
-        // A `Cap<File>` naming a directory TREE (wave 10,
+        // A `Cap<File>` naming a directory TREE (
         // `azos_ipc::file_cap`) names no descriptor: refused as the wrong
         // kind of object, never handed on as a descriptor number.
         Some(Ok(fd)) if azos_ipc::file_cap::is_tree_resource(fd) => {
@@ -1752,7 +1751,7 @@ pub fn sys_close_typed(cap_raw: u64) -> i64 {
             let fd = match azos_ipc::cap_store::with_table(tid, |t| {
                 let fd = t.get_op(cap, CapPerms::NONE, crate::invoke::class_op(ty::FILE, CLASS_CTL))?;
                 // A directory-tree `Cap<File>` has no descriptor to close
-                // Wave 10: refused, and the grant stays.
+                // Refused, and the grant stays.
                 if azos_ipc::file_cap::is_tree_resource(fd) {
                     return Err(azos_ipc::cap::CapError::WrongKind);
                 }
@@ -1868,7 +1867,7 @@ fn close_endpoint(raw: azos_abi::cap::CapHandle) -> i64 {
 }
 
 /// The first `len` bytes of a bounce buffer, zeroed; the rest is never
-/// touched. Wave 13 (DEBTS): the syscall bounce buffers were `[0u8; 4096]`,
+/// touched. The syscall bounce buffers used to be `[0u8; 4096]`,
 /// and zeroing 4 KiB cost ~1,570 instructions on EVERY read, whatever its
 /// length — a 64-byte `NODE_READ` paid more for the memset than for
 /// the read (vsbench `tmp-ord`, `-icount`, windowed per-function count).
@@ -1907,7 +1906,7 @@ pub fn sys_read(fd: u64, buf: u64, count: u64) -> i64 {
         // Read into a kernel temp buffer, then copy_to_user.
         const MAX: usize = azos_abi::syscall_nr::IO_MAX_BYTES;
         let chunk = count.min(MAX);
-        // U07-2 (audit unit-07): validate the destination BEFORE the
+        // Validate the destination BEFORE the
         // destructive `ops.read` — a read consumes from the file/socket
         // (advances the offset, or for a socket takes the bytes off the
         // wire); discovering the destination is bad only after the read
@@ -1948,7 +1947,7 @@ pub(crate) fn console_write_user(buf: u64, count: u64) -> i64 {
         return -1;
     };
     // Write directly to the UART.
-    // U07-1 (audit unit-07): this used to hold ONE `uart::acquire()`
+    // This used to hold ONE `uart::acquire()`
     // (SIE off) across the whole polled transmit, up to `MAX` = 4096
     // B — ≈15 ms (QEMU) / ≈360 ms (115200 baud) of masked interrupts
     // per call, from ring 3, on every image row that grants
@@ -1958,7 +1957,7 @@ pub(crate) fn console_write_user(buf: u64, count: u64) -> i64 {
     //    `Mutex` held for the whole call, and the writer OWNS the
     //    console while its bytes go out: a kernel line from any hart
     //    or interrupt handler is deferred meanwhile and put on the
-    //    wire after the ring-3 line (wave 9 — a timer-ISR line had
+    //    wire after the ring-3 line (a timer-ISR line had
     //    landed inside `[IPCTEST] ALL PASSED`). See that function.
     //
     // 2. FIFO-batched transmit (measured from ring 3,
@@ -2368,8 +2367,8 @@ pub fn sys_uptime() -> i64 {
 azos_common::ro_hook! {
     /// What runs before an ORDERLY power-off or reboot (`power_off_orderly`,
     /// `reboot_orderly`), installed by the kernel at boot: OTA's void of this boot's
-    /// unconfirmed mark, so a deliberate shutdown is not counted as a crash (owner
-    /// decision 2026-09-28). `crates/core/syscall` cannot name `crates/core/ota`, hence a
+    /// unconfirmed mark, so a deliberate shutdown is not counted as a crash.
+    /// `crates/core/syscall` cannot name `crates/core/ota`, hence a
     /// hook, like the recorders above. Never called on a crash path.
     static ORDERLY_POWER_HOOK: fn();
 }
@@ -2397,7 +2396,7 @@ fn orderly_power_off() {
     if let Some(f) = ORDERLY_POWER_HOOK.get() { f(); }
 }
 
-/// Make the data durable before the power goes (owner decision 2026-10-23,
+/// Make the data durable before the power goes (
 /// Q1), whoever asked for the power-off or reboot: every mounted filesystem
 /// written back (`FileOps::sync_all`), then the boot disk flushed and its
 /// controller shut down (`blkdev::shutdown`: NVMe CC.SHN), then the kernel-held
@@ -2486,7 +2485,7 @@ pub(crate) fn pwm_channel_is_motor_bound(ch: u32) -> bool {
 /// 1 sit on channels 0 and 1. So a control write named for channel 2 — a
 /// channel no motor owns — changes the timing of both wheels.
 ///
-/// Found by audit 2026-09-11, and the three shapes were:
+/// The three shapes were:
 ///   · `SYS_DRV_INVOKE` had this right, inline;
 ///   · the untyped `sys_pwm_*` checked authority over the whole reach
 ///     (`pwm_control_cap_ok`) but motor-binding only on the NAMED channel;
@@ -2556,7 +2555,7 @@ pub(crate) fn gpio_pin_is_safety_line(pin: u32) -> bool {
 /// stays. The break stops below the mmap area (`azos_sched::user_mmap_area`),
 /// which is above every image and below every kernel window.
 pub fn sys_brk(addr: u64) -> i64 {
-    // Wave 13: one layout change at a time per thread group.
+    // One layout change at a time per thread group.
     let _mm = azos_sched::group::mm_lock();
     let Some(space) = azos_sched::current_aspace() else { return -1 }; // kernel task
     let cur = azos_sched::update_user_brk(0);
@@ -2608,7 +2607,7 @@ fn socket_owner_for_caller() -> Option<u32> {
     if azos_sched::current_user_pt() == 0 {
         return Some(azos_net::SOCK_OWNER_KERNEL);
     }
-    // Wave 15 (plan 4a): the process, so a thread's socket is its process's
+    // The process, so a thread's socket is its process's
     // (every thread may use it, and it outlives the thread).
     match azos_sched::current_proc_tid() {
         0   => None, // 0 means "no current task"; NEXT_TID never issues it.
@@ -2815,8 +2814,8 @@ pub fn sys_recvfrom_syscall(fd: u64, buf_ptr: u64, len: u64, addr_ptr: u64) -> i
 /// function entry, not at the declaration: the `addr_ptr == 0` branch above
 /// therefore called `sys_recv_syscall` -- which has a 4 KiB bounce of its own
 /// -- from underneath 4 KiB that the call could never use. 8.3 KiB of the
-/// deepest chain in the image, for one `recvfrom` (tools/lint/stack_chain.py,
-/// 2026-09-16). Same shape as [`recv_bounced`], same `inline(never)` for the
+/// deepest chain in the image, for one `recvfrom` (tools/lint/stack_chain.py).
+/// Same shape as [`recv_bounced`], same `inline(never)` for the
 /// same reason: inlined, the buffer is back in the caller's frame.
 #[inline(never)]
 fn recvfrom_bounced(fd: u64, buf_ptr: u64, count: usize, addr_ptr: u64) -> i64 {
@@ -2879,7 +2878,7 @@ pub fn sys_send_syscall(fd: u64, buf_ptr: u64, len: u64, _flags: u64) -> i64 {
     // Yield-aware, exactly as `sys_connect_syscall` is: on an ARP cache miss
     // the TCP layer resolves the peer's MAC before the segment goes out,
     // instead of letting `ip::send`'s -1 reach ring 3 as a fatal error over a
-    // connection that is perfectly healthy. Owner decision, 2026-09-08.
+    // connection that is perfectly healthy.
     //
     // The common case costs one cache lookup — the yield loop is entered only
     // on a miss, and its budget (`SEND_ARP_MAX_YIELDS`) is 20x smaller than
@@ -2994,7 +2993,7 @@ pub fn sys_socket_typed(domain: u64, sock_type: u64, proto: u64) -> i64 {
         return fd;
     }
     let tid = azos_sched::current_task_tid();
-    // O3.4 (2026-09-26): a socket the task opened itself is giftable
+    // O3.4: a socket the task opened itself is giftable
     // (DELEGATE); abitest moves one to epsrv over the 582 exchange.
     match azos_ipc::cap_store::grant::<Socket>(tid, CapPerms::RW_DELEGATE, fd as u32) {
         Some(cap) => cap.raw().as_raw() as i64,
@@ -3227,10 +3226,10 @@ pub fn sys_net_getip() -> i64 {
 /// `PROT_EXEC` in `sys_mmap`'s `prot`, the POSIX bit value (`PROT_READ` 1,
 /// `PROT_WRITE` 2).
 pub const MMAP_PROT_EXEC: u64 = 4;
-/// `prot` bits `sys_mmap`/`sys_mprotect` honour (wave 13), Linux's values.
+/// `prot` bits `sys_mmap`/`sys_mprotect` honour, Linux's values.
 pub const MMAP_PROT_READ: u64 = 1;
 pub const MMAP_PROT_WRITE: u64 = 2;
-/// `flags` bits `sys_mmap` honours (wave 14, DEMANDPAGE), Linux's values:
+/// `flags` bits `sys_mmap` honours (DEMANDPAGE), Linux's values:
 /// commit every page now instead of on first touch. `MAP_LOCKED` implies it
 /// (a locked mapping must take no fault).
 pub const MMAP_MAP_POPULATE: u64 = 0x8000;
@@ -3246,7 +3245,7 @@ pub use azos_abi::syscall_nr::MMAP_MAP_FIXED_NOREPLACE;
 /// SoftRT 2).
 pub(crate) const RT_CLASS_MAX: u8 = 2;
 
-/// Does this mapping commit every page at map time (wave 14, DEMANDPAGE)?
+/// Does this mapping commit every page at map time (DEMANDPAGE)?
 /// Yes with demand paging off, with `MAP_POPULATE`/`MAP_LOCKED`, for a
 /// `mem = "locked"` task (it must take no page fault), and with
 /// `MM_PRECOMMIT_RT` for a real-time-class task (a control loop never takes a
@@ -3444,13 +3443,13 @@ fn mmap_handed_out(va: usize) -> bool {
 /// `MAP_FIXED_NOREPLACE` refusal (`-EEXIST`, `-ENOMEM`, `-EINVAL`), or -1 on
 /// any other error.
 ///
-/// Wave 14 (DEMANDPAGE): the range is reserved (a region record) and each
+/// The range is reserved (a region record) and each
 /// page committed on its first touch, unless [`mmap_precommit`] says
 /// otherwise or the address space has no free record, in which case every
 /// page is committed now, as before. Either way the whole request is charged
 /// here (reserve-time charging).
 pub fn sys_mmap(addr: u64, length: u64, prot: u64, flags: u64, fd: u64, _offset: u64) -> i64 {
-    // Wave 13: one layout change at a time per thread group.
+    // One layout change at a time per thread group.
     let _mm = azos_sched::group::mm_lock();
     crate::ipc_handlers::reap_stale_mappings();
     // **No executable anonymous memory.** Every page below is mapped USER_RW
@@ -3493,11 +3492,11 @@ pub fn sys_mmap(addr: u64, length: u64, prot: u64, flags: u64, fd: u64, _offset:
     };
     let end_va = aligned_base + span;
 
-    // Owner decision 102 — charge the whole request before taking one frame.
+    // Charge the whole request before taking one frame.
     //
     // All or nothing, as `brk`: a caller that asked for 64 pages cannot use 40.
     // Charging first also means a refusal leaves the allocator untouched.
-    // Wave 13 (security): `prot` is honoured. PROT_NONE reserves the range
+    // `prot` is honoured. PROT_NONE reserves the range
     // (the break moves past it) and maps nothing; `mprotect` maps it later.
     // Anything else maps readable pages, writable only with PROT_WRITE: a
     // store to a PROT_READ mapping faults (128+SIGSEGV), as on Linux. It
@@ -3512,7 +3511,7 @@ pub fn sys_mmap(addr: u64, length: u64, prot: u64, flags: u64, fd: u64, _offset:
 
     if !azos_sched::mm_charge_request(num_pages as u32, request_may_grow()) { return -1; }
 
-    // Wave 14 (DEMANDPAGE): reserve; the fault path commits each page from
+    // Reserve; the fault path commits each page from
     // the region's pager with exactly these permissions (never executable).
     if !mmap_precommit(flags)
         && azos_mm::pager::reserve(space, aligned_base, end_va, writable).is_ok()
@@ -3575,7 +3574,7 @@ fn mmap_unwind(user_pt: usize, base: usize, end: usize) {
 }
 
 /// SYS_MO_UNMAP: unmap pages.  Simplified: just marks pages as unmapped.
-/// `mprotect(addr, len, prot)` (wave 13, security): give the pages of
+/// `mprotect(addr, len, prot)` (security): give the pages of
 /// `[addr, addr + len)` exactly `prot`'s read and write permissions. The
 /// Linux personality's `mprotect` (no native number: it is the memory
 /// authority `SYS_MO_MAP` already grants).
@@ -3636,14 +3635,14 @@ pub fn sys_mprotect(addr: u64, length: u64, prot: u64) -> i64 {
             azos_mm::vmm::UserPage::Leaf { exec: true } if write => {
                 return Errno::EACCES.to_syscall_ret();
             }
-            // Wave 15: the vDSO and signal-trampoline frames are the
+            // The vDSO and signal-trampoline frames are the
             // kernel's, one for every address space; never writable.
             azos_mm::vmm::UserPage::Leaf { .. }
                 if write && azos_mm::vmm::user_leaf_is_kernel_shared(user_pt, va) =>
             {
                 return Errno::EACCES.to_syscall_ret();
             }
-            // Wave 14: a reserved page is not missing (it is charged and
+            // A reserved page is not missing (it is charged and
             // committed on first touch); its region takes the new `prot`.
             azos_mm::vmm::UserPage::Missing if !none && !azos_mm::pager::contains(space, va) => {
                 if va >= brk && !mmap_handed_out(va) { return Errno::ENOMEM.to_syscall_ret(); }
@@ -3657,7 +3656,7 @@ pub fn sys_mprotect(addr: u64, length: u64, prot: u64) -> i64 {
         return 0; // gate canary: permissions never change
     }
     if none {
-        // Wave 14: a `PROT_NONE` range stops being reserved, before the
+        // A `PROT_NONE` range stops being reserved, before the
         // sweep (as in `sys_munmap`); its uncommitted pages are discharged.
         let reserved = match azos_mm::pager::release_range(space, start, end) {
             Ok(n) => n as u32,
@@ -3672,7 +3671,7 @@ pub fn sys_mprotect(addr: u64, length: u64, prot: u64) -> i64 {
     // out under the rewrite would be written back as a valid leaf on a frame
     // it is about to free, and a store that fails restores the old permission.
     let _reclaim_off = azos_mm::pager::reclaim_pause(space);
-    // Wave 14: regions first. It is the step that can refuse for want of a
+    // Regions first. It is the step that can refuse for want of a
     // record, and a refusal here leaves everything as it was.
     if azos_mm::pager::protect_range(space, start, end, write).is_err() {
         return Errno::ENOMEM.to_syscall_ret();
@@ -3720,7 +3719,7 @@ pub fn sys_mprotect(addr: u64, length: u64, prot: u64) -> i64 {
 }
 
 pub fn sys_munmap(addr: u64, length: u64) -> i64 {
-    // Wave 13: one layout change at a time per thread group.
+    // One layout change at a time per thread group.
     let _mm = azos_sched::group::mm_lock();
     crate::ipc_handlers::reap_stale_mappings();
     let Some(space) = azos_sched::current_aspace() else { return -1 };
@@ -3796,17 +3795,17 @@ pub fn sys_munmap(addr: u64, length: u64) -> i64 {
     // The rule for "the task's own frame" is `vmm`'s, shared with the exit
     // path rather than restated here: a `USER` leaf that no record of another
     // owner's frames covers (refused above), with no other COW holder.
-    // Owner decision 102 — discharge exactly what was FREED, not what was
+    // Discharge exactly what was FREED, not what was
     // asked for. `unmap_user_range_and_free` counts exactly that: nothing for a VA
     // that held nothing of ours, or a frame another COW holder still owns. Discharging the requested length instead
     // would credit a task for frames it never had, which is the direction that
     // silently disables the budget.
     //
-    // Wave 8: one TLB shootdown per batch of `vmm::UNMAP_BATCH_PAGES` pages,
+    // One TLB shootdown per batch of `vmm::UNMAP_BATCH_PAGES` pages,
     // not one per page; each batch's frames are freed only after its
     // shootdown, so no hart can still read a frame the PMM has reissued.
     //
-    // Wave 14 (DEMANDPAGE): the range leaves its regions BEFORE the sweep,
+    // The range leaves its regions BEFORE the sweep,
     // so no fault can commit a page in it afterwards. The reserved pages
     // never committed were charged at mmap and come back here; the sweep
     // frees and counts the committed ones.
@@ -3843,7 +3842,7 @@ pub fn sys_munmap(addr: u64, length: u64) -> i64 {
     0
 }
 
-/// Wave 14 (DEMANDPAGE), a fork's `before_release` step: the child gets
+/// A fork's `before_release` step: the child gets
 /// the parent's mappings, its anonymous objects cloned (their resident pages
 /// shared copy-on-write, their compressed ones a share of the pool), and is
 /// charged for the part not committed yet, under the same reserve-time model
@@ -3987,11 +3986,11 @@ fn cap_lookup_in_own_table(kind: azos_abi::cap::CapType, resource: u32) -> i64 {
     }
 }
 
-// ── Former inline dispatch arms (wave 7) ─────────────────────────────────────
+// ── Former inline dispatch arms ─────────────────────────────────────
 //
 // The syscalls below were implemented inside `dispatch.rs`'s `match`, which no
-// host test compiles. Their bodies moved here unchanged (owner decision round
-// 7): same checks in the same order, same narrowing of each argument, same
+// host test compiles. Their bodies moved here unchanged:
+// same checks in the same order, same narrowing of each argument, same
 // return codes. The ABI of each call is still documented at its arm.
 
 // ── DNS (F05), 266 ───────────────────────────────────────────────────────────
@@ -4034,7 +4033,7 @@ fn arch_irq_unmask(irq: u32) {
     {
         if azos_drv_irqchip::user_irq::owned(irq) {
             // The hart that took the line's first delivery since its bind
-            // (wave 10 IRQ5), once per bind: the `riscv64 ring-3 irq` row
+            //, once per bind: the `riscv64 ring-3 irq` row
             // compares it with the route and the owner's pin.
             if let Some(taken) = azos_drv_irqchip::user_irq::first_delivery(irq) {
                 azos_drv_sys::kprintln!(
@@ -4073,7 +4072,7 @@ fn arch_irq_unmask(irq: u32) {
 /// before a binding is stored. aarch64: an SPI the kernel did not route for
 /// itself (`azos_arch::irq::gic::user_spi_bindable`). riscv64: a source the
 /// kernel did not enable for itself (`azos_drv_irqchip::user_irq::bindable`;
-/// wave 9 IRQ4 — it used to take any line the capability named, the
+/// It used to take any line the capability named, the
 /// console's included). Host test builds take any line.
 #[inline]
 pub(crate) fn arch_irq_bindable(irq: u32) -> bool {
@@ -4103,7 +4102,7 @@ pub(crate) fn arch_irq_bindable(irq: u32) -> bool {
 /// back to the binding PE); refused for an SPI past the distributor's
 /// `GICD_TYPER.ITLinesNumber`.
 ///
-/// riscv64 (wave 10 IRQ5): hart `cpu` if it takes external interrupts, else
+/// riscv64: hart `cpu` if it takes external interrupts, else
 /// the boot hart (`user_irq::target_hart`); a line bound before on another
 /// hart moves (`user_irq::bind`). Refused for a PLIC source the boot probe
 /// found unimplemented, an APLIC source past `riscv,num-sources`, or one the

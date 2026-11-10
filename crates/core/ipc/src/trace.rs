@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The kernel tracer's region and its older entry points (wave 15, TRACE).
+//! The kernel tracer's region and its older entry points (TRACE).
 //!
 //! The tracer itself is `azos_trace` (per-CPU lock-free rings, the runtime
 //! class mask, the tracepoints). This module owns what needs the IPC layer:
@@ -9,7 +9,7 @@
 //! other region's), the mapping a reader
 //! holding `Cap<Trace>` asks for, and the panic path's dump.
 //!
-//! Until wave 15 this was a 512-event ring of its own (AQ8), recorded into
+//! This used to be a 512-event ring of its own, recorded into
 //! with a shared `fetch_add` from every CPU and readable only through the
 //! UART. [`trace_event`] keeps its signature for the two callers that still
 //! use it (seccomp denials and Linux signal delivery) and forwards to the

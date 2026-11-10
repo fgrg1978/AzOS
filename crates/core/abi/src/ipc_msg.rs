@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The message descriptor of ABI v2 of the call (wave 15 N11).
+//! The message descriptor of ABI v2 of the call.
 //!
 //! One `repr(C)` layout, the same in a v2 call, its reply, and (later) on
 //! the wire to another node: a version, inline words, and capability

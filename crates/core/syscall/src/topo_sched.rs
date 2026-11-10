@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! Apply a topology row's scheduling class and priority to a ring-3 task
-//! (wave 7).
+//!.
 //!
 //! Has every user-space task take its scheduler class from the
-//! signed topology. Until wave 7 the rows were read for admission only; the
+//! signed topology. The rows used to be read for admission only; the
 //! autorun loader, `SYS_SPAWN_EX` and `fork` created every ring-3 task at
 //! `DEFAULT_PRIORITY`, whatever its row said.
 //!
@@ -36,8 +36,8 @@ use azos_topology::RowSched;
 
 /// The highest priority number a topology may give a ring-3 task.
 pub const MAX_TASK_PRIORITY: u32 = azos_sched::IDLE_PRIORITY - 1;
-/// The most urgent priority a topology may give a ring-3 task (owner decision
-/// 2026-09-28, round 15): `RT_PRIORITY_THRESHOLD`, 12. Below it the timer tick
+/// The most urgent priority a topology may give a ring-3 task:
+/// `RT_PRIORITY_THRESHOLD`, 12. Below it the timer tick
 /// never preempts a task, so a ring-3 loop there would starve `net-poll` (12)
 /// and `sys-wdt` (11) on its hart — the starvation that already failed the
 /// `userspace: the brain lies` row once. A row asking for less is raised to
@@ -62,11 +62,11 @@ pub enum TopoSched {
         /// The row asked for a priority below [`MIN_TASK_PRIORITY`] and was
         /// raised to it. The caller records it (`SITE_*_FLOOR`).
         floored: bool,
-        /// Wave 11 SCHED-RT: the row declares a real-time profile in a class
+        /// The row declares a real-time profile in a class
         /// with `admission_control`. The task must be given this reservation
         /// (`azos_sched::rt::reserve`) BEFORE it runs at `priority`; when
         /// `priority` is in the band (below [`MIN_TASK_PRIORITY`]) the
-        /// reservation is what admits it there (owner decision, wave 11: a
+        /// reservation is what admits it there (a
         /// ring-3 row may enter the band only with a CBS reservation that
         /// passes admission). If the reservation is refused, the caller runs
         /// the task at [`band_refused_priority`] without one, or fails.
@@ -102,13 +102,13 @@ pub fn resolve(name: &[u8]) -> TopoSched {
 
 /// The priority a ring-3 task whose band reservation was refused runs at
 /// instead: its row's priority raised to the ring-3 floor, exactly what a row
-/// without a profile gets (the 2026-09-28 rule stands for every task that
+/// without a profile gets (that rule stands for every task that
 /// holds no admitted reservation).
 pub fn band_refused_priority(priority: u32) -> u32 {
     azos_topology::ring3_priority(priority, MIN_TASK_PRIORITY, MAX_TASK_PRIORITY).0
 }
 
-/// Wave 11 SCHED-RT: the EDF + CBS reservation the row named `name` declares,
+/// The EDF + CBS reservation the row named `name` declares,
 /// or `None` when it has no profile or its class has no `admission_control`
 /// (a best-effort class's profile is neither admitted nor enforced).
 ///
@@ -124,7 +124,7 @@ pub fn row_reservation(name: &[u8]) -> Option<azos_sched::rt::Reservation> {
     if !task.profile.is_declared() {
         return None;
     }
-    // In the band only with locked memory too (wave 11 owner decision); an
+    // In the band only with locked memory too; an
     // installed topology already refused such a row, this keeps it so.
     if topo.row_band_entry(ti) == azos_topology::BandEntry::NotLocked {
         return None;
@@ -297,7 +297,7 @@ pub const SITE_SQPOLL_SHARED_HART: u8 = 4;
 /// the waiter was more urgent than a ring-3 task may run. `detail` is the
 /// target's TID; recorded once per target task (`azos_sched::set_pi_floor_recorder`).
 pub const SITE_DONATION_FLOOR: u8 = 5;
-/// Wave 11 SCHED-RT: a row's real-time reservation was refused by run-time
+/// A row's real-time reservation was refused by run-time
 /// admission (`detail` = the task's TID, 0 when no task was created). The
 /// task never enters the band without one.
 pub const SITE_SPAWN_RT: u8 = 6;

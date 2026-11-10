@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Per-endpoint call queues (wave 15 N5).
+//! Per-endpoint call queues.
 //!
 //! The fast call (`SYS_IPC_CALL`) is queued on the endpoint it names,
 //! not in one machine-wide table:
@@ -168,7 +168,7 @@ struct Rec {
     next: AtomicU32,
 }
 
-/// Wave 15 N11, per record: the badge of the endpoint capability a v2 call
+/// N11, per record: the badge of the endpoint capability a v2 call
 /// went through, valid only while `gen` is the record tag's generation (a
 /// v1 call never writes either, so it reads as unbadged, never as the badge
 /// of an earlier call). Beside the records, not in them: a `Rec` stays 64 B,
@@ -263,7 +263,7 @@ pub fn canary_port_calls_none() {
     CANARY_CALLS_NONE.store(true, Ordering::Relaxed);
 }
 
-/// Gate canary `ipc-reply-twice` (wave 15 N11): a reply on a warrant whose
+/// Gate canary `ipc-reply-twice`: a reply on a warrant whose
 /// call was already answered is delivered again instead of refused.
 static CANARY_REPLY_TWICE: AtomicBool = AtomicBool::new(false);
 
@@ -272,7 +272,7 @@ pub fn canary_reply_twice() {
     CANARY_REPLY_TWICE.store(true, Ordering::Relaxed);
 }
 
-/// Runtime canary `ipc-v1-takes-v2` (wave 15 N11c): the v1 accept takes a
+/// Runtime canary `ipc-v1-takes-v2`: the v1 accept takes a
 /// v2 call as it did before the owner's decision of 10-10 (its first four
 /// words and first capability; the rest stay unnamed in the server's
 /// table), so the ktest `ipc_v2_call_refused_by_v1_accept` must fail.
@@ -1539,7 +1539,7 @@ pub fn release_caller(idx: usize, tid: u32) -> Option<Completed> {
     Some(c)
 }
 
-// ── Wave 15 N11: the v2 call's badge and its reply warrant ─────────────────
+// ── The v2 call's badge and its reply warrant ─────────────────
 
 /// Before a v2 call by the task in slot `caller_idx`: the call [`call`] is
 /// about to queue goes through an endpoint capability badged `badge`.
@@ -1647,7 +1647,7 @@ pub fn reply_warrant(handle: u64, holder: u32, words: [u64; WORDS]) -> Reply {
     out
 }
 
-// ── Wave 15 N11b: the v2 message beyond the record's four words ────────────
+// ── The v2 message beyond the record's four words ────────────
 
 /// Kconfig `IPC_MSG_INLINE_WORDS`: inline words one v2 message carries.
 /// The host build uses the descriptor's ABI ceiling (8).
@@ -2350,7 +2350,7 @@ mod tests {
         assert_eq!(handle_gen(make_handle(3, 5)), 5);
     }
 
-    // ── Wave 15 N11: reply warrant and badge ────────────────────────────────
+    // ── Reply warrant and badge ────────────────────────────────
 
     const WORKER: u32 = 31;
 
@@ -2449,7 +2449,7 @@ mod tests {
         assert_eq!(accept_badge(h3, SERVER), None);
     }
 
-    // ── Wave 15 N11b: the v2 message ────────────────────────────────────────
+    // ── The v2 message ────────────────────────────────────────
 
     fn payload(seed: u64) -> Payload {
         let mut p = Payload::EMPTY;
@@ -2562,7 +2562,7 @@ mod tests {
         assert_eq!(take_reply(idx, h2), None, "a v1 answer stages nothing");
     }
 
-    // ── Wave 15 N11c: the v1 accept refuses a v2 call ───────────────────────
+    // ── The v1 accept refuses a v2 call ───────────────────────
 
     /// A v2 call (badge and message stamped) from client `i`.
     fn call_v2_from(i: usize, cap: u32) -> u64 {

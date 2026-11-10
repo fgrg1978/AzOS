@@ -362,7 +362,7 @@ pub struct IoRingState {
     /// where "the pass is definitely finished" is known, and `release_ring`
     /// already holds the table lock there.
     ///
-    /// **Verified true (2026-09-06 audit), not just asserted.** Every
+    /// **Verified true, not just asserted.** Every
     /// transition of `active`/`in_flight`/`orphaned` runs under
     /// `IO_RINGS.lock_irqsave()`, and there are exactly four call sites:
     /// `claim_ring`'s `if !state.active || state.in_flight { return None; }`
@@ -948,8 +948,8 @@ const CODE_REVOKED: u16 = azos_abi::error::Errno::EREVOKED as u16;
 const CODE_PEER_DIED: u16 = azos_abi::error::Errno::EPEERDIED as u16;
 
 /// Ring `r` (its packed reference), bound to a port through `link`, is gone:
-/// the port's source reports `PORT_EVENT_SOURCE_GONE` with `code` (wave 15
-/// N5b). No lock of this module held.
+/// the port's source reports `PORT_EVENT_SOURCE_GONE` with `code`.
+/// No lock of this module held.
 fn post_gone((link, r): (PortLink, u32), code: u16) {
     if !link.is_none() {
         let _ = crate::port::port_source_gone(link, crate::port::PortSourceKind::Ring(r), code);
@@ -1389,7 +1389,7 @@ pub fn io_ring_release_all(tid: u32) {
     // each sees its ring gone and exits (a parked one would otherwise sleep
     // forever on a ring that no longer exists).
     let mut pollers = [0u32; MAX_IO_RINGS];
-    // First, each bound ring's port hears that it is gone (wave 15 N5b), one
+    // First, each bound ring's port hears that it is gone, one
     // ring a hold so nothing is buffered per ring (an orphaned ring too, at
     // its owner's exit rather than when its last pass ends). A pass still in
     // flight that completes later finds its port source gone and signals
@@ -1605,7 +1605,7 @@ pub struct IoRingOps {
     /// once durable, `Some(-errno)` when it failed.
     pub fsync_done:    fn(ticket: u64) -> Option<i32>,
     /// May the running task enter the block layer? `false` for a real-time
-    /// task (owner rule: RT only enqueues). Asked once per submit or poller
+    /// task (RT only enqueues). Asked once per submit or poller
     /// pass; with Kconfig `IORING_ASYNC` the file entries of a task that may
     /// block still go to the worker ([`IoRingOps::file_inline`]) and its block
     /// entries are queued, so this decides only the entries the queue cannot
@@ -1734,11 +1734,11 @@ pub fn io_ring_submit(ring_id: u32) -> i32 {
 /// With no op table registered nothing executes and no claim is taken, so the
 /// compare takes the table lock once on its own: a stale reference answers
 /// `Stale` and a live one `SubmitError(IO_ERR_NO_OPS)`. That one extra hold on
-/// a path that executes nothing is accepted (owner decision 2026-09-14,
+/// a path that executes nothing is accepted (
 /// Q4): answering `IO_ERR_NO_OPS` for any capability would let
 /// a stale one read as live.
 ///
-/// # `caller_tid` (2026-09-23)
+/// # `caller_tid`
 ///
 /// Every device-capability check inside a submit pass is resolved on the
 /// ring's **owner** — `state.owner_task`, stamped once by [`create_core`] and
@@ -3023,7 +3023,7 @@ pub fn io_ring_create_cap_ref(
 ) -> Result<(crate::cap::Cap<crate::cap::targets::IoRing>, u32, u64), IoRingCapError> {
     let (r, phys_addr) = create_core(tid as usize).ok_or(IoRingCapError::NoMem)?;
     // The capability stores the packed `(index, generation)`. `RW_DELEGATE`
-    // (owner decision 2026-09-26, O3.4): the creator may copy and gift its own
+    // (O3.4): the creator may copy and gift its own
     // ring.
     match objref::grant_packed::<crate::cap::targets::IoRing>(tid, crate::cap::CapPerms::RW_DELEGATE, r) {
         Some(cap) => Ok((cap, r, phys_addr as u64)),
@@ -3063,8 +3063,8 @@ pub fn io_ring_create_cap_ref(
 ///
 /// **Not contained.** Destroying is a release, so it resolves through
 /// `CapTable::get_uncontained`: it still needs `WRITE`, and it stays live
-/// while degraded-mode containment is armed, the way closing a socket does (owner
-/// decision 2026-09-13). Submitting — which executes the ring's queued writes —
+/// while degraded-mode containment is armed, the way closing a socket does.
+/// Submitting — which executes the ring's queued writes —
 /// stays contained. There is no untyped destroy.
 pub fn io_ring_destroy_cap(
     table: &crate::cap::CapTable,
@@ -3517,7 +3517,7 @@ mod tests {
         FLUSH_DONE.store(FLUSH_ASKED.load(AOrd::SeqCst), AOrd::SeqCst);
         io_ring_flush_posted();
     }
-    /// `false`: the submitting task is real-time (owner rule: no block I/O).
+    /// `false`: the submitting task is real-time (no block I/O).
     static MAY_BLOCK: AtomicBool = AtomicBool::new(true);
     fn hook_may_block() -> bool { MAY_BLOCK.load(AOrd::SeqCst) }
     /// `false`: a task that may block still hands its file entries to the
@@ -4430,7 +4430,7 @@ mod tests {
         assert_eq!(destroy(OTHER, in_b), Err(STALE));
     }
 
-    /// (6) U03-1 / U04-1's fix, owner decision 2026-09-26: a slot that reaches
+    /// (6) The fix: a slot that reaches
     /// `LAYOUT.gen_max()` is swept **at its own index only**
     /// (`objref::sweep_index`) and reused from generation 1 — instead of the
     /// old design's pool-wide counter, whose exhaustion swept every
@@ -5303,7 +5303,7 @@ mod tests {
         assert_eq!(sqpoll_permit(OWNER), 0, "the exit left the permit behind");
     }
 
-    // ── Wave 11 (PORTWAIT): a ring bound to an event port ─────────────────
+    // ── A ring bound to an event port ─────────────────
 
     /// A pass that writes a completion signals the port the ring is linked
     /// to (one event, type 2); a pass that writes none does not; a completion

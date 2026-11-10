@@ -177,8 +177,8 @@ impl Preemption {
 /// The levels form a chain, so the effect gate's *meet* of several
 /// contributors' envelopes is the most restrictive one ([`Envelope::meet`]).
 ///
-/// Consumed by B4-MEET (W16, class `envelope`), HV-CORE (W19, guest egress),
-/// BATTERY (W24, `[degrade.NAME]`).
+/// Consumed by B4-MEET (class `envelope`), HV-CORE (guest egress),
+/// BATTERY (`[degrade.NAME]`).
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 #[repr(u8)]
 pub enum Envelope {
@@ -328,8 +328,8 @@ pub struct CapSpec<'a> {
     /// Resource-specific resolution happens during task spawn.
     pub target: MaybeStr<'a>,
     /// Whether the minted capability carries `CapPerms::DELEGATE`, `DUP` and
-    /// `TRANSFER` (owner decision 2026-09-26, O3.4; `TRANSFER` split from `DUP`
-    /// 2026-10-17): a task may hand a `TRANSFER`-bearing capability to another
+    /// `TRANSFER` (split from `DUP`):
+    /// a task may hand a `TRANSFER`-bearing capability to another
     /// task via `move_cap`, and copy one that also carries `DUP`; without
     /// `TRANSFER` the move is refused. Defaults to `false` — a topology row
     /// transfers authority only when it says so with `transfer = true` (or the
@@ -387,11 +387,11 @@ pub struct TaskSpec<'a> {
     /// Declared real-time parameters, or `SchedProfile::NONE` for a best-effort
     /// task. Checked by [`Topology::deadline_admission`].
     pub profile: crate::deadline::SchedProfile,
-    /// Owner decision 102 — this task's budget of physical frames, in 4 KiB
+    /// This task's budget of physical frames, in 4 KiB
     /// pages. **`0` means no limit**, which is what every row that does not
     /// declare one gets.
     ///
-    /// Scan unit 3 finding 3: CPU has quotas and memory had none, so one
+    /// CPU has quotas and memory had none, so one
     /// ring-3 task could walk `brk` until the page allocator was empty — and
     /// then the kernel heap, the copy-on-write break and every safety path
     /// that allocates fail too. A VA ceiling (`USER_LOW_MAX`) does not bound
@@ -401,7 +401,7 @@ pub struct TaskSpec<'a> {
     /// because that is where the rest of what a task is allowed to do is
     /// declared.
     pub mem_pages: u32,
-    /// Owner decisions, rounds 13-14: `mem = "locked"` in the
+    /// `mem = "locked"` in the
     /// row. A locked row's `mem_pages` is a RESERVATION counted once by
     /// [`Topology::memory_admission`] and must be declared (non-zero); every
     /// other ring-3 row's `mem_pages` is a CEILING, counted twice there
@@ -416,14 +416,14 @@ pub struct TaskSpec<'a> {
     /// hart, so the signed topology decides who may have one
     /// (`crates/core/ipc/src/io_ring.rs`, `OP_SQPOLL_START`).
     pub sqpoll_idle_ms: u32,
-    /// Wave 9: how many instances of this row may be live at
+    /// How many instances of this row may be live at
     /// once, `instances = N` in the row. `0` stands for the default, 1 (see
     /// [`TaskSpec::instance_count`]). [`Topology::memory_admission`] counts
     /// the row N times; the kernel refuses the N+1th live spawned (or exec'd)
     /// instance. Fork children are not instances: the memory budget bounds
     /// them.
     pub instances: u16,
-    /// `start = true` in the row (wave 9, owner decision): the system starts
+    /// `start = true` in the row: the system starts
     /// this image at boot, from `/fat/<name>`, with the row's own
     /// capabilities, class and frame budget: the component manager does,
     /// except for its own row and a driver that moves between hosts, which
@@ -437,12 +437,12 @@ pub struct TaskSpec<'a> {
     /// at most [`MAX_HUGE_MIB`]; `0` (the default) means no region. Counted by
     /// [`Topology::memory_admission`] as `N × 256` locked pages per instance.
     pub mem_huge_mib: u16,
-    /// Wave 11 (DRVPLACE): `restart = always | on-failure | no` in the row
+    /// `restart = always | on-failure | no` in the row
     /// (topology format 2), what the kernel's supervisor does when a
     /// supervised task of this row ends. [`RestartPolicy::OnFailure`] unless
     /// declared, which is what every row of a format-1 topology gets.
     pub restart: RestartPolicy,
-    /// Wave 12: `abi = "native" | "linux"` in the row (topology
+    /// `abi = "native" | "linux"` in the row (topology
     /// format 3), the syscall table the image's numbers are read against.
     /// [`TaskAbi::Native`] unless declared: no image is translated because
     /// it looks like a Linux binary. A Linux row holds no hardware
@@ -498,7 +498,7 @@ pub struct TaskSpec<'a> {
     /// a strong holder would have been refused is recorded as a would-be
     /// refusal instead of being applied. Authority is then granted by editing
     /// the signed row, with the records as evidence. `false` unless declared.
-    /// Consumed by WEAK-CAPS (W12, `crates/core/sched/src/spawn.rs`).
+    /// Consumed by WEAK-CAPS (`crates/core/sched/src/spawn.rs`).
     pub shadow: bool,
     /// `isolated = true` in the row (CAPS.TOML format 7): the row's real-time
     /// task owns one CPU of the `[sched] isolcpus` set alone, and that CPU may
@@ -517,7 +517,7 @@ pub struct TaskSpec<'a> {
     /// KiB, that kernel allocations made on behalf of this row's Domain (cap
     /// tables, endpoint queues, page tables, ...) may hold at once. **`0`
     /// means no ceiling of its own**, which is what every row that does not
-    /// declare one gets. Consumed by KMEM-CHARGE (W12,
+    /// declare one gets. Consumed by KMEM-CHARGE (
     /// `crates/core/mm/src/budget.rs`).
     pub kmem_kib: u32,
     /// `principal = "user"` in the row (CAPS.TOML format 7): who this row's
@@ -704,7 +704,7 @@ impl SchedConfig {
 // `TaskSpec::caps_start` / `caps_count` index the capability pool as u32 (they
 // were u16, one short of fleet's MAX_CAPS_TOTAL = 65 536). The counters themselves are `usize`: a u8
 // task counter overflowed at the 256th row whatever MAX_TASKS allowed (fleet
-// is 4096), and a u16 pool length stored 65 536 entries as 0 (wave 11 LIMDOC).
+// is 4096), and a u16 pool length stored 65 536 entries as 0.
 const _: () = assert!(MAX_CAPS_TOTAL <= u32::MAX as usize,
     "MAX_CAPS_TOTAL must fit TaskSpec::caps_start (u32)");
 
@@ -1025,7 +1025,7 @@ pub struct PeerSpec<'a> {
     pub noise_pks: [[u8; 32]; PEER_NODES],
     /// Entries of `noise_pks` in use: 0 or `nodes_len`.
     pub noise_pks_len: u8,
-    /// `measurement = "<64 hex>"` (format 7): the image measurement (SHA-256,
+    /// `measurement = "<64 hex>"` (format 7): the image measurement (
     /// the DICE layer's) every node of the class must attest at the
     /// handshake. `None` when the class does not pin one. Never all-zero.
     /// Consumed by DICE-ID (W16).
@@ -1283,7 +1283,7 @@ impl BuildId {
 /// floor. Only functions that never sleep may be patched (the checker, not
 /// the row, decides which).
 ///
-/// Consumed by LIVEPATCH (W20, `kernel/src/boot/livepatch.rs`).
+/// Consumed by LIVEPATCH (`kernel/src/boot/livepatch.rs`).
 #[derive(Clone, Copy, Debug)]
 pub struct LivepatchSpec<'a> {
     /// Row name, unique in the topology.
@@ -1323,7 +1323,7 @@ impl<'a> LivepatchSpec<'a> {
 /// around the threshold does not toggle the level). Rows are consistent: no
 /// level twice, and a more restrictive level has a strictly lower threshold.
 ///
-/// Consumed by BATTERY (W24, `POWERSVC`).
+/// Consumed by BATTERY (`POWERSVC`).
 #[derive(Clone, Copy, Debug)]
 pub struct DegradeSpec<'a> {
     /// Row name, unique in the topology.
@@ -1395,7 +1395,7 @@ impl ClockSpec {
 }
 
 /// One `[swap.NAME]` row (CAPS.TOML format 7): the partition that holds a swap
-/// area. Consumed by SWAP-OUT (W16, `kernel/src/boot/swap.rs`).
+/// area. Consumed by SWAP-OUT (`kernel/src/boot/swap.rs`).
 #[derive(Clone, Copy, Debug)]
 pub struct SwapSpec<'a> {
     /// Row name, unique in the topology.
@@ -1448,7 +1448,7 @@ impl<'a> LoginSpec<'a> {
 
 /// One `[volume.NAME]` row (CAPS.TOML format 7): a native azvol volume and
 /// where it is mounted. Consumed by AZVOL-FORMAT (W21), AZVOL-AEAD (W23) and
-/// AZVOL-MOUNT (W24, `kernel/src/boot/azvol.rs`).
+/// AZVOL-MOUNT (`kernel/src/boot/azvol.rs`).
 #[derive(Clone, Copy, Debug)]
 pub struct VolumeSpec<'a> {
     /// Row name, unique in the topology.
@@ -1534,7 +1534,7 @@ fn paths_overlap(a: &[u8], b: &[u8]) -> bool {
 /// devices do, so every effect from inside the guest passes the same envelope
 /// and leaves the same record as one from a native task.
 ///
-/// Consumed by HV-CORE (W19, `crates/core/hv`) and VMMD-CORE (W21).
+/// Consumed by HV-CORE (`crates/core/hv`) and VMMD-CORE (W21).
 #[derive(Clone, Copy, Debug)]
 pub struct GuestSpec<'a> {
     /// Row name, unique in the topology.
@@ -1930,7 +1930,7 @@ impl FwAction {
 /// Rules are tried in file order and the first that matches decides; a packet
 /// no rule matches is the filter's own default.
 ///
-/// Consumed by FW-RULES (W19, the net crate's `filter.rs`: compiled at boot)
+/// Consumed by FW-RULES (the net crate's `filter.rs`: compiled at boot)
 /// and ROUTE-NAT (W24).
 #[derive(Clone, Copy, Debug)]
 pub struct FirewallSpec<'a> {
@@ -4572,7 +4572,7 @@ impl<'a> Topology<'a> {
                 return Err(AdmissionError::BadRow(RowKind::Policy));
             }
         }
-        // Wave 11 SCHED-RT: a row that would run in the band with a
+        // A row that would run in the band with a
         // reservation must be `mem = "locked"`.
         for ti in 0..self.tasks().len() {
             if self.row_band_entry(ti) == crate::deadline::BandEntry::NotLocked {

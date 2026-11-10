@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Domains (owner decision D2): the unit that owns a capability table, a
+//! Domains: the unit that owns a capability table, a
 //! memory charge and a security boundary. A task is a thread of execution;
 //! the domain is what its threads share.
 //!
@@ -43,7 +43,7 @@
 //!   child Domain, 0 (the default partition) otherwise. Atomic, not in
 //!   [`State`]: the switch path of any hart reads it;
 //! * hooks with no logic yet, each named for the decision that fills it:
-//!   `owner_root` (D10, the user root warrant id; 0 for the system), `vm`
+//!   `owner_root` (the user root warrant id; 0 for the system), `vm`
 //!   (reserved), `measurement` (DICE);
 //! * the parent link and the subtree policy (below).
 //!

@@ -150,8 +150,8 @@ pub trait Power {
     fn cpu_online(&mut self, cpu: u32, on: u32) -> Out<u32>;
     /// Make every mounted filesystem durable: the page cache, the block cache
     /// and the journal written back, then each volume's disk flushed. What the
-    /// power service asks before `shutdown` and `reboot` (owner decision
-    /// 2026-10-23); the kernel's orderly path syncs again after it, for the
+    /// power service asks before `shutdown` and `reboot`;
+    /// the kernel's orderly path syncs again after it, for the
     /// callers that have no service. `OK` with the number of volumes synced;
     /// `FAULT` with the number that failed, or whose flush had not finished
     /// in Kconfig `POWER_OFF_STEP_TIMEOUT_MS`. Needs `WRITE`. Waits for the
@@ -206,7 +206,7 @@ pub const PM_STAT_RECORDED: u32 = 10;
 /// [`runtime::Record::pack`]: `0` when there is none yet.
 pub const PM_STAT_RECORD_BASE: u32 = 16;
 
-/// The power state of one device (runtime PM, owner decision 16-10).
+/// The power state of one device (runtime PM).
 ///
 /// Served by the driver of the device from its own endpoint, next to the
 /// device's own interface; the power service holds the client. Policy

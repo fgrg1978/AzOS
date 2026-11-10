@@ -83,8 +83,8 @@ disk-part-row = []
 #
 # It used to be unconditional, which made an actuation authority part of the
 # default topology of a general-purpose kernel: every build, every board, every
-# workload, whether or not anything on it could move. Owner decision
-# 2026-09-21, with the pivot to a generic microkernel: the ABI numbers stay
+# workload, whether or not anything on it could move.
+# With the pivot to a generic microkernel, the ABI numbers stay
 # where they are (550-561 — retiring a syscall number is not something this
 # project does), and what moves is the GRANT. A deployment that actuates turns
 # this on; one that does not never holds the capability, so there is nothing
@@ -100,7 +100,7 @@ profile-actuation = []
 # zero `Endpoint` rows, so they hang off `qemu` exactly as
 # `cap-refusal-canary` does. See `builder.rs`.
 ipc-endpoint-canary = []
-# Wave 9 (owner decision): `start = true` on the BUZZDRV.ELF and INADRV.ELF
+# `start = true` on the BUZZDRV.ELF and INADRV.ELF
 # rows, so the component manager starts the two ring-3 drivers at boot. Wired to `qemu`
 # only: the images ship only on the QEMU drivers disks (`$AZOS_OUT/build/disk-drv.img`,
 # `$AZOS_OUT/build/disk-aarch64-drv.img`), so a QEMU boot starts them from those disks
@@ -111,19 +111,19 @@ ring3-driver-start = []
 # Its canary: the buzzer row loses `start = true` (the INA219 row keeps it),
 # so the `drivers: buzzer` row must go red on "no ring-3 driver registered".
 ring3-driver-start-canary = ["ring3-driver-start"]
-# Wave 11 (DRVPLACE): Kconfig DRV_INA219_PLACEMENT = kernel, forwarded by the
+# Kconfig DRV_INA219_PLACEMENT = kernel, forwarded by the
 # kernel's `ina219-kernel`. The INADRV.ELF row (the ring-3 host's grants) is
 # not declared (`builder::INADRV_ROW`).
 ina219-kernel = []
 # The kernel's `virtio-rng-ring3`: the RNGDRV.ELF row (the ring-3 virtio-rng
 # driver's grants) exists only with it.
 virtio-rng-ring3 = []
-# Wave 12 (DRVPLACE): Kconfig DRV_BUZZER_PLACEMENT = kernel, forwarded by the
+# Kconfig DRV_BUZZER_PLACEMENT = kernel, forwarded by the
 # kernel's `buzzer-kernel`. The built-in BUZZDRV.ELF row says `place =
 # "kernel"` (`builder::BUZZER_START_HOST`); its ring-3 host is started at boot
 # all the same (the standby of a driver placed in the kernel).
 buzzer-kernel = []
-# Wave 11 (DRVPLACE) gate row: `restart = no` on BUZZDRV.ELF, so the component
+# Gate row: `restart = no` on BUZZDRV.ELF, so the component
 # manager's honouring of the row key can be shown on a boot (the kernel's
 # `restart-smoke`). Every other row, and every build without it, keeps the
 # default `on-failure`.
@@ -188,18 +188,18 @@ coreutil-write-canary = []
 # Canary: `EXT4D.ELF`'s row also holds the boot volume's partition; the
 # topology-tests authority row must turn red. Never in a real build.
 ext4d-grant-canary = []
-# Wave 15 canary: TRACECTL.ELF's row holds no `Cap<Trace>`; every
+# Canary: TRACECTL.ELF's row holds no `Cap<Trace>`; every
 # tracer op must be refused and recorded.
 trace-cap-canary = []
-# Wave 12 canary: FLIGHT.ELF, BEHAVIOR.ELF, CONFIG.ELF and OTA.ELF rows without
+# Canary: FLIGHT.ELF, BEHAVIOR.ELF, CONFIG.ELF and OTA.ELF rows without
 # their capabilities; every family operation must be refused and recorded.
 # Never in a real build.
 family-cap-canary = []
-# Wave 12 gate row: the drivetrain (motor.0/motor.1 WRITE) is FLIGHT.ELF's
+# Gate row: the drivetrain (motor.0/motor.1 WRITE) is FLIGHT.ELF's
 # instead of the autorun row's, so `flight arm` from the user shell can
 # succeed (one writer per motor). Implies the actuation profile.
 flight-tool-drivetrain = ["profile-actuation"]
-# Wave 12: the Linux personality's test row, `LXHELLO.ELF`
+# The Linux personality's test row, `LXHELLO.ELF`
 # (abi = "linux", no capabilities), and the shell's right to start it. Gate
 # only. `linux-abi-caps-canary` grants the row `/fat` read-write so the
 # image's create under `/fat` is no longer refused.
@@ -211,11 +211,11 @@ abichild-fat-row = []
 # The third-party BUSYBOX.ELF row (`make busybox`) and the
 # shell's grant to start it. Gate only.
 linux-busybox-test = ["linux-abi-test"]
-# Wave 13 gate row: `BUSYBOX.ELF`'s row also holds `/fat` and the grant to
+# Gate row: `BUSYBOX.ELF`'s row also holds `/fat` and the grant to
 # `execve` `LXHELLO.ELF` (whose row does not hold `/fat`). Never in a real
 # build.
 linux-exec-row-test = ["linux-busybox-test"]
-# Wave 13 (THREADS): the gate's `LXTHR.ELF` row (`make lxthreads`) and the
+# The gate's `LXTHR.ELF` row (`make lxthreads`) and the
 # shell's launch grant for it.
 linux-threads-test = ["linux-abi-test"]
 # One small `hard_rt` task pinned to CPU 3. The install-time check assumes every
@@ -228,7 +228,7 @@ deadline-hart-canary = []
 # `DEVICE_IRQ_BIND` needs under `IRQ_THREADED`. Boots with fewer than four CPUs
 # refuse it, so only the gate rows that run captest on four CPUs build it.
 captest-row = []
-# Wave 11 SCHED-RT rows (`sched-rt-smoke` in kernel/Cargo.toml): two profiled
+# Rows (`sched-rt-smoke` in kernel/Cargo.toml): two profiled
 # `safety_critical` rows, `rt-edf-a` and `rt-edf-b`, pinned to CPU 0, whose kernel tasks
 # take their EDF + CBS reservations from these rows. Never in a real build.
 sched-rt-smoke = []

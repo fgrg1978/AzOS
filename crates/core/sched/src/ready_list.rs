@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! The per-priority ready queues: intrusive doubly linked FIFO lists.
 //!
-//! **Why lists (wave 15, NRCPUS-FLEET-AREA).** The queues were rings of
+//! **Why lists (NRCPUS-FLEET-AREA).** The queues were rings of
 //! `MAX_TASKS` slots each, `NUM_PRIORITIES` of them per CPU: `32 x MAX_TASKS`
 //! words a CPU, so that any one queue could hold every task. That is 1 MiB of
 //! each fleet CPU's per-CPU area (4096 tasks) and 64 MiB at 64 CPUs, for at
@@ -26,7 +26,7 @@
 //! `links[i].next` is the successor of slot `i` in whichever list holds it,
 //! `prev` its predecessor, meaningful unless `i` is the head. Every stored value
 //! is read sign-extended (see [`rd`]), so one `< links.len()` compare
-//! range-checks it. Wave 15 integration: with `slot + 1` links, a
+//! range-checks it. With `slot + 1` links, a
 //! zero-terminated pop and zero-extended reads, a context switch paid +12
 //! instructions for lists over the rings they replaced (vsbench ctxsw-loaded,
 //! riscv64 -icount, 532 -> 544); these three changes removed that.

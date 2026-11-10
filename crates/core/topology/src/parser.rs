@@ -95,9 +95,9 @@ pub enum ParseError {
 }
 
 /// The CAPS.TOML formats this parser reads. A file with no `format = N`
-/// line before its first section is format 1 (every topology written before
-/// wave 11). Format 2 adds the task key `restart`; format 3
-/// adds the task key `abi`; format 4 (wave 15) adds the
+/// line before its first section is format 1 (every older topology).
+/// Format 2 adds the task key `restart`; format 3
+/// adds the task key `abi`; format 4 adds the
 /// top-level binding keys `device`, `counter` and `sched_sha256` ([`Binding`]);
 /// format 6 adds the `[device.NAME]` sections (what the hardware bus does with
 /// the devices they select); format 5 adds the task keys `imports`, the endpoint names the name server
@@ -107,7 +107,7 @@ pub enum ParseError {
 /// the `[signer.NAME]` sections, the package signers the device admits, the
 /// `[peer.NAME]` sections (classes of remote nodes) and the task key `export`,
 /// the endpoints the RPC server's row may lend to a class. Format 7 (TOPO-ROWS-A
-/// and B, wave 11) adds the task keys `shadow`, `isolated` and `kmem_kib`, the
+/// and B) adds the task keys `shadow`, `isolated` and `kmem_kib`, the
 /// device keys `safe_state`, `commit_ns` and `compensate`, the peer keys
 /// `noise_pk` and `measurement` and the sections the `Section` enum lists.
 /// Format 8 (TOPO-ROWS-C) adds the task keys `security_boundary`,
@@ -119,7 +119,7 @@ pub const CAPS_FORMAT_MAX: u8 = 8;
 
 /// The top-level keys of a format-4 CAPS.TOML that bind the signed file to one
 /// device, to a counter the device never lets go backwards, and to the exact
-/// SCHED.TOML it was signed with (wave 15, TOPOSIGN). They sit inside the
+/// SCHED.TOML it was signed with (TOPOSIGN). They sit inside the
 /// signed bytes, so CAPS.SIG covers them; the sidecar format is unchanged.
 ///
 /// ```toml
@@ -234,7 +234,7 @@ pub struct MotorWriteConflict {
 
 /// The first pair of tasks declaring WRITE on the same motor, if any.
 ///
-/// **One writer per motor** (audit unit 2). A motor is commanded by one task;
+/// **One writer per motor**. A motor is commanded by one task;
 /// a second holder of WRITE is a second source of commands the first cannot
 /// see, and nothing downstream arbitrates between them. The capability model
 /// grants at boot and never delegates, so the topology is the one place the
@@ -264,7 +264,7 @@ pub fn motor_write_conflict(topology: &Topology<'_>) -> Option<MotorWriteConflic
 /// The first task holding `WRITE` on the `flight` endpoint without `WRITE` on
 /// both wheels of the drivetrain, if any.
 ///
-/// **Flight is pair-wide** (the console's `flight arm` rule, wave 12): arming
+/// **Flight is pair-wide** (the console's `flight arm` rule): arming
 /// the flight controller and the ESCs is authority over every motor, so only
 /// the row that may command the whole drivetrain may hold the endpoint's
 /// `WRITE`. The endpoint is a kernel-hosted interface and no longer shares a
@@ -793,7 +793,7 @@ fn cap_spec_from_inline<'a>(
     let mut kind: Option<CapKind> = None;
     let mut perms: Option<CapPerms> = None;
     let mut target: Option<MaybeStr<'a>> = None;
-    // O3.4 (owner decision 2026-09-26): whether this grant carries `DELEGATE`
+    // O3.4: whether this grant carries `DELEGATE`
     // (`DUP` and `TRANSFER`: transferable via `move_cap`). Defaults to `false` below — a row
     // transfers authority only when it says so, never by omission.
     let mut transfer: Option<bool> = None;
@@ -844,7 +844,7 @@ fn cap_spec_from_inline<'a>(
     let kind = kind.ok_or(ParseError::MissingField)?;
     let perms = perms.unwrap_or(CapPerms::READ);
     let target = target.unwrap_or(MaybeStr::from_bytes(&[]));
-    // U10-6 / M40 (2026-09-26): the drivetrain's endpoints (`motor.<wheel>`)
+    // U10-6 / M40: the drivetrain's endpoints (`motor.<wheel>`)
     // exist only in a build with the actuation profile. The seeder refuses
     // them too, but a refusal at parse time tells the OPERATOR that this
     // topology asks for something this build cannot honour, instead of the
@@ -941,7 +941,7 @@ fn parse_cap_perms(s: &[u8]) -> Result<CapPerms, ParseError> {
 /// Maximum caps in the per-task scratch buffer. The topology pool is bounded
 /// separately, to `MAX_CAPS_TOTAL`.
 ///
-/// **Imported, not restated (2026-09-18).** This was `= 256` with a comment
+/// **Imported, not restated.** This was `= 256` with a comment
 /// saying it "matches `azos_ipc::cap::MAX_CAPS_PER_TASK`" — a comment
 /// holding an invariant that nothing checked, and which was already false for
 /// the embedded (32) and fleet (512) profiles, since both this and `ipc`'s
@@ -1283,7 +1283,7 @@ pub fn parse_caps<'a>(
                     r.kv(effective, binding.format)?;
                 }
             }
-            // Wave 11: `format = N` before the first section. Once, and only
+            // `format = N` before the first section. Once, and only
             // a format this parser knows.
             None => {
                 top_level_line(effective, &mut binding, &mut format_declared)?;
@@ -1508,7 +1508,7 @@ fn handle_task_kv<'a>(
             *priority = n as u8;
             Ok(())
         }
-        // Owner decision 102 — this task's budget of 4 KiB frames. Omitted or
+        // This task's budget of 4 KiB frames. Omitted or
         // `0` means no limit. Rejected rather than truncated when it does not
         // fit a `u32`, for the same reason the real-time fields are: a budget
         // that wrapped is a different budget, and this one decides whether a
@@ -1548,7 +1548,7 @@ fn handle_task_kv<'a>(
             *mem_huge_mib = n as u16;
             Ok(())
         }
-        // Wave 9: live instances of this row. 1..=MAX_TASKS;
+        // Live instances of this row. 1..=MAX_TASKS;
         // 0 or more than the task pool can hold is refused, not clamped: an
         // instance count admission cannot honour is not a smaller one.
         "instances" => {
@@ -1567,7 +1567,7 @@ fn handle_task_kv<'a>(
             *sqpoll_idle_ms = u32::try_from(n).map_err(|_| ParseError::BadValue)?;
             Ok(())
         }
-        // Wave 9: the kernel starts this image at boot. `true` or `false`
+        // The kernel starts this image at boot. `true` or `false`
         // only, as `transfer`; a row that says nothing is not started.
         // Nothing may follow the word: `start = trueish` is refused, not read
         // as `true`.
@@ -1579,7 +1579,7 @@ fn handle_task_kv<'a>(
             *start = b;
             Ok(())
         }
-        // Wave 11 (format 2): what the supervisor does when a supervised task
+        // What the supervisor does when a supervised task
         // of this row ends: "always", "on-failure" (the default) or "no".
         // In a format-1 file the key is refused, not read: that file's
         // writer did not mean it. Nothing may follow the value.
@@ -1594,7 +1594,7 @@ fn handle_task_kv<'a>(
             *restart = RestartPolicy::from_bytes(v).ok_or(ParseError::UnknownEnumValue)?;
             Ok(())
         }
-        // Wave 12 (format 3): the syscall table the image is run
+        // The syscall table the image is run
         // against, "native" (the default) or "linux". Refused in a file of
         // an earlier format, as `restart` is in format 1.
         "abi" => {
@@ -3928,7 +3928,7 @@ mod tests {
     #[test]
     fn unterminated_caps_array_without_trailing_newline_is_rejected() {
         let mut topo = Topology::empty();
-        // `endpoint`, not `motor` (M40, 2026-09-26): `motor` now requires the
+        // `endpoint`, not `motor`: `motor` now requires the
         // `profile-actuation` feature (see `parse_cap_kind`), and this test
         // is about the unterminated-array guard, not about `motor` — using
         // an always-accepted kind keeps it testing the same hazard under
@@ -3949,7 +3949,7 @@ mod tests {
         assert_eq!(topo.tasks_len(), 1);
     }
 
-    // ── M40 (U10-6, 2026-09-26): the `motor` endpoint requires profile-actuation ────
+    // ── M40: the `motor` endpoint requires profile-actuation ────
     //
     // Mirrors `builder.rs`'s existing `autorun_task_declares_both_
     // drivetrain_motor_grants` test, which already runs this same file
@@ -4002,7 +4002,7 @@ mod tests {
         assert_eq!(cap_list[0].target, MaybeStr::from_bytes(b"irq.5"));
     }
 
-    // ── O3.4 (owner decision 2026-09-26): `transfer` key ────────────────
+    // ── O3.4: `transfer` key ────────────────
 
     /// `transfer` defaults to `false` when absent — a row hands out
     /// authority to move the capability only when it says so explicitly.

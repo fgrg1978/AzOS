@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The Linux personality's pure half (owner decisions P1-P6).
+//! The Linux personality's pure half.
 //!
 //! A task whose signed topology row says `abi = "linux"` traps with Linux
 //! syscall numbers in `a7`/`x8`. The kernel side
@@ -159,7 +159,7 @@ pub const TABLE: &[(u64, &str, &[u16])] = &[
     // Bookkeeping over a held `Cap<File>`: the offset of its open file description.
     (nr::LSEEK, "lseek", &[]),
     // The console reads through the input the shell lent its foreground job
-    // (the console's `READ` op, wave 13).
+    // (the console's `READ` op).
     (nr::READ, "read", &[k::SYS_INVOKE as u16]),
     (nr::WRITE, "write", &[k::SYS_INVOKE as u16]),
     (nr::READV, "readv", &[k::SYS_INVOKE as u16]),
@@ -170,14 +170,14 @@ pub const TABLE: &[(u64, &str, &[u16])] = &[
     (nr::FSTAT, "fstat", &[k::SYS_INVOKE as u16]),
     (nr::EXIT, "exit", &[k::SYS_EXIT as u16, k::SYS_THREAD_EXIT as u16]),
     (nr::EXIT_GROUP, "exit_group", &[k::SYS_EXIT as u16]),
-    // The word the calling thread's exit clears and wakes (wave 13).
+    // The word the calling thread's exit clears and wakes.
     (nr::SET_TID_ADDRESS, "set_tid_address", &[]),
-    // Wave 13: `FUTEX_WAIT`/`FUTEX_WAKE` (and their `_BITSET` forms with a
+    // `FUTEX_WAIT`/`FUTEX_WAKE` (and their `_BITSET` forms with a
     // full mask), private to the process.
-    // Wave 15 N9: FUTEX_REQUEUE / CMP_REQUEUE reach SYS_FUTEX_WAKE (a wake
+    // FUTEX_REQUEUE / CMP_REQUEUE reach SYS_FUTEX_WAKE (a wake
     // that moves the rest), so a profile that allows the wake allows them.
     (nr::FUTEX, "futex", &[k::SYS_FUTEX_WAIT as u16, k::SYS_FUTEX_WAKE as u16]),
-    // Wave 15: the robust futex list walked at the thread's exit.
+    // The robust futex list walked at the thread's exit.
     (nr::SET_ROBUST_LIST, "set_robust_list", &[]),
     (nr::NANOSLEEP, "nanosleep", &[k::SYS_SLEEP_UNTIL as u16]),
     // Only the ring-3 runtime answers it (`poll` shapes: [`poll`]); the
@@ -199,7 +199,7 @@ pub const TABLE: &[(u64, &str, &[u16])] = &[
     // Only `SS_DISABLE` is answered: no alternate stack.
     (nr::SIGALTSTACK, "sigaltstack", &[]),
     (nr::RT_SIGRETURN, "rt_sigreturn", &[]),
-    // Wave 13: a signal to another task is the native stop call's authority
+    // A signal to another task is the native stop call's authority
     // (`SYS_ALERT`, 611): the caller's ancestry, by its profile. A
     // signal to itself reaches nothing.
     (nr::KILL, "kill", &[k::SYS_ALERT as u16]),
@@ -217,7 +217,7 @@ pub const TABLE: &[(u64, &str, &[u16])] = &[
     (nr::BRK, "brk", &[k::SYS_INVOKE as u16]),
     (nr::MUNMAP, "munmap", &[k::SYS_MO_UNMAP as u16]),
     (nr::MMAP, "mmap", &[k::SYS_MO_MAP as u16]),
-    // Wave 13: the pages' read and write permissions, exactly; never execute.
+    // The pages' read and write permissions, exactly; never execute.
     (nr::MPROTECT, "mprotect", &[k::SYS_MO_MAP as u16]),
     (nr::WAIT4, "wait4", &[k::SYS_INVOKE as u16]),
     // Fork shape only (stage 3): a copy-on-write child of the same image,
@@ -225,7 +225,7 @@ pub const TABLE: &[(u64, &str, &[u16])] = &[
     // or given another handle on the same region (a pipe), closed again if the
     // child cannot be set up.
     //
-    // Wave 13: or a thread (`CLONE_VM | CLONE_FS | CLONE_FILES |
+    // Or a thread (`CLONE_VM | CLONE_FS | CLONE_FILES |
     // CLONE_SIGHAND | CLONE_THREAD` with a stack), sharing the process's
     // address space, capabilities and descriptors.
     (nr::CLONE, "clone", &[k::SYS_FOREIGN_FORK as u16, k::SYS_CAP_CLOSE as u16, k::SYS_THREAD_CREATE as u16]),
@@ -542,13 +542,13 @@ pub fn utsname_bytes(arch: Arch, nodename: &[u8]) -> [u8; UTSNAME_SIZE] {
 }
 
 /// Signal delivery's frames, default actions and the console line
-/// discipline (wave 13).
+/// discipline.
 pub mod signal;
 
-/// The robust futex list walked at a thread's exit (wave 15).
+/// The robust futex list walked at a thread's exit.
 pub mod robust;
 
-/// `readv`/`writev` as one transfer each: the iovec walk (wave 15, K2).
+/// `readv`/`writev` as one transfer each: the iovec walk.
 pub mod iov;
 
 /// The x86-64 face of the ring-3 runtime: its call numbers, argument
@@ -626,12 +626,12 @@ impl KSigaction {
 
 /// The Linux wait status of a child that ended with native exit code `code`:
 /// a normal exit with the low 8 bits (`WIFEXITED`, `WEXITSTATUS`). A child a
-/// signal ended is reported by [`wait_status_signalled`] instead (wave 13).
+/// signal ended is reported by [`wait_status_signalled`] instead.
 pub const fn wait_status(code: i32) -> i32 {
     (code & 0xff) << 8
 }
 
-/// The Linux wait status of a child killed by signal `sig` (wave 13):
+/// The Linux wait status of a child killed by signal `sig`:
 /// `WIFSIGNALED`, `WTERMSIG` = `sig`, no core dump.
 pub const fn wait_status_signalled(sig: u32) -> i32 {
     (sig & 0x7f) as i32
@@ -707,7 +707,7 @@ pub mod clone {
     pub const CLONE_CHILD_SETTID: u64 = 0x1000000;
 }
 
-/// `futex` operations (wave 13).
+/// `futex` operations.
 pub mod futex {
     pub const FUTEX_WAIT: u64 = 0;
     pub const FUTEX_WAKE: u64 = 1;
@@ -718,7 +718,7 @@ pub mod futex {
     pub const FUTEX_PRIVATE_FLAG: u64 = 128;
     pub const FUTEX_CLOCK_REALTIME: u64 = 256;
     pub const FUTEX_BITSET_MATCH_ANY: u64 = 0xffff_ffff;
-    /// Priority-inheritance operations (wave 15 N10, Kconfig `FUTEX_PI`).
+    /// Priority-inheritance operations (Kconfig `FUTEX_PI`).
     pub const FUTEX_LOCK_PI: u64 = 6;
     pub const FUTEX_UNLOCK_PI: u64 = 7;
     pub const FUTEX_TRYLOCK_PI: u64 = 8;

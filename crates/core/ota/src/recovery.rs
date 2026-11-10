@@ -33,8 +33,8 @@
 //! The kernel calls `recovery_mode_should_enter` once per boot,
 //! right after `ota_boot_validate` (`boot_count_loaded` in
 //! `kernel/src/boot/ota.rs`), with the crash count and both other
-//! inputs `None`. An armed decision boots **safe mode** (owner
-//! decision 2026-09-28): every actuator held, no ring-3 program
+//! inputs `None`. An armed decision boots **safe mode**:
+//! every actuator held, no ring-3 program
 //! started, console and OTA alive, the boot never confirmed — the
 //! device waits for a good image.
 

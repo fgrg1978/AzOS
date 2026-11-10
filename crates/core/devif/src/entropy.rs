@@ -8,7 +8,7 @@
 //! feeds the pool what its device delivered.
 //! The pool never hands out anything while unseeded: [`outcome::NOT_READY`](crate::outcome::NOT_READY)
 //! on every build, because there is no counter-derived fallback worth the
-//! name "entropy" (owner decision V1.2).
+//! name "entropy".
 
 use crate::outcome::Out;
 use azos_idl::azos_interface;

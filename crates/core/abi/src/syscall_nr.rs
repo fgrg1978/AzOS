@@ -62,7 +62,7 @@
 //! undefined behaviour, not a wrong answer.
 //!
 //! ### AArch64 (`aarch64-unknown-none`, hard-float,
-//! ARMv8.5 baseline, owner decision 97)
+//! ARMv8.5 baseline)
 //!
 //! | Role                                   | Register(s)   |
 //! |-----------------------------------------|---------------|
@@ -100,7 +100,7 @@
 //! Trap instruction: `syscall`, which itself loads `rcx` with the return
 //! RIP and `r11` with RFLAGS.
 //!
-//! ## Register contract (Chain E commit 8, owner decision 2026-10-12)
+//! ## Register contract (Chain E commit 8)
 //!
 //! **Every native syscall**, not only IPC: on return, ring 3 may rely on
 //! exactly these holding what it left in them:
@@ -167,7 +167,7 @@
 //!     of a native image on a page of its own already (W^X); stack
 //!     alignment is the loader's job (where it sets the initial `sp`), not
 //!     the linker's.
-//!   * This target is hard-float (owner decision 97: ARMv8.5 baseline,
+//!   * This target is hard-float (ARMv8.5 baseline,
 //!     NEON mandatory) — unlike RISC-V's `imac` baseline, which has no
 //!     vector state to save. If any ring-3 program uses NEON, the trap
 //!     entry/exit must save/restore `v0..=v31`, `fpsr` and `fpcr` around the
@@ -328,7 +328,7 @@ pub const CAP_INFO_ENDPOINT: u64 = 3;
 /// Foundational case 1 (authority: creates a protection domain).
 pub const SYS_SPAWN_EX: u64 = 5;
 
-/// `SYS_THREAD_CREATE` — wave 13 (THREADS): a new thread of the calling
+/// `SYS_THREAD_CREATE` — a new thread of the calling
 /// task's process. `a0` = user entry PC, `a1` = its stack pointer (16-byte
 /// aligned top), `a2` = an argument, `a3` = the address of a 32-bit word its
 /// exit clears and futex-wakes (0: none; what a join waits on), `a4` = its
@@ -350,7 +350,7 @@ pub const SYS_SPAWN_EX: u64 = 5;
 /// Foundational case 1 (authority: a new schedulable context in the caller's domain).
 pub const SYS_THREAD_CREATE: u64 = 6;
 
-/// `SYS_THREAD_EXIT` — wave 13: end only the calling thread, with `a0` as
+/// `SYS_THREAD_EXIT` — end only the calling thread, with `a0` as
 /// its code (a thread's code is reported to nobody). Its clear-tid word is
 /// cleared and woken. The process's last thread ending ends the process; a
 /// process's first thread (its leader) that ends while others run waits in
@@ -416,13 +416,13 @@ pub const EXIT_STAT_REUSE_TEARDOWNS: u64 = 1;
 /// task still held its address space.
 pub const EXIT_STAT_EARLY_NOTICES: u64 = 2;
 
-/// `DOMAIN_EXIT_STATS` selector (wave 12, EXIT2): exit notices that found no
+/// `DOMAIN_EXIT_STATS` selector (EXIT2): exit notices that found no
 /// room and were lost. Zero by construction — notices are kept until reaped,
 /// in a table with one entry per task slot behind a creation admission — so
 /// any other count is a bug.
 pub const EXIT_STAT_NOTICE_DROPS: u64 = 5;
 
-/// `DOMAIN_EXIT_STATS` selector (wave 12, EXIT2): `fork`/`spawn` refusals
+/// `DOMAIN_EXIT_STATS` selector (EXIT2): `fork`/`spawn` refusals
 /// because queued (unreaped) exit notices hold the task slots that were free.
 pub const EXIT_STAT_NOTICE_REFUSALS: u64 = 6;
 
@@ -668,7 +668,7 @@ pub const SHM_MAP_PROT_WRITE: u64 = 1;
 /// capability, no deadline, no label bit of its own; the badge is not
 /// reported, as for a register-form call) and refuses any other: that call
 /// ends `-EMSGFORM`, the server sees nothing and every capability it carried
-/// is back in the caller's table (owner decision 10-10: what the registers
+/// is back in the caller's table (what the registers
 /// cannot name would sit unnamed in the server's table). A descriptor-form
 /// accept takes every call.
 
@@ -778,7 +778,7 @@ pub const SYS_IPC_REPLY: u64 = 23;
 /// and then blocks for the next request on the caller's own endpoints: the
 /// server side of the loop `vsbench` runs on the hot path.
 ///
-/// Fail-fast (owner decision 2026-09-15). A reply that is not delivered
+/// Fail-fast. A reply that is not delivered
 /// accepts nothing and returns at once: `-2` for a stale handle, `-3` for any
 /// other refusal. A delivered reply continues exactly as the register-form
 /// [`SYS_IPC_ACCEPT`]: `a0` = the next handle with `a1` = caller TID and
@@ -988,7 +988,7 @@ pub fn port_event_decode(b: &[u8; 16]) -> PortEventInfo {
 
 // ── Futex ─────────────────────────────────────────────────────────────
 
-/// `SYS_FUTEX_WAIT` — wave 13: `a0` = address of an aligned 32-bit word,
+/// `SYS_FUTEX_WAIT` — `a0` = address of an aligned 32-bit word,
 /// `a1` = the value it must hold, `a2` = a relative timeout in nanoseconds
 /// (0: none). Blocks while the word holds `a1` until a [`SYS_FUTEX_WAKE`]
 /// on the same word, the timeout, or a stop. The word is keyed by the
@@ -1010,7 +1010,7 @@ pub fn port_event_decode(b: &[u8; 16]) -> PortEventInfo {
 /// Foundational case 2 (block/wake: sleeps on a word).
 pub const SYS_FUTEX_WAIT: u64 = 28;
 
-/// `SYS_FUTEX_WAKE` — wave 13: wake at most `a1` waiters on the word at `a0`,
+/// `SYS_FUTEX_WAKE` — wake at most `a1` waiters on the word at `a0`,
 /// keyed as [`SYS_FUTEX_WAIT`] keys it. Returns how many were woken;
 /// `-EFAULT` for a word the caller cannot read, `-EINVAL` misaligned. With
 /// [`FUTEX_OP_PI_UNLOCK`] in the high 32 bits of `a1`, the owner releases a

@@ -87,12 +87,12 @@ pub struct Abandoned {
 }
 
 
-// ── Wave 15 N7g: the call's donation as a wait-graph edge ───────────────────
+// ── The call's donation as a wait-graph edge ───────────────────
 //
 // A call does not lend a counted donation: the caller blocks on its server's `IpcCall` node in the
 // wait graph, so the server runs at the most urgent of its callers (the
-// over-boost of two counted donations to one server is gone, owner decision
-// 10-10), a chain of calls inherits transitively, a call that would close a
+// over-boost of two counted donations to one server is gone),
+// a chain of calls inherits transitively, a call that would close a
 // cycle is refused, and the ring-3 floor applies through the graph's
 // `ClassPi::write_floor`. The record's donee stays the token that says who
 // retires the call: whoever takes it unblocks instead of returning. The
@@ -248,7 +248,7 @@ pub fn call(caller_idx: usize, caller_tid: u32, dest: Dest, words: [u64; WORDS],
     }
     let server_idx = azos_sched::idx_for_tid(server)?;
     // The server's exit hook may have run with its slot not yet freed:
-    // refuse a call nobody would answer (U04-2 route b).
+    // refuse a call nobody would answer.
     if azos_sched::scheduler::slot_is_exiting(server_idx) {
         return None;
     }
@@ -385,8 +385,8 @@ pub fn handle_slot(handle: u64) -> Option<usize> {
 
 /// The current task, `server_tid` in task slot `server_idx`, takes its next
 /// call (the v1 accept). A v2 call it finds is refused, not taken: its
-/// caller is completed `-EMSGFORM` and woken here (owner decision 10-10,
-/// wave 15 N11c; see `ep_queue::take_locked`).
+/// caller is completed `-EMSGFORM` and woken here (
+/// N11c; see `ep_queue::take_locked`).
 #[inline]
 pub fn accept(server_idx: usize, server_tid: u32) -> Option<AcceptedReq> {
     ep_queue::accept::<true>(server_idx, server_tid, complete_one)
@@ -488,7 +488,7 @@ pub fn abandon(handle: u64, caller_tid: u32) -> Abandoned {
 /// half is the endpoint's: `endpoint_release_all` / `endpoint_orphan_all`
 /// complete every call on the endpoints `tid` served with `-EPEERDIED`.)
 pub fn release_all(tid: u32) {
-    // Reply warrants `tid` was handed (wave 15 N11): their callers would
+    // Reply warrants `tid` was handed: their callers would
     // otherwise wait for an answer nobody holds the right to give.
     ep_queue::release_holder(tid, complete_one);
     let Some(idx) = azos_sched::idx_for_tid(tid) else { return };
@@ -567,7 +567,7 @@ fn retire_completed(c: &ep_queue::Completed) {
     }
 }
 
-// ── ABI v2 of the call (wave 15 N11) ────────────────────────────────────────
+// ── ABI v2 of the call ────────────────────────────────────────
 //
 // A v2 call is a v1 call with the badge stamped on the caller's record
 // first; a v2 accept takes every call and also reads the badge, while the
@@ -611,7 +611,7 @@ pub fn reply_warrant(handle: u64, holder: u32, words: [u64; WORDS]) -> FastIpcRe
 
 pub use crate::ep_queue::{Payload, V2_CAPS, V2_WORDS};
 
-/// [`call_v2`] carrying the whole v2 message `msg` (wave 15 N11b): its
+/// [`call_v2`] carrying the whole v2 message `msg`: its
 /// first four words and first capability also fill the v1 record, which
 /// the exit and drain paths read, and which a register-form accept delivers
 /// when `fits_regs` (else it refuses the call, N11c).

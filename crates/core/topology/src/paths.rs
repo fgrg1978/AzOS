@@ -47,7 +47,7 @@ pub const CAPS_TOML_PATH: &[u8] = b"/fat/CAPS.TOM";
 pub const CAPS_SIG_PATH: &[u8] = b"/fat/CAPS.SIG";
 /// Signed scheduler topology (`SCHED.TOML` format).
 pub const SCHED_TOML_PATH: &[u8] = b"/fat/SCHED.TOM";
-/// The `DSIG` sidecar over the bytes of [`SCHED_TOML_PATH`]. Retired by the loader in wave 15: SCHED.TOML is authenticated by the
+/// The `DSIG` sidecar over the bytes of [`SCHED_TOML_PATH`]. Retired by the loader: SCHED.TOML is authenticated by the
 /// `sched_sha256` its signed CAPS.TOML carries (`crate::signed`). The name is
 /// kept so tools and tests can say which file they no longer need.
 pub const SCHED_SIG_PATH: &[u8] = b"/fat/SCHED.SIG";

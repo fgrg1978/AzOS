@@ -83,7 +83,7 @@ pub fn fork_cow(parent_pt: usize) -> KResult<usize> {
     fork_cow_walk_held(parent, parent_pt, false).map(|(pt, _)| pt)
 }
 
-/// The fork rule for a shared-memory mapping (owner decision 16-10, the
+/// The fork rule for a shared-memory mapping (the
 /// POSIX pipe over a `Cap<Shm>`): a child that inherits the capability
 /// inherits the mapping **shared, not copy-on-write**. Its leaves are the
 /// parent's, entry for entry, so a store by either side lands in the region
@@ -165,7 +165,7 @@ impl crate::memobj::ChildLeaves for ForkLeaves {
 }
 
 /// [`fork_cow`] of an address space other threads may be changing meanwhile
-/// (`concurrent`, wave 13: the parent is one thread of a group). Their
+/// (`concurrent`: the parent is one thread of a group). Their
 /// faults (a copy-on-write break, a first touch) rewrite parent entries
 /// while the walk runs, so each parent entry is flipped by compare-and-swap
 /// and retaken when it changed. A single-threaded parent's entries change
@@ -247,7 +247,7 @@ fn fork_cow_walk(parent_pt: usize, anon: &[PassedRange], concurrent: bool) -> KR
 /// Leaf tables a fork unhooks from its parent per call, at most.
 const PRUNE_MAX: usize = 16;
 
-/// The parent's blank leaf tables a fork unhooked (wave 13): `munmap` frees
+/// The parent's blank leaf tables a fork unhooked: `munmap` frees
 /// pages, not tables, so an address space that once mapped a large region
 /// keeps tables with nothing in them, and every later fork walked them, and
 /// every child's teardown again (vsbench: 7 such tables, ~21k instructions
@@ -325,7 +325,7 @@ fn fork_cow_inner<const CONCURRENT: bool>(
     pruned: &mut Pruned,
 ) -> KResult<()> {
     let entries = ARCH.entries_per_table();
-    // Wave 13: the trampoline's frame, read once (0 on aarch64).
+    // The trampoline's frame, read once (0 on aarch64).
     let tramp = crate::vdso::sigtramp_phys();
     let kpt = vmm::kernel_pagetable();
     // Every level-2 table the parent owns: its root on riscv64 and aarch64
@@ -414,7 +414,7 @@ fn fork_cow_l2<const CONCURRENT: bool>(
 
             // Walk L0 (4 KiB pages). The child's leaf table for this range is
             // walked to (and made) once, at its first page, and its entries
-            // written by index after that (wave 13: a walk per page was
+            // written by index after that (a walk per page was
             // ~150 of a fork's ~600 instructions per page).
             let mut child_l0: *mut u64 = core::ptr::null_mut();
             let mut vpn0_next = 0usize;
@@ -492,7 +492,7 @@ fn fork_cow_l2<const CONCURRENT: bool>(
                 let cow_pte = loop {
                 let phys = ARCH.pte_phys(l0_pte);
 
-                // Wave 13: the riscv64 sigreturn trampoline is the kernel's,
+                // The riscv64 sigreturn trampoline is the kernel's,
                 // read-execute in every address space. The child gets the
                 // same leaf: never copy-on-write, so no store fault can ever
                 // turn it into a private writable copy of an executable page.
@@ -515,7 +515,7 @@ fn fork_cow_l2<const CONCURRENT: bool>(
                 // with refcount >= 2", so teardown can never free a live page.
                 page_addref(phys)?;
 
-                // Only a WRITABLE page becomes copy-on-write (wave 13,
+                // Only a WRITABLE page becomes copy-on-write (
                 // security). A read-only or executable page (text, rodata)
                 // is shared as it is, frame counted, entry unchanged: a store
                 // to it must fault as the protection violation it is. Marked
@@ -529,7 +529,7 @@ fn fork_cow_l2<const CONCURRENT: bool>(
                     break None;
                 }
                 // Parent: clear WRITE, set COW marker. By compare-and-swap
-                // (wave 13): a thread of the process may break or unmap this
+                //: a thread of the process may break or unmap this
                 // page meanwhile (the fork holds its layout lock, not its
                 // faults). Then the reference goes back and the entry is
                 // taken again as it now is.
@@ -613,7 +613,7 @@ fn cow_break_once(pt: usize, fault_addr: usize) -> KResult<bool> {
 
     // Must be a valid, leaf, COW-marked PTE.
     if !ARCH.pte_is_valid(pte) || !ARCH.pte_is_cow(pte) || !ARCH.pte_is_leaf(pte, 0) {
-        // Already broken (CTXHUNT, 2026-10-08): two threads of one process
+        // Already broken (CTXHUNT): two threads of one process
         // stored to the same COW page on two harts; one broke it, the other
         // faulted through its own read-only translation before the
         // shootdown reached it and walked to the broken entry. That store
@@ -634,7 +634,7 @@ fn cow_break_once(pt: usize, fault_addr: usize) -> KResult<bool> {
         }
         return Err(KernelError::NotMapped);
     }
-    // Defence in depth (wave 13, W^X): `fork_cow` marks only writable pages
+    // Defence in depth (W^X): `fork_cow` marks only writable pages
     // copy-on-write, and a writable page is never executable, so a COW entry
     // with the execute bit is not one this kernel made. Refuse rather than
     // hand out a writable copy of code.
@@ -644,7 +644,7 @@ fn cow_break_once(pt: usize, fault_addr: usize) -> KResult<bool> {
 
     let old_phys = ARCH.pte_phys(pte);
 
-    // The last holder keeps the frame (wave 14; Linux's `wp_page_reuse`).
+    // The last holder keeps the frame (Linux's `wp_page_reuse`).
     // Once the other sharers have broken their copies or exited, the count is
     // 1 and the page is this task's alone: a copy would allocate a frame,
     // copy 4 KiB into it and free the original, to end where restoring the
@@ -734,7 +734,7 @@ fn cow_break_once(pt: usize, fault_addr: usize) -> KResult<bool> {
             return Err(KernelError::EncodeFailed);
         }
     };
-    // Compare-and-swap (wave 13): another thread of the process may have
+    // Compare-and-swap: another thread of the process may have
     // broken the same page, or unmapped it, since the read above. The loser
     // frees its copy and returns as resolved, keeping its hands off the old
     // frame's count: its access retries on whatever the entry now says. The

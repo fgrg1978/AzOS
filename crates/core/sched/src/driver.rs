@@ -26,7 +26,7 @@ const MAX_IRQS_PER_DRIVER: usize = 4;
 const DRIVER_TIMEOUT_MS: u64 = 5000;
 
 /// Maximum auto-restart attempts before giving up (the AQ2 table). The M4
-/// supervisor (`supervisor.rs`) has its own limit since wave 10: Kconfig
+/// supervisor (`supervisor.rs`) has its own limit: Kconfig
 /// `SUP_RESTART_BURST` restarts within `SUP_RESTART_INTERVAL_S` (default 3
 /// within 300 s), on failure only.
 pub const DRIVER_MAX_RESTARTS: u8 = 3;

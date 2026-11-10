@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Per-task frame budget arithmetic (owner decision 102, scan unit 3 finding 3).
+//! Per-task frame budget arithmetic (scan unit 3 finding 3).
 //!
 //! **WHY THIS FILE EXISTS.** The enforcement — `mm_charge` / `mm_discharge` /
 //! `mm_reset_charge` / `set_current_user_page_limit`, all in
 //! `crates/core/sched/src/scheduler.rs` — now delegates to `PageBudget`, held by the
-//! task's domain (`crates/core/sched/src/domain.rs`, owner decision D2), which
+//! task's domain (`crates/core/sched/src/domain.rs`), which
 //! all of a process's threads share, behind `PER_CPU[cpu].current_idx`.
 //! `scheduler.rs` is RV64 context-switch machinery (asm, CSRs, PLIC, a
 //! 4000-line global task table) and cannot be `#[path]`-pulled onto the host —

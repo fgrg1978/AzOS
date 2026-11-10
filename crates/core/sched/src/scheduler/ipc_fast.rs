@@ -528,7 +528,7 @@ unsafe fn direct_switch_block<const FAST: bool>(cpu: usize, ti: usize, reason: W
         // so it closes and opens the two signals itself.
         #[cfg(feature = "energy")]
         energy::on_switch(cpu, cur, ti);
-        // Wave 15 (TRACE): the direct IPC hand-off is a switch too (reason 2).
+        // The direct IPC hand-off is a switch too (reason 2).
         // The state is an atomic load: read it only when recording, or the
         // compiled-out build would still pay it.
         if azos_trace::sched_on() {

@@ -15,7 +15,7 @@ pub mod donation;
 pub mod filter;
 pub mod task;
 pub mod ready_list;
-/// Wave 11 SCHED-RT: band budget and EDF + CBS arithmetic (host-tested).
+/// Band budget and EDF + CBS arithmetic (host-tested).
 pub mod rt_core;
 pub mod rt_receipt;
 pub mod timer_heap;
@@ -40,12 +40,12 @@ pub mod seccomp;
 pub mod driver;
 pub mod supervisor;
 pub mod process;
-/// Wave 13: process life-cycle phase profile (feature `fork-profile`).
+/// Process life-cycle phase profile (feature `fork-profile`).
 pub mod prof;
 /// `current_cpu_id()` cross-check against the hardware id (gate only).
 #[cfg(feature = "cpuid-probe")]
 pub mod cpuid_probe;
-/// Wave 13: thread groups and futexes.
+/// Thread groups and futexes.
 pub mod domain;
 pub mod group;
 pub mod futex;
@@ -98,7 +98,7 @@ pub use scheduler::{
     cpu_is_real_time,
 };
 
-/// Wave 11 SCHED-RT: run-time admission of EDF + CBS reservations
+/// Run-time admission of EDF + CBS reservations
 /// (`rt::reserve`), their counters, and the band budget's.
 pub use scheduler::rt;
 pub use scheduler::stamp_pending;
@@ -204,7 +204,7 @@ pub use process::{
     note_clone_invariant,
 };
 
-/// The per-CPU variables this crate keeps in the per-CPU areas (wave 15,
+/// The per-CPU variables this crate keeps in the per-CPU areas (
 /// NRCPUS), for the kernel's `setup_per_cpu_areas`: the ready queues, the RT
 /// band's reservation state and, with the APS backend, its policy tables.
 /// Every one must be attached for every possible CPU before the first task is

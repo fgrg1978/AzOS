@@ -48,7 +48,7 @@
 //! an in-range index and does alias a generation; no production path mints one.
 //!
 //! # Per-slot generations, swept only at their own index
-//! # (owner decision 2026-09-26)
+//! #
 //!
 //! Each pool kept **one** `GenCounter`-style source for the whole pool: every
 //! create, at whichever index, drew the next generation from the same counter.
@@ -222,7 +222,7 @@ pub fn grant_packed<T: CapTarget>(tid: u32, perms: CapPerms, r: u32) -> Option<C
 /// wraps (`take_slot_gen` answered [`SlotGen::Wrap`] for it) — see the module
 /// doc for why this revokes nothing live and why it still costs O(`MAX_TASKS`)
 /// cap-table locks (the accepted residual of not widening `CapSlot::resource`
-/// to 64 bits, owner decision 2026-09-26).
+/// to 64 bits).
 ///
 /// **Lock order.** No pool lock is held (the caller marked the slot mid-sweep
 /// and released the pool lock before calling this), and the walk takes one

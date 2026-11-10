@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Authority-checked CONFIG.INI load — W2-B5 (audit U10-2).
+//! Authority-checked CONFIG.INI load — W2-B5.
 //!
 //! # The problem
 //!
@@ -148,7 +148,7 @@ pub fn cfg_load_verified(ini_bytes: &[u8], sig_ok: bool) -> ConfigTrust {
     }
 }
 
-// ── Wave 11: replay protection and a fail-closed that latches ──────────────
+// ── Replay protection and a fail-closed that latches ──────────────
 //
 // A bare signature over the file's bytes could be
 // replayed (an older, validly signed CONFIG.INI copied back), and deleting
@@ -293,7 +293,7 @@ const fn loss_of(check: ConfigSigCheck) -> AuthorityLoss {
 /// sidecar; this decides.
 ///
 /// * Unprovisioned: never load (no id to bind a signature to), never latch
-///   (no record says a signed file was ever here) — the pre-wave-11
+///   (no record says a signed file was ever here) — the earlier
 ///   fail-closed defaults.
 /// * Floor 0: load a valid sidecar (and raise the floor to its counter);
 ///   anything else is defaults, as above.

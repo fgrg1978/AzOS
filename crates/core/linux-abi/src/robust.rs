@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! The robust futex list a Linux thread registers with `set_robust_list`
-//! (wave 15), walked when the thread ends: its pure half.
+//!, walked when the thread ends: its pure half.
 //!
 //! The list lives in the thread's memory (`struct robust_list_head`: the
 //! list's `next`, a signed `futex_offset`, `list_op_pending`; 24 bytes on a
@@ -42,7 +42,7 @@ pub trait RobustMem {
     fn wake_one(&mut self, addr: u64);
     /// The priority-inheritance word at `addr` (bit 0 of its list pointer)
     /// names the dying thread: `Some(woke)` when the PI futex code took it
-    /// over (Kconfig `FUTEX_PI`, wave 15 N10: it writes `FUTEX_OWNER_DIED`
+    /// over (Kconfig `FUTEX_PI`: it writes `FUTEX_OWNER_DIED`
     /// and hands the word to its top waiter, `woke`), `None` to leave the
     /// word to this walk (PI futexes off: nobody can sleep on it).
     fn pi_owner_died(&mut self, _addr: u64) -> Option<bool> {

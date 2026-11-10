@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! `readv`/`writev`: the iovec walk, its pure half (wave 15, K2).
+//! `readv`/`writev`: the iovec walk, its pure half.
 //!
 //! Linux moves a vectored call as ONE transfer: `writev` gathers the
 //! segments and makes one write, so another writer of the same open file

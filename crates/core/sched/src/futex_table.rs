@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The futex table (wave 15 N9): one table for every word a task can sleep
+//! The futex table: one table for every word a task can sleep
 //! on, whichever call filed it.
 //!
 //! # Keys
@@ -11,7 +11,7 @@
 //!   `FUTEX_PRIVATE_FLAG`, and what a "shared" Linux futex on memory that is
 //!   not a shm region falls back to (that memory is the process's alone).
 //! * [`Key::Shared`]: `(object id, offset)`, the packed reference of a shm
-//!   region and the byte offset of the word in it (owner decision). Two
+//!   region and the byte offset of the word in it. Two
 //!   tasks that map the region at different addresses meet on it; no
 //!   physical address is ever a key. The native futex calls
 //!   (`SYS_FUTEX_WAIT`/`WAKE`) on a word of a shm region and a Linux futex
@@ -107,7 +107,7 @@ const WOKEN_REQUEUED: u8 = 5;
 /// returns owning that word.
 const WOKEN_PI_OWNER: u8 = 6;
 /// A requeue-PI took it and enqueued it on its PI target's wait-graph
-/// object on its behalf (owner decision 10-10, Linux
+/// object on its behalf (Linux
 /// `rt_mutex_start_proxy_lock`): it boosts the word's owner while it
 /// sleeps on, unlinked from every chain, unwoken. The handover that makes
 /// it the owner, a signal or its timeout wakes it; it then finishes its
@@ -634,8 +634,8 @@ impl FutexTable {
 }
 
 /// The key an exit-path wake files a word of process `proc_id` at `addr`
-/// under (the robust walk and the clear-child-tid wake; owner decisions
-/// 10-10, Linux keys both shared, `handle_futex_death` and `mm_release`):
+/// under (the robust walk and the clear-child-tid wake;
+/// Linux keys both shared, `handle_futex_death` and `mm_release`):
 /// `shm` is the word's `(region, offset)` when the process maps it from a
 /// shm region, and then the key is `Key::Shared` (Kconfig `FUTEX_SHARED`);
 /// any other word is the process's private key. A waiter that slept on a
@@ -906,7 +906,7 @@ pub fn requeue_key<E: FutexEnv>(
 /// whether another waiter follows): `Ok(true)` and the top wakes owning it.
 /// Every other waiter is handed to `enqueue` (the table, its TID), which
 /// enqueues it on `to`'s wait-graph object on its behalf and boosts the
-/// owner at once (owner decision 10-10, Linux `rt_mutex_start_proxy_lock`):
+/// owner at once (Linux `rt_mutex_start_proxy_lock`):
 /// it is not woken. Lock order: the table, then the graph. A waiter
 /// `enqueue` refuses (no owner to wait for, a deadlock) wakes requeued and
 /// runs its own `LOCK_PI` on `to`. Returns how many were taken (Linux's
@@ -1022,7 +1022,7 @@ mod tests {
 
     #[test]
     fn the_exit_wake_of_a_shm_word_takes_its_shared_waiter_not_a_private_one() {
-        // Owner decision 10-10 (Linux mm_release / handle_futex_death): the
+        // Linux mm_release / handle_futex_death: the
         // clear-tid and robust wakes key a shm word by its region; a waiter
         // that used FUTEX_PRIVATE_FLAG on that word sleeps on.
         let mut t = FutexTable::new();

@@ -132,7 +132,7 @@ pub fn memobj_create_cap(
     pipe_creator_ends(tid, r);
     let perms = spec.perms;
     // The capability stores the packed `(index, generation)`. `MAP` and
-    // `DELEGATE` (owner decision 2026-09-26, O3.4): the creator maps its own
+    // `DELEGATE` (O3.4): the creator maps its own
     // region and may share or gift it.
     match objref::grant_packed::<crate::cap::targets::Shm>(tid, cap_perms_for(perms), r) {
         Some(cap) => Ok(cap),

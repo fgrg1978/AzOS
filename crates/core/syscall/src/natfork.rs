@@ -6,7 +6,7 @@
 //! `SYS_SPAWN_EX`); the child's table is built here, in the `before_release`
 //! hook `handlers::sys_fork` gives `sys_fork_impl_hooked`.
 //!
-//! Owner decision, round 49: the fork child inherits its parent's
+//! The fork child inherits its parent's
 //! descriptors as duplicates sharing the open description (POSIX), and its
 //! capabilities are seeded from its OWN topology row, never copied from the
 //! parent's table. That is the model a Linux-personality child already has
@@ -39,7 +39,7 @@
 //!    handle naming something the child does not hold is stale in the child,
 //!    and a later grant in that slot gets a newer generation.
 //!
-//! A `Cap<Shm>` the parent has mapped is inherited too (owner decision 16-10;
+//! A `Cap<Shm>` the parent has mapped is inherited too (
 //! the POSIX pipe is a byte ring in one): at the same handle, with the
 //! mapping at the same address, **shared with the parent and not
 //! copy-on-write** ([`inherit_shm`], `azos_mm::cow::fork_share_range`).
@@ -67,7 +67,7 @@
 //! Runs in the parent's context before the child can run (the `before_release`
 //! hook above).
 //!
-//! Thread groups (wave 13 THREADS) share one table among siblings; a sibling
+//! Thread groups share one table among siblings; a sibling
 //! closing a descriptor between two chunks of step 1 makes that descriptor
 //! absent in the child, which is the answer a fork racing a close may give.
 //! A close, unmap, MOVE or revoke of a mapped `Cap<Shm>` that lands while the
@@ -103,7 +103,7 @@ pub fn record_row_named(tid: u32, key: &[u8]) {
     }
 }
 
-/// Wave 15 (plan 4a): the seed row recorded for the process on slot `from`
+/// The seed row recorded for the process on slot `from`
 /// (its leader's) moves to slot `to`, which now holds the process's TID
 /// `tid` (an exec from a thread that was not the leader).
 pub fn hand_over(from: usize, to: usize, tid: u32) {
@@ -236,7 +236,7 @@ pub(crate) fn native_child_setup(parent: u32, child: u32) -> Result<(), Errno> {
 
 /// Is `(kind, res)` a descriptor a fork child inherits?
 ///
-/// A `Cap<Shm>` is one when `parent` has it mapped (owner decision 16-10: the
+/// A `Cap<Shm>` is one when `parent` has it mapped (the
 /// POSIX pipe is a byte ring in a shared region, and a fork child must find
 /// the pipe it was forked with). The child gets the capability at the same
 /// handle and the mapping at the same address, **shared, not copy-on-write**
@@ -383,7 +383,7 @@ fn find_candidate(
 // ── The row's seed, minted once (per-row template) ──────────────────────────
 //
 // Re-running every minter on every fork cost about 1.1k instructions per row
-// capability (wave 13 measurement: 27 caps, +30k per fork+exit+wait). A
+// capability (measured: 27 caps, +30k per fork+exit+wait). A
 // minter of a kind that names no live object (`!objref::is_packed_kind`: a
 // pin, a channel number of the board, a sensor type, an interned path or
 // image name, a singleton) answers the same for the same row on every call:
@@ -438,7 +438,7 @@ static TEMPLATES: azos_sync::spinlock::SpinLock<Templates> =
 static TEMPLATE_SEAL_FAILS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
 /// A seal over the row, the topology's address and every entry: a 64-bit
-/// multiply-xor mix per word (wave 13: the byte-wise FNV-1a it replaced cost
+/// multiply-xor mix per word (the byte-wise FNV-1a it replaced cost
 /// ~880 instructions per fork). Not a MAC: it catches an entry changed in
 /// memory after it was recorded, which is what the template guards against.
 fn seal_of(row: u32, n: u32, ents: &[TEnt]) -> u64 {

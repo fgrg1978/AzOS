@@ -141,7 +141,7 @@ pub trait FileOps: Sync {
     fn read_whole(&self, path: &[u8], dst: &mut [u8]) -> usize;
 
     /// [`read_whole`](Self::read_whole), handing each run of bytes to `sink`
-    /// as it lands in `dst` (wave 14, SPAWNCACHE: the image is hashed in the
+    /// as it lands in `dst` (SPAWNCACHE: the image is hashed in the
     /// same pass that reads it, while the run is still in the data cache).
     /// `sink` sees every byte of `dst[..n]` once, in order. On a refusal (0)
     /// it may have seen a prefix. The default reads, then hands over the
@@ -152,7 +152,7 @@ pub trait FileOps: Sync {
         n
     }
 
-    /// The identity of the bytes at `path` now (wave 14, SPAWNCACHE): two
+    /// The identity of the bytes at `path` now (SPAWNCACHE): two
     /// equal stamps mean the same bytes, so what was verified about the first
     /// holds for the second. `None` (the default) when the file system cannot
     /// promise that; nothing is then cached.

@@ -18,8 +18,8 @@
 //! let table: [u8; MAX_TASKS] = [0; MAX_TASKS];
 //! ```
 //!
-//! Status 2026-09-26 (V2.6): the Phase C3 migration reached PART of the
-//! symbol table, not all of it. As of the 2026-09-25 audit, 78 of 167
+//! Status: the Phase C3 migration reached PART of the
+//! symbol table, not all of it. At the last audit, 78 of 167
 //! declared Kconfig symbols reached no `azos_limits::` import
 //! anywhere in `crates/`, `kernel/`, or `userspace/` — a same-named
 //! literal twin in code (e.g. `TIMER_FREQ`, `PID_DT_MS`) made a

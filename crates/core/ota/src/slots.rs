@@ -177,8 +177,8 @@ pub enum VoidOutcome {
 }
 
 /// An ORDERLY reboot or power-off is about to happen: take back this boot's
-/// own unconfirmed mark, so the shutdown does not count as a crash (owner
-/// decision 2026-09-28). Called by `sys_reboot`/`sys_shutdown` (through the
+/// own unconfirmed mark, so the shutdown does not count as a crash.
+/// Called by `sys_reboot`/`sys_shutdown` (through the
 /// kernel's hook, `crates/core/syscall`) and by the shell's `reboot`/`shutdown`,
 /// never by the panic path: a crash or a reset still counts.
 ///

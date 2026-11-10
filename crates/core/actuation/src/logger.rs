@@ -91,7 +91,7 @@ pub enum LogStorageError {
     /// write/fsync/close error from the underlying device.
     Io,
     /// The caller is a real-time task, which never does block I/O (owner
-    /// rule, wave 15): its records are queued and the log flusher task
+    /// rule): its records are queued and the log flusher task
     /// has been woken to write them. Not durable yet when this returns.
     Deferred,
 }
@@ -119,7 +119,7 @@ pub trait LogStorage: Sync {
     /// loss. See [`logger_seed_next_serial`] for why every OTHER `open` now
     /// lands on a serial that has never been written this lineage, making
     /// the truncate a no-op in practice rather than the every-boot data-loss
-    /// it used to be before 2026-09-26 (U08-3).
+    /// it used to be.
     fn open(&self, serial: u32) -> Result<LogHandle, LogStorageError>;
 
     /// Append `buf` to `handle`. Must return the number of bytes actually
@@ -225,11 +225,11 @@ pub const SAFETY_ENVELOPE_REFUSED: u8 = 0x01;
 /// carries `detail = 0xE5700000` so it cannot be mistaken for a real stop.)
 /// 8 = a geofence breach (`safety::ESTOP_ACTION_GEOFENCE`), `detail` the
 /// overshoot in metres. 9 = `sys-wdt`'s stack-canary check
-/// (`safety::ESTOP_ACTION_STACK_OVERFLOW`, U08-1), `detail` the count of
+/// (`safety::ESTOP_ACTION_STACK_OVERFLOW`), `detail` the count of
 /// overwritten canaries. 10 = `sys-wdt`'s timer-liveness check
-/// (`safety::ESTOP_ACTION_TIMER_FROZEN`, U08-1), `detail` the stall count.
+/// (`safety::ESTOP_ACTION_TIMER_FROZEN`), `detail` the stall count.
 /// 11 = the config authority this device had is gone at boot
-/// (`safety::ESTOP_ACTION_CONFIG_AUTHORITY`, wave 11), `detail` the
+/// (`safety::ESTOP_ACTION_CONFIG_AUTHORITY`), `detail` the
 /// `azos_config::AuthorityLoss` code.
 /// 15 = the hung-task or stuck-CPU detector's safe stop (`safety::ESTOP_ACTION_HANG`),
 /// `detail` the task's tid or the CPU's id with the top bit set.
@@ -263,7 +263,7 @@ pub const SAFETY_LOG_WRAPPED: u8 = 0x05;
 /// just the destination.
 ///
 /// Every change is recorded, including the intermediate CAUTIOUS and SLOW
-/// levels — owner decision, 2026-09-05. `SAFETY_DEGRADE` already records the
+/// levels. `SAFETY_DEGRADE` already records the
 /// one-bit degraded-mode view on both arm and clear; recording only CONTAINED here
 /// would have left the same gap the graded levels exist to close, namely why
 /// the robot was moving slowly rather than merely whether it had stopped.
@@ -422,7 +422,7 @@ pub const SAFETY_SECCOMP_AUDIT: u8 = 0x0C;
 ///
 /// Action 4 is the one refusal of a BOUND image: a `SYS_SPAWN_EX` of an image the
 /// signed topology has no row for (`crates/core/syscall/src/spawn.rs`,
-/// `SPAWN_REFUSED_ACTION_NO_ROW`, owner decision 2026-09-28).
+/// `SPAWN_REFUSED_ACTION_NO_ROW`).
 /// Action 5 is a `SYS_SPAWN_EX` without the launch grant. Action
 /// 6 is a streamed image (larger than the exec bounce buffer) whose
 /// bytes at load did not hash to the digest it was planned by: the file
@@ -478,7 +478,7 @@ pub const SAFETY_COW_OOM: u8 = 0x0F;
 /// Boot refused to start the first ring-3 program because the actuation gate
 /// (`azos_robot::motor::set_motor_gate`) was not installed yet.
 ///
-/// Owner decision 2026-09-25 (Q1.4): the motor write path already fails
+/// The motor write path already fails
 /// closed with no gate installed (`gate_speed` in `crates/domains/robot/robot/src/
 /// motor.rs` now returns 0, not the requested speed), and this is the
 /// second, independent layer — boot refuses to hand a user program the CPU
@@ -540,14 +540,14 @@ pub const SAFETY_MM_QUOTA_FAULT: u8 = 0x1F;
 pub const OPERATOR_KEY_FP_BYTES: usize = LOG_PAYLOAD_BYTES - 4;
 
 /// The IMU has been invalid/stale for longer than `safety::
-/// IMU_INCOHERENT_AFTER_TICKS` (owner decision, 2026-09-26, V1.6). Written
+/// IMU_INCOHERENT_AFTER_TICKS` (V1.6). Written
 /// ONCE per stretch of invalidity by `safety::check_common`, not once per
 /// tick the condition continues. `action_code` is unused (0); `detail`
 /// carries the elapsed tick count at the moment it latched.
 pub const SAFETY_SENSOR_INCOHERENT: u8 = 0x12;
 
 /// A payload command (spray pump, gripper, camera shutter) was refused
-/// because the e-stop latch holds (H22, coordinator audit, 2026-09-26).
+/// because the e-stop latch holds (coordinator audit).
 /// Before this decision `payload_exec` had no e-stop check at all — a 12 V
 /// spray pump kept running through a latched e-stop, and a gripper/shutter
 /// command was silently applied too. `action_code` carries the
@@ -555,13 +555,13 @@ pub const SAFETY_SENSOR_INCOHERENT: u8 = 0x12;
 pub const SAFETY_PAYLOAD_REFUSED: u8 = 0x13;
 
 /// A ring-3 entropy read (the brain link's ephemeral key among them) was
-/// REFUSED because the pool was unseeded (owner decision, 2026-09-26, V1.2 —
-/// U09-8 / security finding #26). `action_code` is 1 (a ring-3 read),
+/// REFUSED because the pool was unseeded.
+/// `action_code` is 1 (a ring-3 read),
 /// `detail` the caller's TID.
 pub const SAFETY_ENTROPY_UNSEEDED_REFUSED: u8 = 0x14;
 
 /// A ring-3 task's topology row names a scheduling class this build's
-/// scheduler does not have (wave 7), so its class and priority were NOT
+/// scheduler does not have, so its class and priority were NOT
 /// applied: the task runs at the priority it was created with instead of the
 /// one the signed topology declares. `action_code` is the site (0 = autorun,
 /// 1 = `SYS_SPAWN_EX`), `detail` the task's TID.
@@ -573,7 +573,7 @@ pub const SAFETY_ENTROPY_UNSEEDED_REFUSED: u8 = 0x14;
 /// Site 4: an io_ring's `sqpoll` permit refused on a one-hart machine (the
 /// poller would share its owner's hart); `detail` is the owner's TID.
 ///
-/// Site 5 (wave 9): a priority donation to a ring-3 task was raised to the
+/// Site 5: a priority donation to a ring-3 task was raised to the
 /// ring-3 floor — the donor (a kernel real-time task) was more urgent than a
 /// ring-3 task may run; `detail` is the target's TID, once per target task.
 pub const SAFETY_TOPO_CLASS_REFUSED: u8 = 0x16;
@@ -601,7 +601,7 @@ pub const SUP_ACTION_GAVE_UP: u8 = 2;
 pub const SUP_ACTION_RESPAWN_FAILED: u8 = 3;
 /// The driver ended (any exit code) under its topology row's `restart = no`:
 /// released and not restarted, by policy rather than by a spent budget
-/// (wave 11). Recorded as a give-up is, so a driver that is gone for good is
+///. Recorded as a give-up is, so a driver that is gone for good is
 /// always on the recorder, whichever rule ended it.
 pub const SUP_ACTION_NO_RESTART: u8 = 4;
 /// A child of the component manager died with its named endpoints held for
@@ -617,7 +617,7 @@ pub const fn sup_record_detail(row: u16, count: u8) -> u32 {
 /// The behavior loop has held STOP through L1 for
 /// `ml_link::ABSENT_RECORD_CYCLES` consecutive cycles because the ML verdict
 /// it acts on is missing: the ring-3 ML service never started, died and is not
-/// back, or stopped answering (owner decision 2026-09-28: fail closed).
+/// back, or stopped answering (fail closed).
 /// `action_code` is the outcome of the cycle the record was written on
 /// (`ml_link::ABSENT_*`), `detail` the service's TID (0: never started).
 ///
@@ -650,7 +650,7 @@ pub const RTWD_ACTION_REPEATS: u8 = 3;
 pub const RTWD_DETAIL_STOPPED: u32 = 1 << 31;
 
 /// The boot did not install the signed capability topology from the volume
-/// (Kconfig `TOPOLOGY_SOURCE`, `kernel/src/boot/topology.rs`, wave 15).
+/// (Kconfig `TOPOLOGY_SOURCE`, `kernel/src/boot/topology.rs`).
 /// Durable, once per boot, written before the built-in topology is installed
 /// or the boot hart halts. `action_code` is one of the `TOPO_ACTION_*`
 /// below; `detail` is `azos_topology::signed::SignedRefusal::code()` for an
@@ -896,7 +896,7 @@ impl LogRecord {
 // Durable queues: one per CPU, one producer each, never evicted.
 // ---------------------------------------------------------------------------
 //
-// Owner rule (wave 15): a real-time task never does block I/O, and never
+// Owner rule: a real-time task never does block I/O, and never
 // waits for a task that does. Every encoder below runs in whatever task logs
 // the event (the 1 kHz motor loop, the RT watchdog, the syscall path, a fault
 // handler), so the queue it pushes into takes no lock. Each CPU has its own
@@ -1199,7 +1199,7 @@ static LOG_ACTIVE: AtomicBool = AtomicBool::new(false);
 /// Monotonic session serial number.
 ///
 /// **Not persisted by this static — it cannot survive a reboot on its own,
-/// being a plain in-process integer.** Owner decision, 2026-09-26 (U08-3):
+/// being a plain in-process integer.**
 /// the kernel seeds this from [`replay_boot`]'s `next_serial` (a real
 /// filesystem scan of the previous session's tail, via
 /// [`logger_seed_next_serial`]) BEFORE calling [`logger_init`]. Before this
@@ -1236,7 +1236,7 @@ static NONCE_CARRY: AtomicU64 = AtomicU64::new(0);
 /// `LogStorage::write` calls plus an `fsync` — real disk I/O on the other
 /// side of the seam. Owning it is what serialises two flushers and makes the
 /// queues' consumer single. It is a [`Claim`](azos_sync::claim::Claim), not a
-/// `Mutex` (owner rule F1: no `Mutex` across device I/O; the claim's exchange
+/// `Mutex` (no `Mutex` across device I/O; the claim's exchange
 /// mutex is held for the instant of taking and giving it): no real-time task
 /// ever takes it — an RT caller of [`logger_flush`] wakes the log flusher
 /// instead — so there is no RT waiter whose priority an owner would need to
@@ -1286,7 +1286,7 @@ impl Flush {
 // The log flusher: the one place RT tasks' records reach the medium.
 // ---------------------------------------------------------------------------
 //
-// Owner rule (wave 15): a real-time task never does block I/O. An RT caller
+// Owner rule: a real-time task never does block I/O. An RT caller
 // of `logger_flush` (the RT watchdog's periodic flush, a `*_durable` record
 // from the motor loop after its SAFE STOP) bumps `FLUSH_REQ` and wakes the
 // flusher, a kernel task at `LOG_FLUSHER_PRIORITY` (outside the RT band),
@@ -1663,7 +1663,7 @@ pub const LOG_FILE_HEADER_BYTES: usize = 16;
 /// **Not the queue capacity.** It used to be, which put a 128-record batch
 /// (4 KiB) and a 4 KiB encode buffer in one `logger_flush` frame — 8 KiB on a
 /// kernel stack of 16 KiB, which is what `CONFIG_KERNEL_STACK_SIZE_KB` was
-/// everywhere until 2026-09-16 and still is on embedded, with the FAT32
+/// everywhere before the default was raised and still is on embedded, with the FAT32
 /// write path and its own sector buffering called from underneath it. A flush
 /// now loops over chunks, so the queues still empty in one call but the frame
 /// stays small: 16 records is 512 B of encode buffer, exactly one sector.
@@ -1677,7 +1677,7 @@ pub const LOG_FLUSH_BATCH_MAX: usize = 16;
 /// `logger_init`** — that call reads the stored serial the moment it runs,
 /// not lazily.
 ///
-/// Owner decision, 2026-09-26 (U08-3): the caller is expected to pass
+/// The caller is expected to pass
 /// [`BootReplay::next_serial`], from a [`replay_boot`] scan of the medium
 /// this boot is about to write to — one past the previous session's
 /// highest serial, so the new session never reuses (and, per that scan
@@ -1760,7 +1760,7 @@ pub fn logger_tick() {
 /// when records were written but the storage's `fsync` did not confirm them
 /// durable (see `flush_one_batch`).
 ///
-/// A real-time caller does not flush (owner rule: an RT task never does
+/// A real-time caller does not flush (an RT task never does
 /// block I/O), and neither does a task in a SpinLock section or with
 /// interrupts masked: `block_current` refuses its sleep, and the wait for the
 /// disk would spin with preemption off. Both get `Err(Deferred)` at once and
@@ -2292,7 +2292,7 @@ pub fn receipt_ages(device: u16, kind: u8) -> (u64, u64) {
 /// `refusable`: the record may be refused (`EffectCommit::Full`, nothing
 /// counted). Not `refusable` (an effect that moves toward a safe state, which
 /// is never refused): the record is [`Admit::Stop`]: it uses the safety
-/// reserve (owner decision 16-10: a stop is always recorded) down to
+/// reserve (a stop is always recorded) down to
 /// [`STOP_KEEPS_FREE`] free slots; past that `Full` means this one was lost
 /// (counted dropped, and by the gate as unrecorded).
 ///
@@ -2413,7 +2413,7 @@ pub fn log_safety_violation_durable(
 }
 
 /// Durably record the operator-release nonce floor `verify_operator_release`
-/// just accepted (owner decision, 2026-09-26 — persistence closes the replay
+/// just accepted (persistence closes the replay
 /// window a captured signed release has across a reset; no TRNG on any
 /// target board to seed a fresh, unpredictable challenge instead).
 ///
@@ -2761,7 +2761,7 @@ pub const LOG_SERIAL_WRAP: u32 = 100_000;
 // reset.
 // ---------------------------------------------------------------------------
 //
-// Owner decision, 2026-09-13: at boot, the last `SAFETY_ESTOP` in the durable
+// At boot, the last `SAFETY_ESTOP` in the durable
 // record decides whether the machine starts latched. A session that ended
 // latched starts latched; a log file that exists but cannot be read also starts
 // latched (fail safe); no volume and no log file is a fresh boot. A latch that a
@@ -2769,7 +2769,7 @@ pub const LOG_SERIAL_WRAP: u32 = 100_000;
 // the durable e-stop write exists for exactly the reset that follows it.
 //
 // **It must still run BEFORE `logger_init` — for a different reason now.**
-// Until 2026-09-26 every boot started at serial 0 and opened it with
+// Every boot used to start at serial 0 and open it with
 // TRUNCATE, so running after `logger_init` would have erased the very file
 // this reads. `logger_init` no longer reuses a serial that might hold bytes
 // (see `logger_seed_next_serial`/`BootReplay::next_serial`), so a `logger_
@@ -2934,8 +2934,8 @@ impl BootLatch {
 }
 
 /// Everything one boot needs from the durable record, found in a SINGLE walk
-/// over the files — the owner decision of 2026-09-26 (U08-3 + the
-/// operator-release nonce floor) that replaces the old "every session starts
+/// over the files — including the
+/// operator-release nonce floor — and replaces the old "every session starts
 /// at serial 0 and truncates it" scheme.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BootReplay {

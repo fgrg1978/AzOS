@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The AzOS interface definition language, first cut (L13, owner decision D5).
+//! The AzOS interface definition language, first cut.
 //!
 //! An interface is a Rust trait annotated `#[azos_interface(id = N, level =
 //! L)]`. One interface generates, from one op table:

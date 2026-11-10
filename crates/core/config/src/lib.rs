@@ -136,7 +136,7 @@ pub static CFG_ESTOP_GPIO_PIN: AtomicU32 = AtomicU32::new(255);
 /// (without needing a shell command).  0 = disabled.
 pub static CFG_OTA_AUTO_RECV_PORT: AtomicU32 = AtomicU32::new(0);
 
-// ── Q4.2: sched_hz clamp (owner decision, 2026-09-25) ────────────────────────
+// ── Q4.2: sched_hz clamp ────────────────────────
 //
 // Two sources fed the scheduler tick: Kconfig `SCHED_HZ` (`config/kernel/Kconfig.sched`,
 // the compile-time default for this board/profile) and CONFIG.INI's
@@ -311,7 +311,7 @@ pub const MAX_ENTRIES: usize = 32;
 pub const MAX_KEY: usize = 24;
 /// Maximum value length in bytes.
 ///
-/// Was 16 until 2026-08-20, which is exactly the length of
+/// Was 16, which is exactly the length of
 /// `/fat/GPIODRV.ELF` and `/fat/SYSTEST.ELF` — the two autorun paths in use.
 /// They fit by one byte of luck; `/fat/BRAINCLI.ELF` (17) did not, and the
 /// parser silently cut it to `/fat/BRAINCLI.EL`, so the failure surfaced far
@@ -443,7 +443,7 @@ fn find_duplicate_key(data: &[u8]) -> Option<&[u8]> {
 /// lines is an ERROR ([`CfgError::DuplicateKey`]): the file is refused as a
 /// whole, and the previous configuration is left exactly as it was, so a
 /// caller can neither read a half-loaded store nor mistake one line for the
-/// other. (Until wave 11 the first line silently won and the second was
+/// other. (It used to be that the first line silently won and the second was
 /// ignored.)
 ///
 /// Lines starting with `#` and blank lines are silently ignored.

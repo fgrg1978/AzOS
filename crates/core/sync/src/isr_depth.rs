@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! Per-hart "am I inside an interrupt handler?" depth.
 //!
-//! Owner decision 2026-09-20 (security scan, unit 4): **detect** a lock taken
+//! Policy: **detect** a lock taken
 //! from interrupt context rather than mask interrupts against it.
 //!
 //! # Why this exists and not `sstatus.SIE`

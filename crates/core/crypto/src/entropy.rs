@@ -224,7 +224,7 @@ pub fn fill(out: &mut [u8]) -> bool {
     with_pool(|p| p.fill(out))
 }
 
-// ── Persisted seed record (U09-8, owner decision 2026-09-26 V1.2) ─────────
+// ── Persisted seed record ─────────
 //
 // "Refuse to derive session keys on an unseeded pool" (the fix for U09-8 /
 // security finding #26, applied by the entropy server, `azos_syscall::entropy`,
@@ -423,7 +423,7 @@ pub enum SeedTail {
 /// A GPT keeps a second copy of its table at the END of the medium: the
 /// backup entry array right after `LastUsableLBA`, the backup header at
 /// `AlternateLBA`. Those are not partitions, so the partition extents alone
-/// answer `Clear` while the tail overlaps them (audit K2-M1).
+/// answer `Clear` while the tail overlaps them.
 ///
 /// `reserved_region_write` alone only checks that the device is larger than
 /// the tail — it cannot know where the filesystem ends — and the key it

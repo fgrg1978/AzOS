@@ -70,7 +70,7 @@ azos_common::ro_hook! {
 /// the scheduler overwrote on every context switch on ANY core let a task
 /// enqueue itself under the id of whatever task another core had just
 /// switched to; the wake then went to that other task and the real waiter
-/// slept forever (measured on aarch64 with `-smp 2`, 2026-09-24). So the id
+/// slept forever (measured on aarch64 with `-smp 2`). So the id
 /// is only ever read through this per-CPU accessor.
 static WQ_TID_FN: fn() -> u32;
 }

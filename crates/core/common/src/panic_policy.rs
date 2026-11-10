@@ -44,7 +44,7 @@
 //!
 //! A panic inside the panic handler never reaches the predicate: the handler
 //! marks the hart before anything else and halts such a panic with one line
-//! (kernel/src/panic.rs `nested`, owner decision 2026-10-24).
+//! (kernel/src/panic.rs `nested`).
 
 use core::sync::atomic::{AtomicU32, Ordering};
 

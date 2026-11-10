@@ -156,13 +156,13 @@ pub(crate) fn resolve_endpoint_dest_slot(
 }
 
 /// Whether the fast-IPC call lends the caller's priority to the server
-/// (wave 11 PIFAST) — see the call arm. `pifast-donation-canary` never
+/// — see the call arm. `pifast-donation-canary` never
 /// donates, so `pifast-smoke`'s loaded phase must fail its bound.
 const FAST_CALL_DONATES: bool = !cfg!(feature = "pifast-donation-canary");
 
 /// Body of the register-form `SYS_IPC_CALL` arm: `a0` names the destination
 /// by a capability the caller holds, `words` are `a2..a5`. The raw-TID form
-/// (108) is retired (wave 15 N5). The register form moves no capability: a
+/// (108) is retired. The register form moves no capability: a
 /// call that moves one is a descriptor-form call (`crate::ipc_v2`).
 fn fast_ipc_call_arm(a0: u64, words: [u64; 4], out: &mut SyscallOut) -> i64 {
 
@@ -222,7 +222,7 @@ pub(crate) fn fast_ipc_call_to(
             let server_tid = dest.owner;
 
             ipc_trace!("[IPC] CALL  tid={} -> srv={} w0={:#x}", caller_tid, server_tid, words[0]);
-            // Wave 11 PIFAST: the caller lends the server its
+            // The caller lends the server its
             // priority for the span of the call, before the slot is published
             // and recorded in it (`fast_ipc_call_donating`). Without it a
             // server below the caller is woken behind any task in between on
@@ -366,7 +366,7 @@ pub(crate) fn fast_ipc_call_wait(
                 result = reply[0] as i64;
                 break;
             }
-            // Completed without an answer (wave 15 N5): the
+            // Completed without an answer: the
             // server died (-EPEERDIED) or the endpoint was
             // destroyed (-EREVOKED) with this call queued or
             // in service. The code is the call's answer.
@@ -524,12 +524,12 @@ pub fn syscall_verdict(num: u64) -> SyscallEntry {
         azos_sched::filter::FilterVerdict::Linux if azos_limits::LINUX_ABI => {
             return SyscallEntry::Linux;
         }
-        // V1.8 (owner decision, 2026-09-26): kill, not `-1` — see
+        // V1.8: kill, not `-1` — see
         // `handlers::seccomp_deny_kill`'s doc for why the logic lives there.
         // `seccomp_deny_kill` must NOT be `#[cold]`: that attribute on the
         // callee reshaped THIS function's register allocation and block layout
         // — measured +18 instr riscv64 / +8 aarch64 on `syscall-floor`
-        // (2026-09-26, bisected: the arm's divergence and the 584 arm cost 0).
+        // (bisected: the arm's divergence and the 584 arm cost 0).
         azos_sched::filter::FilterVerdict::Deny => seccomp_deny_kill(num),
         // Never answered without the personality; refused like `Deny` if it
         // ever were.
@@ -561,7 +561,7 @@ pub fn syscall_register_only(num: u64) -> SyscallEntry {
     // nothing to user memory, so they are answered here and the fat frame
     // stays in `dispatch_slow`.
     //
-    // (Wave 10: the `match` is now `SYSCALL_TABLE`, one small function per
+    // (the `match` is now `SYSCALL_TABLE`, one small function per
     // arm, so no frame is fat any more; what these two still skip is
     // `dispatch_slow`'s context stores and the indirect call. Kept: removing
     // them was not measured.)
@@ -716,7 +716,7 @@ pub(crate) fn fast_ipc_accept_into_waking_as<const V1: bool>(
             if let Some((client, h)) = wake {
                 azos_sched::wait::wake_fast_ipc_client_tid(client, h);
             }
-            // Wave 11 PIFAST: the reply's donation, returned after the wake.
+            // The reply's donation, returned after the wake.
             handle as i64
         }
         None => {
@@ -869,7 +869,7 @@ fn fast_ipc_reply_words(handle: u64, words: [u64; 4]) -> i64 {
             azos_sched::wait::wake_fast_ipc_client_tid(
                 caller_tid, handle);
             // The answer ends the call: the server gives back the caller's
-            // priority (wave 11 PIFAST) — AFTER the wake. Returned before it,
+            // priority — AFTER the wake. Returned before it,
             // a preemption in between leaves the reply deposited, the client
             // asleep and the server back at its own priority behind whatever
             // sits between them.
@@ -949,7 +949,7 @@ static SYSCALL_TABLE: [Handler; SYSCALL_TABLE_LEN] = syscall_table!(
         SYS_EXIT    => sys_exit(a0),
         SYS_GETPID  => sys_getpid(),
         SYS_YIELD   => sys_yield(),
-        // Wave 13: threads (`crate::threads`).
+        // Threads (`crate::threads`).
         SYS_THREAD_CREATE => crate::threads::sys_thread_create(a0, a1, a2, a3, a4, regs),
         SYS_THREAD_EXIT   => crate::threads::sys_thread_exit(a0),
         SYS_FUTEX_WAIT    => crate::vdso_notify::sys_futex_wait(a0, a1, a2),
@@ -986,7 +986,7 @@ static SYSCALL_TABLE: [Handler; SYSCALL_TABLE_LEN] = syscall_table!(
 
         // SYS_IPC_CALL, register form: client side. a0 = a `Cap<Endpoint>`,
         // a1 = 0, a2..a5 = data words (up to 4 × u64 = 32 bytes). Blocks until
-        // the server replies. The raw-TID form (108) is retired (wave 15 N5):
+        // the server replies. The raw-TID form (108) is retired:
         // the endpoint is the only address.
         // The descriptor form (`a1` a `MsgDesc`) is `crate::ipc_v2`'s.
         SYS_IPC_CALL => if a1 == 0 {
@@ -1055,7 +1055,7 @@ static SYSCALL_TABLE: [Handler; SYSCALL_TABLE_LEN] = syscall_table!(
         // is not read: libsys preloads the accept's not-written sentinel there,
         // so `FastRequest::delivered` keeps its meaning on this path.
         //
-        // **Fail-fast (owner decision 2026-09-15).** The accept already fills
+        // **Fail-fast.** The accept already fills
         // all of a1..a5 (`SYSCALL_OUT_REGS`), so no register is left to report
         // the reply's outcome next to an accepted request. A reply that is not
         // delivered therefore accepts nothing and returns at once: -2 stale,

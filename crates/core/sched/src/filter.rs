@@ -13,7 +13,7 @@
 
 /// Maximum number of allowed syscalls per process.
 ///
-/// **Widened from 32 to 64 on 2026-09-07 (owner decision), and the reason is
+/// **Widened from 32 to 64, and the reason is
 /// the migration rather than any profile being full today.** Every family
 /// moving to capability-typed syscalls doubles its entries in a profile for
 /// as long as both paths stay live: a role profile went from 9 to 17 extras
@@ -32,10 +32,10 @@
 /// what prove this did not move a field `context_switch.S` reaches by
 /// hard-coded offset.
 ///
-/// 96 since wave 9 (owner decision): the widest image profile (ABITEST.ELF,
-/// audit mode) listed 62 of 64. A Kconfig int since wave 15
+/// 96: the widest image profile (ABITEST.ELF,
+/// audit mode) listed 62 of 64. A Kconfig int
 /// (`CONFIG_SYSCALL_FILTER_MAX`, default 128): ABITEST.ELF reached 74 of 96,
-/// past the quarter-free margin `tests/host/seccomp-tests` keeps. Since wave 7 the dispatcher answers from the
+/// past the quarter-free margin `tests/host/seccomp-tests` keeps. The dispatcher answers from the
 /// bitmap ([`SYSCALL_FILTER_BITMAP_BITS`]), so the list length costs no
 /// syscall; it is kept for the audit and spawn-plan comparisons and costs
 /// another 64 bytes per `Task` (4 KiB of task pool).
@@ -51,7 +51,7 @@ pub const SYSCALL_FILTER_MAX: usize = azos_limits::SYSCALL_FILTER_MAX;
 /// answer it has always given.
 ///
 /// 672 (640 until the foreign-ABI family took 640 and 641), not 1024 (owner
-/// decision, wave 7): 672 bits = 84 bytes per
+/// decision): 672 bits = 84 bytes per
 /// `SyscallFilter`, one embedded in each `Task` slot (`MAX_TASKS` = 64).
 /// `Task` itself grows by 64 bytes (1088 -> 1152 on
 /// riscv64, 1728 -> 1792 on aarch64: 16 of the 80 land in tail padding it
@@ -74,7 +74,7 @@ const _: () = assert!(SYSCALL_FILTER_BITMAP_BITS % 32 == 0, "the bitmap is whole
 /// order it was built, which the tests and the spawn-plan comparison read.
 /// `bits` is the same set as a bitmap over `0..SYSCALL_FILTER_BITMAP_BITS`,
 /// which is what the dispatcher reads: one word load and a bit test instead
-/// of a scan of up to `SYSCALL_FILTER_MAX` entries on every filtered syscall (owner decision,
+/// of a scan of up to `SYSCALL_FILTER_MAX` entries on every filtered syscall (
 /// round 8). [`Self::allow`] is the only writer of either and writes both in
 /// the same guarded step, so every filter built through it — the role
 /// profiles, the image profiles, the fail-closed deny-all — carries the two

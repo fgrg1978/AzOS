@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Lock scopes as types (owner decision 09-10, flag F6).
+//! Lock scopes as types (flag F6).
 //!
 //! Who may touch a piece of state is part of its type:
 //!

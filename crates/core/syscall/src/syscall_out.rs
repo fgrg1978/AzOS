@@ -46,7 +46,7 @@ pub const NO_CAP_MOVED: u64 = 0;
 
 /// How many extra return registers [`SyscallOut`] carries: `a1`..`a6`.
 ///
-/// **Was 5 until the capability MOVE landed (2026-09-20).** `SYS_IPC_ACCEPT`
+/// **Was 5 until the capability MOVE landed.** `SYS_IPC_ACCEPT`
 /// already filled all five with `[caller_tid, w0, w1, w2, w3]` and returned the
 /// exchange handle in `a0`, so a capability moved along with the message had
 /// **nowhere to come back**. The sixth register is where the receiver learns

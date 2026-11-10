@@ -142,7 +142,7 @@ impl CapHandle {
     /// or `ipc`'s copy ever drifts from 256, nothing here catches it —
     /// that would need an analogous assert added on the `ipc` side, which
     /// is a follow-up for the owner to approve, not part of this change.
-    /// 256 → 512 on 2026-09-18, alongside `SLOT_BITS` 8 → 9. This is the
+    /// 256 → 512, alongside `SLOT_BITS` 8 → 9. This is the
     /// CEILING the handle encoding supports, not any one profile's value:
     /// `config/limits/Kconfig.limits` sets 32 (embedded), 256 (edge) and 512 (fleet), and
     /// it is `crates/core/ipc`'s assert — now bound to the *configured* constant
@@ -460,7 +460,7 @@ pub mod ty {
     /// An io_ring.
     pub const IORING: CapType = CapType::new(CapKind::Queue, 0);
     /// The right to see every task: minted for one target only, `"tasks"`,
-    /// `READ`, resource `0` (wave 12): the warrant of the admin introspection
+    /// `READ`, resource `0`: the warrant of the admin introspection
     /// region.
     pub const TASK: CapType = CapType::new(CapKind::Domain, 0);
     /// A file descriptor (FAT32 / tmpfs / azvol) or a directory tree.
@@ -495,7 +495,7 @@ pub mod ty {
     /// [`crate::nic_queue::resource`]; the topology grants it by interface
     /// name and queue (`nicq.eth1.0`).
     pub const NIC_QUEUE: CapType = CapType::new(CapKind::Queue, 1);
-    /// The kernel tracer (wave 15, the `LOG_TRACE_*` ops): `READ` maps the
+    /// The kernel tracer (the `LOG_TRACE_*` ops): `READ` maps the
     /// per-CPU rings and reads the class mask, `WRITE` changes it.
     pub const TRACE: CapType = CapType::new(CapKind::Log, 0);
     /// The console: `WRITE` puts bytes on it, `READ` waits for input on it

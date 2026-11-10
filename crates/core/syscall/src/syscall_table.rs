@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! The syscall table: one handler per number, indexed, so every syscall costs
-//! the same to reach (owner decision 2026-09-28, the `sys_call_table` shape).
+//! the same to reach (the `sys_call_table` shape).
 //!
 //! # Why not the `match`
 //!
@@ -10,7 +10,7 @@
 //! riscv64 disassembly of 4992614), so the jump itself was already flat; what
 //! was shared is everything after it. Every arm body was inlined into that one
 //! function, with its register allocation, spills and block layout, so an
-//! arm's cost depended on the whole function: wave 9 measured the notify calls
+//! arm's cost depended on the whole function: a measurement found the notify calls
 //! (592/593) 10 instructions dearer on aarch64 and 6 on riscv64, and
 //! `ring-pingpong` 40 and 28, between two trees that differed by the 602 arm. Here
 //! each arm is its own function behind one bounds check, one load and one

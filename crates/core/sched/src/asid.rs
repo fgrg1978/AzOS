@@ -15,7 +15,7 @@
 //! current generation (a rollover happened since) takes a fresh ASID the
 //! next time it is switched in ([`prepare_switch`]).
 //!
-//! **One ASID per address space (owner decision 10-10).** The space's ASID
+//! **One ASID per address space.** The space's ASID
 //! lives in the per-space record `tlb_gen::SPACES`, keyed by the root frame
 //! (`ArchPlatform::user_root_frame`), not in the threads: a re-tag looks the
 //! record up under [`LOCK`] and adopts the space's ASID when another thread
@@ -258,7 +258,7 @@ fn owns(a: u16, word: usize, g: u32) -> bool {
         && SLOT_WORD[i].load(Ordering::Relaxed) == word as u64
 }
 
-/// Exec's install of its new user root on this hart (owner decision 10-10):
+/// Exec's install of its new user root on this hart:
 /// through the generation scheme, as [`prepare_switch`] does for a switch,
 /// so the hart leaves exec tracked (`tlb_gen::enter_installed`) instead of
 /// stale (riscv64, x86_64) or untracked (aarch64) until its next switch, and
@@ -317,7 +317,7 @@ const ALWAYS: u64 = 2;
 /// (`tlb_gen::AZOS_TLB_SWITCH_FLUSH`). Call with interrupts masked, right
 /// before `context_switch`, on the hart that will switch.
 ///
-/// The hot case (wave 15, TLBC) is a task whose memo (`Task::tlb_memo_*`)
+/// The hot case (TLBC) is a task whose memo (`Task::tlb_memo_*`)
 /// names its current word in the current generation with this hart
 /// recorded: the word still owns its ASID (an ASID is handed out once per
 /// generation, and a re-tag of the same space re-records the same word)

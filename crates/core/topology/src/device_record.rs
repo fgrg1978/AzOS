@@ -74,7 +74,7 @@ impl DeviceRecord {
     }
 }
 
-// ── The signed topology's counter floor (wave 15, TOPOSIGN) ─────────────────
+// ── The signed topology's counter floor (TOPOSIGN) ─────────────────
 //
 // A second record, in its own reserved-tail sector (Kconfig
 // `TOPOLOGY_FLOOR_SECTOR`, default 3), so the CONFIG.SIG floor above and this

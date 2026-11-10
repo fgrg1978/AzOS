@@ -4,7 +4,7 @@
 //!
 //! Every one of them reads the hart id and then a per-hart table; a tick
 //! between the two moves the task to another hart and the second read
-//! returns what the FIRST hart runs (found 2026-10-20: a kernel page fault
+//! returns what the FIRST hart runs (found: a kernel page fault
 //! copying to a user VA). They all go through [`on_this_hart`], which masks
 //! interrupts across the pair. This module counts, in a ktest build, how
 //! often that window is opened by a task and how often it was open to

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Static-key sites (wave 15, TRACE; Kconfig `KTRACE_STATIC_KEYS`): the
+//! Static-key sites (TRACE; Kconfig `KTRACE_STATIC_KEYS`): the
 //! link-time table of patchable tracepoint branches and the two instruction
 //! words each one can hold.
 //!
@@ -66,7 +66,7 @@ pub const A64_MSR_PAN_0: u32 = 0xd500_409f;
 /// aarch64 `msr PAN, #1`.
 pub const A64_MSR_PAN_1: u32 = 0xd500_419f;
 
-/// `SpinWait` boot-once sites (wave 15, N2b; Kconfig RV_ZACAS / RV_ZAWRS /
+/// `SpinWait` boot-once sites (Kconfig RV_ZACAS / RV_ZAWRS /
 /// RV_ZIHINTPAUSE / A64_LSE at `probe`; not trace keys): Linux's
 /// ALTERNATIVE. The site is linked as the SAFE form, a branch to the
 /// fallback ([`KEY_SPIN_CAS`]: the LR/SC or LL/SC loop) or a nop

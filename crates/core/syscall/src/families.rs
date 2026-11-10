@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The privileged families the kernel hosts (wave 12; endpoint
+//! The privileged families the kernel hosts (endpoint
 //! interfaces since D6 part A): `Flight`, `Behavior`, `Config` and `Ota`, the
 //! ring-3 forms of the recovery console's `flight`, `behavior`, `config` and
 //! `ota` commands, for the `FLIGHT.ELF`, `BEHAVIOR.ELF`, `CONFIG.ELF` and

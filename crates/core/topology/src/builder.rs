@@ -80,7 +80,7 @@ const TASK_ABICHILD_IMAGE: &[u8] = b"ABICHILD.ELF";
 #[cfg(feature = "ipc-endpoint-canary")]
 const TASK_UHELLO_IMAGE: &[u8] = b"UHELLO.ELF";
 
-// ── Board service registry — owner decision 2026-09-24 ──────────────────────
+// ── Board service registry ──────────────────────
 //
 // `Makefile`'s disk-image ELF list used to be hand-maintained and drifted
 // from what the project actually is (robot-shaped, decided before the
@@ -114,7 +114,7 @@ const TASK_UHELLO_IMAGE: &[u8] = b"UHELLO.ELF";
 // to end — two places asserting the same authority, one of them unread by
 // anything.
 //
-// **Their class and priority ARE applied (wave 7).** The autorun loader and
+// **Their class and priority ARE applied.** The autorun loader and
 // `SYS_SPAWN_EX` look a program's scheduling row up by its IMAGE name first and
 // fall back to `autorun` only when the image has no row, so each of these
 // three runs as `best_effort` at [`SERVICE_PRIORITY`], the number its row
@@ -132,7 +132,7 @@ const TASK_BRAINCLI_IMAGE: &[u8] = b"BRAINCLI.ELF";
 /// row ([`INFER_CALL_CAP`]).
 const TASK_MLSRV_IMAGE: &[u8] = b"MLSRV.ELF";
 
-// Wave 9 (DRV1): the ring-3 buzzer and INA219 drivers.
+// The ring-3 buzzer and INA219 drivers.
 // Unlike the three rows above, these rows DO carry capabilities, and they are
 // read: every row with `start = true` is started with `SYS_SPAWN_EX`'s
 // machinery by the component manager (`manager_starts`: not a fixed driver
@@ -341,7 +341,7 @@ const RESOURCE_ENDPOINT_INFER: &[u8] = b"endpoint.infer";
 // paths grant identical authority. `motor.N` is the topology's target
 // convention.
 //
-// Behind `profile-actuation` since 2026-09-21: a drivetrain is what a
+// Behind `profile-actuation`: a drivetrain is what a
 // deployment has, not what a kernel has. See that feature in `Cargo.toml`.
 const RESOURCE_MOTOR_0: &[u8] = b"motor.0";
 const RESOURCE_MOTOR_1: &[u8] = b"motor.1";
@@ -387,7 +387,7 @@ const INFER_CALL_CAP: CapSpec<'static> = CapSpec {
 };
 // ── The three hardware families, granted per RESOURCE ────────────────────
 //
-// Until 2026-09-10 no ring-3 task was granted a gpio, i2c or pwm endpoint at
+// No ring-3 task used to be granted a gpio, i2c or pwm endpoint at
 // all, so the interfaces behind them had no possible caller and the guards
 // that protect the drivetrain from them had no exercise on a booted machine. Named
 // resources, never a family in bulk: a grant is authority over one pin, one
@@ -402,7 +402,7 @@ const RESOURCE_GPIO_FREE:  &[u8] = b"gpio.20";
 // Granted READ only — see the CapSpec below for why write access to this one
 // address is a safety matter and not a convenience.
 const RESOURCE_I2C_IMU:    &[u8] = b"i2c.0.0x68";
-// U06-9 (2026-09-26): the brain-link PSK, one per board, the kernel-hosted
+// U06-9: the brain-link PSK, one per board, the kernel-hosted
 // `linkkey` interface (`azos_devif`): the bare interface name, no resource --
 // `"linkkey.0"` names nothing and is refused rather than minting the
 // singleton under a name that looks like it selected something.
@@ -467,7 +467,7 @@ const KEYS_LOGIN: CapSpec = CapSpec {
     perms: CapPerms::EXEC,
     target: MaybeStr::from_bytes(RESOURCE_KEYS), transfer: false, ops: KEYS_LOGIN_OPS,
 };
-// Wave 9 (P9): read access to the kernel entropy pool, the kernel-hosted
+// Read access to the kernel entropy pool, the kernel-hosted
 // `entropy` interface (`azos_devif`): the bare interface name, no resource.
 const RESOURCE_ENTROPY:    &[u8] = b"entropy";
 
@@ -485,7 +485,7 @@ const RESOURCE_ENTROPY:    &[u8] = b"entropy";
 // capability and still being refused is the assertion; without the grant, a
 // deleted guard would look exactly like a missing capability.
 //
-// **BEHIND A FEATURE SINCE 2026-09-11, and the feature is the point.** These
+// **BEHIND A FEATURE, and the feature is the point.** These
 // two exist to make a REFUSAL observable, which is a property of the test
 // suite, not of a robot. Left unconditional they were production topology: on
 // a board, `autorun` held a capability naming motor 0's duty channel and one
@@ -516,7 +516,7 @@ const RESOURCE_MMIO_RO: &[u8] = b"mmio.dt:sifive,test1";
 // QEMU `virt` kernels only: the board RTC, writable, and its
 // interrupt line, so `userspace/tests/captest` can raise an interrupt from ring 3,
 // bind it, and prove it is delivered and re-armed only by its ACK. aarch64
-// Wave 8: the PL031, `irq.34` (SPI 2). riscv64 (wave 9 IRQ4): the goldfish
+// The PL031, `irq.34` (SPI 2). riscv64: the goldfish
 // RTC, `irq.11` (PLIC/APLIC source 11). `topo_bare` / `topo_arch_*` (set by
 // `build.rs`: a kernel target, or the emitter's `emit-target-*` feature):
 // `tests/host/topology-tests` builds this crate for `aarch64-apple-darwin` with
@@ -538,12 +538,12 @@ const RESOURCE_IRQ_RTC: &[u8] = b"irq.34";
 // nobody chose.
 #[cfg(feature = "disk-part-row")]
 const RESOURCE_DISK_PART1: &[u8] = b"block.part.1";
-// `block.part.0`, READ only (wave 10): the FAT32 volume of the same image. With
+// `block.part.0`, READ only: the FAT32 volume of the same image. With
 // it the row's task holds TWO readable partitions, so each block entry names
 // its partition by the endpoint's badge, end to end.
 #[cfg(feature = "disk-part-row")]
 const RESOURCE_DISK_PART0: &[u8] = b"block.part.0";
-// Directory trees ring 3 may change (wave 10: mkdir, unlink, rmdir, rename and
+// Directory trees ring 3 may change (mkdir, unlink, rmdir, rename and
 // truncate need a `Cap<File>` WRITE tree covering the path). QEMU only, for
 // `userspace/tests/captest`: `/fat`, the FAT32 volume, and `/tmp`, the tmpfs
 // directory its positive mkdir/rmdir use. A board topology grants no tree:
@@ -559,7 +559,7 @@ const RESOURCE_TREE_TMP: &[u8] = b"/tmp";
 const RESOURCE_IRQ_RTC: &[u8] = b"irq.11";
 // A line the capability range admits and QEMU `virt`'s interrupt controller
 // does not implement, so `userspace/tests/captest` can see a bind of it refused with
-// `-ENODEV` and nothing left bound (wave 10 IRQ5). riscv64: source 100 — the
+// `-ENODEV` and nothing left bound. riscv64: source 100 — the
 // PLIC has 1..=95 (`riscv,ndev = <0x5f>`), the APLIC 1..=96
 // (`riscv,num-sources = <0x60>`), the capability range is 1..128. aarch64:
 // SPI 1000 — the capability range is 32..=1019, the GICv3 distributor's
@@ -855,8 +855,8 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     // (`seed_one_cap`); a kind without one would document a capability the
     // bridge can never mint — see that file's gap list.
     //
-    // **`soft_rt` at 16, not `hard_rt` at 0 (wave 7).** This row's class was
-    // never applied until wave 7, so `hard_rt`/0 described nothing that ran.
+    // **`soft_rt` at 16, not `hard_rt` at 0.** This row's class was
+    // never applied before, so `hard_rt`/0 described nothing that ran.
     // Applied literally it clamps to 8: inside the band the tick never
     // preempts (`RT_PRIORITY_THRESHOLD` = 12) and above `net-poll` (12) and
     // `sys-wdt` (11). That is the configuration `kernel/src/main.rs` records
@@ -933,7 +933,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
                 perms: CapPerms::READ,
                 target: MaybeStr::from_bytes(RESOURCE_IRQ_RTC), transfer: false, ops: 0,
         },
-            // READ, not RW — 2026-09-11. The same argument the sensor grants
+            // READ, not RW. The same argument the sensor grants
             // below already make, applied to the one device where getting it
             // wrong is a safety property rather than a privacy one.
             //
@@ -1015,7 +1015,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
                 perms: CapPerms::READ,
                 target: MaybeStr::from_bytes(RESOURCE_FRAME), transfer: false, ops: 0,
         },
-            // U06-9 (2026-09-26): the ring-3 door onto the reserved-sector
+            // U06-9: the ring-3 door onto the reserved-sector
             // brain-link PSK (the kernel-hosted `linkkey` endpoint). `brain_client` is
             // the one holder that reads it; every other autorun program
             // (`GPIODRV.ELF`/`REFLEX.ELF`) simply never calls the syscall
@@ -1028,7 +1028,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
                 perms: CapPerms::READ,
                 target: MaybeStr::from_bytes(RESOURCE_LINK_KEY), transfer: false, ops: 0,
         },
-            // Wave 9 (P9), an endpoint op since D6 part A: the kernel-hosted
+            // An endpoint op: the kernel-hosted
             // `entropy` interface (`azos_devif::Entropy`), the source of
             // `brain_client`'s ephemeral handshake keys. READ only (the op
             // class that draws), never transferable.
@@ -1054,7 +1054,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
                 perms: CapPerms::WRITE,
                 target: MaybeStr::from_bytes(RESOURCE_ENDPOINT_BENCH), transfer: false, ops: 0,
         },
-            // Last, so no earlier grant changes slot (wave 10 IRQ5).
+            // Last, so no earlier grant changes slot.
             #[cfg(all(feature = "cap-refusal-canary", topo_bare))]
             CapSpec {
                 kind: CapKind::Device,
@@ -1086,7 +1086,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     // grants no way to move anything — the point of the generic-microkernel
     // pivot. `require_pair_write` still demands WRITE on both, so a
     // half-declared drivetrain is refused rather than half-actuated. Under
-    // `flight-tool-drivetrain` (a gate feature, wave 12) the drivetrain is
+    // `flight-tool-drivetrain` (a gate feature) the drivetrain is
     // `FLIGHT.ELF`'s instead: one writer per motor (`motor_write_conflict`).
     let mut n = 0;
     if DRIVETRAIN && !cfg!(feature = "flight-tool-drivetrain") {
@@ -1157,7 +1157,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     // (gpio_drv, abitest, captest, vsbench, reflex...), so it has to clear the
     // hungriest of them.
     //
-    // MEASURED 2026-09-20, not guessed: `vsbench` peaks at **512 pages**
+    // MEASURED, not guessed: `vsbench` peaks at **512 pages**
     // (2 MiB); `abitest` and `gpio_drv` reach **0** — they never grow the heap
     // at all. So 2048 is four times the observed maximum.
     //
@@ -1167,7 +1167,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     // programs exits before anything reads it. Three unlike programs agreeing
     // exactly is the instrument. `mm_peak_global` outlives the task.
     //
-    // It is still a real ceiling, and that is the point. Scan unit 3 finding 3
+    // It is still a real ceiling, and that is the point. The problem
     // was that ONE ring-3 task could walk `brk` until the allocator was empty:
     // the QEMU linker window is 32 MiB total, so a runaway loop took the kernel
     // heap, the copy-on-write break and every allocating safety path with it.
@@ -1184,14 +1184,14 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     // can reach it cheaply: 2048 would need an 8 MiB allocation to observe a
     // refusal, on a 32 MiB arena, which is a slow way to prove one comparison.
     //
-    // Wave 8: the budget now covers EVERY frame the task holds
+    // The budget now covers EVERY frame the task holds
     // -- its ELF image, user stack and page tables included, which used to be
     // left out -- and the value is Kconfig's `AUTORUN_MEM_PAGES` (2048 on
     // edge, 256 on embedded, where 2048 x 2 would not be admitted in 16 MiB).
     // The canary's 64 leaves abitest room for its image, stack, tables, shm
     // and io_ring and still refuses a 256-page `brk` far short of it.
     //
-    // Wave 9: the row declares no `instances`, so it has the default, 1: one
+    // The row declares no `instances`, so it has the default, 1: one
     // live autorun program. Its fork children are not instances; they live
     // inside the budget and the COW copy memory admission pays for.
     #[cfg(not(feature = "mem-quota-canary"))]
@@ -1219,7 +1219,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
             crate::deadline::SchedProfile { period_us: 10_000, runtime_us: 6_000, deadline_us: 0, cpu_mask: 1, core_class: None },
         )
         .expect("default_minimal_topology: deadline canary push failed");
-        // A band row with a profile must be `mem = "locked"` (wave 11), or the
+        // A band row with a profile must be `mem = "locked"`, or the
         // refusal would be that one instead of the infeasibility tested here.
         topo.set_last_task_mem_pages(16);
         topo.set_last_task_mem_locked(true);
@@ -1234,14 +1234,14 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
         crate::deadline::SchedProfile { period_us: 10_000, runtime_us: 1_000, deadline_us: 0, cpu_mask: 1 << 3, core_class: None },
     )
     .expect("default_minimal_topology: hart canary push failed");
-    // Locked, as every profiled band row must be (wave 11): see above.
+    // Locked, as every profiled band row must be: see above.
     #[cfg(feature = "deadline-hart-canary")]
     {
         topo.set_last_task_mem_pages(16);
         topo.set_last_task_mem_locked(true);
     }
 
-    // Wave 11 SCHED-RT rows: the two reservations the `edf` check of
+    // Rows: the two reservations the `edf` check of
     // `kernel/src/rt_smoke.rs` runs on, declared here so boot admission places
     // them (CPU 0, band, 75 % of it) and the kernel tasks named after them
     // attach to the placement (`topo_sched::row_reservation`).
@@ -1380,9 +1380,9 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     // fixed when the capability is SEEDED, by image name. Retiring
     // `SYS_IPC_FAST_CALL` therefore needed the peer to become an image.
     //
-    // **At [`AUTORUN_SERVER_PRIORITY`], one above its client** (owner decision
-    // 2026-10-23: every server strictly outranks its clients). `vsbench` runs
-    // under the `autorun` row (16). From wave 7 the row shared its client's
+    // **At [`AUTORUN_SERVER_PRIORITY`], one above its client**
+    // (every server strictly outranks its clients). `vsbench` runs
+    // under the `autorun` row (16). The row used to share its client's
     // bucket (`soft_rt` 16), because across buckets the `ipc-roundtrip` lane
     // measures a cross-bucket hand-off as well as the IPC path: with
     // `-icount`, 2277 -> 2403 instructions on aarch64 and 2659 -> 2789 on
@@ -1391,7 +1391,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     // `ipc_direct::pair_cancels`). The owner accepts that cost; at 15 against
     // 16 it is 2306 -> 2608 instructions per round trip on riscv64
     // (`VSBENCH_ICOUNT=1 VSBENCH_SMP=1`, bench-minimal kernel; 9893 -> 9943
-    // ns/op on the product kernel), 2026-10-23.
+    // ns/op on the product kernel).
     #[cfg(feature = "ipc-endpoint-canary")]
     topo.push_task(
         MaybeStr::from_bytes(TASK_VSSRV_IMAGE),
@@ -1492,11 +1492,11 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
         topo.set_last_task_start(true);
     }
 
-    // Wave 9 (DRV1) — the ring-3 drivers; see `TASK_BUZZDRV_IMAGE`. After the
+    // The ring-3 drivers; see `TASK_BUZZDRV_IMAGE`. After the
     // board rows, so no index-pinned row above moves.
     //
     // **The buzzer: `best_effort` at [`SERVICE_PRIORITY`] (24), like
-    // GPIODRV.ELF** (owner decision 2026-09-28; wave 9 had the drivers at
+    // GPIODRV.ELF** (the drivers were at
     // `soft_rt` 16; the INA219's row below has a reservation instead): above the
     // interactive session ([`SH_PRIORITY`], 26), never equal to it. A client
     // more urgent than the driver donates its priority for the span of each
@@ -1508,7 +1508,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     // aarch64 QEMU at boot: a 50 ms tone switched off after 1578 ms), and
     // delayed INA219 samples when that driver was here too. The mAh sum does
     // not depend on that cadence: each sample is weighted by the time the
-    // driver measured since the previous one (wave 10).
+    // driver measured since the previous one.
     // The buzzer's ring-3 host. Its row exists whichever host the driver
     // starts in (`BUZZER_START_HOST`): the row is what the ring-3 host runs
     // with when the driver is, or is moved, there. `stateless`: the driver
@@ -1681,7 +1681,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
         topo.set_last_task_mem_pages(1 << 20);
     }
 
-    // Owner decision 2026-09-28: `SYS_SPAWN_EX` refuses an image the topology has
+    // `SYS_SPAWN_EX` refuses an image the topology has
     // no row for. `abitest` spawns `UHELLO.ELF` (its `spawn()` conformance
     // check), which until then ran with no row: no capabilities, the default
     // budget, the default priority. This is that row. No capabilities, as
@@ -1692,7 +1692,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     topo.push_task(MaybeStr::from_bytes(TASK_UHELLO_IMAGE), MaybeStr::from_bytes(NAME_SOFT_RT), 16, &[])
         .expect("default_minimal_topology: UHELLO.ELF push failed");
 
-    // Wave 11: the user shell and its multicall tool image, pushed
+    // The user shell and its multicall tool image, pushed
     // after every other row (feature-gated ones included) so no index another
     // test pins moves. Both are real board programs, so the board volume
     // ships them (`board_elfs`), and both have their row when it does.
@@ -1727,7 +1727,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
         topo.set_last_task_mem_pages(SH_MEM_PAGES);
         topo.set_last_task_imports(SH_IMPORTS)
             .expect("default_minimal_topology: SH.ELF imports");
-        // `restart` stays `on-failure` (wave 11): `exit` ends the shell with
+        // `restart` stays `on-failure`: `exit` ends the shell with
         // code 0 and gives the console back to the kernel shell. `always` would
         // restart it instead (owner note, DRVPLACE).
         topo.set_last_task_restart(crate::types::RestartPolicy::OnFailure);
@@ -1752,7 +1752,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     }
     // The tool image. It reads and writes the descriptors and pipe ends the
     // shell MOVES to it, and opens files beneath the read-only root directory. Its
-    // capabilities are the full task view, for `ps` (wave 12), and with
+    // capabilities are the full task view, for `ps`, and with
     // Kconfig INSPECT the introspection regions, for `inspect`: none of them
     // under `CONSOLE_LOCKDOWN`.
     if azos_limits::USERSPACE_TOOLBOX {
@@ -1805,7 +1805,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
         // presets give slack only to rows that say so).
         topo.set_last_task_timer_slack(true);
     }
-    // Wave 12: the other privileged families, one tool each, the POWER.ELF
+    // The other privileged families, one tool each, the POWER.ELF
     // pattern: each row is the whole of its tool's authority, checked by its
     // family's typed call on every call, and the shell holds only the right
     // to start them, not under `CONSOLE_LOCKDOWN`.
@@ -1822,7 +1822,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
             .expect("default_minimal_topology: family tool push failed");
         topo.set_last_task_mem_pages(POWER_MEM_PAGES);
     }
-    // Wave 15 (TRACE): the tracer's reader, the POWER.ELF pattern. Its row is
+    // The tracer's reader, the POWER.ELF pattern. Its row is
     // the whole of its authority: `Cap<Trace>` (READ maps the rings, WRITE
     // sets the class mask), checked by the tracer's ops on every call,
     // and `/fat` read-write for `tracectl stream -o FILE`. The shell holds
@@ -2005,7 +2005,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
         topo.set_last_task_restart(crate::types::RestartPolicy::OnFailure);
     }
 
-    // Wave 12, gate only (`linux-abi-test`): `LXHELLO.ELF`, a
+    // Gate only (`linux-abi-test`): `LXHELLO.ELF`, a
     // static Linux binary built from `userspace/tests/lxhello/lxhello.c`,
     // run by the shell under the Linux personality. Its row is its whole
     // authority, as for a native image: `/tmp` only, so its
@@ -2023,7 +2023,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     }
     // The third-party `BUSYBOX.ELF` (`make busybox`), a
     // Linux row holding only `/tmp`: its `sh` forks and runs applets under
-    // the same row. Wave 13: not gate-only any more. A build whose `.config`
+    // the same row. Not gate-only any more. A build whose `.config`
     // says `BUSYBOX` (USERSPACE_GPL + LINUX_ABI, default off) carries this
     // row and the shell's grant to start it, so a deployment that ships
     // BusyBox runs it from the shell; the gate's `linux-busybox-test` adds it
@@ -2035,7 +2035,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
         topo.set_last_task_abi(crate::types::TaskAbi::Linux)
             .expect("default_minimal_topology: BUSYBOX.ELF is a Linux row with no hardware capability");
     }
-    // Wave 13 (THREADS), gate only (`linux-threads-test`): `LXTHR.ELF`
+    // Gate only (`linux-threads-test`): `LXTHR.ELF`
     // (`make lxthreads`), a static musl program using pthreads, a Linux row
     // holding only `/tmp`. Its frame budget covers four thread stacks
     // (musl maps about 140 KiB each) beside its own image and heap.
@@ -2407,7 +2407,7 @@ pub const fn console_image() -> Option<&'static [u8]> {
 const CONSOLE_MEM_PAGES: u32 = SH_MEM_PAGES;
 
 /// Does the built-in topology carry the `LXTHR.ELF` row? Gate builds
-/// (`linux-threads-test`) with the Linux personality (wave 13).
+/// (`linux-threads-test`) with the Linux personality.
 pub const LXTHR_ROW: bool = cfg!(feature = "linux-threads-test") && azos_limits::LINUX_ABI;
 /// The image name of the threads test (`make lxthreads`).
 #[cfg(feature = "linux-threads-test")]
@@ -2433,13 +2433,13 @@ pub const TASK_BUSYBOX_IMAGE: &[u8] = b"BUSYBOX.ELF";
 /// 64 KiB slab as 31 pages and trims it back to 16, so the peak is a 115-page
 /// base, six slabs at start (one per size class) and the eighth slab's
 /// transient during `ls`: 259 pages, wherever the kernel places the mappings
-/// (traced on riscv64, 2026-10-24). 512 leaves room for that and one more
+/// (traced on riscv64). 512 leaves room for that and one more
 /// fork level.
 const BUSYBOX_MEM_PAGES: u32 = 512;
 /// `BUSYBOX.ELF`'s authority: `/tmp` read-write, and the read-only root
 /// directory ([`ROOT_RO`]: it reads where it always could, and writes only
 /// under `/tmp`). Gate only
-/// (`linux-exec-row-test`, wave 13): also `/fat` read-write and the grant to
+/// (`linux-exec-row-test`): also `/fat` read-write and the grant to
 /// `execve` `LXHELLO.ELF`, whose own row holds only `/tmp`: the exec'd image
 /// must lose the write on `/fat` (it runs with its target row's authority).
 #[cfg(not(feature = "linux-exec-row-test"))]
@@ -2452,13 +2452,13 @@ const BUSYBOX_CAPS: &[CapSpec] = &[
     LXHELLO_LAUNCH,
 ];
 
-/// Wave 12: the flight tool's image (`flight arm | disarm`).
+/// The flight tool's image (`flight arm | disarm`).
 pub const TASK_FLIGHT_IMAGE: &[u8] = b"FLIGHT.ELF";
-/// Wave 12: the behavior tool's image (`behavior status | enable | disable`).
+/// The behavior tool's image (`behavior status | enable | disable`).
 pub const TASK_BEHAVIOR_IMAGE: &[u8] = b"BEHAVIOR.ELF";
-/// Wave 12: the config tool's image (`config get | set`).
+/// The config tool's image (`config get | set`).
 pub const TASK_CONFIG_IMAGE: &[u8] = b"CONFIG.ELF";
-/// Wave 12: the OTA tool's image (`ota status | rollback | switch`).
+/// The OTA tool's image (`ota status | rollback | switch`).
 pub const TASK_OTA_IMAGE: &[u8] = b"OTA.ELF";
 
 /// The rights of the family tools' endpoints (`FLIGHT.ELF`, `BEHAVIOR.ELF`,
@@ -2704,7 +2704,7 @@ const TMP_RW: CapSpec = CapSpec {
 
 /// `SH.ELF`'s authority outside `CONSOLE_LOCKDOWN`: [`SH_CAPS`], plus the
 /// right to start `BUSYBOX.ELF` when the topology carries its row
-/// ([`BUSYBOX_ROW`], wave 13), plus (gate only, `linux-abi-test`) the right
+/// ([`BUSYBOX_ROW`]), plus (gate only, `linux-abi-test`) the right
 /// to start `LXHELLO.ELF`.
 #[cfg(not(feature = "linux-abi-test"))]
 const SH_CAPS_UNLOCKED: &[CapSpec] = match (BUSYBOX_ROW, PKGD_ROW) {
@@ -2765,7 +2765,7 @@ const SH_CAPS_UNLOCKED: &[CapSpec] = if BUSYBOX_ROW && !cfg!(feature = "linux-bu
 };
 #[cfg(feature = "linux-abi-test")]
 const SH_CAPS_UNLOCKED_LX: [CapSpec<'static>; SH_CAPS.len() + LX_LAUNCHES.len()] = sh_caps_plus(LX_LAUNCHES);
-/// A `.config` with `BUSYBOX` (a deployment's row, wave 13) in a gate build
+/// A `.config` with `BUSYBOX` (a deployment's row) in a gate build
 /// without `linux-busybox-test`: the gate's grants plus BusyBox's.
 #[cfg(feature = "linux-abi-test")]
 const SH_CAPS_UNLOCKED_BB: [CapSpec<'static>; SH_CAPS.len() + LX_LAUNCHES.len() + 1] =
@@ -2861,7 +2861,7 @@ const POWER_PM_INA: CapSpec = CapSpec {
     target: MaybeStr::from_bytes(RESOURCE_ENDPOINT_PM_INA), transfer: false, ops: 0,
 };
 
-/// The tracer's reader (wave 15, TRACE).
+/// The tracer's reader (TRACE).
 pub const TASK_TRACECTL_IMAGE: &[u8] = b"TRACECTL.ELF";
 /// Frame budget of `TRACECTL.ELF`: image, stack, its record batch and the
 /// trace region's mapping (at most `MAX_MEMOBJ_PAGES`, 64 pages, booked to the
@@ -2900,8 +2900,8 @@ const FAT_RW: CapSpec = CapSpec {
 
 // The ring-3 priorities (lower = more urgent; the fair class weighs a task by
 // its number, `azos_sched::eevdf_core::weight_of_prio`). Every server strictly
-// outranks every client it serves (`Topology::server_not_above_client`, owner
-// decision 2026-10-23): the order is the rows' service graph, from the leaves
+// outranks every client it serves (`Topology::server_not_above_client`):
+// the order is the rows' service graph, from the leaves
 // up, and no server shares a bucket with a client.
 
 /// The servers of the `autorun` row (16), `EPSRV.ELF` and `VSSRV.ELF`:
@@ -3071,7 +3071,7 @@ const SH_CAPS_BASE: &[CapSpec] = &[
         perms: CapPerms::EXEC,
         target: MaybeStr::from_bytes(TASK_POWER_IMAGE), transfer: false, ops: 0,
     },
-    // Wave 12: the other privileged tools, outside the lockdown only.
+    // The other privileged tools, outside the lockdown only.
     CapSpec {
         kind: CapKind::Node,
         perms: CapPerms::EXEC,
@@ -3092,7 +3092,7 @@ const SH_CAPS_BASE: &[CapSpec] = &[
         perms: CapPerms::EXEC,
         target: MaybeStr::from_bytes(TASK_OTA_IMAGE), transfer: false, ops: 0,
     },
-    // Wave 15 (TRACE): the tracer's reader.
+    // The tracer's reader.
     CapSpec {
         kind: CapKind::Node,
         perms: CapPerms::EXEC,
@@ -4013,7 +4013,7 @@ fn rpc_peer_noise_pk() -> Option<[u8; 32]> {
     Some(k)
 }
 
-/// The full task view (wave 12, owner round 48): `Cap<Task>` `READ` on
+/// The full task view (owner round 48): `Cap<Task>` `READ` on
 /// `"tasks"`, the warrant the admin introspection region is granted against
 /// (its task list, the wake log, the decisions): without it a row that asks
 /// for `inspect.admin` is refused it. `SH.ELF`, `DECISD.ELF` and
@@ -4167,7 +4167,7 @@ const INSPECT_LOGINS_CAP: CapSpec = inspect_view(b"inspect.logins");
 const INSPECT_CLOCK_CAP: CapSpec = inspect_view(b"inspect.clock");
 
 /// Under `CONSOLE_LOCKDOWN`: no task view and no introspection region, as
-/// before wave 12; the tools still read files, beneath the read-only root.
+/// before; the tools still read files, beneath the read-only root.
 const TOOLBOX_CAPS_LOCKDOWN: &[CapSpec] = &[ROOT_RO];
 
 /// Under `CONSOLE_LOCKDOWN`: the volume is not the shell's to change, and it
@@ -4220,9 +4220,9 @@ mod tests {
             .find_task(&MaybeStr::from_bytes(TASK_AUTORUN))
             .expect("autorun task must be declared for the P1 bridge to seed");
         let caps = topo.caps_of(task);
-        // Fixed 2026-09-26 (M40 / audit-flagged stale test): the row this
+        // Fixed (M40 / audit-flagged stale test): the row this
         // test reads grew, over several commits, to also carry the free
-        // PWM channel, the free GPIO pin, the IMU (I2c, READ) and the ten
+        // PWM channel, the free GPIO pin, the IMU (READ) and the ten
         // ten `sensor.N` READ endpoints (see the block comment above
         // `push_task`, which already listed all of these) — 13 entries
         // unconditionally, not 1. This assertion was never executed until

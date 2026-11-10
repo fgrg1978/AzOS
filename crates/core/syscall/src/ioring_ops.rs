@@ -361,7 +361,7 @@ fn file_io(owner_tid: u32, cap_raw: u32, write: bool, buf: *mut u8, len: usize) 
     };
     let cap: Cap<File> = Cap::from_raw(CapHandle::from_raw(cap_raw));
     let fd = match azos_ipc::cap_store::with_table(owner_tid, |t| t.get_op(cap, need, op)) {
-        // A directory-tree `Cap<File>` names no descriptor (wave 10).
+        // A directory-tree `Cap<File>` names no descriptor.
         Some(Ok(fd)) if azos_ipc::file_cap::is_tree_resource(fd) => {
             return refuse(owner_tid, ty::FILE, azos_ipc::cap::CapError::WrongKind)
         }

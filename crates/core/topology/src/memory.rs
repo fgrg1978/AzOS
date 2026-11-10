@@ -35,12 +35,12 @@
 //! child. Whether it may fork is the caller's answer (the kernel reads it from
 //! the image's seccomp profile at boot); a locked row never forks.
 //!
-//! # Instances (wave 9)
+//! # Instances
 //!
 //! A row declares `instances = N` (default 1): N live instances, each with
 //! the row's budget. Admission counts every one of them, and the kernel
 //! enforces the count: the N+1th live spawned (or exec'd) instance of the row
-//! is refused. Fork children are not instances (owner decision, wave 9): they
+//! is refused. Fork children are not instances: they
 //! are bounded by the memory budget, and the COW copy counted above pays for
 //! them.
 //!

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The descriptor form of the call family (wave 15 N11b): `SYS_IPC_CALL`,
+//! The descriptor form of the call family: `SYS_IPC_CALL`,
 //! `SYS_IPC_ACCEPT` and `SYS_IPC_REPLY` with a `MsgDesc`, and
 //! `SYS_IPC_REPLY_DELEGATE` and `SYS_CAP_DERIVE`.
 //!
@@ -8,7 +8,7 @@
 //! Both share the call queue (`azos_ipc::fastcall`), so a descriptor-form
 //! server may accept a register-form call (no `MSG_BADGED`). A register-form
 //! accept takes a descriptor-form call only when the registers can hold it
-//! (owner decision 10-10, N11c: `fits_regs` below); any other it refuses, the
+//! (N11c: `fits_regs` below); any other it refuses, the
 //! call ends `-EMSGFORM`, and the caller takes back every capability it moved. The descriptor also
 //! carries the caller's deadline (see `ipc_deadline`): a call whose deadline has
 //! passed is refused before it is queued, and the server reads the deadline in

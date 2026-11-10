@@ -33,11 +33,11 @@ pub mod sleep;
 pub mod spawn;
 pub mod spawn_handoff;
 pub mod named_cap;
-/// Wave 14 (SPAWNCACHE): the verified-image digest cache.
+/// The verified-image digest cache.
 pub mod image_cache;
-/// Wave 13: what a native fork child holds (descriptors, its row's capabilities).
+/// What a native fork child holds (descriptors, its row's capabilities).
 pub mod natfork;
-/// Wave 13: the native thread calls (620..=623).
+/// The native thread calls (620..=623).
 pub mod threads;
 pub mod topo_sched;
 pub mod motor_host;
@@ -97,18 +97,18 @@ pub mod nicq;
 /// Hypervisor step H1 (Kconfig HV): the `Vm` and `Vcpu` interfaces the kernel hosts.
 #[cfg(feature = "hv")]
 pub mod vm;
-/// Wave 12: the flight, behavior, config and OTA typed calls (615..=618).
+/// The flight, behavior, config and OTA typed calls (615..=618).
 pub mod families;
-/// Wave 15: the kernel tracer's control call (632).
+/// The kernel tracer's control call (632).
 pub mod trace_ctl;
-/// Wave 15 N11b: ABI v2 of the call (633..=637).
+/// ABI v2 of the call (633..=637).
 pub mod ipc_v2;
 /// The deadline a v2 call carries, checked before it is queued.
 pub mod ipc_deadline;
 /// The kernel's own calls to an endpoint a task serves (Phase 4 elasticity).
 pub mod kcall;
 pub mod schedctl;
-/// Wave 15: which ring-3 task commands each wheel; its exit stops them.
+/// Which ring-3 task commands each wheel; its exit stops them.
 pub mod motor_commander;
 #[cfg(feature = "lx-loader")]
 pub mod module_ops;

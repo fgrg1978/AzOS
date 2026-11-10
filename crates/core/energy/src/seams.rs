@@ -14,7 +14,7 @@
 //!
 //! The selections below are `const`s, so in the default build each seam's
 //! `match` has one arm and folds to the code it replaced: the kernel's `.text`
-//! is unchanged (measured on both ISAs by the wave-12
+//! is unchanged (measured on both ISAs by the
 //! ENERGY report). Stage E3 adds `Governor::{Schedutil, DeadlineFloor}`, E4
 //! `IdleGovernor::Teo`; [`Seams::select`] picks them at boot, under Kconfig
 //! `ENERGY`, only when a model is present and the signed topology's mode is
@@ -42,7 +42,7 @@ pub enum Governor {
     /// no reservation, so it cannot honour I1; [`Seams::select`] never
     /// chooses it, and it stays as the building block `DeadlineFloor` uses.
     Schedutil,
-    /// Stage E3: `max(schedutil, deadline floor, safety floor)` (I1, I6).
+    /// Stage E3: `max(schedutil, deadline floor, safety floor)` (I6).
     DeadlineFloor,
 }
 

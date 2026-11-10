@@ -78,7 +78,7 @@ fn main() {
         .unwrap_or_else(|e| panic!("azos-config: parse error in {}: {e}", config_path.display()));
 
     // -----------------------------------------------------------------------
-    // Bools a valid .config leaves out (wave 11). kconfiglib writes nothing
+    // Bools a valid .config leaves out. kconfiglib writes nothing
     // for a bool that is n and hidden: a `visible if` menu (the Robot menu
     // outside USE_ROBOT), an `if` block, a `depends on`. The value is n
     // all the same, and code that is compiled into every image may still read
@@ -686,7 +686,7 @@ fn run_validations(cfg: &ConfigMap) {
     }
 
     // -----------------------------------------------------------------------
-    // virtio-net rings (wave 15 N1/N2): split-ring sizes are powers of two
+    // virtio-net rings: split-ring sizes are powers of two
     // (virtio 1.x 2.7: Queue Size), and a TX batch must fit in the frames
     // the TX ring holds (2 descriptors per frame), or a batch fills the ring
     // before its doorbell announces any of it. Absent keys (an old .config)
@@ -777,8 +777,8 @@ fn run_validations(cfg: &ConfigMap) {
     }
 
     // -----------------------------------------------------------------------
-    // SCHED_HZ_FLOOR must not exceed SCHED_HZ (Q4.2, owner decision
-    // 2026-09-25). SCHED_HZ_FLOOR is the floor CONFIG.INI is allowed to
+    // SCHED_HZ_FLOOR must not exceed SCHED_HZ .
+    // SCHED_HZ_FLOOR is the floor CONFIG.INI is allowed to
     // request at boot (crates/core/config's `resolve_sched_hz`); SCHED_HZ is the
     // compile-time ceiling for this board/profile. Kconfig cannot express
     // "SCHED_HZ_FLOOR <= SCHED_HZ" as a `range` (a symbol's range can only
@@ -798,7 +798,7 @@ fn run_validations(cfg: &ConfigMap) {
     // time the `.config` is regenerated, same as every other new option.
     // -----------------------------------------------------------------------
     // -----------------------------------------------------------------------
-    // Wave 11 tunables whose constraint a Kconfig `range` cannot state, or
+    // Tunables whose constraint a Kconfig `range` cannot state, or
     // that a hand-edited .config could break (kconfiglib enforces `range`
     // only when it writes the file).
     //   UDP_RX_SLOTS: the receive ring index is a mask (crates/net/stack/src/
@@ -808,7 +808,7 @@ fn run_validations(cfg: &ConfigMap) {
     //   CONSOLE_TX_RING_BYTES: console_defer.rs defers every kernel line that
     //     finds less than LINE_RESERVE (256) bytes of room.
     //   MAX_IO_RINGS: a Cap<IoRing> packs the ring index in 8 bits.
-    // Absent keys (a .config from before wave 11) are not checked.
+    // Absent keys (an older .config) are not checked.
     // -----------------------------------------------------------------------
     if let Some(slots) = get_u64(cfg, "UDP_RX_SLOTS") {
         if !slots.is_power_of_two() {
@@ -835,7 +835,7 @@ fn run_validations(cfg: &ConfigMap) {
                     (0 wheeled, 1 drone, 2 humanoid, 3 ackermann).");
         }
     }
-    // Wave 15 (config/subsys/Kconfig.robot, RC input): a switch that shares a
+    // A switch that shares a
     // channel with a stick, or the kill switch on the mode switch, turns an
     // ordinary stick movement into a stop or a hand-over. Refused, not
     // guessed at. Channel 0 is "none".
@@ -924,7 +924,7 @@ fn run_validations(cfg: &ConfigMap) {
     }
 
     // -----------------------------------------------------------------------
-    // FAT32 block cache geometry (wave 14): 512 B lines in sets of 8, the set
+    // FAT32 block cache geometry: 512 B lines in sets of 8, the set
     // count a power of two. A size that is not 0 or a power of two from 4 KiB
     // would leave lines past the last whole power-of-two set count unused, so
     // it is refused rather than silently rounded down.
@@ -943,12 +943,12 @@ fn run_validations(cfg: &ConfigMap) {
 }
 
 // ---------------------------------------------------------------------------
-// Wave 15 (SLAB): KHEAP_SLAB_CLASSES is a string ("16 32 64 ..."); the kernel
+// KHEAP_SLAB_CLASSES is a string ("16 32 64 ..."); the kernel
 // heap's size-class cache (crates/core/mm/src/slab.rs) needs it as a slice,
 // trimmed to KHEAP_SLAB_MAX_CLASS. Checked here because a Kconfig `string`
 // has no range: every size a multiple of 8 from 8 to 4096, strictly
 // ascending, 1 to 16 of them after the trim; KHEAP_SLAB_BYTES a power of two.
-// Absent keys (a .config from before wave 15) emit nothing, and the kernel
+// Absent keys (an older .config) emit nothing, and the kernel
 // then fails to compile rather than run on silent defaults.
 // ---------------------------------------------------------------------------
 fn emit_kheap_slab_classes(cfg: &ConfigMap, out: &mut String) {

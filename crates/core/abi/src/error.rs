@@ -21,10 +21,10 @@ pub enum Errno {
     EPERM = 1,
     /// No such file or directory.
     ENOENT = 2,
-    /// No such process/task. Added for `SYS_CAP_GRANT` (user decision
-    /// 2026-08-23): "no live task by that TID" and "no such resource" are
+    /// No such process/task. Added for `SYS_CAP_GRANT`:
+    /// "no live task by that TID" and "no such resource" are
     /// different fixes for the caller, so they get different numbers. POSIX
-    /// value 3. `SYS_CAP_GRANT` itself was removed 2026-09-03 (boot-only
+    /// value 3. `SYS_CAP_GRANT` itself was removed (boot-only
     /// caps), but the code is a standard POSIX errno kept for the
     /// next syscall that needs "no such task" — it is not retired with it.
     ESRCH = 3,
@@ -38,7 +38,7 @@ pub enum Errno {
     /// Bad file descriptor / handle.
     EBADF = 9,
     /// Resource temporarily unavailable.
-    /// No child process to wait for. Added 2026-09-07 for [`DOMAIN_WAIT`](crate::invoke::DOMAIN_WAIT)
+    /// No child process to wait for. Added for [`DOMAIN_WAIT`](crate::invoke::DOMAIN_WAIT)
     /// (`crates/core/abi/src/syscall_nr.rs`), which needs to say "that TID is not
     /// a child of yours, or you already reaped it" distinctly from "-1, not
     /// finished yet" — the first never becomes true however long the caller
@@ -99,7 +99,7 @@ pub enum Errno {
     /// similar TID-authority gates that are not a capability-table lookup,
     /// so `ECAPPERMS` would misdescribe them).
     ///
-    /// U07-6 (audit unit-07): folded in here so
+    /// Folded in here so
     /// `Errno::from_syscall_ret(-99)` resolves instead of `None`, closing
     /// the gap between this table's claim to be the single source of truth
     /// for error codes (`abi/src/lib.rs`'s module doc) and the fact that it
@@ -137,10 +137,10 @@ pub enum Errno {
     /// ABI version mismatch.
     EABIVERSION = 210,
     /// A fast call completed without an answer because the task serving its
-    /// endpoint died while the call was queued or in service (wave 15 N5).
+    /// endpoint died while the call was queued or in service.
     EPEERDIED = 211,
     /// A fast call completed without an answer because its endpoint was
-    /// destroyed while the call was queued or in service (wave 15 N5).
+    /// destroyed while the call was queued or in service.
     EREVOKED = 212,
     /// Reserved: an endpoint with no sender capability left (Mach's
     /// no-senders notice). Not returned yet.

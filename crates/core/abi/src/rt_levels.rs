@@ -57,7 +57,7 @@ pub struct Booked {
 /// inside a level only; a level above runs first whatever its deadlines, so
 /// the density sum is not enough: two reservations at 75 % in all, the lower
 /// one with a 2 ms deadline behind 5 ms of the upper one, miss every job
-/// (wave 15, `sched-rt-util` `mixed`). The test, for each level `l` present,
+/// (`sched-rt-util` `mixed`). The test, for each level `l` present,
 /// with `dmin` its shortest relative deadline:
 ///
 /// `sum(density, levels <= l) + sum(q, levels < l) / dmin <= 1`

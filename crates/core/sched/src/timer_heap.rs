@@ -341,7 +341,7 @@ pub trait DueSleepers<const N: usize> {
 /// section as the arm. A sleeper arms after its commit and under the lock,
 /// so a read made there either sees that commit (and arms the same
 /// deadline) or precedes it (and is overwritten by the sleeper's own arm).
-/// A deadline read before the lock (wave 5, gate 185) could predate an arm
+/// A deadline read before the lock (gate 185) could predate an arm
 /// that completed in between and overwrite it with an older deadline.
 ///
 /// At most `limit` entries go in one pass: the pass runs with interrupts
@@ -661,7 +661,7 @@ mod tests {
         }
     }
 
-    // ── `wake_due` under another hart: the wave-5 race (gate 185) ──────────
+    // ── `wake_due` under another hart: the race ──────────
     //
     // Slot 0 is a sleeper whose own hart runs a script of atomic steps; the
     // model runs them inside `wake_due`'s calls (its interleaving points),
@@ -939,7 +939,7 @@ mod tests {
     /// The tick's retry re-arm must not overwrite the deadline a sleeper
     /// armed itself after the pop: every interleaving of the sleeper's
     /// switch / run / re-block / arm with one pass of `wake_due`, with the
-    /// pass split into batches of 1 and in one batch. Red with the wave-5
+    /// pass split into batches of 1 and in one batch. Red with the original
     /// bug (the re-armed deadline read before the lock is taken).
     #[test]
     fn wake_due_retry_never_overwrites_a_newer_arm() {

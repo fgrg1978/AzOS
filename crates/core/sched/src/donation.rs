@@ -17,7 +17,7 @@ pub const NO_TID: u32 = u32::MAX;
 
 /// A priority `p` held at `floor` (0: none): never more urgent (a lower
 /// number) than the floor. `u32::MAX` (no boost) stays. The wait graph's
-/// ring-3 floor (`classes::graph_floored`, owner decision 10-10).
+/// ring-3 floor (`classes::graph_floored`).
 pub const fn floored(p: u32, floor: u32) -> u32 {
     if p < floor { floor } else { p }
 }
@@ -46,7 +46,7 @@ pub const fn return_step(count: u32) -> (u32, bool) {
 /// (`tests/host/sched-wake-tests`) drives the same two functions below through its
 /// own, with threads.
 ///
-/// # Why a lock (wave 9)
+/// # Why a lock
 ///
 /// The count and the priority used to be two separate atomics, and the last
 /// restore did two steps: count to 0, then store the base priority. A boost

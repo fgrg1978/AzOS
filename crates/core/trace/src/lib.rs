@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 #![no_std]
 
-//! The kernel event tracer (wave 15, TRACE; Kconfig `KTRACE`).
+//! The kernel event tracer (TRACE; Kconfig `KTRACE`).
 //!
 //! One lock-free single-producer/single-consumer ring per CPU, all in one
 //! kernel-owned shared-memory region (`azos_ipc::trace` creates it at boot
@@ -86,7 +86,7 @@ struct Producer(UnsafeCell<TraceProducer>);
 unsafe impl Sync for Producer {}
 
 /// Each CPU's producer (the ring control: head, drops, its ring's address),
-/// in its per-CPU area (wave 15, NRCPUS), one cache line a CPU. All-zero is
+/// in its per-CPU area (NRCPUS), one cache line a CPU. All-zero is
 /// `TraceProducer::empty()`, a producer that is not live and records nothing.
 ///
 /// Scope: a bare `PerCpuRemote` for now: written by its own CPU only

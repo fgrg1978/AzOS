@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Per-CPU trace record rings (wave 15, TRACE): the layout the kernel tracer
+//! Per-CPU trace record rings (TRACE): the layout the kernel tracer
 //! (`azos_trace`) produces into and a ring-3 reader (`tracectl`) consumes
 //! from, one shared-memory region holding one ring per CPU.
 //!
@@ -101,7 +101,7 @@ pub const HDR_CLASSES: usize = 44;
 /// u32: the runtime class mask (a mirror the kernel updates on every change).
 pub const HDR_MASK: usize = 48;
 /// u64 (two u32 words, low first): the timestamp, in the records' timebase,
-/// of the last mask change, written before [`HDR_MASK`] (wave 15, static
+/// of the last mask change, written before [`HDR_MASK`] (static
 /// keys): a reader dates a change by the kernel's clock, not by when it
 /// noticed it.
 pub const HDR_MASK_TS: usize = 56;

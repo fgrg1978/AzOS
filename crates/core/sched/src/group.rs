@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Thread groups (wave 13, THREADS): tasks that share one address space, one
+//! Thread groups (THREADS): tasks that share one address space, one
 //! capability table and one descriptor table.
 //!
 //! A group is named by its leader's TID (the process id; Linux's tgid). Every
@@ -28,7 +28,7 @@
 //! clears and wakes its clear-tid word (`CLONE_CHILD_CLEARTID`,
 //! `set_tid_address`), and posts no notice: a thread is nobody's child.
 //!
-//! What a thread creates belongs to its process (wave 15, plan 4a): sockets,
+//! What a thread creates belongs to its process (plan 4a): sockets,
 //! ports, channels, pipes, shared-memory regions and IO rings are booked to
 //! the process id (`current_proc_tid`), as descriptors and capabilities
 //! already were, so any thread may use them and they outlive the thread
@@ -40,7 +40,7 @@
 //!
 //! # Exec
 //!
-//! An exec from a process with threads (wave 15, plan 4a) first ends every
+//! An exec from a process with threads (plan 4a) first ends every
 //! other thread and waits until they have gone
 //! (`scheduler::exec_end_other_threads`): the group is marked exec'ing, no
 //! member may join, a member's exit ends only itself, and the last one's
@@ -138,7 +138,7 @@ struct Group {
     /// how many times it holds it.
     mm_owner: u32,
     mm_depth: u32,
-    /// The thread exec'ing (wave 15, plan 4a), 0 for none: every other member
+    /// The thread exec'ing (plan 4a), 0 for none: every other member
     /// is being stopped and ends only itself; no member may be added. When it
     /// is not the leader, the leader hands it the process's identity on its
     /// way out (`scheduler::exec_take_over`).

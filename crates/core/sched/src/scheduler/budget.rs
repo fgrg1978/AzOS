@@ -41,7 +41,7 @@ pub fn current_task_switches() -> (u64, u64) {
 }
 
 /// What the per-task vDSO page publishes about the task running on this
-/// hart (`azos_mm::vdso::task_page_publish`, wave 6), read in one pass
+/// hart (`azos_mm::vdso::task_page_publish`), read in one pass
 /// from the same `PER_CPU[cpu].current_idx` cache as
 /// [`current_task_switches`]: O(1), no TID scan. `None` when no task is
 /// current. Called from the timer interrupt and from the page's own syscalls.
@@ -88,7 +88,7 @@ pub fn current_task_hart() -> usize {
 
 /// Is `tid` the task RUNNING on a hart other than the caller's, right now?
 ///
-/// The user-driver proxy's bounded spin (wave 9) asks this before each block:
+/// The user-driver proxy's bounded spin asks this before each block:
 /// spinning for a reply only pays when the driver is executing elsewhere at
 /// that moment. A snapshot of `PER_CPU[..].current_idx`, unsynchronised — a
 /// stale answer costs at most one bounded spin or one block, never a missed
@@ -123,7 +123,7 @@ pub fn current_task_slot() -> Option<(usize, u32)> {
 
 /// Base priority (no donation) of the task running on this CPU, or
 /// `IDLE_PRIORITY` if none is current: the task's own class, which is what
-/// the owner rule "an RT task never does block I/O" is about
+/// the rule "an RT task never does block I/O" is about
 /// (`RT_BLOCK_IO_CHECK`). Per CPU like [`current_task_tid`].
 pub fn current_task_base_priority() -> u32 {
     let idx = my_idx();
@@ -149,7 +149,7 @@ pub fn current_task_base_priority() -> u32 {
 /// `sys_fork_impl`).
 pub fn current_task_parent_tid() -> u32 {
     let idx = my_idx();
-    // Wave 13: a thread's parent is its process's (the leader's).
+    // A thread's parent is its process's (the leader's).
     if idx == usize::MAX { 0 } else { PARENT_TID[proc_slot(idx)].load(Ordering::Relaxed) }
 }
 
@@ -215,7 +215,7 @@ pub fn aspace_of_root(root: usize) -> Option<azos_mm::aspace::SpaceRef> {
 }
 
 /// The current task's translation root word (`satp` / TTBR0 with its ASID):
-/// what a new member of its thread group runs on (wave 13).
+/// what a new member of its thread group runs on.
 pub fn current_task_satp() -> u64 {
     match current_slot() {
         Some(idx) => TASKS[idx].task_satp,
@@ -225,7 +225,7 @@ pub fn current_task_satp() -> u64 {
 
 /// The slot holding the per-process memory state (break, window
 /// reservations, frame budget) of the task in slot `idx`: its thread group
-/// leader's, or its own (wave 13). The leader's slot outlives every member.
+/// leader's, or its own. The leader's slot outlives every member.
 #[inline]
 pub(crate) fn proc_slot(idx: usize) -> usize {
     let l = crate::group::lead_of_idx(idx);
@@ -282,7 +282,7 @@ pub fn task_adopt_domain(tid: u32, of: u32) -> bool {
 }
 
 /// The current task's process id: its thread group leader's TID, or its own
-/// (wave 13). What owns its descriptors and keys its personality state.
+///. What owns its descriptors and keys its personality state.
 ///
 /// `#[inline]` with `my_idx` (an `#[inline(always)]` masked window) spelled
 /// out: it is the whole of `getpid`, the syscall-floor call, and a call to a
@@ -298,9 +298,9 @@ pub fn current_proc_tid() -> u32 {
     }
 }
 
-// ── Owner decision 102 — per-task frame budget ────────────────────────────
+// ── Per-task frame budget ────────────────────────────
 //
-// Scan unit 3 finding 3: CPU had quotas and
+// CPU had quotas and
 // memory had none. `sys_brk` stops at `USER_LOW_MAX`, a VA ceiling, not a
 // frame budget — and on the QEMU linker window that ceiling (32 MiB) is the
 // whole arena. One ring-3 task could empty the page allocator, and then the
@@ -444,7 +444,7 @@ fn table_hook(root: usize, what: azos_mm::vmm::TableCharge) -> bool {
     let idx = my_idx();
     unsafe {
         if idx >= MAX_TASKS { return true; }
-        // Wave 13: a member's root is its group's; `mm_charge` charges the
+        // A member's root is its group's; `mm_charge` charges the
         // leader.
         if TASKS[idx].aspace.get().is_some_and(|a| a.root() == root) {
             // KMEM-CHARGE: a table the Domain's own mappings grow is a frame
@@ -681,13 +681,13 @@ pub fn note_mm_quota_refusal() {
     MM_QUOTA_REFUSALS.fetch_add(1, Ordering::Relaxed);
 }
 
-// ── Wave 9: live instances per topology row ──────────────────────────────────
+// ── Live instances per topology row ──────────────────────────────────
 //
 // A row declares `instances = N` (default 1) and memory admission counted N
 // copies of its budget (plus one COW copy each when its image may fork). This
 // count keeps the running system inside what was counted: at most N live
 // spawned (or exec'd) instances of a row. Fork children are NOT instances
-// (owner decision, wave 9): they are bounded by the memory budget, and the
+//: they are bounded by the memory budget, and the
 // COW copy admission charges a forking row is what pays for them. A task
 // holds at most one count (`TaskMem::row`) and gives it back at exit. Rows
 // are identified by index + 1, as `TaskMem::row` stores them.
@@ -874,11 +874,11 @@ pub fn mm_instance_refusals() -> u32 {
 /// **Dead code as of this audit: zero callers anywhere in the tree**
 /// (`grep -rn "mm_reset_charge(" crates kernel` finds only this
 /// definition). The doc used to claim `exec_user` and the exit path both
-/// called it; neither does. `owner decision 102` (see the comment on
+/// called it; neither does. The frame-budget design (see the comment on
 /// the fresh domain a created task gets) covers the address-space
 /// discard case a different way, which may be why nothing calls this —
 /// left as a finding, not removed, since deleting a `pub fn` in a
-/// scheduler this size is an owner call.
+/// scheduler this size is a maintainer's call.
 pub fn mm_reset_charge() {
     let idx = my_idx();
     {
@@ -887,8 +887,8 @@ pub fn mm_reset_charge() {
 }
 
 /// Charge the `pages` of one request to the budget of `tid`'s process, all or
-/// nothing, like [`mm_charge_request`] for the current task. Wave 14
-/// (DEMANDPAGE): a fork's child is charged the uncommitted reservation it
+/// nothing, like [`mm_charge_request`] for the current task.
+/// A fork's child is charged the uncommitted reservation it
 /// inherits, before it runs, under the reserve-time model. The child starts
 /// from its row's base, so what it holds past it is a growth of its own, from
 /// the growth pool. `false` when `tid` is not live or would go over its
@@ -1193,7 +1193,7 @@ pub fn task_row_at(i: usize) -> Option<TaskRow> {
         name[..len].copy_from_slice(&t.name[..len]);
         Some(TaskRow {
             tid: t.tid,
-            // Wave 13: a thread's parent is its process's (the leader's).
+            // A thread's parent is its process's (the leader's).
             parent: PARENT_TID[proc_slot(i)].load(Ordering::Relaxed),
             priority: t.priority.load(Ordering::Relaxed),
             state,
@@ -1317,8 +1317,7 @@ pub fn task_cpu_affinity(tid: u32) -> Option<i8> {
 /// the copy. Once every shipped ring-3 binary ran under an image profile, that
 /// copy sat on every ring-3 syscall. This reads `TASKS[idx].syscall_filter`
 /// where it lies: the same fields, the same answer, no copy. The instruction
-/// counts of both versions, from the release disassembly, are in the S3
-/// follow-up note of 2026-09-14.
+/// counts of both versions, from the release disassembly, come from the release disassembly.
 ///
 /// `num` is the full number from `a7`: `SyscallFilter::verdict_for` refuses one
 /// past `u16::MAX` rather than narrowing it. A slot index past the pool (no

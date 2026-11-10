@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
 //! The `LinkKey` interface the kernel hosts: the ring-3 door onto the brain-link
-//! PSK (U06-9, owner decision 2026-09-26; an endpoint op since D6 part A).
+//! PSK (an endpoint op since D6 part A).
 //!
 //! ## The gap this closes
 //!
-//! The kernel stopped reading the brain-link PSK from `/fat/LINK.KEY` on
-//! 2026-09-26 (`kernel/src/reserved_tail.rs`'s `LINK_KEY`): the key now
+//! The kernel stopped reading the brain-link PSK from `/fat/LINK.KEY`
+//! (`kernel/src/reserved_tail.rs`'s `LINK_KEY`): the key now
 //! lives, as a validated record, in a reserved tail sector past the
 //! filesystem that a USB mass-storage export never reports as present.
 //! `brain_client` reads it through [`Server`], on the kernel-hosted `linkkey`

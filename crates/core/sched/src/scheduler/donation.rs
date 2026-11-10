@@ -175,8 +175,8 @@ pub fn boost_ready_task(tid: u32, new_prio: u32) {
     }
 }
 
-/// The ring-3 floor of slot `idx` for the wait graph (owner decision
-/// 10-10, `classes::graph_floored`): `RT_PRIORITY_THRESHOLD` for a ring-3
+/// The ring-3 floor of slot `idx` for the wait graph (
+/// `classes::graph_floored`): `RT_PRIORITY_THRESHOLD` for a ring-3
 /// task and 0 for a kernel task. A ktest build also floors the one slot
 /// [`ktest_flag_ring3`] names.
 pub(crate) fn ring3_floor_at(idx: usize) -> u32 {

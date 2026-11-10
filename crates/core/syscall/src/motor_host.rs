@@ -10,7 +10,7 @@
 //!   resolved WITHOUT the containment step: whether a command may move the
 //!   wheel is decided one level down, in `azos_robot::motor_set_reporting`.
 //!   While an e-stop is latched or containment is armed it carries out brake
-//!   and coast and refuses forward and backward (owner decision 2026-09-13), so
+//!   and coast and refuses forward and backward, so
 //!   refusing a stop here would leave a task that may drive unable to stop.
 //! * **Pair-wide ops** (the PID loop) command the whole drivetrain in one
 //!   operation, so they need `WRITE` on BOTH wheels' endpoints and a contained
@@ -511,7 +511,7 @@ impl azos_devif::Motor for MotorServer {
             Err(o) => return o,
         };
         // A direction past coast is refused before anything reaches the motor
-        // layer (owner decision, gap 1 Q5): no pin written, no marker printed.
+        // layer (gap 1 Q5): no pin written, no marker printed.
         let Some(d) = direction_of(dir) else { return Out::err(outcome::BAD_ARGUMENT) };
         let effect = MotorEffect { wheel: id, tid: self.0.tid, dir, pct: 50, toward_safe: toward_safe(dir, 50),
                                    timing: timing_of(toward_safe(dir, 50), id, azos_devif::motor::MotorIdl::OP_DIRECTION) };

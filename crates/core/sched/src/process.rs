@@ -7,7 +7,7 @@ use azos_arch::{ArchPlatform, ARCH};
 use azos_arch::PAGE_SIZE;
 use azos_arch_api::{MemType, PagePerms};
 
-/// O3.2 (owner decision, PAN/SUM): one name for the RAII "I am about to
+/// O3.2 (PAN/SUM): one name for the RAII "I am about to
 /// touch user-tagged memory on purpose" guard on either ISA —
 /// `arch-aarch64::sysregs::UserAccess` (`msr PAN, #0/#1`) or
 /// `arch-riscv64::cpu::UserAccess` (`csrs`/`csrc sstatus.SUM`). Construct
@@ -87,7 +87,7 @@ const _: () = assert!(RAM_BASE == 0 || USER_STACK_TOP <= RAM_BASE);
 /// board this binary is built for.
 ///
 /// `VDSO_USER_BASE` is a fixed address, untouched by the derivation above.
-/// As of the 2026-09-22 fix (`VDSO_USER_BASE = 0x2000_0000`, VPN[2]=0 on
+/// As of the fix (`VDSO_USER_BASE = 0x2000_0000`, VPN[2]=0 on
 /// every board) this is true everywhere `USER_STACK_TOP` is derived from
 /// `RAM_BASE` — every board's `RAM_BASE` is at least `0x4000_0000` — so the
 /// flag is now a defence-in-depth check rather than a live skip: kept
@@ -119,8 +119,8 @@ use elf_bounds::PT_LOAD;
 /// the merge never has to choose between a user mapping and a kernel one.
 ///
 /// It also keeps the image clear of the two other things that live in a user
-/// address space — the vDSO at `vdso::VDSO_USER_BASE` (`0x2000_0000` as of
-/// 2026-09-22; `crates/core/abi/src/vdso.rs`) and the stack just below
+/// address space — the vDSO at `vdso::VDSO_USER_BASE` (`0x2000_0000`;
+/// `crates/core/abi/src/vdso.rs`) and the stack just below
 /// `USER_STACK_TOP` — whose overlap was previously swallowed by an ignored
 /// `vmm::map` result.
 ///
@@ -255,7 +255,7 @@ pub struct ExecHandoff {
 // (`ECALL_SEPC`/`ECALL_USER_SP`, set by the trap handler before every
 // syscall dispatch) and the fork hand-off into another global
 // (`FORK_CHILD_CTX`) — both raced against concurrent syscalls/forks on
-// other harts (audit finding K-A15). sepc/user_sp
+// other harts. sepc/user_sp
 // are now threaded through as plain function parameters (hart-local, no
 // shared state, no race possible) all the way from the trap handler down to
 // `sys_fork_impl`; the fork hand-off itself now lives on the child's own
@@ -355,7 +355,7 @@ fn exec_install(
     }
 }
 
-/// An exec admitted but not yet committed (wave 15, plan 4a): the new address
+/// An exec admitted but not yet committed (plan 4a): the new address
 /// space is built, its budget and row instance checked and claimed, its stack
 /// laid out; the caller's image is untouched. Everything that can refuse an
 /// exec has run. [`exec_commit`] switches to it (it cannot fail);
@@ -455,7 +455,7 @@ fn exec_admit(
             }
         }
     }
-    // Wave 9: an exec into a different row becomes one of that row's
+    // An exec into a different row becomes one of that row's
     // live instances, refused past its `instances` before the task
     // gives up the image it is running. The count taken here is given
     // back by `exec_abort`, or (the one the process held) by the commit.
@@ -616,7 +616,7 @@ fn take_current_task_exec_ctx_slow() -> Option<ExecHandoff> {
     // `make_satp`); the hand-off's later write of the same value is harmless.
     // riscv64: `csrw satp` + `sfence.vma`; aarch64: TTBR0_EL1 + local flush,
     // skipped for a zero word (no root lives at PA 0 there). Through the
-    // ASID generation scheme (owner decision 10-10): the hart leaves exec
+    // ASID generation scheme: the hart leaves exec
     // tracked, and a rollover since exec built the word re-tags it here.
     let satp = crate::asid::install_exec_root(satp as usize) as u64;
     if let Some(old) = old {
@@ -730,7 +730,7 @@ pub(crate) fn load_elf_hdr(hdr: &[u8], file_len: usize) -> Option<ExecContext> {
     load_elf_impl(hdr, file_len, false)
 }
 
-/// Wave 14 (SPAWNCACHE): build the address space of an image the
+/// Build the address space of an image the
 /// verified-image cache kept (`azos_mm::image_frames`): its executable
 /// frames shared read-execute, every other page a fresh copy, then the same
 /// stack, vDSO and kernel entries as [`load_elf`]. `entry` and `brk` are the
@@ -762,7 +762,7 @@ pub(crate) fn load_elf_cached(
     }
 }
 
-/// Wave 14 (SPAWNCACHE): the page range `[lo, hi)` the `PT_LOAD` segments of
+/// The page range `[lo, hi)` the `PT_LOAD` segments of
 /// the image whose headers are `hdr` occupy (headers [`load_elf`] or
 /// [`load_elf_hdr`] already accepted). `None` without a loaded segment.
 pub(crate) fn image_page_range(hdr: &[u8]) -> Option<(usize, usize)> {
@@ -784,7 +784,7 @@ pub(crate) fn image_page_range(hdr: &[u8]) -> Option<(usize, usize)> {
     if hi > lo && hi <= USER_LOW_MAX { Some((lo, hi)) } else { None }
 }
 
-/// Wave 14: make every hart's instruction fetch see the image text the
+/// Make every hart's instruction fetch see the image text the
 /// loader just wrote into the frames of `user_pt` over `[lo, hi)`, before any
 /// task runs in it (it may run on any hart, and a frame may have held other
 /// code before). Called once per load that WROTE executable frames: a fresh
@@ -1091,7 +1091,7 @@ pub fn in_stack_area(va: usize) -> bool {
 /// The part of an address space every image gets — the stack, the vDSO and
 /// sigreturn pages, the kernel's entries, the SATP — after its segments are
 /// mapped in `user_pt`: the tail of [`load_elf_into`], and of
-/// [`load_elf_cached`] (wave 14, SPAWNCACHE). `frames` counts the image's
+/// [`load_elf_cached`] (SPAWNCACHE). `frames` counts the image's
 /// data frames so far; the stack's are added. Same teardown rule as
 /// [`load_elf_into`]: on `None` the caller destroys `user_pt`.
 fn finish_user_space(user_pt: usize, e_entry: u64, brk_va: usize, mut frames: u32, stack: usize) -> Option<ExecContext> {
@@ -1124,7 +1124,7 @@ fn finish_user_space(user_pt: usize, e_entry: u64, brk_va: usize, mut frames: u3
         va += PAGE_SIZE;
     }
 
-    // Wave 13: the riscv64 sigreturn trampoline, read-execute, the page after
+    // The riscv64 sigreturn trampoline, read-execute, the page after
     // the vDSO (`vdso::SIGTRAMP_USER_VA`; the vDSO itself is `map_vdso`'s, once
     // the address space exists). Shared, never written by a task:
     // a fork shares the leaf as it is (`cow::fork_cow`) and teardown never
@@ -1628,7 +1628,7 @@ fn kernel_ctx_refuse(addr: usize, len: usize, op: &'static str) -> bool {
 ///
 /// Returns `true` on success, `false` on any unmapped/forbidden page.
 ///
-/// **O3.2 (owner decision, PAN/SUM) — why the [`UserAccess`] guard around
+/// **O3.2 (PAN/SUM) — why the [`UserAccess`] guard around
 /// this function's own access does not protect THIS access.** The
 /// per-page read (`azos_mm::uaccess`) goes through `azos_mm::addr::phys_to_virt(pa)`
 /// — the kernel's OWN mapping of that physical frame (`U=0`/no `AP_EL0` on
@@ -1692,8 +1692,8 @@ pub fn copy_from_user_resident(kernel_dst: *mut u8, user_src: usize, len: usize)
 /// Returns `true` on success, `false` on any forbidden/unmapped page.
 /// Can `len` bytes be written at `user_dst` right now?
 ///
-/// **NO PRODUCTION CALLER TODAY, and that is deliberate — owner decision,
-/// 2026-09-19.** All three callers this was written for
+/// **NO PRODUCTION CALLER TODAY, and that is deliberate.**
+/// All three callers this was written for
 /// (`sys_port_wait_typed`, `sys_driver_poll_event`, `sys_driver_fetch_request`)
 /// moved to [`user_range_prepare_write`], because each of them CONSUMES
 /// something it cannot put back and therefore needs a guarantee rather than an
@@ -1741,7 +1741,7 @@ pub fn user_range_writable(user_dst: usize, len: usize) -> bool {
     let mut done = 0usize;
     while done < len {
         let va = user_dst + done;
-        // **A question, not an action** (owner decision 100c).
+        // **A question, not an action**.
         //
         // This used to call `translate_user(.., true)`, which on a COW leaf
         // runs `handle_cow_fault` and ALLOCATES a private copy. So a range
@@ -1774,8 +1774,8 @@ pub fn user_range_writable(user_dst: usize, len: usize) -> bool {
 /// Make `len` bytes at `user_dst` writable NOW, so the `copy_to_user` that
 /// follows cannot fail for a permission or allocation reason.
 ///
-/// **This is an action, and it is named as one.** Owner decision 100c removed
-/// the COW break from `user_range_writable` because a function named as a
+/// **This is an action, and it is named as one.** The COW break was removed
+/// from `user_range_writable` because a function named as a
 /// query must not mutate the address space — that stands. What 100c left
 /// behind is that the three callers never wanted a query: each of them
 /// CONSUMES something it cannot put back (`sys_port_wait_typed` dequeues an
@@ -1892,8 +1892,8 @@ pub fn user_cas_u32(user_addr: usize, old: u32, new: u32) -> Result<(), Option<u
 /// [`user_cas_u32`] that never faults: the page must already be writable
 /// (`vmm::translate_user_writable_nofault`), so a copy-on-write or not yet
 /// committed page answers `Err(None)` with nothing allocated and no TLB
-/// shootdown. For a caller under a spinlock (the PI futex table, wave 15
-/// N10b), which then drops it, calls [`fault_in_user_writable`] and retries.
+/// shootdown. For a caller under a spinlock (the PI futex table),
+/// which then drops it, calls [`fault_in_user_writable`] and retries.
 pub fn user_cas_u32_nofault(user_addr: usize, old: u32, new: u32) -> Result<(), Option<u32>> {
     if user_addr & 3 != 0 {
         return Err(None);
@@ -2224,7 +2224,7 @@ fn fork_hooked_inner(
     // root that is not its own; `fork_cow` leaves the count in `pt_build`.
     let _ = crate::scheduler::take_current_pt_build();
     let t_ph = crate::prof::t();
-    // Wave 13: a thread group's other members may fault on the parent's
+    // A thread group's other members may fault on the parent's
     // entries while they are walked (`fork_cow_shared_held`).
     let concurrent = crate::scheduler::current_slot().is_some_and(|i| crate::group::lead_of_idx(i) != 0);
     // The hold on the parent lasts until `before_release` has cloned its
@@ -2300,7 +2300,7 @@ fn fork_hooked_inner(
     // full COW page table per attempt and turns a bounded, recoverable denial
     // into permanent PMM exhaustion.
     // The child runs in its parent's class at its parent's BASE priority
-    // Wave 7, as a Linux fork child keeps its parent's policy and nice.
+    // As a Linux fork child keeps its parent's policy and nice.
     // It used to be `DEFAULT_PRIORITY` whatever the parent was: harmless while
     // every ring-3 task ran at the default, an escalation once the topology is
     // applied — a `best_effort` program at 24 could fork itself a child at 16.
@@ -2309,12 +2309,12 @@ fn fork_hooked_inner(
     let t_ph = crate::prof::t();
     let (child_prio, child_class) = crate::scheduler::current_sched_params();
     // Who created whom, so `wait` knows who to notify: set with the slot, under
-    // the exit-notice admission (wave 12).
+    // the exit-notice admission.
     let child_idx = match crate::try_task_create_init(
         "forked", fork_child_entry, 0, child_prio, -1,
         crate::filter::TaskInit {
             class_raw: Some(child_class),
-            // Wave 13: a fork from a thread is its process's child.
+            // A fork from a thread is its process's child.
             parent: crate::scheduler::current_proc_tid(),
             abi: crate::scheduler::current_abi(),
             ..crate::filter::TaskInit::default()
@@ -2374,7 +2374,7 @@ fn fork_hooked_inner(
     // longer belongs to our child, which cannot happen while the child is
     // waiting (it never exits before consuming) — defensive only.
 
-    // / wave 13: the caller's setup of the child (a Linux child's
+    // The caller's setup of the child (a Linux child's
     // descriptors and row, a native child's descriptors at the parent's
     // exact handles and its row); refused, the child ends at its first
     // scheduling (the forced stop is checked before its `sret`) and no
@@ -2433,7 +2433,7 @@ fn fork_hooked_inner(
     refused.unwrap_or(child_tid as i64)
 }
 
-/// Wave 13 (THREADS): create a thread of the calling task's process.
+/// Create a thread of the calling task's process.
 ///
 /// The new task runs on its creator's address space (same root and
 /// translation word: no copy, no COW), joins its domain (capability table
@@ -2541,7 +2541,7 @@ pub fn thread_create_impl(
     // Gate canary only: the new thread keeps its creator's thread pointer
     // (musl's thread-local storage is then the creator's).
     let tls = if cfg!(feature = "threads-tls-canary") { None } else { tls };
-    // Wave 15: a native thread's argument, in its third argument register.
+    // A native thread's argument, in its third argument register.
     // aarch64's trap path hands this call no register snapshot (`regs` is
     // zeroed there: copying the creator's file, its 528-byte FP state
     // included, cost every create about 1,000 instructions), so the one
@@ -2615,7 +2615,7 @@ pub fn resume_pc_after(sepc: u64) -> u64 {
 /// those in about a millisecond, and the parent's window from task creation
 /// to the publish is about that long on QEMU: `SYS_SPAWN_EX`/`SYS_SPAWN_EX` print
 /// the `[SPAWN][PRIO]` line, seed the capabilities and (608) write the startup
-/// block and move descriptors inside it. Measured 2026-10-03 (riscv64, -smp 4,
+/// block and move descriptors inside it. Measured (riscv64, -smp 4,
 /// gate rows): the line fired on most spawns, and every one of those children
 /// was published 1.7-2.0 ms after it started waiting (1001-1913 yields) — a
 /// bounded window, not a stalled parent. 100 ms is fifty times that window,

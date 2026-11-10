@@ -174,7 +174,7 @@ pub fn set_frame_modifier(phys: usize, bit: u32, on: bool) -> bool {
 /// kernel_end`, if the range holds no frame, or if the array does not fit in
 /// it. The first ordering is impossible on real hardware — the kernel image
 /// is loaded INTO the RAM range `mem_start` describes — and can only come
-/// from a corrupt or hostile `/memory` node (DTB audit, 2026-09-22): the
+/// from a corrupt or hostile `/memory` node (DTB audit): the
 /// subtraction `kernel_end - mem_start` used to underflow and, under this
 /// kernel's release profile (`overflow-checks = true`, `panic = "abort"`),
 /// reset the board with no diagnostic. Refusing beats clamping to a range

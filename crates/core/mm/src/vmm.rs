@@ -261,7 +261,7 @@ fn mmu_error_to_kernel_error(e: MmuError) -> KernelError {
 ///   - Everything else a user address space contains sits far above it:
 ///     the `brk` heap grows up from the image and is capped at
 ///     `USER_LOW_MAX = 0x0200_0000`, the vDSO is at `VDSO_USER_BASE =
-///     0x2000_0000` (`crates/core/abi/src/vdso.rs`, moved 2026-09-22 from
+///     0x2000_0000` (`crates/core/abi/src/vdso.rs`, moved from
 ///     `0x5000_0000` — see that module's doc for why), the driver/shm MMIO
 ///     window at `0x6000_0000` (same class of VPN[2]=1 collision with
 ///     VF2/aarch64 RAM the vDSO had, not fixed by this task — see
@@ -427,7 +427,7 @@ pub fn faults_resolved() -> (u64, u64) {
 
 /// Maximum number of page tables we track for reference counting.
 ///
-/// U09-7: this used to be a bare `128` — a ceiling on live address spaces
+/// This used to be a bare `128` — a ceiling on live address spaces
 /// independent of, and far below, Kconfig `MAX_TASKS` (up to 16384; 4096 on
 /// the fleet profile). `create_pagetable` is called once per live task
 /// (`sched::process`) and once per COW fork (`cow.rs`), so a task count
@@ -654,7 +654,7 @@ pub fn write_would_enter_kernel_table(pt_phys: usize, vaddr: usize) -> bool {
 
 /// Is `[start, end)` (page-aligned) empty in the user table `pt_phys` — no
 /// leaf, no entry of any kind — and reachable without
-/// entering a table the kernel shares? Wave 14 (DEMANDPAGE): a reservation
+/// entering a table the kernel shares? A reservation
 /// must answer what the eager `mmap` loop answered through `map`'s
 /// `AlreadyMapped`, or a region could be laid over a page something else
 /// owns, or over the kernel's MMIO tables, and only fail at first touch.
@@ -843,7 +843,7 @@ pub(crate) fn walk_level(pt_phys: usize, vaddr: usize, alloc: bool, promised: bo
             // `pt_phys`.
             let new_pt = alloc_table(pt_phys, promised, level - 1)?;
             let new_pte = ARCH.pte_make_table(new_pt.as_usize());
-            // Installed by compare-and-swap (wave 13): the threads of one
+            // Installed by compare-and-swap: the threads of one
             // process walk one table, and two of them may both find this slot
             // empty. The loser frees its table and follows the winner's.
             // SAFETY: `pte_ptr` is an aligned entry of a live table page.
@@ -883,7 +883,7 @@ pub(crate) fn walk_level(pt_phys: usize, vaddr: usize, alloc: bool, promised: bo
 /// physical `table` is valid; `n` if none. Reads four entries per step and
 /// tests their OR (validity is one bit on both ISAs, so the OR is valid iff
 /// one of them is): a fork and a teardown walk whole leaf tables, mostly
-/// empty, and this is where they spent most of their time (wave 13: ~8
+/// empty, and this is where they spent most of their time (~8
 /// instructions per empty entry, ~6,000 entries per fork of vsbench).
 #[inline]
 pub(crate) fn next_valid(table: usize, from: usize, n: usize) -> usize {
@@ -911,7 +911,7 @@ fn next_entry<const ANY: bool>(table: usize, from: usize, n: usize) -> usize {
         if i < n && hit(core::ptr::read_volatile(t.add(i))) {
             return i;
         }
-        // Eight at a time (wave 13: ~2.4 instructions per empty entry, from
+        // Eight at a time (~2.4 instructions per empty entry, from
         // ~3.7 four at a time), then four, then one.
         while i + 8 <= n {
             let any = core::ptr::read_volatile(t.add(i))
@@ -1114,7 +1114,7 @@ pub fn map_mega(pt_phys: usize, vaddr: usize, paddr: usize, flags: PagePerms) ->
 /// unsafe layout and should fail loudly rather than silently produce a W+X
 /// page. Returns `Err(KernelError::InvalidArg)` in that case.
 ///
-/// Wave 15: the loader now refuses, before it gets here, an image in which
+/// The loader now refuses, before it gets here, an image in which
 /// two segments mapped differently share a page
 /// (`elf_bounds::check_page_sharing`), so the widening finds the bits already
 /// there; this stays the backstop for W^X on a shared page.
@@ -1122,7 +1122,7 @@ pub fn map_mega(pt_phys: usize, vaddr: usize, paddr: usize, flags: PagePerms) ->
 /// Only ever widens: bits already present are kept, and the USER bit is
 /// required up front so this cannot be aimed at a kernel mapping.
 ///
-/// **Verified true, not just asserted (2026-09-06 audit).** Two refusals
+/// **Verified true, not just asserted.** Two refusals
 /// below make it hold: `if level != 0` at the leaf check rejects any
 /// superpage — where the kernel's merged, non-`USER` entries appear in a user
 /// page table, and where a locked row's `USER` region is (Kconfig
@@ -1717,7 +1717,7 @@ pub fn translate_user(pt_phys: usize, vaddr: usize, write: bool) -> Option<usize
     }
 }
 
-/// [`translate_user`]'s miss: wave 14 (DEMANDPAGE). A reserved page (a page
+/// [`translate_user`]'s miss. A reserved page (a page
 /// of a mapping: `mmap`, `brk`) not touched yet is committed here, as
 /// the fault the copy would have taken from ring 3 would commit it — a
 /// `read()` into fresh `mmap` memory must not answer EFAULT — and the
@@ -1759,7 +1759,7 @@ pub fn shim_set_miss_hook(hook: Option<fn()>) {
 
 /// The physical address of `vaddr` when its user page is ALREADY writable:
 /// never breaks copy-on-write, never commits a reserved page, never
-/// allocates nor shoots TLBs down (wave 15 N10b, for a futex word under a
+/// allocates nor shoots TLBs down (for a futex word under a
 /// spinlock; Linux `futex_atomic_cmpxchg_inatomic`). `None` otherwise: the
 /// caller drops its lock, faults the page in with [`translate_user`]
 /// (`write = true`) and retries.
@@ -1835,7 +1835,7 @@ pub fn user_write_would_be_permitted(pt_phys: usize, vaddr: usize) -> bool {
             f.user && f.read && (f.write || ARCH.pte_is_cow(pte))
                 && kernel_reaches(f.mem, ARCH.pte_phys(pte) + (vaddr & mask))
         }
-        // Wave 14: a reserved page is writable if its mapping says so; the
+        // A reserved page is writable if its mapping says so; the
         // copy that follows commits it.
         None => reserved_write_permitted(pt_phys, vaddr),
     }
@@ -2117,7 +2117,7 @@ fn kernel_va(pa: usize) -> usize {
 /// The physical end of the RAM [`init`] mapped (0 before it ran).
 static RAM_END: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
-/// The physical end of the RAM the kernel maps (wave 15: `text_poke` places
+/// The physical end of the RAM the kernel maps (`text_poke` places
 /// its alias above it).
 pub fn ram_end() -> usize {
     RAM_END.load(core::sync::atomic::Ordering::Relaxed)
@@ -2289,7 +2289,7 @@ pub fn map_kernel_image(va_start: usize, va_end: usize) -> KResult<usize> {
 /// device memory there as in the kernel's table (one type per frame).
 ///
 /// Fixed capacity, no allocation: this runs before the heap on some paths.
-/// Kconfig `MAX_MMIO_REGIONS` (N12h; was the literal 16).
+/// Kconfig `MAX_MMIO_REGIONS` (was the literal 16).
 const MAX_MMIO_REGIONS: usize = azos_limits::MAX_MMIO_REGIONS;
 static MMIO_REGIONS: SpinLock<[(usize, usize); MAX_MMIO_REGIONS]> =
     SpinLock::new([(0, 0); MAX_MMIO_REGIONS]);
@@ -2390,7 +2390,7 @@ pub fn mmio_regions_refused() -> usize {
 /// the aarch64 device-only table), record it for replay into task tables,
 /// and push it into the live roots.
 ///
-/// **Device memory** ([`PagePerms::MMIO`], audit K2-H3): aarch64 Device-nGnRE,
+/// **Device memory** ([`PagePerms::MMIO`]): aarch64 Device-nGnRE,
 /// x86 PAT UC, riscv64 Svpbmt `IO` where the extension is on (the PMA decides
 /// otherwise). It used to be `KERNEL_RW`, write-back: on aarch64 every window
 /// above the boot's 1 GiB Device block (a Raspberry Pi 5's peripherals, PCIe
@@ -2409,7 +2409,7 @@ pub fn mmio_regions_refused() -> usize {
 /// window already maps (two devices in one page) is not an error.
 ///
 /// `Err(CapacityFull)`, with NOTHING mapped, when the record already holds
-/// Kconfig `MAX_MMIO_REGIONS` windows (N12i; it used to map the window and
+/// Kconfig `MAX_MMIO_REGIONS` windows (it used to map the window and
 /// drop the record silently, so the kernel reached the device and every task
 /// table built later did not). The refusal is counted
 /// ([`mmio_regions_refused`]); the caller says it.
@@ -2462,7 +2462,7 @@ pub fn map_mmio_region(base: usize, size: usize) -> KResult<()> {
         }
         return Err(e);
     }
-    // Roots built before this window (owner decision 10-10, N12g): without
+    // Roots built before this window: without
     // this a task current on another hart could not reach the device.
     let _ = propagate_kernel_entries();
     Ok(())
@@ -3387,14 +3387,14 @@ pub fn copy_kernel_entries_to_user(user_pt: usize) {
 static PROPAGATE_GEN: AtomicUsize = AtomicUsize::new(0);
 
 /// Push the kernel's current entries into every root of the merged-root
-/// roster (owner decision 10-10, N12g): a kernel mapping created after task
+/// roster: a kernel mapping created after task
 /// roots exist — a driver's low MMIO in a merge slot, or a kernel-only slot
 /// first used late — reaches them. It is the same idempotent merge
 /// [`copy_kernel_entries_to_user`] runs: a kernel-only slot the root lacks
 /// is linked word for word (the kernel's fixed L1; G as the kernel root has
 /// it), a merge-slot L1 entry the root lacks is filled (never G: only
 /// kernel-only slots get G, see [`kernel_global_bit`]). Each of those words
-/// goes in by CAS from empty (N12h, [`crate::pte_install`]): a user `map`
+/// goes in by CAS from empty ([`crate::pte_install`]): a user `map`
 /// racing for the same word is never overwritten. Where the root owns its own
 /// L0 table and the kernel has one too (it won that race, or mapped its pages
 /// there first), the kernel's leaves are copied into the root's empty words;
@@ -3449,7 +3449,7 @@ pub fn propagate_kernel_entries() -> (usize, usize) {
         let _meta = PT_META.lock();
         PROPAGATE_GEN.fetch_add(1, Ordering::Release);
     }
-    // One `PT_META` hold per root (FX8, the FX7 walk): the root is live
+    // One `PT_META` hold per root (the FX7 walk): the root is live
     // through its merge and its shootdown, and the hold no longer grows
     // with the task count.
     let mut written = 0usize;
@@ -4051,7 +4051,7 @@ pub static LIVE_ROOT_REFUSALS: core::sync::atomic::AtomicU32 =
 ///   recorded here as an untested guard rather than given a test that would
 ///   pass against any mutation of it.
 ///
-///   "Nothing upstream" is an enumeration, not a hope — re-derived 2026-09-06
+///   "Nothing upstream" is an enumeration, not a hope — re-derived
 ///   because the previous wording credited it all to one guard and there are
 ///   two. Every function in this file that WRITES a PTE, and what stops each:
 ///
@@ -4095,7 +4095,7 @@ pub static LIVE_ROOT_REFUSALS: core::sync::atomic::AtomicU32 =
 fn user_leaf_is_task_owned(l0: u64, tramp_phys: usize) -> bool {
     if !ARCH.pte_perms(l0).user { return false; }
     let phys = ARCH.pte_phys(l0);
-    // Wave 13: nor the riscv64 sigreturn trampoline (the kernel's own page).
+    // Nor the riscv64 sigreturn trampoline (the kernel's own page).
     if tramp_phys != 0 && phys == tramp_phys { return false; }
     crate::cow::page_decref(phys)
 }
@@ -4262,7 +4262,7 @@ pub(crate) fn release_pruned_tables(root: usize, tables: &[usize]) {
     }
 }
 
-/// What one user page of an address space is, for `mprotect` (wave 13).
+/// What one user page of an address space is, for `mprotect`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum UserPage {
     /// No leaf: nothing there, or a page of a mapping that is not in the
@@ -4327,7 +4327,7 @@ pub fn user_page(pt_phys: usize, vaddr: usize) -> UserPage {
 }
 
 /// Give every user leaf in `[start, end)` exactly the
-/// write permission `write` (wave 13, `mprotect`), then one shootdown of the
+/// write permission `write` (`mprotect`), then one shootdown of the
 /// range if anything changed. Read stays; execute is never combined with
 /// write (a leaf with execute is left alone when `write`; the caller refuses
 /// that range first).
@@ -4336,8 +4336,8 @@ pub fn user_page(pt_phys: usize, vaddr: usize) -> UserPage {
 /// address space. Made writable it stays COW: the next store breaks it, as it
 /// would have before (the page was writable when the fork made it COW). Made
 /// read-only it loses the COW marker, so a store faults instead of breaking
-/// it into a writable copy; its frame stays shared and counted. Wave 14
-/// (security): a plain read-only leaf whose frame another space maps (a fork
+/// it into a writable copy; its frame stays shared and counted.
+/// A plain read-only leaf whose frame another space maps (a fork
 /// shares read-only pages as they are) made writable becomes COW too, never
 /// writable in place (`rewrite_leaf_write`). Returns how many entries
 /// changed.
@@ -4379,7 +4379,7 @@ pub fn protect_user_range(pt_phys: usize, start: usize, end: usize, write: bool)
 
 /// Rewrite the user leaf at `ptr` (now `pte`, permissions `f`, never
 /// executable when `write`) with `write` as its write permission and no COW
-/// marker. Wave 14 (security): when write is ADDED and the frame has another
+/// marker. When write is ADDED and the frame has another
 /// holder (a fork shared it read-only, or it is copy-on-write), the leaf is
 /// made copy-on-write instead, so the first store breaks it into this space's
 /// own copy; setting the bit would let this space write a frame another

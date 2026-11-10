@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Process life-cycle phase profile (feature `fork-profile`, wave 13).
+//! Process life-cycle phase profile (feature `fork-profile`).
 //!
 //! Under QEMU `-icount shift=0` virtual time advances one nanosecond per
 //! instruction, so on aarch64 (`CNTVCT_EL0` at 1 GHz) a counter difference is

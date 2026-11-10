@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Wave 13: the per-task signal words.
+//! The per-task signal words.
 //!
 //! **Which tasks have them.** A slot has signal state only once the Linux
 //! personality attaches it ([`attach`], at the task's creation or fork).
-//! The native ABI stays signal-free (owner decision P3, rounds 10-12): a
+//! The native ABI stays signal-free (rounds 10-12): a
 //! signal aimed at a native task is not posted here at all; the caller maps
 //! it onto the stop request the native ABI already has (`task_stop`).
 //!
@@ -20,7 +20,7 @@
 //! paths test it and call out of line only when it is not zero, so a task
 //! that never sees a signal pays one load and a branch per return.
 //!
-//! **Threads (wave 13).** Every word here is per TASK (thread): the pending
+//! **Threads.** Every word here is per TASK (thread): the pending
 //! set and the mask are a thread's own, as on Linux. The dispositions are the
 //! process's (`CLONE_SIGHAND`: one personality entry per process), so the
 //! discarded set is written to every member at once ([`set_current_ignored`]).
@@ -182,7 +182,7 @@ fn detach_slot(idx: usize) {
 /// `tid` is exiting: its slot's words go, so the counter does not keep every
 /// later return to user mode on the slow path.
 ///
-/// Wave 15: a process-directed signal still pending on a thread that is not
+/// A process-directed signal still pending on a thread that is not
 /// its process's leader is posted to the process again (Linux keeps it in
 /// the shared pending set, which outlives any one thread), unless the whole
 /// process is ending. Its thread-directed ones end with it, as on Linux.
@@ -556,7 +556,7 @@ pub fn counts() -> (u32, u32) {
     (POSTED.load(Ordering::Relaxed), DELIVERED.load(Ordering::Relaxed))
 }
 
-/// Wave 15 (plan 4a): an exec from a thread that is not its process's leader
+/// An exec from a thread that is not its process's leader
 /// hands the leader's identity (`from`, the leader's slot) to the exec'ing
 /// thread (`to`): the slot's signal words follow the TID. The process's
 /// pending signals and its ignored set move to `to`; `to` keeps its own mask

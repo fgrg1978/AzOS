@@ -55,7 +55,7 @@ revoke-chain-canary = []
 # `cap_store.rs` `grant_like`: the copy of a fork is not checked against a revoke
 # that finished while it was being made (host test in tests/host/cap-tests).
 fork-revoke-canary = []
-# Wave 15 gate canary: a static-key write goes through the EXECUTABLE text
+# Gate canary: a static-key write goes through the EXECUTABLE text
 # mapping instead of the alias; W^X must stop it with a store fault.
 text-poke-wx-canary = []
 # Gate canary of the introspection regions (`inspect_region.rs`): every view
@@ -64,7 +64,7 @@ text-poke-wx-canary = []
 # real build.
 inspect-view-canary = []
 default = []
-# M40 (audit U10-6): gates `seed_one_cap_outcome`'s actuation arms the
+# M40: gates `seed_one_cap_outcome`'s actuation arms the
 # same way `crates/core/topology`'s parser and builder already gate the word
 # "motor" / the `CapSpec` rows — a non-actuating build must have ZERO live
 # paths to mint a drivetrain capability, not just zero declared ones.
@@ -78,7 +78,7 @@ ioring-sync-fsync-canary = []
 # io_ring registered buffers: a vacated ring forgets the pins its buffers hold,
 # so `a_vacated_ring_gives_every_pin_back` goes red. Host suite only.
 ioring-regbuf-leak-canary = []
-# `port.rs`'s capability-binding canary (wave 11): `port_cap_event`
+# `port.rs`'s capability-binding canary: `port_cap_event`
 # ignores every event, so a binding outlives a revoke. Host suite only.
 port-revoke-canary = []
 # `ep_queue.rs`'s call-source canary: a call that finds its queue empty hands

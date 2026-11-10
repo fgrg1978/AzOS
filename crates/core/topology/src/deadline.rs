@@ -7,7 +7,7 @@
 //! `true` for the safety classes, and read by nothing: a safety property the
 //! topology promised and the kernel never enforced. And `task_set_deadline` had
 //! an admission check of its own (`scheduler::deadline_admission_check`, deleted
-//! in wave 11 with the rest of that path) that summed utilisation over ALL tasks
+//! with the rest of that path) that summed utilisation over ALL tasks
 //! regardless of CPU, so it accepted a set no single CPU could run, and had no
 //! caller anyway. This module is the check
 //! itself, pure and allocation-free, so the topology can be REFUSED AT BOOT
@@ -148,7 +148,7 @@ pub enum DeadlineRefusal {
         task: u16,
     },
     /// Placed, but the real-time band's tasks on its CPU need more than the
-    /// band may use there (wave 11 SCHED-RT: the band budget, Kconfig
+    /// band may use there (the band budget, Kconfig
     /// `RT_BAND_CAP_PCT`, leaves the rest of each CPU to the tasks outside
     /// the band, so admitting band reservations beyond it would promise
     /// deadlines the budget then breaks). `task` is the first band task on
@@ -158,7 +158,7 @@ pub enum DeadlineRefusal {
         task: u16,
     },
     /// A row that would run in the real-time band with a reservation is not
-    /// `mem = "locked"` (owner decision, wave 11 SCHED-RT): a ring-3 task in
+    /// `mem = "locked"`: a ring-3 task in
     /// the band must not take demand-paging faults on its real-time path.
     BandNotLocked {
         /// Index of the task in the topology.
@@ -167,7 +167,7 @@ pub enum DeadlineRefusal {
     /// Room on a CPU for the task's density, but the reservations placed
     /// there sit at different priority levels and a level could miss a
     /// deadline (`azos_abi::rt_levels::levels_check`, the rule run-time
-    /// `reserve` applies too: wave 15). Only under fixed priority between
+    /// `reserve` applies too). Only under fixed priority between
     /// levels ([`LevelOrder::Fixed`]). Reported for the last CPU tried.
     Levels {
         /// Index of the task in the topology.
@@ -228,7 +228,7 @@ impl DeadlineRefusal {
 /// equal at compile time (this crate does not depend on the scheduler).
 pub const RT_BAND_THRESHOLD: u8 = 12;
 
-/// May a row's task run in the real-time band (wave 11 SCHED-RT, owner
+/// May a row's task run in the real-time band (owner
 /// decisions)? Only with an admitted CBS reservation AND `mem = "locked"`.
 /// The one rule both topology admission and `SYS_SPAWN_EX` apply.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -238,8 +238,7 @@ pub enum BandEntry {
     /// In the band, with an admitted profile and locked memory: allowed.
     Admitted,
     /// In the band without an admitted profile: a ring-3 task named after it
-    /// is raised to the ring-3 floor instead (raised and recorded, the rule of
-    /// 2026-09-28).
+    /// is raised to the ring-3 floor instead (raised and recorded).
     NoReservation,
     /// In the band with an admitted profile but demand-paged memory: refused,
     /// at topology admission and at spawn.

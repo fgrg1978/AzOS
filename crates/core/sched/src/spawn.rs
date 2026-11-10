@@ -47,7 +47,7 @@ pub struct SpawnPrepared {
     /// What the auxiliary vector of a Linux image reports, read
     /// from the image's headers by [`spawn_prepare`].
     aux: azos_image::ImageAux,
-    /// The initial break [`spawn_prepare`]'s load set (wave 14, SPAWNCACHE:
+    /// The initial break [`spawn_prepare`]'s load set (SPAWNCACHE:
     /// kept with the image's frames for its next spawn).
     brk: u64,
     /// The bytes of user stack the load mapped (kept with the image's frames,
@@ -234,7 +234,7 @@ pub enum ElfImage<'a> {
     /// `fill(user_pt)`: copies the segments in ([`crate::process::fill_elf_segments`])
     /// and checks the digest.
     Streamed { hdr: &'a [u8], len: usize, fill: &'a mut dyn FnMut(usize) -> bool },
-    /// Wave 14 (SPAWNCACHE): an image the verified-image cache kept from an
+    /// An image the verified-image cache kept from an
     /// earlier spawn of the same bytes ([`capture_image`]): its frames, and
     /// the entry, break and auxiliary values that load produced.
     Cached { pages: &'a azos_mm::image_frames::ImagePages, kept: KeptImage },
@@ -248,7 +248,7 @@ pub(crate) fn kept_aux(kept: &KeptImage) -> azos_image::ImageAux {
     azos_image::ImageAux { phdr: a[0], phent: a[1], phnum: a[2], entry: a[3], pagesz: a[4] }
 }
 
-/// Wave 14 (SPAWNCACHE): keep the image `child` was just loaded from — its
+/// Keep the image `child` was just loaded from — its
 /// executable frames by reference, its other pages as copies — for the next
 /// spawn of the same bytes (`azos_mm::image_frames`). Called after
 /// [`spawn_prepare`] and before anything writes into the child (its startup
@@ -278,7 +278,7 @@ pub enum SpawnError {
     NoTask,
     /// The image's address space exceeds its row's budget.
     OverBudget,
-    /// Wave 9: the image's row already has `instances` live
+    /// The image's row already has `instances` live
     /// spawned instances.
     Instances,
     /// No memory for the address space object.
@@ -289,7 +289,7 @@ pub enum SpawnError {
 /// `filter`, with the current task as its parent. `name` is the task's name.
 ///
 /// `sched` is the child's `(priority, class_raw)`: its topology row's when it
-/// has one (wave 7, resolved by the caller), `None` for the scheduler's
+/// has one (resolved by the caller), `None` for the scheduler's
 /// default (`DEFAULT_PRIORITY`, `DEFAULT_SCHED_CLASS_RAW`).
 ///
 /// Every failure after the page table exists destroys it with
@@ -397,7 +397,7 @@ pub fn spawn_prepare(
         return Err(SpawnError::OverBudget);
     }
 
-    // Wave 9: the child is one of its row's live instances, refused past the
+    // The child is one of its row's live instances, refused past the
     // row's `instances` before any task exists for it. Given back on the
     // failure exits below; from `set_task_mem_row` on, the child's exit
     // gives it back.
@@ -419,7 +419,7 @@ pub fn spawn_prepare(
     let init = TaskInit {
         syscall_filter: Some(filter),
         class_raw,
-        // Set with the slot, under the exit-notice admission (wave 12).
+        // Set with the slot, under the exit-notice admission.
         parent: crate::current_task_tid(),
         abi: if !linux {
             crate::task::ABI_NATIVE
