@@ -1406,8 +1406,8 @@ pub fn thread_exit(code: i32) -> ! {
     loop {}
 }
 
-/// Wait while the word at `addr` holds `expected` (`SYS_FUTEX_WAIT`, wave
-/// 13), at most `timeout_ns` nanoseconds (0: no limit). 0 when woken,
+/// Wait while the word at `addr` holds `expected` (`SYS_FUTEX_WAIT`),
+/// at most `timeout_ns` nanoseconds (0: no limit). 0 when woken,
 /// `-EAGAIN` (11) when the word differed, `-ETIMEDOUT` (110), `-EINTR`.
 pub fn futex_wait(addr: &core::sync::atomic::AtomicU32, expected: u32, timeout_ns: u64) -> isize {
     unsafe { syscall3(SYS_FUTEX_WAIT, addr.as_ptr() as u64, expected as u64, timeout_ns) }

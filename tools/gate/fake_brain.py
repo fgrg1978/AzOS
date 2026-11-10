@@ -919,7 +919,7 @@ def main() -> int:
     ap.add_argument("--kernel-estop-release", action="store_true",
                     help="drive / latch / bare ESTOP_RESET (must NOT clear) / "
                          "operator-signed ESTOP_RESET (must clear) -- the "
-                         "2026-09-25 owner decision, end to end")
+                         "end to end")
     ap.add_argument("--operator-priv", type=str, default=None,
                     help="--kernel-estop-release only: path to the 32-byte "
                          "raw Ed25519 seed of the operator authority's "

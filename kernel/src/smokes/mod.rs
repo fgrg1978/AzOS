@@ -263,7 +263,7 @@ pub(crate) fn spawn_sched_smokes(num_cpus: usize) {
         if num_cpus >= 3 {
             azos_sched::task_create_affinity("tlb-probe", tlb_probe::runner, 2,
                                                  tlb_probe::PROBE_PRIO, 1);
-            kprintln!("[SCHED] Created tlb-probe task (wave 8 shootdown) [harts 1,2]");
+            kprintln!("[SCHED] Created tlb-probe task (shootdown) [harts 1,2]");
         } else {
             kprintln!("[TLB-SMOKE] SKIP: needs -smp >= 3, have {}", num_cpus);
         }

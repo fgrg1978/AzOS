@@ -188,8 +188,8 @@ pub const TABLE: &[(u64, &str, &[u16])] = &[
     (nr::SCHED_YIELD, "sched_yield", &[k::SYS_YIELD as u16]),
     // One CPU, the one the task runs on (a single-threaded task's view).
     (nr::SCHED_GETAFFINITY, "sched_getaffinity", &[]),
-    // `PR_SET_NAME`/`PR_GET_NAME` and `PR_{SET,GET}_CHILD_SUBREAPER` (wave
-    // 13) accepted; every other option `-EINVAL`.
+    // `PR_SET_NAME`/`PR_GET_NAME` and `PR_{SET,GET}_CHILD_SUBREAPER`
+    // accepted; every other option `-EINVAL`.
     (nr::PRCTL, "prctl", &[]),
     (nr::RT_SIGACTION, "rt_sigaction", &[]),
     (nr::RT_SIGPROCMASK, "rt_sigprocmask", &[]),

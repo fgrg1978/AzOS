@@ -268,8 +268,8 @@ pub fn disk_write_during_read_of(trigger: u64, sector: u64, bytes: &[u8]) {
     *WRITE_DURING_READ.lock().unwrap() = Some((trigger, sector, bytes.to_vec()));
 }
 
-/// Called at the start of every device write, before its bytes land (wave
-/// 14, SPAWNCACHE): what a reader on another hart would see then.
+/// Called at the start of every device write, before its bytes land
+/// (SPAWNCACHE): what a reader on another hart would see then.
 static BEFORE_WRITE: Mutex<Option<fn()>> = Mutex::new(None);
 
 /// Install (or remove) the [`BEFORE_WRITE`] hook.

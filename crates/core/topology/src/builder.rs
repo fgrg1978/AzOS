@@ -2773,8 +2773,8 @@ const SH_CAPS_UNLOCKED_BB: [CapSpec<'static>; SH_CAPS.len() + LX_LAUNCHES.len() 
 
 /// [`SH_CAPS`] followed by `extra`, as one array of exactly that length. It
 /// replaced a list that copied `SH_CAPS[0]`, `SH_CAPS[1]`, ... by index,
-/// which went stale each time a grant was added to `SH_CAPS` (twice in wave
-/// 12).
+/// which went stale each time a grant was added to `SH_CAPS`.
+///
 const fn sh_caps_plus<const N: usize>(extra: &[CapSpec<'static>]) -> [CapSpec<'static>; N] {
     assert!(N == SH_CAPS.len() + extra.len(), "sh_caps_plus: N is SH_CAPS plus extra");
     let mut out = [SH_CAPS[0]; N];

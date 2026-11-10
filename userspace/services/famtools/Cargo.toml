@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
-description = "The AzOS privileged-family tools (wave 12): FLIGHT.ELF, BEHAVIOR.ELF, CONFIG.ELF and OTA.ELF, one binary each, each through its family's typed syscall under the capability its own topology row grants. Excluded from workspace; built standalone."
+description = "The AzOS privileged-family tools: FLIGHT.ELF, BEHAVIOR.ELF, CONFIG.ELF and OTA.ELF, one binary each, each through its family's typed syscall under the capability its own topology row grants. Excluded from workspace; built standalone."
 
 [dependencies]
 azos_libsys = { path = "../../../crates/core/libsys" }

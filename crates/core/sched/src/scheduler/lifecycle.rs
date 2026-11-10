@@ -1319,8 +1319,8 @@ pub fn task_exit_by_signal(code: i32) -> ! {
     task_exit_with_code(code)
 }
 
-/// End only the calling thread (Linux `exit`, the native thread exit; wave
-/// 13). For a task in no thread group it is [`task_exit_with_code`]. A group
+/// End only the calling thread (Linux `exit`, the native thread exit).
+/// For a task in no thread group it is [`task_exit_with_code`]. A group
 /// leader waits in its exit path until it is the group's last member.
 pub fn thread_exit(code: i32) -> ! {
     if let Some(idx) = current_slot() {

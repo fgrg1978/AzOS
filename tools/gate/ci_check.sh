@@ -11302,8 +11302,8 @@ par -s -a -h "board:vf2 pstore boot counter" host_job_run farm_board_row "board:
 #             off): `verdict=reset reason=policy-reset`, one banner, nothing
 #             contained.
 #   safety  — Contain, and the panic is in rt-motor itself, a registered
-#             safety task, holding no lock (`rt-panic-canary-safety`, wave
-#             13): `verdict=reset reason=safety-task` on hart 0 in task
+#             safety task, holding no lock (`rt-panic-canary-safety`):
+#             `verdict=reset reason=safety-task` on hart 0 in task
 #             rt-motor, one banner, the crash counter raised, nothing
 #             contained, and the latch kept — the observer (interrupts
 #             masked, so its tick cannot park it) prints `latch:
@@ -26168,8 +26168,7 @@ PYEOF
     # under -icount (where ns/op is an instruction count), may not cost more than the
     # baseline in tools/bench/net_lane_baseline.tsv (`tools/bench/net_lane_gate.py`);
     # the Linux column prints beside them. The baseline is recorded from the tree
-    # before the queue pair, main at d316a8009,
-    # at the start of the test phase:
+    # before the queue pair, at the start of the test phase:
     # recording needs QEMU, which waits for that phase, so until then a lane the
     # baseline does not hold is skipped and printed as SKIP. riscv64 runs the net and
     # tcp sections through vsbench_compare.sh, aarch64 through vsbench_aarch64.sh;

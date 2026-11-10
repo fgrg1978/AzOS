@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! The capabilities and descriptors of the child of a `SYS_FOREIGN_FORK` (wave
-//! 13, NATFORK): the process copy a ring-3 runtime makes to host a foreign
+//! The capabilities and descriptors of the child of a `SYS_FOREIGN_FORK`
+//! (NATFORK): the process copy a ring-3 runtime makes to host a foreign
 //! program's `fork`. A native program has no fork (its creation call is
 //! `SYS_SPAWN_EX`); the child's table is built here, in the `before_release`
 //! hook `handlers::sys_fork` gives `sys_fork_impl_hooked`.

@@ -392,8 +392,8 @@ pub fn system_wdt_task(_: usize) {
         // A flood that stopped has no further denial to close its window;
         // write its count now, so this pass's flush carries it to disk.
         azos_syscall::handlers::cap_denial_flush_pending();
-        // This task is RT (11): it never does block I/O (wave
-        // 15). The `log-flush` task writes the ring; this only wakes it.
+        // This task is RT (11): it never does block I/O.
+        // The `log-flush` task writes the ring; this only wakes it.
         crate::logger::logger_request_flush();
 
         // ── 4. Driver health check (AQ2) ────────────────────────────────

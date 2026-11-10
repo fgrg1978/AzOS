@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0 OR GPL-2.0-only"
 publish = false
-description = "Host stand-in for azos_robot, used only by tests/host/behavior-tests' motor-gate/record suite (Q1.3/Q1.4, 2026-09-25). NOT part of the kernel."
+description = "Host stand-in for azos_robot, used only by tests/host/behavior-tests' motor-gate/record suite. NOT part of the kernel."
 
 # Always on: this crate exists only for tests, so `motor.rs`'s
 # `clear_motor_gate_for_test`/`clear_motor_recorder_for_test`

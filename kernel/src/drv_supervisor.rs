@@ -93,8 +93,8 @@ static SUCCESSOR_HART: [AtomicI8; MAX_SUPERVISED] = {
     [ANY; MAX_SUPERVISED]
 };
 
-/// What re-creates a supervised kernel host (`SupOrigin::KernelHost`, wave
-/// 13), per supervisor slot: the task's name, entry point and priority.
+/// What re-creates a supervised kernel host (`SupOrigin::KernelHost`),
+/// per supervisor slot: the task's name, entry point and priority.
 #[derive(Clone, Copy)]
 struct KernelHost {
     name: &'static str,

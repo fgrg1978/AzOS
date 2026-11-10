@@ -992,8 +992,8 @@ fn load_elf_into(
                 None => {
                     // A page the segment's file bytes cover whole is
                     // overwritten by the copy below before any task runs on
-                    // this table, so its zero-fill would be discarded (wave
-                    // 14: ~1,500 instructions a page, rv64). The test is the
+                    // this table, so its zero-fill would be discarded
+                    // (~1,500 instructions a page, rv64). The test is the
                     // copy's own: `copy_start == va`, `copy_end == page_end`
                     // and the source in bounds, so the copy is certain to
                     // run over all of it. Any other page is zeroed as before.

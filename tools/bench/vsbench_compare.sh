@@ -560,8 +560,8 @@ KP_KERNEL="$BENCH_TARGET/azos-product/riscv64imac-unknown-none-elf/release/kerne
 # its boot log). Empty by default: the numbers then are the gate kernel's.
 # Each is a selection on the configuration (tools/build/kconfig_to_cargo.py --select).
 KM_FEATURES="bench-minimal${VSBENCH_AZOS_EXTRA_FEATURES:+,$VSBENCH_AZOS_EXTRA_FEATURES}"
-# VSBENCH_PRODUCT_EXTRA_FEATURES: the same, for the product kernel only (wave
-# 15: the product column's udp-roundtrip failed only there, so its probe had
+# VSBENCH_PRODUCT_EXTRA_FEATURES: the same, for the product kernel only
+# (the product column's udp-roundtrip failed only there, so its probe had
 # to be built into that kernel). Empty by default.
 KP_FEATURES="${VSBENCH_PRODUCT_EXTRA_FEATURES:-}"
 [ -n "${VSBENCH_PRODUCT_EXTRA_FEATURES:-}" ] && echo "vsbench: CANARY/diagnostic product features: $KP_FEATURES" >&2

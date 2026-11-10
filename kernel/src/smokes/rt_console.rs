@@ -4,8 +4,8 @@
 //! `CONSOLE_RT_APPEND_ONLY`).
 //!
 //! A probe task in the RT band prints a burst of kernel lines (more bytes
-//! than the UART TX ring and the deferred buffer hold together). Before wave
-//! 15 such a caller that found deferred output took the console over and
+//! than the UART TX ring and the deferred buffer hold together). Otherwise
+//! such a caller that found deferred output took the console over and
 //! drained it in its own time, waiting for the wire. Now every line goes
 //! through the append-only path (counted by `uart::rt_console_counts`) and
 //! none reaches the call that waits for the wire, where the dev check

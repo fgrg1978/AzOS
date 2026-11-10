@@ -859,8 +859,8 @@ pub const ESTOP_ACTION_CONFIG_AUTHORITY: u8 = 11;
 /// like every source but 3 and 7 (`logger::estop_action_latches`).
 pub const ESTOP_ACTION_RC_LINK_LOSS: u8 = 12;
 
-/// `SAFETY_ESTOP` action code of a stop latched by the RC kill switch (wave
-/// 15, Kconfig `RC_KILL_CHANNEL`). `detail` is the switch channel's pulse
+/// `SAFETY_ESTOP` action code of a stop latched by the RC kill switch (Kconfig
+/// `RC_KILL_CHANNEL`). `detail` is the switch channel's pulse
 /// width in microseconds.
 pub const ESTOP_ACTION_RC_KILL: u8 = 13;
 

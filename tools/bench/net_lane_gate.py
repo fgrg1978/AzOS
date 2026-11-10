@@ -81,7 +81,7 @@ def main(argv):
         rows.update({(isa, l): seen["azos"][l] for l in lanes})
         with open(BASELINE, "w") as f:
             f.write("# vsbench network lanes, ns/op = instructions under -icount shift=0 (tools/bench/net_lane_gate.py)\n")
-            f.write("# Recorded from main d316a8009 (~/azos-backup/main-2026-11-06-b68.bundle), before the queue pair.\n")
+            f.write("# Recorded from the tree before the queue pair.\n")
             for (i, l), ns in sorted(rows.items()):
                 f.write(f"{i}\t{l}\t{ns}\n")
         return 0

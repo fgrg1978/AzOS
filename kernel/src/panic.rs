@@ -341,8 +341,8 @@ fn finish(delay_ms: u32) -> ! {
 /// them. The interrupt token is dropped: nothing here returns to restore it.
 ///
 /// The actuators stop through the lock-free hooks their domain registered at
-/// boot (robot: motors 0 and 1, then the ESC; `azos_actuation::gate`, wave
-/// 11), not `motor_stop`/`esc_disarm`: those take the `MOTORS`/`GPIO`/`PWM`
+/// boot (robot: motors 0 and 1, then the ESC; `azos_actuation::gate`),
+/// not `motor_stop`/`esc_disarm`: those take the `MOTORS`/`GPIO`/`PWM`
 /// and UART spinlocks, so a hart holding any of them at panic time would
 /// wedge this call before any UART output ever went out — see the module
 /// doc comment above and the doc comments on `motor_stop_panic`/

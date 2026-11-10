@@ -669,8 +669,8 @@ pub(crate) fn fast_ipc_accept_into_waking(
     fast_ipc_accept_into_waking_as::<true>(out, server_idx, server_tid, polled, wake)
 }
 
-/// One accept attempt: the v1 accept (`V1`, which refuses a v2 call; wave
-/// 15 N11c) or the v2 one (`SYS_IPC_ACCEPT`, which takes every call).
+/// One accept attempt: the v1 accept (`V1`, which refuses a v2 call)
+/// or the v2 one (`SYS_IPC_ACCEPT`, which takes every call).
 #[inline(always)]
 fn accept_as<const V1: bool>(server_idx: usize, server_tid: u32) -> Option<AcceptedReq> {
     if V1 {
