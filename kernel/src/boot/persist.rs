@@ -42,7 +42,7 @@ pub(crate) fn recover_persistent_state() {
         // ── Companion link key (reserved tail sector) ───────────────────────
         // The 32-byte pre-shared key the companion link's Noise static keys derive
         // from (`azos_crypto::secure_channel`).
-        // The companion's matching key lives in env `AZOS_BRAIN_LINK_KEY`. The link
+        // The companion's matching key lives in env `AZOS_COMPANION_LINK_KEY`. The link
         // is always a Noise session: without a key it does not run at all (the
         // control and camera dials close at once, `companion_dial`), it is never
         // downgraded to anything weaker.

@@ -36,7 +36,7 @@ releases yet. The ABI crate keeps its own file,
   attach, and a `dma-coherent` property inherited from a bus above a device-tree
   node no longer makes the node a bus master (`azos_hwbus`).
 
-- The ring-3 behaviour engine (`BRAINCLI.ELF`) asks the inference service for
+- The ring-3 behaviour engine (`COMPCLI.ELF`) asks the inference service for
   L1's verdict every cycle, within Kconfig `ML_REPLY_TIMEOUT_US`, and holds a
   stop on any missing one (no reply in time, a refusal, an unsigned or
   unknown model, a reply that is not a class); the rangefinders stay the floor
@@ -44,9 +44,9 @@ releases yet. The ABI crate keeps its own file,
   seccomp row gains `SYS_THREAD_CREATE`, the futex calls, `SYS_MO_UNMAP` and
   the `frame` and `infer` interfaces, and the autorun row a badged `WRITE`
   grant on `endpoint.infer`, withheld from every other image. The engine sends
-  the camera's frames on its brain link (`PKT_CAMERA`, Kconfig
-  `BRAIN_CAMERA_PERIOD_MS`, renamed from `CAMERA_TX_CAPTURE_PERIOD_MS`), and
-  the brain's `PKT_PREDICT` biases L1 towards turning away earlier, never
+  the camera's frames on its companion link (`PKT_CAMERA`, Kconfig
+  `COMPANION_CAMERA_PERIOD_MS`, renamed from `CAMERA_TX_CAPTURE_PERIOD_MS`), and
+  the companion's `PKT_PREDICT` biases L1 towards turning away earlier, never
   faster than the layers chose.
 
 - The flight recorder keeps its durable records (the e-stop latch and release,
@@ -104,7 +104,7 @@ releases yet. The ABI crate keeps its own file,
 - The `Authority` interface (`endpoint.authority`): a ring-3 engine stages a
   protocol frame (`put`, 48 bytes a piece) and submits it (`frame`); the
   extension that owns the protocol answers it in the kernel. The robot answers
-  the brain protocol's authority frames there (e-stop, degraded mode,
+  the companion link protocol's authority frames there (e-stop, degraded mode,
   semantic level, the operator's e-stop and device-hold release, payload and
   configuration effects, an actuator command's confidence, unknown types
   recorded): one handler, which the ring-3 engine (through `Authority`) and the kernel's
@@ -115,13 +115,13 @@ releases yet. The ABI crate keeps its own file,
   out, motion refused while halted, and a dead commander's command stopped:
   the ring-3 behaviour engine's output path.
 
-- The robot's behaviour engine runs in ring 3. `BRAINCLI.ELF`, the robot disk
-  image's autorun, is the engine and the one brain link: it chooses among L1
-  (avoid an obstacle the rangefinders see), L2 (the brain's command for 2 s)
+- The robot's behaviour engine runs in ring 3. `COMPCLI.ELF`, the robot disk
+  image's autorun, is the engine and the one companion link: it chooses among L1
+  (avoid an obstacle the rangefinders see), L2 (the companion's command for 2 s)
   and L3 (explore while a session is up), as the kernel's layer switches allow
-  (`Behavior::status`), publishes with `Motor::command`, and hands the brain's
+  (`Behavior::status`), publishes with `Motor::command`, and hands the companion's
   authority frames to the kernel (`endpoint.authority`). It runs without a
-  brain when the image has no link key. The kernel keeps the enforcement: the
+  companion when the image has no link key. The kernel keeps the enforcement: the
   safety layer's cap (L0), the e-stop latch and the operator's release, the RC
   override (which outranks the engine and survives its death), the geofence,
   the envelope and the effect loops. Every motor write is capped by the
@@ -195,7 +195,7 @@ releases yet. The ABI crate keeps its own file,
   kernel-hosted endpoint and a message window in the ring's data buffer, and is
   decided with the checks of `SYS_IPC_CALL` (the owner's profile, the handle in
   the owner's table, the capability's op mask, the op's class) through the
-  interface's own dispatch. The seven device opcodes are deleted; `brain_client`
+  interface's own dispatch. The seven device opcodes are deleted; `companion_client`
   reads its sensors with one submit and sends its ring motor command as one
   `speed` entry per wheel ([Documentation/ipc.md](Documentation/ipc.md)).
 - Updates and advisories on the device: `pkg outdated` asks the configured
