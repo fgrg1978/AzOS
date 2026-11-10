@@ -53,6 +53,7 @@ mod envelope;
 pub use envelope::delete_gate;
 pub mod enforce;
 pub mod estop;
+pub mod estop_line;
 pub mod estop_pin;
 pub mod gate;
 pub mod kind;

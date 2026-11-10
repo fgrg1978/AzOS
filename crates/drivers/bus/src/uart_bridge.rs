@@ -24,10 +24,16 @@ use core::sync::atomic::AtomicBool;
 /// `Uart` interface refuses to attach it.
 static ESTOP_LINE: AtomicBool = AtomicBool::new(false);
 
-/// Give the line to the kernel's e-stop reader. Called at boot, before any
-/// ring-3 program can attach the line (`azos_safety_core::actuation::install`).
-pub fn bridge_claim_for_estop() {
+/// Whether this build has the bridge hardware.
+pub const BRIDGE_IN_BUILD: bool = cfg!(feature = "vf2");
+
+/// Give the line to the kernel's e-stop reader and initialise it, whatever
+/// else brings the network up. Called at boot, before any ring-3 program can
+/// attach the line (`azos_safety_core::actuation::install`); whether the line
+/// answers.
+pub fn bridge_claim_for_estop() -> bool {
     ESTOP_LINE.store(true, core::sync::atomic::Ordering::Release);
+    bridge_init() == 0
 }
 
 fn claimed_for_estop() -> bool {
@@ -156,6 +162,9 @@ mod uart1 {
 
     /// Initialize UART1 at 115200 baud, 8N1, FIFO enabled.
     pub fn bridge_init() -> i32 {
+        if INIT_DONE.load(Ordering::Acquire) {
+            return 0;
+        }
         wr(IER, 0x00);           // disable interrupts
         set_lcr(LCR_DLAB);      // enable DLAB for divisor access
         wr(RBR, DIVISOR);       // divisor low

@@ -263,8 +263,15 @@ pub fn install() {
         panic!("the robot extension's providers were refused: {:?}", e);
     }
     // The UART bridge line is the kernel's e-stop channel before any ring-3
-    // program can attach it (`enforce::bridge_estop`).
-    azos_drv_bus::uart_bridge::bridge_claim_for_estop();
+    // program can attach it (`enforce::bridge_estop`), initialised here
+    // whether or not the network is built.
+    let line = azos_actuation::estop_line::line(
+        azos_drv_bus::uart_bridge::BRIDGE_IN_BUILD,
+        azos_drv_bus::uart_bridge::bridge_claim_for_estop(),
+    );
+    if !azos_actuation::estop_line::report(line) {
+        panic!("the UART e-stop line does not respond");
+    }
     // The companion protocol's authority frames, from the ring-3 behaviour engine.
     azos_syscall::authority_host::set_handler(crate::frames::submitted);
 

@@ -68,6 +68,10 @@ telemetry-ring-canary = []
 # proof is accepted with no durable recorder in every build, so the fail-closed
 # release tests must go red.
 estop-unrecorded-canary = []
+# Gate canary only (host suite `actuation-tests`): the UART e-stop line is
+# reported ready whenever the build has the bridge, whatever its
+# initialisation said.
+estop-line-dead-ready-canary = []
 
 [dependencies]
 azos_arch     = { workspace = true }

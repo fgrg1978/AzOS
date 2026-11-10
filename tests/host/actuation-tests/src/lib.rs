@@ -100,6 +100,9 @@ mod verdict_tests;
 #[allow(dead_code)]
 #[path = "../../../../crates/core/actuation/src/estop_pin.rs"]
 mod estop_pin;
+#[allow(dead_code)]
+#[path = "../../../../crates/core/actuation/src/estop_line.rs"]
+mod estop_line;
 #[cfg(test)]
 mod unserved;
 
@@ -487,6 +490,24 @@ pub(crate) mod tests {
             .map(|r| (r.payload[1], u32::from_le_bytes(r.payload[4..8].try_into().unwrap())))
             .collect();
         assert_eq!(got, vec![(PIN_NO_KILL_SWITCH, 5)], "one record, for the configured pin only");
+    }
+
+    /// **A robot never boots with a dead UART e-stop line, and says which
+    /// case it is in.** The line is ready when the bridge answered; absent (and
+    /// said) in a build without the bridge; dead when the build has it and it
+    /// did not answer, and only that refuses the boot.
+    ///
+    /// **Canary.** `estop-line-dead-ready-canary`: a bridge that did not
+    /// answer is reported ready.
+    #[test]
+    fn a_dead_uart_estop_line_refuses_the_boot_and_an_absent_one_is_said() {
+        use crate::estop_line::{line, report, Line};
+        assert_eq!(line(true, true), Line::Ready);
+        assert_eq!(line(false, false), Line::NoBridge);
+        assert_eq!(line(true, false), Line::Dead, "a bridge that did not answer");
+        assert!(report(Line::Ready));
+        assert!(report(Line::NoBridge));
+        assert!(!report(Line::Dead), "the boot goes on without an e-stop line");
     }
 
     /// `detail` of every `SAFETY_ESTOP` record in `files`, in order.

@@ -51,6 +51,8 @@ durable-full-mask-canary = []
 telemetry-ring-canary = []
 # estop.rs's unrecorded-release gate canary: a known value, never enabled by default.
 estop-unrecorded-canary = []
+# estop_line.rs's gate canary: a known value, never enabled by default.
+estop-line-dead-ready-canary = []
 
 [dependencies]
 azos_common = { path = "../../../crates/core/common" }
