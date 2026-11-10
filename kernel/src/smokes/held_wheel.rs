@@ -9,7 +9,8 @@
 //!
 //! The test holds wheel 1 the way a miss does: a watch armed with a deadline
 //! already past, swept by the safe-state sweep. Before the hold the loop's
-//! write for wheel 1 is its command; after it, a coast at duty 0 whatever it
+//! write for wheel 1 is its command (unless an earlier real miss of the boot
+//! holds it already); after it, a coast at duty 0 whatever it
 //! computed (`rt_motor::control_command`, which `control_apply_wheel` calls
 //! for every write of the loop). Only wheel 1 is read: wheel 0 is the
 //! commander-exit ktest's, whose canary (`commander-exit-nostop-canary`)
@@ -33,7 +34,13 @@ azos_ktest::ktest_late! {
         if !safe_state::can_drive(KIND_MOTOR) {
             return Err("no safe-state driver is registered for the motor kind");
         }
-        if azos_safety_core::rt_motor::control_command(HELD, MotorDir::Forward, 40) != (MotorDir::Forward, 40) {
+        // A watched motor effect that missed its deadline earlier in the boot
+        // (late is a miss: the gate rows' hosts are loaded, and the soak row
+        // runs without -icount) already holds the wheel: there is no free
+        // write to compare, and the held one is still judged.
+        if safe_state::held(KIND_MOTOR, HELD as u16) {
+            azos_drv_sys::kprintln!("# held wheel: wheel 1 was already held by an earlier miss; only its held write is judged");
+        } else if azos_safety_core::rt_motor::control_command(HELD, MotorDir::Forward, 40) != (MotorDir::Forward, 40) {
             return Err("the control loop's write for wheel 1 was changed before it was held");
         }
         let me = azos_sched::current_task_tid();
