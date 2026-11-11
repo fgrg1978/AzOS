@@ -13914,6 +13914,8 @@ host_job host_canary_row "ext4: a listed entry is resolved by path canary" ext4-
     listing_a_directory_costs_steps_linear_in_its_entries
 host_job host_canary_row "fs: a directory listing never resumes canary" fs-tests dir-cursor-canary \
     a_listing_resumes_where_the_last_call_stopped
+host_job host_canary_row "call task: no deadline to the server canary (devif)" devif-tests call-deadline-canary \
+    a_call_through_the_task_carries_the_clients_deadline_to_the_server
 host_job host_canary_row "ring-3: dt inherited coherence canary" hwbus-tests dt-inherited-coherent-canary \
     a_dma_coherent_inherited_from_a_bus_makes_no_master
 host_job host_canary_row "ring-3: line grant record silent canary (ipc)" ipc-tests line-grant-silent-canary \

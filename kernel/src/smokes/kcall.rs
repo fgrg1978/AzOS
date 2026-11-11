@@ -35,6 +35,8 @@
 //!   the call task runs at the reader's priority (sampled when the host takes
 //!   the call and halfway through the budget, while the read still waits),
 //!   back to its own after.
+//!   The host, less urgent than the reader, holds the call at the reader's
+//!   priority and sees a deadline in it (the call carries one to the server).
 //!   Runtime canaries `powermon-unbounded` (the read waits for the answer)
 //!   and `call-no-lend` (the reader lends nothing): `not ok`.
 
@@ -305,6 +307,10 @@ static HUNG_MS: AtomicU32 = AtomicU32::new(0);
 /// read ended.
 #[cfg(feature = "board-io")]
 static HUNG_PRIO: [AtomicU32; 3] = [const { AtomicU32::new(0) }; 3];
+/// The host's own priority while it holds the call, and the deadline the call
+/// carried to it.
+#[cfg(feature = "board-io")]
+static HUNG_SERVER: [AtomicU32; 2] = [const { AtomicU32::new(0) }; 2];
 /// When the read began (timebase ticks), and how long after it the host took
 /// the call (ms).
 #[cfg(feature = "board-io")]
@@ -336,9 +342,11 @@ fn hung_host(_: usize) {
         let mut req = MsgDesc::default();
         let h = dispatch(SYS_IPC_ACCEPT, [&mut req as *mut MsgDesc as u64, 0, 0, 0, 0, 0], &mut out);
         if h >= 0 {
+            HUNG_SERVER[1].store(u32::from(req.deadline != 0), Ordering::Release);
             break h;
         }
     };
+    HUNG_SERVER[0].store(azos_sched::task_priority(me).unwrap_or(u32::MAX), Ordering::Release);
     let prio = || azos_sched::task_priority(crate::powermon::call_task_tid()).unwrap_or(u32::MAX);
     let waiting = || !HUNG_READ_DONE.load(Ordering::Acquire);
     // The reader lent its priority before the call task took the call: it
@@ -379,7 +387,8 @@ azos_ktest::ktest_late! {
     fn a_power_read_of_a_hung_host_is_bounded() {
         let budget = azos_limits::PROXY_REPLY_TIMEOUT_MS;
         crate::powermon::start_call_task();
-        azos_sched::task_create_affinity("kcall-hung", hung_host, 0, PRIO, -1);
+        // Less urgent than the reader, so the priority it runs at is the lent one.
+        azos_sched::task_create_affinity("kcall-hung", hung_host, 0, azos_sched::DEFAULT_PRIORITY, -1);
         crate::ktest::wait("the test could not serve endpoint.powermon itself", || HUNG_READY.load(Ordering::Acquire))?;
         let timed_out = crate::powermon::timed_out();
         azos_sched::task_create_affinity("kcall-hread", hung_reader, 0, PRIO, -1);
@@ -409,6 +418,12 @@ azos_ktest::ktest_late! {
         }
         if take != PRIO || (mid != 0 && mid != PRIO) {
             return Err("the call task did not run at the waiting reader's priority");
+        }
+        if HUNG_SERVER[1].load(Ordering::Acquire) != 1 {
+            return Err("the call reached the host without a deadline, so nothing was lent to it");
+        }
+        if HUNG_SERVER[0].load(Ordering::Acquire) != PRIO {
+            return Err("the host did not run at the waiting reader's priority");
         }
         if HUNG_PRIO[2].load(Ordering::Acquire) != azos_sched::DEFAULT_PRIORITY {
             return Err("the call task kept the reader's priority after the read ended");

@@ -32,6 +32,18 @@ pub fn deadline_in(now: u64, freq: u64, ms: u64) -> u64 {
     now.saturating_add(freq.saturating_mul(ms) / 1000)
 }
 
+/// The deadline a call made through the call task carries to the server, in
+/// nanoseconds on the monotonic clock: the client's own when it set one, else
+/// the instant the first client stops waiting (`until`, in timer ticks). A
+/// call with a deadline lends the caller's priority on to the server; one
+/// without lends nothing.
+pub fn carried_deadline_ns(own_ns: u64, until: u64, freq: u64) -> u64 {
+    if cfg!(feature = "call-deadline-canary") || own_ns != 0 {
+        return own_ns;
+    }
+    azos_abi::time::ticks_to_ns(until, freq).max(1)
+}
+
 /// The call a client posted, or joined.
 #[derive(Clone, Copy)]
 pub struct Posted {
@@ -47,6 +59,8 @@ pub struct Take {
     pub seq: u32,
     pub node: Option<u32>,
     pub msg: MsgDesc,
+    /// The tick the client that posted the call stops waiting.
+    pub until: u64,
 }
 
 /// What a waiting client finds.
@@ -70,6 +84,7 @@ struct Job {
     seq: u32,
     node: Option<u32>,
     req: MsgDesc,
+    until: u64,
     taken: bool,
 }
 
@@ -113,7 +128,7 @@ impl<const C: usize, const W: usize> CallSlot<C, W> {
             Some(_) => return Err(BUSY),
             None => {
                 self.last = self.last.wrapping_add(1);
-                self.job = Some(Job { seq: self.last, node, req: *msg, taken: false });
+                self.job = Some(Job { seq: self.last, node, req: *msg, until: deadline, taken: false });
                 (self.last, true)
             }
         };
@@ -139,7 +154,7 @@ impl<const C: usize, const W: usize> CallSlot<C, W> {
     pub fn take(&mut self) -> Option<Take> {
         let j = self.job.as_mut().filter(|j| !j.taken)?;
         j.taken = true;
-        Some(Take { seq: j.seq, node: j.node, msg: j.req })
+        Some(Take { seq: j.seq, node: j.node, msg: j.req, until: j.until })
     }
 
     /// The call `seq` is answered: every client waiting for it has the answer.

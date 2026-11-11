@@ -22,3 +22,5 @@ call-slot-park-canary = []
 # Canary: a client that joins a call posted and not yet taken does not wake the
 # call task (`a_client_that_joins_a_posted_call_wakes_the_task` goes red).
 call-slot-joiner-canary = []
+# Canary: a call made through the call task carries no deadline, so it lends nothing to the server.
+call-deadline-canary = []

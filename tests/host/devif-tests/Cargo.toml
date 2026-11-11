@@ -16,6 +16,7 @@ azos_ina219 = { path = "../../../crates/drivers/ina219" }
 
 [features]
 call-slot-park-canary = ["azos_devif/call-slot-park-canary"]
+call-deadline-canary = ["azos_devif/call-deadline-canary"]
 call-slot-joiner-canary = ["azos_devif/call-slot-joiner-canary"]
 badge-without-controller-canary = ["azos_devif/badge-without-controller-canary"]
 

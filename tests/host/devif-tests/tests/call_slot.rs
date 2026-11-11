@@ -4,7 +4,7 @@
 //! who joins it, what an abandoned call leaves behind, and how long an idle
 //! task may sleep through a wake that came too early.
 
-use azos_devif::call_slot::{park_reason, CallSlot, Poll, BUSY};
+use azos_devif::call_slot::{carried_deadline_ns, park_reason, CallSlot, Poll, BUSY};
 use azos_idl::{IdlError, MsgDesc};
 
 fn req(word: u64) -> MsgDesc {
@@ -132,4 +132,22 @@ fn the_close_queue_holds_what_it_is_sized_for_and_is_taken_once() {
     assert_eq!(&c[..n], &[7, 9]);
     assert_eq!(s.take_closes().1, 0);
     assert!(s.queue_close(11));
+}
+
+/// **A call through the call task reaches the server with a deadline:** the
+/// call edge lends the client's priority to the server only for a call that
+/// carries one, and the task's own call would otherwise carry none.
+///
+/// **Canary.** `call-deadline-canary`: the call carries no deadline.
+#[test]
+fn a_call_through_the_task_carries_the_clients_deadline_to_the_server() {
+    const FREQ: u64 = 10_000_000;
+    let mut s = CallSlot::<0, 2>::new(false);
+    let until = 5 * FREQ;
+    s.post(1, until, None, &req(1)).unwrap();
+    let t = s.take().unwrap();
+    assert_eq!(t.until, until);
+    assert_eq!(carried_deadline_ns(t.msg.deadline, t.until, FREQ), 5_000_000_000);
+    assert_eq!(carried_deadline_ns(7, t.until, FREQ), 7, "a deadline the client set is kept");
+    assert_ne!(carried_deadline_ns(0, 0, FREQ), 0, "never 0: that means none");
 }

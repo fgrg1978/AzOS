@@ -17,7 +17,7 @@
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use azos_abi::ipc_msg::MsgDesc;
-use azos_devif::call_slot::{deadline_in, park_reason, CallSlot, Poll};
+use azos_devif::call_slot::{carried_deadline_ns, deadline_in, park_reason, CallSlot, Poll};
 use azos_devif::{IdlError, IdlResult};
 use azos_drv_sys::kwarn;
 use azos_sched::{BlockOutcome, WaitReason};
@@ -97,6 +97,7 @@ impl<const C: usize, const W: usize> CallTask<C, W> {
                 continue;
             };
             let mut msg = job.msg;
+            msg.deadline = carried_deadline_ns(msg.deadline, job.until, azos_drv_sys::timebase::freq());
             let res = (this.run)(job.node, &mut msg);
             let woken = this.slot.lock().finish(job.seq, &msg, res);
             if woken.orphan {
