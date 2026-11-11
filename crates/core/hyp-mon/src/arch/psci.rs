@@ -16,7 +16,8 @@
 
 use crate::state::HYP;
 use azos_hyp_api::{Kind, DENIED, NOT_SUPPORTED};
-use core::sync::atomic::{AtomicU64, Ordering};
+use super::mmu::HYP_PE_SLOTS;
+use super::ptcheck::affinity;
 
 // PSCI / SMCCC function ids (the 32- and 64-bit forms the kernel issues).
 const PSCI_VERSION: u64 = 0x8400_0000;
@@ -36,10 +37,6 @@ const SMCCC_ARCH_WORKAROUND_1: u64 = 0x8000_8000;
 const SMCCC_ARCH_WORKAROUND_2: u64 = 0x8000_7FFF;
 const SMCCC_ARCH_WORKAROUND_3: u64 = 0x8000_3FFF;
 
-/// Per-target kernel entry/context, stored on `CPU_ON` so the substituted
-/// secondary entry can resume the kernel where it asked.
-static TARGET_ENTRY: [AtomicU64; super::MAX_PES] = [const { AtomicU64::new(0) }; super::MAX_PES];
-static TARGET_CTX: [AtomicU64; super::MAX_PES] = [const { AtomicU64::new(0) }; super::MAX_PES];
 
 #[inline]
 fn reg(regs: *mut u64, n: usize) -> u64 {
@@ -50,10 +47,14 @@ fn set(regs: *mut u64, n: usize, v: u64) {
     unsafe { *regs.add(n) = v };
 }
 
+fn mpidr() -> u64 {
+    let v: u64;
+    unsafe { core::arch::asm!("mrs {}, MPIDR_EL1", out(reg) v) };
+    v
+}
+
 fn this_pe() -> u32 {
-    let mpidr: u64;
-    unsafe { core::arch::asm!("mrs {}, MPIDR_EL1", out(reg) mpidr) };
-    (mpidr & 0xff) as u32
+    (mpidr() & 0xff) as u32
 }
 
 fn allowed(id: u64) -> bool {
@@ -99,7 +100,7 @@ fn dispatch(regs: *mut u64, _trapped_smc: bool) {
             if id == PSCI_SYSTEM_SUSPEND_64 || reg(regs, 1) & POWER_DOWN != 0 {
                 super::pin::unpin_this_pe();
             }
-            suspend(regs)
+            suspend(regs, id == PSCI_SYSTEM_SUSPEND_64)
         }
         PSCI_CPU_OFF => {
             super::pin::unpin_this_pe();
@@ -114,37 +115,40 @@ fn dispatch(regs: *mut u64, _trapped_smc: bool) {
 }
 
 /// `CPU_ON(target, entry, context)`: substitute the entry with the monitor's
-/// secondary entry and store the kernel's own entry/context, so the PE comes
-/// up at EL2 and the monitor resumes it at the one legal EL1 entry (F4 locks
-/// that entry; before the lock the first requested entry is taken as legal).
+/// secondary entry and keep the kernel's context for the target's slot (keyed
+/// by its full affinity), so the PE comes up at EL2 and the monitor resumes it
+/// at the one legal EL1 entry (F4 locks that entry; before the lock the first
+/// requested entry is taken as legal).
 fn cpu_on(regs: *mut u64) {
     let target = reg(regs, 1);
     let entry = reg(regs, 2);
     let ctx = reg(regs, 3);
     let legal = HYP.legal_entry_or_set(entry);
-    if entry != legal {
+    if entry != legal || entry == 0 {
         crate::record(Kind::EntryRefused, this_pe(), entry, target, 0);
         set(regs, 0, DENIED as u64);
         return;
     }
-    let idx = (target & 0xff) as usize;
-    if idx >= super::MAX_PES {
+    let Some(slot) = HYP_PE_SLOTS.record(affinity(target), ctx) else {
+        crate::record(Kind::CallRefused, this_pe(), PSCI_CPU_ON_64, target, 0);
         set(regs, 0, DENIED as u64);
         return;
-    }
-    TARGET_ENTRY[idx].store(entry, Ordering::Release);
-    TARGET_CTX[idx].store(ctx, Ordering::Release);
-    // Substitute: the PE powers on at the monitor's secondary entry with the
-    // target index as its context, and the monitor resumes it at `entry`.
-    let sec = secondary_entry_pa();
-    set(regs, 2, sec);
-    set(regs, 3, idx as u64);
+    };
+    // Substitute: the PE powers on at the monitor's secondary entry with its
+    // slot as the context, and the monitor resumes it at the legal entry.
+    set(regs, 2, secondary_entry_pa());
+    set(regs, 3, slot as u64);
     forward(regs);
 }
 
-fn suspend(regs: *mut u64) {
-    // Same entry substitution as CPU_ON: a resumed PE must re-enter the monitor.
-    let entry = reg(regs, 2);
+/// `CPU_SUSPEND(state, entry, ctx)` / `SYSTEM_SUSPEND(entry, ctx)`: a
+/// power-down comes back through the monitor, so the entry is substituted and
+/// the kernel's context is kept under this PE's own slot (the slot, not the
+/// kernel's context, is what firmware hands back in x0). The two calls carry
+/// the entry one register apart.
+fn suspend(regs: *mut u64, system: bool) {
+    let (ei, ci) = if system { (1, 2) } else { (2, 3) };
+    let entry = reg(regs, ei);
     if entry != 0 {
         let legal = HYP.legal_entry_or_set(entry);
         if entry != legal {
@@ -152,7 +156,12 @@ fn suspend(regs: *mut u64) {
             set(regs, 0, DENIED as u64);
             return;
         }
-        set(regs, 2, secondary_entry_pa());
+        let Some(slot) = HYP_PE_SLOTS.record(affinity(mpidr()), reg(regs, ci)) else {
+            set(regs, 0, DENIED as u64);
+            return;
+        };
+        set(regs, ei, secondary_entry_pa());
+        set(regs, ci, slot as u64);
     }
     forward(regs);
 }
@@ -182,21 +191,19 @@ fn secondary_entry_pa() -> u64 {
     _hyp_secondary_entry as *const () as usize as u64
 }
 
-/// Resolve the kernel entry/context for a secondary that entered the monitor
-/// via the substituted `CPU_ON`. Called from `_hyp_secondary_entry`.
+/// The kernel entry a PE that entered through the substituted `CPU_ON` or
+/// resume path continues at: always the one legal entry, whatever was asked.
+/// Called from `_hyp_secondary_entry`.
 #[no_mangle]
-pub extern "C" fn hyp_secondary_resume(idx: u64) -> u64 {
-    let i = (idx as usize).min(super::MAX_PES - 1);
+pub extern "C" fn hyp_secondary_resume(_slot: u64) -> u64 {
     // Before the core runs the kernel: the locked kernel-half registers, writes to them trapped.
     super::pin::unpin_this_pe();
     super::pt::enter_pe();
-    // The stub reads x0 back from here as the kernel entry; context is placed
-    // into the saved frame by the stub.
-    TARGET_ENTRY[i].load(Ordering::Acquire)
+    HYP.legal_entry()
 }
 
+/// The context the kernel asked to find in x0 (its hart id), by slot.
 #[no_mangle]
-pub extern "C" fn hyp_secondary_ctx(idx: u64) -> u64 {
-    let i = (idx as usize).min(super::MAX_PES - 1);
-    TARGET_CTX[i].load(Ordering::Acquire)
+pub extern "C" fn hyp_secondary_ctx(slot: u64) -> u64 {
+    HYP_PE_SLOTS.ctx_of(slot as usize)
 }

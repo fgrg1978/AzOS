@@ -59,6 +59,11 @@ impl Hyp {
         self.legal_entry.store(entry, Ordering::Release);
     }
 
+    /// The entry in force; 0 until one is set.
+    pub fn legal_entry(&self) -> u64 {
+        self.legal_entry.load(Ordering::Acquire)
+    }
+
     pub fn legal_entry_or_set(&self, entry: u64) -> u64 {
         match self.legal_entry.compare_exchange(0, entry, Ordering::AcqRel, Ordering::Acquire) {
             Ok(_) => entry,

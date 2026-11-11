@@ -101,8 +101,13 @@ fn a_root_is_only_a_root_inside_guarded_memory() {
 fn a_request_is_read_only_from_aligned_kernel_memory() {
     let g = guarded(&[[0x4100_0000, 0x4100_1000]]);
     let (hole, hole_end) = (0x4060_0000, 0x4080_0000);
-    let e = |pa| derive_req_addr_error(pa, hole, hole_end, &g);
+    let ram = [[0x4000_0000, 0x8000_0000]];
+    let e = |pa| derive_req_addr_error(pa, &ram, hole, hole_end, &g);
     assert_eq!(e(0x4200_0000), None);
+    assert!(e(0x0900_0000).is_some(), "a device frame below RAM");
+    assert!(e(0x8000_0000 - 8).is_some(), "ending past RAM");
+    assert_eq!(e(0x8000_0000 - 168), None, "the request's last byte is the last byte of RAM");
+    assert_eq!(derive_req_addr_error(0x0900_0000, &[], hole, hole_end, &g), None, "RAM is named at the lock, not before");
     assert!(e(0x4200_0004).is_some(), "unaligned");
     assert!(e(0x4100_0000).is_some(), "the root's own page");
     assert!(e(0x4100_0000 - 8).is_some(), "ending inside a guarded page");

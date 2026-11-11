@@ -13,7 +13,7 @@ use super::ptcheck::*;
 use super::s2;
 use crate::state::HYP;
 use azos_hyp_api::{
-    pt_entry_error, pt_pool_error, DENIED, INVALID, INV_KERNEL_TABLES, NOT_SUPPORTED, OK, PT_POOL_PAGES_MAX, RACED,
+    latch_after, pt_entry_error, pt_pool_error, DENIED, INVALID, INV_KERNEL_TABLES, NOT_SUPPORTED, OK, PT_POOL_PAGES_MAX, RACED,
 };
 use core::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 
@@ -114,32 +114,49 @@ pub fn enter_pe() {
     pin::arm_entry();
 }
 
+/// The locked pool's `[start, end)`; empty until the pool lock has landed.
+pub fn pool_range() -> [u64; 2] {
+    if READY.load(Ordering::Acquire) == 0 { return [0; 2]; }
+    [POOL[0].load(Ordering::Relaxed), POOL[1].load(Ordering::Relaxed)]
+}
+
 /// `pt_lock_pool(pool_pa, pages | page_shift << 32, root_pa)`.
 pub fn lock_pool(pool_pa: u64, packed: u64, root_pa: u64) -> i64 {
-    if !s2::locked() || crate::PES_UP.load(Ordering::Acquire) > 1 { return DENIED; }
-    if ONCE.swap(1, Ordering::AcqRel) != 0 { return DENIED; }
     let (pages, shift) = (packed & 0xffff_ffff, packed >> 32);
     let image = s2::image();
-    if s2::with_guard_ram(|guarded, ram, hole, hole_end| {
-        pt_pool_error(pool_pa, pages, shift, root_pa, ram, &image, hole, hole_end, guarded)
-    })
-    .is_some()
-    {
-        return INVALID;
+    let (shift64, shift) = (shift, shift as u32);
+    // Only read once `pt_pool_error` has bounded the three.
+    let end = pool_pa.wrapping_add(pages.wrapping_shl(shift));
+    let mut live = None;
+    // Latched once the pool, the live registers and the walk are accepted; a
+    // refusal for what the kernel passed leaves the lock free for a corrected call.
+    if let Some(e) = latch_after(&ONCE, || {
+        if !s2::locked() || crate::PES_UP.load(Ordering::Acquire) > 1 { return Some(DENIED); }
+        if s2::with_guard_ram(|guarded, ram, hole, hole_end| {
+            pt_pool_error(pool_pa, pages, shift64, root_pa, ram, &image, hole, hole_end, guarded)
+        })
+        .is_some()
+        {
+            return Some(INVALID);
+        }
+        let regs = pin::walk_regs();
+        if lock_regs_error(pin::this_pe_pinned(), regs.ttbr1, root_pa).is_some() { return Some(INVALID); }
+        // SAFETY: ID registers.
+        let (mmfr1, mmfr3) = unsafe { pin::id_mmfr1_mmfr3() };
+        if extensions(mmfr1, mmfr3) == Extensions::Unenforceable { return Some(NOT_SUPPORTED); }
+        if scan(root_pa, LEVELS - 1, pool_pa, end, shift, &image).is_err() { return Some(INVALID); }
+        if unreached_not_empty(pool_pa, pages, shift) { return Some(INVALID); }
+        // SAFETY: the EL2 identity map covers RAM; the tables are the kernel's until the pool is locked.
+        let read = |pa: u64| unsafe { core::ptr::read_volatile(pa as *const u64) };
+        for (i, va) in s2::image_va().into_iter().enumerate() {
+            if image_error(read, root_pa, va, image[i][0], image[i][1] - image[i][0], i == 0, shift).is_some() { return Some(INVALID); }
+        }
+        live = Some(regs);
+        None
+    }) {
+        return e;
     }
-    let live = pin::walk_regs();
-    if lock_regs_error(pin::this_pe_pinned(), live.ttbr1, root_pa).is_some() { return INVALID; }
-    // SAFETY: ID registers.
-    let (mmfr1, mmfr3) = unsafe { pin::id_mmfr1_mmfr3() };
-    if extensions(mmfr1, mmfr3) == Extensions::Unenforceable { return NOT_SUPPORTED; }
-    let (shift, end) = (shift as u32, pool_pa + (pages << shift));
-    if scan(root_pa, LEVELS - 1, pool_pa, end, shift, &image).is_err() { return INVALID; }
-    if unreached_not_empty(pool_pa, pages, shift) { return INVALID; }
-    // SAFETY: the EL2 identity map covers RAM; the tables are the kernel's until the pool is locked.
-    let read = |pa: u64| unsafe { core::ptr::read_volatile(pa as *const u64) };
-    for (i, va) in s2::image_va().into_iter().enumerate() {
-        if image_error(read, root_pa, va, image[i][0], image[i][1] - image[i][0], i == 0, shift).is_some() { return INVALID; }
-    }
+    let Some(live) = live else { return DENIED };
     if !cfg!(feature = "hyp-pt-pool-open-canary") {
         let r = s2::pool_read_only(pool_pa, end - pool_pa);
         if r != OK { return r; }

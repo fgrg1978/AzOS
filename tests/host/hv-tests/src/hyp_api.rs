@@ -105,7 +105,7 @@ const HOLE: (u64, u64) = (0x4060_0000, 0x4080_0000);
 #[test]
 fn a_guard_request_must_be_whole_free_ram_pages() {
     let g = Guarded::new();
-    let e = |pa, n, ram: &[[u64; 2]], image: &[[u64; 2]], g: &Guarded| guard_error(pa, n, ram, image, HOLE.0, HOLE.1, g);
+    let e = |pa, n, ram: &[[u64; 2]], image: &[[u64; 2]], g: &Guarded| guard_error(pa, n, ram, image, HOLE.0, HOLE.1, [0; 2], g);
     assert_eq!(e(0x4100_0000, 1, &RAM, &IMAGE, &g), None);
     assert_eq!(e(0x4100_0000, GUARD_PAGES_MAX, &RAM, &IMAGE, &g), None);
     assert!(e(0x4100_0000, GUARD_PAGES_MAX + 1, &RAM, &IMAGE, &g).is_some(), "too many pages");
@@ -124,9 +124,23 @@ fn a_guard_request_must_be_whole_free_ram_pages() {
 }
 
 #[test]
+fn the_locked_table_pool_cannot_be_donated() {
+    let g = Guarded::new();
+    let pool = [0x4300_0000, 0x4310_0000];
+    let e = |pa, n, pool: [u64; 2]| guard_error(pa, n, &RAM, &IMAGE, HOLE.0, HOLE.1, pool, &g);
+    assert!(e(0x4300_0000, 1, pool).is_some(), "the pool's first page");
+    assert!(e(0x430f_f000, 1, pool).is_some(), "the pool's last page");
+    assert!(e(0x42ff_f000, 2, pool).is_some(), "straddling the pool's start");
+    assert_eq!(e(0x4310_0000, 1, pool), None, "adjacent is free");
+    assert_eq!(e(0x42ff_f000, 1, pool), None);
+    // Before the pool lock there is no pool.
+    assert_eq!(e(0x4300_0000, 1, [0; 2]), None);
+}
+
+#[test]
 fn a_page_is_guarded_once() {
     let g = guarded_pages(&[[0x4100_0000, 0x4100_1000], [0x4200_0000, 0x4200_2000]]);
-    let e = |pa, n| guard_error(pa, n, &RAM, &IMAGE, HOLE.0, HOLE.1, &g);
+    let e = |pa, n| guard_error(pa, n, &RAM, &IMAGE, HOLE.0, HOLE.1, [0; 2], &g);
     assert!(e(0x4100_0000, 1).is_some());
     assert!(e(0x41ff_f000, 2).is_some(), "overlapping the front of a guarded range");
     assert!(e(0x4200_1000, 1).is_some(), "inside a guarded range");
@@ -264,11 +278,53 @@ fn only_a_valid_write_fault_on_a_permission_is_a_store_the_monitor_emulates() {
 
 #[test]
 fn the_two_lpi_table_pointers_of_a_redistributor_are_not_the_hosts_to_write() {
-    for off in 0x70..0x80 {
-        assert!(rd_write_refused(off), "{off:#x}");
+    for rd in [0, 1, 7] {
+        for off in 0x70..0x80 {
+            assert!(rd_write_refused(rd, off, 0), "{rd} {off:#x}");
+        }
+        for off in [0x14, 0x6c, 0x80, 0xffff] {
+            assert!(!rd_write_refused(rd, off, 1), "{rd} {off:#x}: waking and the rest stay the host's");
+        }
+        assert!(rd_write_refused(rd, 0x1_0070 & 0xffff, 0), "the offset is within the 64 KiB frame");
     }
-    for off in [0x0, 0x14, 0x6c, 0x80, 0xffff] {
-        assert!(!rd_write_refused(off), "{off:#x}");
+    assert!(!rd_write_refused(1, 0x0, 0), "turning LPIs off is harmless");
+}
+
+#[test]
+fn only_the_redistributor_the_monitor_programmed_may_have_lpis_enabled() {
+    // RD 0 has the monitor's tables: the host's own CTLR writes and the DirectLPI registers go through.
+    assert!(!rd_write_refused(0, 0x0, 1));
+    assert!(!rd_write_refused(0, 0x40, 1));
+    for rd in 1..8 {
+        assert!(rd_write_refused(rd, 0x0, 1), "EnableLPIs on RD {rd}");
+        assert!(rd_write_refused(rd, 0x0, 0x8000_0001), "EnableLPIs with RWP bits");
+        assert!(!rd_write_refused(rd, 0x0, 0x8000_0000), "no EnableLPIs");
+        for off in [0x40, 0x48, 0xa0, 0xb0, 0xbf] {
+            assert!(rd_write_refused(rd, off, 1), "DirectLPI register {off:#x} on RD {rd}");
+        }
     }
-    assert!(rd_write_refused(0x1_0070 & 0xffff), "the offset is within the 64 KiB frame");
+}
+
+#[test]
+fn a_one_shot_call_is_latched_only_by_a_request_that_passes() {
+    use core::sync::atomic::{AtomicU64, Ordering};
+    let flag = AtomicU64::new(0);
+    // Refused for what it carried: nothing is latched, the corrected retry goes through.
+    assert_eq!(latch_after(&flag, || Some(INVALID)), Some(INVALID));
+    assert_eq!(flag.load(Ordering::Relaxed), 0, "a refused request leaves the latch free");
+    assert_eq!(latch_after(&flag, || None), None);
+    assert_eq!(flag.load(Ordering::Relaxed), 1);
+    // Latched: a second call is denied without being validated at all.
+    let mut ran = false;
+    assert_eq!(latch_after(&flag, || { ran = true; None }), Some(DENIED));
+    assert!(!ran);
+}
+
+#[test]
+fn a_confidential_boot_needs_every_lock_in_force() {
+    assert_eq!(missing_invariants(INV_BOOT_LOCKED | INV_GUARDED | INV_HOST_S2), 0);
+    for bit in [INV_IMAGE_RO, INV_EL1_EXEC_TEXT_ONLY, INV_RO_DATA, INV_KERNEL_TABLES, INV_PINNED] {
+        assert_eq!(missing_invariants(INV_BOOT_LOCKED & !bit), bit, "one lock absent is reported by name");
+    }
+    assert_eq!(missing_invariants(0), INV_BOOT_LOCKED);
 }

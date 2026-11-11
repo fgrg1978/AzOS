@@ -50,7 +50,8 @@ macro_rules! hyp_blob {
     feature = "hyp-rd-open-canary",
     feature = "hyp-its-skip-mapti-canary",
     feature = "hyp-pt-pool-open-canary",
-    feature = "hyp-pt-check-skip-canary"
+    feature = "hyp-pt-check-skip-canary",
+    feature = "hyp-secondary-s2-canary"
 )))]
 hyp_blob!("/build/aarch64/hyp-mon.bin");
 #[cfg(feature = "hyp-mmu-off-canary")]
@@ -83,6 +84,8 @@ hyp_blob!("/build/aarch64/hyp-mon-its-skip-mapti.bin");
 hyp_blob!("/build/aarch64/hyp-mon-pt-pool-open.bin");
 #[cfg(feature = "hyp-pt-check-skip-canary")]
 hyp_blob!("/build/aarch64/hyp-mon-pt-check-skip.bin");
+#[cfg(feature = "hyp-secondary-s2-canary")]
+hyp_blob!("/build/aarch64/hyp-mon-secondary-s2.bin");
 
 /// Issue a monitor call (SMCCC: id in x0, args in x1..x4, results back in
 /// x0..x4). An HVC, which the monitor traps at EL2.
@@ -144,6 +147,31 @@ pub(crate) fn report() {
     }
 }
 
+/// After every boot lock: the invariants the boot locks should have put in
+/// force against what the monitor reports. A confidential image stops on a
+/// missing one; any other names them and says the boot is degraded.
+fn check_locks() {
+    let missing = azos_hyp_api::missing_invariants(monitor_call(CALL_PROBE, 0)[2]);
+    if missing != 0 {
+        for (bit, name) in INVARIANT_NAMES {
+            if missing & bit != 0 {
+                kprintln!("[BOOT] EL2:        invariant {} NOT in force (a lock was refused)", name);
+            }
+        }
+        if confidential() && !canary!("hyp-halt-skip") {
+            crate::boot::isa::refuse_text(
+                "[BOOT] EL2:        refused: a lock the confidential posture needs is not in force (split never degrades)",
+            )
+        }
+        kprintln!("[BOOT] EL2:        DEGRADED: the invariants above are not in force on this boot");
+    }
+}
+
+/// The confidential posture, which a split image that lost a lock does not boot in.
+fn confidential() -> bool {
+    azos_limits::SECURITY_CONFIDENTIAL || canary!("hyp-fake-confidential")
+}
+
 /// A secondary released through a spin table jumps to a kernel-written address
 /// at EL2, past the monitor, and the monitor cannot intercept that. `found` is
 /// how many spin-table CPUs the tree lists; any is a halt for a split image.
@@ -184,7 +212,7 @@ pub(crate) fn report_dma_hole(dtb_ptr: usize) {
             kprintln!("[BOOT] EL2:        DMA hole: {} x {}", kind.name(), n);
         }
     }
-    let confidential = azos_limits::SECURITY_CONFIDENTIAL || canary!("hyp-fake-confidential");
+    let confidential = confidential();
     if azos_limits::HYP_ACCEPT_DMA_HOLE || canary!("hyp-fake-accept") {
         kprintln!("[BOOT] EL2:        DMA hole accepted (HYP_ACCEPT_DMA_HOLE)");
     } else if confidential && !canary!("hyp-halt-skip") {
@@ -262,8 +290,17 @@ pub(crate) fn pin_secondary(cpu: usize) {
         Some((mode, _)) => kprintln!("[HYP] pin: PE {} pinned ({})", cpu, pin_mode(mode)),
         #[cfg(not(feature = "hyp-pin-probe"))]
         Some(_) => {}
-        None => kprintln!("[BOOT] EL2:        PE {} could not be pinned", cpu),
+        None => {
+            kprintln!("[BOOT] EL2:        PE {} could not be pinned", cpu);
+            if confidential() && !canary!("hyp-halt-skip") {
+                crate::boot::isa::refuse_text("[BOOT] EL2:        refused: a PE that cannot be pinned in a confidential image (split never degrades)")
+            }
+        }
     }
+    #[cfg(feature = "hyp-secondary-text-probe")]
+    secondary_text_probe(cpu);
+    #[cfg(feature = "hyp-secondary-guard-probe")]
+    secondary_guard_probe(cpu);
 }
 
 /// Ticks for `PIN_COST_WRITES` rewrites of this PE's `TTBR0_EL1` with the
@@ -445,7 +482,8 @@ pub(crate) fn lock_image() {
 
 /// `ro_after_init` read-only at stage 2, right after the stage-1 seal.
 pub(crate) fn lock_ro_data() {
-    let r = monitor_call(CALL_LOCK_RO_DATA, 0);
+    // The row's stand-in for a refusal: the call is not made, so `ro-data` is never reported.
+    let r = if canary!("hyp-fake-ro-refused") { [azos_hyp_api::DENIED as u64, 0, 0, 0] } else { monitor_call(CALL_LOCK_RO_DATA, 0) };
     if r[0] as i64 == OK {
         kprintln!("[BOOT] EL2:        ro_after_init locked");
     } else {
@@ -453,12 +491,15 @@ pub(crate) fn lock_ro_data() {
     }
     lock_pt_pool();
     report();
+    check_locks();
     #[cfg(feature = "hyp-lock-probe")]
     text_write_probe();
     #[cfg(feature = "hyp-key-flip-probe")]
     key_flip_probe();
     #[cfg(feature = "hyp-guard-probe")]
     guard_probe();
+    #[cfg(feature = "hyp-secondary-guard-probe")]
+    secondary_guard_donate();
     #[cfg(feature = "hyp-pin-probe")]
     pin_probe();
     #[cfg(feature = "hyp-key-root-probe")]
@@ -506,10 +547,10 @@ fn ring_count(kind: azos_hyp_api::Kind) -> u32 {
 }
 
 /// A page the guard probe donates: nothing else lives in it.
-#[cfg(feature = "hyp-guard-probe")]
+#[cfg(any(feature = "hyp-guard-probe", feature = "hyp-secondary-guard-probe"))]
 #[repr(C, align(4096))]
 struct ProbePage([u8; 4096]);
-#[cfg(feature = "hyp-guard-probe")]
+#[cfg(any(feature = "hyp-guard-probe", feature = "hyp-secondary-guard-probe"))]
 static mut PROBE_PAGE: ProbePage = ProbePage([0xA5; 4096]);
 
 /// Feature `hyp-guard-probe` (the `hyp: R8` rows): donate a page, then ask for
@@ -563,7 +604,7 @@ fn key_flip_probe() {
 /// Feature `hyp-lock-probe` (the `hyp: R4` rows): map a page of kernel text
 /// writable at stage 1 and write it. Stage 2 must refuse: the boot dies in
 /// the kernel page-fault path. Never in a real build.
-#[cfg(feature = "hyp-lock-probe")]
+#[cfg(any(feature = "hyp-lock-probe", feature = "hyp-secondary-text-probe"))]
 fn text_write_probe() {
     use azos_arch_api::PagePerms;
     let kpt = azos_mm::vmm::kernel_pagetable();
@@ -837,4 +878,39 @@ fn pt_probe() {
     // SAFETY: the probe's purpose is this write; it must not return.
     unsafe { core::ptr::write_volatile(azos_mm::addr::phys_to_virt(root + free * 8) as *mut u64, 0) };
     kprintln!("[HYP] PROBE FAILED: a table of the pool was written from EL1");
+}
+
+/// Feature `hyp-secondary-text-probe` (the `hyp: R4` secondary rows): the text
+/// write of `hyp-lock-probe`, from the second PE once it is online. Host stage
+/// 2 is per PE, so the lock the boot PE made must hold here too.
+#[cfg(feature = "hyp-secondary-text-probe")]
+fn secondary_text_probe(cpu: usize) {
+    if cpu == 1 {
+        kprintln!("[HYP] PE 1 is online and writes kernel text next");
+        text_write_probe();
+    }
+}
+
+/// Feature `hyp-secondary-guard-probe`: the boot PE donates a page before the
+/// second PE is up (in `lock_ro_data`'s probes)...
+#[cfg(feature = "hyp-secondary-guard-probe")]
+fn secondary_guard_donate() {
+    let page = pa_of(core::ptr::addr_of!(PROBE_PAGE) as usize);
+    if monitor_call2(CALL_GUARD_PAGES, page, 1)[0] as i64 == OK {
+        kprintln!("[HYP] guard: PE 0 donated the probe page");
+    } else {
+        kprintln!("[HYP] PROBE FAILED: the probe page was not donated");
+    }
+}
+
+/// ...and the second PE reads it, which its stage 2 must refuse.
+#[cfg(feature = "hyp-secondary-guard-probe")]
+fn secondary_guard_probe(cpu: usize) {
+    if cpu != 1 {
+        return;
+    }
+    kprintln!("[HYP] guard: PE 1 reading the donated page (must fault)");
+    // SAFETY: the probe's purpose is this read; it must not return.
+    let b = unsafe { core::ptr::read_volatile(core::ptr::addr_of!(PROBE_PAGE) as *const u8) };
+    kprintln!("[HYP] PROBE FAILED: PE 1 read the donated page ({:#x})", b);
 }

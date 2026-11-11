@@ -14,7 +14,7 @@ pub mod stage2;
 
 use crate::state::{SpinLock, HYP};
 use azos_hyp_api::{
-    guard_error, lock_desc_error, text_site_error, Guarded, Kind, LockDesc, TextSite, DENIED,
+    guard_error, latch_after, lock_desc_error, text_site_error, Guarded, Kind, LockDesc, TextSite, DENIED,
     GUARD_RANGES_MAX, INVALID, INV_EL1_EXEC_TEXT_ONLY, INV_GUARDED, INV_HOST_S2, INV_IMAGE_RO, INV_RO_DATA,
     LOCK_RAM_MAX, NOT_SUPPORTED, OK, TEXT_SITES_MAX,
 };
@@ -105,6 +105,62 @@ fn has_xnx() -> bool {
     (v >> 28) & 0xf != 0
 }
 
+/// This PE's stage-2 registers set to `vtcr`/`vttbr` and `HCR_EL2.VM` on, with
+/// this PE's own TLB cleared. Per-PE state: every PE that runs the host needs it.
+fn enable_on_this_pe(vtcr: u64, vttbr: u64) {
+    unsafe {
+        core::arch::asm!(
+            "msr VTCR_EL2, {vtcr}",
+            "msr VTTBR_EL2, {vttbr}",
+            "isb",
+            "tlbi vmalls12e1",
+            "dsb nsh",
+            "isb",
+            "mrs {t}, HCR_EL2",
+            "orr {t}, {t}, {vm}",
+            "msr HCR_EL2, {t}",
+            "isb",
+            vtcr = in(reg) vtcr,
+            vttbr = in(reg) vttbr,
+            vm = in(reg) 1u64, // HCR_EL2.VM
+            t = out(reg) _,
+        );
+    }
+}
+
+/// Set once a PE other than the first has attached; the lock is refused after,
+/// because its `install` reaches this PE's registers only on the PE that runs it.
+static ATTACHED: AtomicU64 = AtomicU64::new(0);
+
+/// Put the host stage 2 that is live now (the locked map once there is one)
+/// on this PE, before EL1 runs here: a secondary coming up, or any PE coming
+/// back from a power-down. Without it the PE runs the kernel with `HCR_EL2.VM`
+/// clear and none of the stage-2 invariants hold on it. Canary
+/// `hyp-secondary-s2-canary`: the attach is skipped.
+pub fn attach_host_s2() {
+    if cfg!(feature = "hyp-secondary-s2-canary") { return; }
+    // Under the lock: the root read here cannot be replaced before this PE has it.
+    GUARD_LOCK.lock();
+    ATTACHED.store(1, Ordering::Release);
+    let root = active_root();
+    let regs = match s2_cfg() {
+        Some(cfg) if root != 0 => {
+            let mut mem = PoolMem;
+            Stage2::attach(cfg, root, &mut mem).registers(0).ok()
+        }
+        _ => None,
+    };
+    GUARD_LOCK.unlock();
+    // No map to attach (the boot PE's build failed): this PE must not run the host unconfined.
+    let Some((vtcr, vttbr)) = regs else {
+        loop {
+            // SAFETY: parks this PE.
+            unsafe { core::arch::asm!("wfe", options(nomem, nostack)) };
+        }
+    };
+    enable_on_this_pe(vtcr, vttbr);
+}
+
 fn install(vttbr: u64, vtcr: u64) {
     unsafe {
         core::arch::asm!(
@@ -139,26 +195,38 @@ pub fn lock_kernel_image(desc_pa: u64) -> i64 {
 }
 
 fn lock_locked(desc_pa: u64) -> i64 {
-    if LOCK_ONCE.swap(1, Ordering::AcqRel) != 0 { return DENIED; }
-    if crate::PES_UP.load(Ordering::Acquire) > 1 { return DENIED; }
-    if !has_xnx() { return NOT_SUPPORTED; }
-    // SAFETY: the EL2 identity map covers RAM; the kernel is trusted until the lock.
-    let d: LockDesc = unsafe { core::ptr::read_volatile(desc_pa as *const LockDesc) };
+    let mut taken = None;
+    // The latch is taken once the descriptor and the site table are accepted: a
+    // refusal for what the kernel passed leaves the lock free for a corrected call.
+    if let Some(e) = latch_after(&LOCK_ONCE, || {
+        if crate::PES_UP.load(Ordering::Acquire) > 1 || ATTACHED.load(Ordering::Acquire) != 0 { return Some(DENIED); }
+        if !has_xnx() { return Some(NOT_SUPPORTED); }
+        // SAFETY: the EL2 identity map covers RAM; the kernel is trusted until the lock.
+        let d: LockDesc = unsafe { core::ptr::read_volatile(desc_pa as *const LockDesc) };
+        let (hole, hole_end) = (HOLE[0].load(Ordering::Relaxed), HOLE[1].load(Ordering::Relaxed));
+        // SAFETY: under `GUARD_LOCK`.
+        let guarded = unsafe { *core::ptr::addr_of!(GUARDED) };
+        if lock_desc_error(&d, hole, hole_end, guarded.as_slice()).is_some() { return Some(INVALID); }
+        // The site table, copied into the monitor before anything is locked.
+        let n = d.nsites as usize;
+        // SAFETY: one PE runs (checked above); the copy is the monitor's own.
+        let sites = unsafe { &mut *core::ptr::addr_of_mut!(SITES) };
+        for (i, slot) in sites.iter_mut().enumerate().take(n) {
+            // SAFETY: the EL2 identity map covers RAM; the array is the kernel's, pre-lock.
+            *slot = unsafe { core::ptr::read_volatile((d.sites as *const TextSite).add(i)) };
+            if text_site_error(slot, d.text).is_some() { return Some(INVALID); }
+        }
+        sites[..n].sort_unstable_by_key(|s| s.pa);
+        NSITES.store(n as u64, Ordering::Release);
+        taken = Some(d);
+        None
+    }) {
+        return e;
+    }
+    let Some(d) = taken else { return DENIED };
     let (hole, hole_end) = (HOLE[0].load(Ordering::Relaxed), HOLE[1].load(Ordering::Relaxed));
     // SAFETY: under `GUARD_LOCK`.
     let guarded = unsafe { *core::ptr::addr_of!(GUARDED) };
-    if lock_desc_error(&d, hole, hole_end, guarded.as_slice()).is_some() { return INVALID; }
-    // The site table, copied into the monitor before anything is locked.
-    let n = d.nsites as usize;
-    // SAFETY: one PE runs (checked above); the copy is the monitor's own.
-    let sites = unsafe { &mut *core::ptr::addr_of_mut!(SITES) };
-    for (i, slot) in sites.iter_mut().enumerate().take(n) {
-        // SAFETY: the EL2 identity map covers RAM; the array is the kernel's, pre-lock.
-        *slot = unsafe { core::ptr::read_volatile((d.sites as *const TextSite).add(i)) };
-        if text_site_error(slot, d.text).is_some() { return INVALID; }
-    }
-    sites[..n].sort_unstable_by_key(|s| s.pa);
-    NSITES.store(n as u64, Ordering::Release);
     let cfg = match VtcrConfig::new(40, parange()) { Ok(c) => c, Err(_) => return INVALID };
     let mut mem = PoolMem;
     let mut s2 = match Stage2::new(cfg, &mut mem) { Ok(s) => s, Err(_) => return INVALID };
@@ -368,7 +436,7 @@ fn guard_locked(pa: u64, n: u64) -> i64 {
     };
     let ram = &ram[..NRAM.load(Ordering::Acquire) as usize];
     let image = &image[..3 * IMAGE_SET.load(Ordering::Acquire) as usize];
-    if guard_error(pa, n, ram, image, hole, hole_end, guarded).is_some() { return INVALID; }
+    if guard_error(pa, n, ram, image, hole, hole_end, super::pt::pool_range(), guarded).is_some() { return INVALID; }
     // A 2 MiB table and a 1 GiB table per 2 MiB the range touches, at most.
     let splits = 2 * (n.div_ceil(512) + 1);
     if POOL_NEXT.load(Ordering::Acquire) + splits > POOL_TABLES as u64 { return NOT_SUPPORTED; }
@@ -480,24 +548,7 @@ pub unsafe fn build_and_enable(hole_pa: u64, hole_len: u64, ram_top: u64) {
     };
     BOOT_ROOT.store(s2.root(), Ordering::Release);
     IPA_CFG.store(parange as u64, Ordering::Relaxed);
-    unsafe {
-        core::arch::asm!(
-            "msr VTCR_EL2, {vtcr}",
-            "msr VTTBR_EL2, {vttbr}",
-            "isb",
-            "tlbi vmalls12e1",
-            "dsb nsh",
-            "isb",
-            "mrs {t}, HCR_EL2",
-            "orr {t}, {t}, {vm}",
-            "msr HCR_EL2, {t}",
-            "isb",
-            vtcr = in(reg) vtcr,
-            vttbr = in(reg) vttbr,
-            vm = in(reg) 1u64, // HCR_EL2.VM
-            t = out(reg) _,
-        );
-    }
+    enable_on_this_pe(vtcr, vttbr);
     HYP.set_invariant(INV_HOST_S2);
 }
 

@@ -9,9 +9,9 @@
 //! Normal write-back inner-shareable. The entry stub (`entry.rs`) loads it and
 //! turns the MMU on; this module grants EL1 back to the kernel.
 
+use super::ptcheck::PeSlots;
 use super::{MAX_PES, STACK_SIZE};
 use azos_hyp_api::{INV_EL2_MMU, INV_HOST_S2, INV_PSCI};
-use core::sync::atomic::AtomicU64;
 
 /// 4 KiB TG0, 39-bit (T0SZ=25), inner WB cacheable + inner-shareable,
 /// PS = 40-bit, EL2 RES1 at bits 23 and 31.
@@ -45,20 +45,23 @@ static IDENTITY_L1: L1 = L1(identity());
 #[no_mangle]
 pub static mut HYP_STACKS: [[u8; STACK_SIZE]; MAX_PES] = [[0; STACK_SIZE]; MAX_PES];
 
-/// The next free EL2 stack slot, claimed with an exclusive once the MMU is on.
+/// Which core owns which EL2 stack slot, by full affinity (`keys` first, read by
+/// the entry stub), and the context each gets back when it resumes.
 #[no_mangle]
-pub static HYP_PE_SEQ: AtomicU64 = AtomicU64::new(0);
+pub static HYP_PE_SLOTS: PeSlots<MAX_PES> = PeSlots::new();
 
 /// Run after the entry stub has turned EL2 stage-1 on. Sets the vectors, HCR,
-/// the EL1 grants, builds host stage-2 on the primary (F2), and accounts the
-/// PE. `slot` is this PE's stack index (0 = primary). Returns to the stub,
-/// which `eret`s the caller into EL1.
+/// the EL1 grants, builds host stage-2 on the primary (F2) or attaches it on any
+/// other entry, and accounts the PE. `slot` is this PE's stack index;
+/// `primary` is set only for the first entry of the boot PE (a PE back from a
+/// power-down, the boot PE included, enters as a secondary). Returns to the
+/// stub, which `eret`s the caller into EL1.
 ///
 /// # Safety
-/// Called once per PE from `_azos_monitor_enter`, at EL2 with the MMU on.
+/// Called on every entry of a PE, from the entry stub, at EL2 with the MMU on.
 #[no_mangle]
-pub unsafe extern "C" fn hyp_el2_init(slot: u64) {
-    let primary = slot == 0;
+pub unsafe extern "C" fn hyp_el2_init(slot: u64, primary: u64) {
+    let primary = primary != 0;
 
     if cfg!(feature = "hyp-no-secondary-init-canary") && !primary {
         // R1 red: a secondary never finishes init, so `probe` sees fewer PEs.
@@ -83,6 +86,10 @@ pub unsafe extern "C" fn hyp_el2_init(slot: u64) {
             v = in(reg) (1u64 << 31) | (1u64 << 41) | (1u64 << 40) | tsc,
         );
         grant_el1();
+    }
+    // Stage 2 is per PE: every PE that runs the host takes the live map before EL1 runs on it.
+    if !primary {
+        super::s2::attach_host_s2();
     }
     super::pin::init_pe();
 

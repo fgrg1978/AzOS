@@ -296,7 +296,7 @@ pub fn rd_write(regs: *mut u64, esr: u64, ipa: u64) -> bool {
     let Some((size, rt)) = mmio_store(esr).filter(|_| in_frame) else { return false };
     // SAFETY: `regs` holds x0..x30 as the vector saved them; Rt 31 is XZR.
     let value = if rt == 31 { 0 } else { unsafe { *regs.add(rt as usize) } };
-    if rd_write_refused((ipa - st.rd) % st.stride) {
+    if rd_write_refused((ipa - st.rd) / st.stride, (ipa - st.rd) % st.stride, value) {
         let mpidr: u64;
         unsafe { core::arch::asm!("mrs {}, MPIDR_EL1", out(reg) mpidr) };
         crate::record(Kind::MmioRefused, (mpidr & 0xff) as u32, esr, ipa, value);

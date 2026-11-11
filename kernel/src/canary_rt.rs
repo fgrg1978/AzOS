@@ -313,6 +313,9 @@ pub(crate) const NAMES: &[&str] = &[
     "hyp-fake-accept",
     // The same file: no halt is taken (the rows' canary).
     "hyp-halt-skip",
+    // The same file: `lock_ro_data` is taken to have been refused, so a
+    // confidential split image must stop (row `hyp: M-3 ...`).
+    "hyp-fake-ro-refused",
     // kernel/src/ktest.rs `power_off`: the run's verdict is dropped, so a
     // failed run powers off with a clean run's QEMU exit status (riscv64 0,
     // aarch64 0, x86_64 1); the gate's ktest rows must fail on the status

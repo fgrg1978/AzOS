@@ -9,3 +9,12 @@ publish = false
 [lib]
 name = "azos_hyp_api"
 path = "src/lib.rs"
+
+[features]
+# Each removes one rule from a pure check so its host test goes red
+# (tests/host/hv-tests forwards them). Never set in a real build.
+canary-guard-pool = []
+canary-derive-no-ram = []
+canary-latch-first = []
+canary-missing-inv = []
+canary-rd-lpi-open = []

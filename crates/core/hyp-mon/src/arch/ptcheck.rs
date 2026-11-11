@@ -286,7 +286,69 @@ pub fn write_allowed(reg: Vm, v: u64, locked: Option<Locked>) -> bool {
 /// The affinity that names a core: Aff3:Aff2:Aff1:Aff0 of `MPIDR_EL1`. Aff0 alone
 /// does not (a DynamIQ core's number is in Aff1 and every Aff0 is 0).
 pub const fn affinity(mpidr: u64) -> u64 {
-    mpidr & 0x0000_00FF_00FF_FFFF
+    mpidr & AFF_MASK
+}
+
+/// Aff3:Aff2:Aff1:Aff0 of an `MPIDR_EL1`.
+pub const AFF_MASK: u64 = 0x0000_00FF_00FF_FFFF;
+
+/// The EL2 stack and resume-context slots, one per core by full affinity: a
+/// core that goes off or down and comes back finds the slot it had, so slots
+/// are not used up by power cycles. The entry stub (`entry.rs`) reads `keys`
+/// by symbol (first field) and checks the slot holds the core's own key before
+/// it takes the slot's stack; `psci.rs` claims the slot of a core it is about
+/// to start or that is about to power down, and stores the context the kernel
+/// wants back in x0 there.
+#[repr(C)]
+pub struct PeSlots<const N: usize> {
+    pub keys: [AtomicU64; N],
+    ctx: [AtomicU64; N],
+}
+
+impl<const N: usize> PeSlots<N> {
+    pub const fn new() -> Self {
+        PeSlots { keys: [const { AtomicU64::new(0) }; N], ctx: [const { AtomicU64::new(0) }; N] }
+    }
+
+    /// Remember `ctx` for the core `aff` (the kernel's x0 when it resumes) and
+    /// give back its slot, the value the monitor passes through firmware.
+    pub fn record(&self, aff: u64, ctx: u64) -> Option<usize> {
+        let slot = self.claim(aff)?;
+        self.ctx[slot].store(ctx, Ordering::Release);
+        Some(slot)
+    }
+
+    /// The context stored for `slot`; 0 for a slot out of range.
+    pub fn ctx_of(&self, slot: usize) -> u64 {
+        self.ctx.get(slot).map_or(0, |c| c.load(Ordering::Acquire))
+    }
+
+    /// The word a slot holds for an affinity (never 0, which is free); the
+    /// entry stub builds the same from `MPIDR_EL1`.
+    pub const fn key(aff: u64) -> u64 {
+        // Canary `hyp-pe-aff0-canary` (host suite only): the core's number is taken from Aff0 alone.
+        (aff & if cfg!(feature = "hyp-pe-aff0-canary") { 0xff } else { AFF_MASK }) | 1 << 63
+    }
+
+    /// The slot of `aff`, taking the first free one if it has none. Slots fill
+    /// in order and are never given back, so a core is found before any free
+    /// slot is reached. `None` when every slot belongs to another core: cores,
+    /// not power cycles, are what `N` bounds.
+    pub fn claim(&self, aff: u64) -> Option<usize> {
+        let key = Self::key(aff);
+        // Canary `hyp-pe-seq-canary` (host suite only): every call takes a fresh slot, as the old counter did.
+        if cfg!(feature = "hyp-pe-seq-canary") {
+            return self.keys.iter().position(|s| s.compare_exchange(0, key, Ordering::AcqRel, Ordering::Acquire).is_ok());
+        }
+        for (i, s) in self.keys.iter().enumerate() {
+            match s.compare_exchange(0, key, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => return Some(i),
+                Err(cur) if cur == key => return Some(i),
+                Err(_) => {}
+            }
+        }
+        None
+    }
 }
 
 /// The cores that have pinned, by affinity.

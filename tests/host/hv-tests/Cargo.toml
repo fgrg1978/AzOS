@@ -47,6 +47,16 @@ canary-ppi-not-silenced = []
 hv = []
 # `crates/core/hyp-mon/src/arch/kdf.rs` (pulled in by path): the salt left out of the derive.
 hyp-kdf-salt-canary = []
+# `crates/core/hyp-mon/src/arch/ptcheck.rs` (pulled in by path): the PE slot table.
+hyp-pe-seq-canary = []
+hyp-pe-aff0-canary = []
+
+# `crates/core/hyp-api`'s pure checks: one rule removed each.
+canary-guard-pool = ["azos_hyp_api/canary-guard-pool"]
+canary-derive-no-ram = ["azos_hyp_api/canary-derive-no-ram"]
+canary-latch-first = ["azos_hyp_api/canary-latch-first"]
+canary-missing-inv = ["azos_hyp_api/canary-missing-inv"]
+canary-rd-lpi-open = ["azos_hyp_api/canary-rd-lpi-open"]
 
 [profile.release]
 overflow-checks = true

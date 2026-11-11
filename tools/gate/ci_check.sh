@@ -3851,6 +3851,7 @@ hyp_mon_blob() { # hyp_mon_blob <variant-feature|"">  -> builds the matching blo
         hyp-its-skip-mapti-canary)    name=hyp-mon-its-skip-mapti ;;
         hyp-pt-pool-open-canary)      name=hyp-mon-pt-pool-open ;;
         hyp-pt-check-skip-canary)     name=hyp-mon-pt-check-skip ;;
+        hyp-secondary-s2-canary)      name=hyp-mon-secondary-s2 ;;
     esac
     out="$AZOS_OUT/build/aarch64/$name.bin"
     AZOS_OUT="$AZOS_OUT" bash "$REPO_ROOT/tools/build/hyp_mon.sh" aarch64 "$out" "$feat" >/dev/null 2>&1
@@ -3880,6 +3881,7 @@ hyp_monitor_row() { # hyp_monitor_row <label> <select> <want: pass|canary> [mark
         *its-skip-mapti*) hyp_mon_blob hyp-its-skip-mapti-canary ;;
         *pt-pool-open*) hyp_mon_blob hyp-pt-pool-open-canary ;;
         *pt-check-skip*) hyp_mon_blob hyp-pt-check-skip-canary ;;
+        *secondary-s2*) hyp_mon_blob hyp-secondary-s2-canary ;;
         *) hyp_mon_blob "" ;;
     esac
     # A canary must build: "did not build" is its own failure (the third bucket),
@@ -6431,6 +6433,39 @@ par "hyp: F3 no-conduit halts (arm)" hyp_halt_row "hyp: F3 no-conduit halts (arm
     "[BOOT] EL2:        refused: no PSCI conduit"
 par "hyp: F3 no-conduit halt canary (arm)" hyp_halt_row "hyp: F3 no-conduit halt canary (arm)" hyp-fake-no-conduit canary \
     "[BOOT] EL2:        refused: no PSCI conduit"
+
+# Host stage 2 is per PE (VTTBR/VTCR_EL2, HCR_EL2.VM): the monitor attaches the
+# live map on every PE it brings up or back, before EL1 runs there. R4 and R8
+# again, from the second PE: a write through a stage-1 RW alias of kernel text,
+# and a read of a page the boot PE donated, must fault there too. Canary: the
+# monitor skips the attach on non-boot PEs, so both go through.
+HYP_WAIT='\[FATAL\] aarch64 kernel page fault|PROBE FAILED' \
+par "hyp: H-1 secondary PE text write faults (arm)" hyp_monitor_row "hyp: H-1 secondary PE text write faults (arm)" "hyp-secondary-text-probe" pass \
+    "[HYP] PE 1 is online and writes kernel text next" "[HYP] PROBE: writing kernel text" "[FATAL] aarch64 kernel page fault"
+HYP_WAIT='\[FATAL\] aarch64 kernel page fault|PROBE FAILED' \
+par "hyp: H-1 secondary PE text-write canary (arm)" hyp_monitor_row "hyp: H-1 secondary PE text-write canary (arm)" "hyp-secondary-s2-canary,hyp-secondary-text-probe" canary \
+    "[FATAL] aarch64 kernel page fault"
+HYP_WAIT='\[FATAL\] aarch64 kernel page fault|PROBE FAILED' \
+par "hyp: H-1 secondary PE donated page faults (arm)" hyp_monitor_row "hyp: H-1 secondary PE donated page faults (arm)" "hyp-secondary-guard-probe" pass \
+    "[HYP] guard: PE 0 donated the probe page" "[HYP] guard: PE 1 reading the donated page (must fault)" "[FATAL] aarch64 kernel page fault"
+HYP_WAIT='\[FATAL\] aarch64 kernel page fault|PROBE FAILED' \
+par "hyp: H-1 secondary PE donated-page canary (arm)" hyp_monitor_row "hyp: H-1 secondary PE donated-page canary (arm)" "hyp-secondary-s2-canary,hyp-secondary-guard-probe" canary \
+    "[FATAL] aarch64 kernel page fault"
+
+# M-3, a lock the monitor refuses is not silent: the probe's mask is checked
+# against what the boot locks (hyp_api::missing_invariants). A confidential
+# image stops ("split never degrades"); any other prints the missing
+# invariants and a DEGRADED line. The runtime canary `hyp-fake-ro-refused`
+# stands for a refused `lock_ro_data` (`hyp-fake-accept`: the DMA hole check,
+# which would halt first on QEMU `virt`, is out of the way); `hyp-halt-skip`
+# is the halt's canary.
+par "hyp: M-3 confidential refuses a missing lock (arm)" hyp_halt_row "hyp: M-3 confidential refuses a missing lock (arm)" hyp-fake-confidential,hyp-fake-accept,hyp-fake-ro-refused pass \
+    "[BOOT] EL2:        refused: a lock the confidential posture needs is not in force"
+par "hyp: M-3 confidential halt canary (arm)" hyp_halt_row "hyp: M-3 confidential halt canary (arm)" hyp-fake-confidential,hyp-fake-accept,hyp-fake-ro-refused canary \
+    "[BOOT] EL2:        refused: a lock the confidential posture needs is not in force"
+HYP_APPEND="canary=hyp-fake-ro-refused" HYP_WAIT='refused: |AzOS Rust kernel booted' \
+par "hyp: M-3 a missing lock is reported (arm)" hyp_monitor_row "hyp: M-3 a missing lock is reported (arm)" "hyp-monitor-row" pass \
+    "[BOOT] EL2:        invariant ro-data NOT in force" "[BOOT] EL2:        DEGRADED:" "AzOS Rust kernel booted! (aarch64)"
 
 # Leave $A64_IMG on an ordinary qemu build for the rows below.
 a64_kbuild "qemu" >/dev/null 2>&1 || true
@@ -12894,6 +12929,26 @@ host_job host_canary_row "hv: egress ceiling canary" hv-tests canary-egress-open
     a_store_past_the_envelope_is_refused_and_a_load_is_not
 host_job host_canary_row "hv: vm clock canary" hv-tests canary-clock-per-vcpu \
     a_vcpu_started_after_a_pause_is_told_the_time_the_running_one_was_told
+# The resident monitor's pure checks and tables (crates/core/hyp-api, hyp-mon's
+# ptcheck.rs): a donated page may not be the locked table pool; a key request
+# is read only from RAM; a one-shot lock call is latched after its request
+# passes, not before; a confidential boot names the locks it lacks; an EL2
+# stack slot belongs to a core by full affinity and a power cycle does not
+# take a new one.
+host_job host_canary_row "hyp: M-4 guard of the table pool canary" hv-tests canary-guard-pool \
+    the_locked_table_pool_cannot_be_donated
+host_job host_canary_row "hyp: M-4 key request outside RAM canary" hv-tests canary-derive-no-ram \
+    a_request_is_read_only_from_aligned_kernel_memory
+host_job host_canary_row "hyp: M-1 LPIs on an unprogrammed redistributor canary" hv-tests canary-rd-lpi-open \
+    only_the_redistributor_the_monitor_programmed_may_have_lpis_enabled
+host_job host_canary_row "hyp: M-3 latch after validation canary" hv-tests canary-latch-first \
+    a_one_shot_call_is_latched_only_by_a_request_that_passes
+host_job host_canary_row "hyp: M-3 missing invariants canary" hv-tests canary-missing-inv \
+    a_confidential_boot_needs_every_lock_in_force
+host_job host_canary_row "hyp: M-2 power-cycle slots canary" hv-tests hyp-pe-seq-canary \
+    a_core_that_cycles_power_keeps_its_slot
+host_job host_canary_row "hyp: M-2 affinity key canary" hv-tests hyp-pe-aff0-canary \
+    a_dynamiq_core_is_told_apart_by_its_whole_affinity
 host_job host_canary_row "perm: vdso mprotect canary (host)" syscall-tests vdso-write-canary \
     mprotect_never_makes_the_vdso_writable
 # A Linux module loads only from the signed build-time digest table: the

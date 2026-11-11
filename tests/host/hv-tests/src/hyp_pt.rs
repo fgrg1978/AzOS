@@ -371,3 +371,60 @@ fn the_extensions_that_reread_a_descriptor_are_trapped_or_the_lock_is_refused() 
         assert_eq!(extensions(0, mmfr3), Extensions::Unenforceable);
     }
 }
+
+// ── the EL2 stack and resume-context slots (power cycles, DynamIQ, resume of the boot PE) ──
+
+const PRIMARY: u64 = 0x8000_0000;
+
+#[test]
+fn a_core_that_cycles_power_keeps_its_slot() {
+    let t: PeSlots<8> = PeSlots::new();
+    assert_eq!(t.claim(PRIMARY), Some(0));
+    let cpu1 = 0x8000_0001;
+    assert_eq!(t.claim(cpu1), Some(1));
+    // CPU_OFF/CPU_ON and power-down resumes, far more than the table holds.
+    for _ in 0..1000 {
+        assert_eq!(t.claim(cpu1), Some(1), "the same core finds its slot again");
+        assert_eq!(t.claim(PRIMARY), Some(0));
+    }
+    assert_eq!(t.claim(0x8000_0002), Some(2), "the next core takes the next slot, not a power-cycle's");
+}
+
+#[test]
+fn more_cores_than_slots_are_refused_not_aliased() {
+    let t: PeSlots<4> = PeSlots::new();
+    for i in 0..4 {
+        assert_eq!(t.claim(0x8000_0000 + i), Some(i as usize));
+    }
+    assert_eq!(t.claim(0x8000_0004), None);
+    assert_eq!(t.claim(0x8000_0003), Some(3));
+}
+
+#[test]
+fn a_dynamiq_core_is_told_apart_by_its_whole_affinity() {
+    // Every Aff0 is 0 here: the core number is in Aff1, which an Aff0 key cannot see.
+    let t: PeSlots<8> = PeSlots::new();
+    let (a, b, c) = (0x8000_0000, 0x8000_0100, 0x8000_0200);
+    assert_ne!(PeSlots::<8>::key(a), PeSlots::<8>::key(b));
+    assert_eq!(t.record(a, 0xA).unwrap(), 0);
+    assert_eq!(t.record(b, 0xB).unwrap(), 1);
+    assert_eq!(t.record(c, 0xC).unwrap(), 2);
+    assert_eq!((t.ctx_of(0), t.ctx_of(1), t.ctx_of(2)), (0xA, 0xB, 0xC), "no core gets another's context");
+    // Aff3 counts too, and the bits above the affinity (MT, U, the RES1 bit) do not.
+    assert_ne!(PeSlots::<8>::key(0x1_0000_0000 | a), PeSlots::<8>::key(a));
+    assert_eq!(PeSlots::<8>::key(0x8000_0000 | 1 << 24 | 1 << 30), PeSlots::<8>::key(0x8000_0000));
+}
+
+#[test]
+fn the_boot_core_resumes_with_the_context_it_suspended_with() {
+    // The boot core is never CPU_ON'd: its slot and context come from its own suspend.
+    let t: PeSlots<8> = PeSlots::new();
+    assert_eq!(t.claim(PRIMARY), Some(0));
+    let slot = t.record(PRIMARY, 0x77).expect("a slot for the suspending core");
+    assert_eq!(slot, 0);
+    assert_eq!(t.ctx_of(slot), 0x77);
+    // A second suspend replaces the context; a slot past the table has none.
+    t.record(PRIMARY, 0x78);
+    assert_eq!(t.ctx_of(0), 0x78);
+    assert_eq!(t.ctx_of(99), 0);
+}

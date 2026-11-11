@@ -48,7 +48,8 @@ core::arch::global_asm!(
 _azos_monitor_enter:
     mov     x28, lr                      // EL1 return (callee-saved across the body)
     HYP_MMU_ON
-    bl      _hyp_claim_and_stack         // x0 = slot, sp set
+    mov     x0, #0                       // the primary holds slot 0
+    bl      _hyp_claim_and_stack         // sp set
     // Save the caller's GPRs so the EL1 continuation sees them unchanged.
     sub     sp, sp, #256
     stp     x0, x1,   [sp, #0]
@@ -67,7 +68,9 @@ _azos_monitor_enter:
     stp     x26, x27, [sp, #208]
     stp     x28, x29, [sp, #224]
     str     x30,      [sp, #240]
-    bl      hyp_el2_init                 // x0 = slot, still in place
+    mov     x0, #0
+    mov     x1, #1                       // primary
+    bl      hyp_el2_init
     ldp     x0, x1,   [sp, #0]
     ldp     x2, x3,   [sp, #16]
     ldp     x4, x5,   [sp, #32]
@@ -90,39 +93,50 @@ _azos_monitor_enter:
     msr     ELR_EL2, x28
     eret
 
-// Claim this PE's EL2 stack slot (MMU is on, so exclusives work) and set SP.
-// Returns the slot in x0. A slot at or above the pool parks the PE (fail
-// closed). Clobbers x0, x10-x14.
+// Take the stack of slot x0 for this PE (MMU is on, so exclusives work). The
+// slot's key must be this PE's affinity: free (taken now, the primary's slot 0)
+// or already its own (a PE back from CPU_OFF or a power-down, or one `CPU_ON`
+// claimed for). Another PE's slot, or a slot past the pool, parks the PE (fail
+// closed). Keeps x0 = slot. Clobbers x10-x13.
 _hyp_claim_and_stack:
-    adrp    x10, HYP_PE_SEQ
-    add     x10, x10, :lo12:HYP_PE_SEQ
-1:  ldaxr   x11, [x10]
-    add     x12, x11, #1
-    stlxr   w13, x12, [x10]
-    cbnz    w13, 1b
-    cmp     x11, #{maxpes}
+    cmp     x0, #{maxpes}
     b.hs    _hyp_park
-    mov     x0, x11
+    mrs     x10, MPIDR_EL1
+    ldr     x11, ={aff_mask}
+    and     x10, x10, x11
+    orr     x10, x10, #(1 << 63)
+    adrp    x12, HYP_PE_SLOTS
+    add     x12, x12, :lo12:HYP_PE_SLOTS
+    add     x12, x12, x0, lsl #3
+1:  ldaxr   x11, [x12]
+    cmp     x11, x10
+    b.eq    2f
+    cbnz    x11, _hyp_park
+    stlxr   w13, x10, [x12]
+    cbnz    w13, 1b
+2:  clrex
     adrp    x12, HYP_STACKS
     add     x12, x12, :lo12:HYP_STACKS
     movz    x13, #{stack_hi}, lsl #16
-    madd    x12, x11, x13, x12
+    madd    x12, x0, x13, x12
     add     x12, x12, x13
     mov     sp, x12
     ret
 
 // A PSCI-started secondary enters here (the entry the monitor substituted in
 // `CPU_ON`), at EL2, MMU off, with x0 = the target index the monitor chose as
-// the context. It brings EL2 up for this PE and `eret`s to the kernel's own
+// the context (the slot of this PE). It brings EL2 up for this PE and `eret`s to the kernel's own
 // requested entry with x0 = the kernel's requested context (its hart id).
 .globl _hyp_secondary_entry
 _hyp_secondary_entry:
     HYP_MMU_ON
-    mov     x27, x0                      // the index the monitor passed
-    bl      _hyp_claim_and_stack         // x0 = slot, sp set
-    bl      hyp_el2_init                 // x0 = slot
+    mov     x27, x0                      // the slot the monitor passed
+    bl      _hyp_claim_and_stack         // sp set, x0 = slot
+    mov     x1, #0                       // not the primary's first entry
+    bl      hyp_el2_init
     mov     x0, x27
     bl      hyp_secondary_resume         // x0 = kernel entry PC
+    cbz     x0, _hyp_park                // never an eret to PA 0
     mov     x26, x0
     mov     x0, x27
     bl      hyp_secondary_ctx            // x0 = kernel context (its hart id)
@@ -302,6 +316,7 @@ _hyp_el2_fault:
     b       _hyp_el2_fault
 "#,
     maxpes = const MAX_PES,
+    aff_mask = const super::ptcheck::AFF_MASK,
     stack_hi = const (STACK_SIZE >> 16),
     mmu = const (!cfg!(feature = "hyp-mmu-off-canary")) as u32,
     tcr = const super::mmu::TCR_EL2,

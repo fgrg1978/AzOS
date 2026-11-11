@@ -7,6 +7,8 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
+use core::sync::atomic::{AtomicU64, Ordering};
+
 /// Bumped on any change of a call's arguments or of [`Violation`].
 pub const ABI_VERSION: u64 = 1;
 
@@ -410,7 +412,8 @@ impl Default for Guarded {
 }
 
 /// Why `guard_pages(pa, n)` is refused; `None`: `n` whole pages at `pa` lie in
-/// RAM, clear of the locked `image` ranges, the monitor `[hole, hole_end)` and
+/// RAM, clear of the locked `image` ranges, the monitor `[hole, hole_end)`,
+/// the kernel-half table pool `pool` (empty, 0..0, until it is locked) and
 /// everything guarded. `ram` and `image` are empty before the lock, when the
 /// kernel has not named them yet. Pure, so the host suite checks it.
 pub fn guard_error(
@@ -420,6 +423,7 @@ pub fn guard_error(
     image: &[[u64; 2]],
     hole: u64,
     hole_end: u64,
+    pool: [u64; 2],
     guarded: &Guarded,
 ) -> Option<&'static str> {
     const P: u64 = 4096;
@@ -428,8 +432,34 @@ pub fn guard_error(
     let Some(end) = pa.checked_add(n * P) else { return Some("wraps") };
     if pa < hole_end && hole < end { return Some("overlaps the monitor"); }
     if image.iter().any(|r| pa < r[1] && r[0] < end) { return Some("overlaps the image"); }
+    if !cfg!(feature = "canary-guard-pool") && pa < pool[1] && pool[0] < end { return Some("overlaps the kernel tables"); }
     if guarded.overlaps(pa, end) { return Some("already guarded"); }
     if !ram.is_empty() && !ram.iter().any(|m| m[0] <= pa && end <= m[1]) { return Some("outside RAM"); }
+    None
+}
+
+/// What a confidential split image needs in force once the boot has locked
+/// everything: the image, the read-only data, the kernel tables and the pin.
+pub const INV_BOOT_LOCKED: u64 = INV_IMAGE_RO | INV_EL1_EXEC_TEXT_ONLY | INV_RO_DATA | INV_KERNEL_TABLES | INV_PINNED;
+
+/// The bits of [`INV_BOOT_LOCKED`] a `probe` mask does not report.
+pub fn missing_invariants(reported: u64) -> u64 {
+    if cfg!(feature = "canary-missing-inv") { return 0; }
+    INV_BOOT_LOCKED & !reported
+}
+
+/// A one-shot call's latch, taken only once `validate` has passed: a call
+/// refused for what it carried (`Some(error)`) leaves the latch free for a
+/// corrected retry, and a second call after the latch is `DENIED`. `validate`
+/// runs under the caller's lock and must not change what a retry would see.
+pub fn latch_after(flag: &AtomicU64, validate: impl FnOnce() -> Option<i64>) -> Option<i64> {
+    if cfg!(feature = "canary-latch-first") {
+        if flag.swap(1, Ordering::AcqRel) != 0 { return Some(DENIED); }
+        return validate();
+    }
+    if flag.load(Ordering::Acquire) != 0 { return Some(DENIED); }
+    if let Some(e) = validate() { return Some(e); }
+    if flag.swap(1, Ordering::AcqRel) != 0 { return Some(DENIED); }
     None
 }
 
@@ -485,13 +515,17 @@ pub fn derive_req_error(r: &DeriveReq) -> Option<&'static str> {
 }
 
 /// Why the memory a request is read from is refused: it must be 8-aligned, not
-/// wrap, and touch neither the monitor nor a guarded page (the monitor would
-/// read the kernel's secrets back to it as key material).
-pub fn derive_req_addr_error(pa: u64, hole: u64, hole_end: u64, guarded: &Guarded) -> Option<&'static str> {
+/// wrap, lie in RAM (`ram` is empty before the lock) and touch neither the
+/// monitor nor a guarded page (the monitor would read the kernel's secrets
+/// back to it as key material, or a device frame the lock took from the host).
+pub fn derive_req_addr_error(pa: u64, ram: &[[u64; 2]], hole: u64, hole_end: u64, guarded: &Guarded) -> Option<&'static str> {
     if pa % 8 != 0 { return Some("request not 8-aligned"); }
     let Some(end) = pa.checked_add(core::mem::size_of::<DeriveReq>() as u64) else { return Some("wraps") };
     if pa < hole_end && hole < end { return Some("request over the monitor"); }
     if guarded.overlaps(pa, end) { return Some("request over a guarded page"); }
+    if !cfg!(feature = "canary-derive-no-ram") && !ram.is_empty() && !ram.iter().any(|m| m[0] <= pa && end <= m[1]) {
+        return Some("request outside RAM");
+    }
     None
 }
 
@@ -599,10 +633,18 @@ pub const fn mmio_store(esr: u64) -> Option<(u8, u8)> {
     Some((1 << ((esr >> 22) & 3), ((esr >> 16) & 0x1f) as u8))
 }
 
-/// `GICR_PROPBASER` and `GICR_PENDBASER` (offsets 0x70 and 0x78 of the
-/// redistributor frame, eight bytes each): the host does not write them.
-pub const fn rd_write_refused(offset: u64) -> bool {
-    matches!(offset & 0xffff, 0x70..=0x7f)
+/// A write of `value` the host aims at `offset` of redistributor `rd`'s first
+/// frame. `GICR_PROPBASER` and `GICR_PENDBASER` (0x70..0x7f) are never the
+/// host's to write. Only redistributor 0 has the tables the monitor
+/// programmed, so on any other the host may not turn LPIs on (`GICR_CTLR`
+/// bit 0) or use the DirectLPI registers (`SETLPIR` and `CLRLPIR` at 0x40..0x4f, `INVLPIR` and
+/// `INVALLR` at 0xa0..0xbf): the redistributor would read or write a pending
+/// table the monitor never checked.
+pub const fn rd_write_refused(rd: u64, offset: u64, value: u64) -> bool {
+    let off = offset & 0xffff;
+    if matches!(off, 0x70..=0x7f) { return true; }
+    if cfg!(feature = "canary-rd-lpi-open") || rd == 0 { return false; }
+    (off == 0 && value & 1 != 0) || matches!(off, 0x40..=0x4f | 0xa0..=0xbf)
 }
 
 /// Why `pt_lock_pool(pool_pa, pages | page_shift << 32, root_pa)` is refused;

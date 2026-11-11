@@ -350,3 +350,6 @@ pin-effective-priority-canary	pending	crates/core/sched/src/scheduler/mod.rs (th
 hyp-pt-pool-open-canary	const	kernel/src/entry/aarch64/ext/hyp_monitor.rs: which separately built monitor image is `.incbin`'d (a link-time choice, no runtime site)
 hyp-pt-check-skip-canary	const	kernel/src/entry/aarch64/ext/hyp_monitor.rs: which separately built monitor image is `.incbin`'d (a link-time choice, no runtime site)
 hyp-pt-probe	pending	
+hyp-secondary-s2-canary	const	kernel/src/entry/aarch64/ext/hyp_monitor.rs: which separately built monitor image is `.incbin`'d (a link-time choice, no runtime site)
+hyp-secondary-text-probe	pending	
+hyp-secondary-guard-probe	pending	

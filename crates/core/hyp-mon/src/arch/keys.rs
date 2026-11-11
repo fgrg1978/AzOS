@@ -37,12 +37,12 @@ pub fn derive(slot: u64, req_pa: u64) -> Result<[u8; KEY_LEN], i64> {
     if root_pa == 0 {
         return Err(DENIED);
     }
-    super::s2::with_guard(|g, hole, hole_end| {
-        if derive_req_addr_error(req_pa, hole, hole_end, g).is_some() {
+    super::s2::with_guard_ram(|g, ram, hole, hole_end| {
+        if derive_req_addr_error(req_pa, ram, hole, hole_end, g).is_some() {
             return Err(INVALID);
         }
         // SAFETY: the EL2 identity map covers RAM; the request is the kernel's
-        // (8-aligned, clear of the monitor and of guarded pages, checked above)
+        // (8-aligned, in RAM, clear of the monitor and of guarded pages, checked above)
         // and the root lies in guarded memory (checked when it was set).
         let (req, mut root): (DeriveReq, [u8; KEY_LEN]) = unsafe {
             (core::ptr::read_volatile(req_pa as *const DeriveReq), core::ptr::read_volatile(root_pa as *const [u8; KEY_LEN]))

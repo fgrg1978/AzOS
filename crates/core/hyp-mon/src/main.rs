@@ -17,7 +17,7 @@
 #![no_main]
 
 use azos_hyp_api::{Kind, Ring, Violation};
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 mod arch;
 mod state;
@@ -45,17 +45,23 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
     }
 }
 
-/// How many PEs have completed `_hyp_entry`. Reported by `probe`.
+/// How many distinct PEs have completed `_hyp_entry`. Reported by `probe`.
 pub(crate) static PES_UP: AtomicU32 = AtomicU32::new(0);
+/// The slots of those PEs.
+static PES_SEEN: AtomicU64 = AtomicU64::new(0);
 
 /// Called from `_hyp_entry` once EL2 stage-1 is on, before the `eret` to EL1.
 /// `primary` is set for the PE that built the shared tables.
 #[no_mangle]
-pub extern "C" fn hyp_cpu_up(_hart: u64, primary: u64) {
+pub extern "C" fn hyp_cpu_up(slot: u64, primary: u64) {
     if primary != 0 {
         HYP.init_once();
     }
-    PES_UP.fetch_add(1, Ordering::AcqRel);
+    // A PE counts once, however many times it comes back through the monitor.
+    let bit = 1u64 << (slot & 63);
+    if PES_SEEN.fetch_or(bit, Ordering::AcqRel) & bit == 0 {
+        PES_UP.fetch_add(1, Ordering::AcqRel);
+    }
 }
 
 /// The synchronous-exception handler for traps from EL1 (and the monitor's own

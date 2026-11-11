@@ -1140,6 +1140,9 @@ hyp-pt-probe = ["hyp-monitor-row"]
 hyp-cost-probe = []
 hyp-pt-pool-open-canary = ["hyp-monitor-row"]
 hyp-pt-check-skip-canary = ["hyp-monitor-row"]
+hyp-secondary-s2-canary = ["hyp-monitor-row"]
+hyp-secondary-text-probe = ["hyp-monitor-row"]
+hyp-secondary-guard-probe = ["hyp-monitor-row"]
 # Kconfig INSPECT: the introspection tree (crates/core/inspect), published
 # by kernel/src/boot/inspect.rs. A `base` tag: emitted unless the symbol is n.
 # With the USB host, its `usb/devN` listing joins the tree.
