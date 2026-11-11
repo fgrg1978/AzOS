@@ -799,3 +799,29 @@ fn a_fresh_tasks_reset_is_the_plain_one_and_an_execs_keeps_the_objects() {
     OBJECTS.store(0, std::sync::atomic::Ordering::SeqCst);
     free_all(k);
 }
+
+/// **A row that declares no `kmem_kib` gets the preset's default** (Kconfig
+/// `KMEM_DEFAULT_KIB` plus one KiB per `KMEM_DEFAULT_PAGES_DIV` pages of its
+/// frame base), and one that declares it keeps what it declared. The default is
+/// a limit: a charge past it is refused.
+/// **Canary** `kmem-default-off-canary`: a row that declares none is unbounded.
+#[test]
+fn a_row_with_no_kmem_kib_gets_the_preset_default_and_a_declared_one_is_kept() {
+    let _s = serial();
+    let base = azos_limits::KMEM_DEFAULT_KIB as u32;
+    assert!(base != 0, "the build under test has the default on");
+    let div = azos_limits::KMEM_DEFAULT_PAGES_DIV as u32;
+    let k = domain::create().expect("a free domain");
+    domain::set_limit(k, 640);
+    set_kmem_limit_kib(k, 0);
+    assert_eq!(kmem_limit_kib(k), base + 640 / div, "the preset's base and a KiB per mem_pages / div");
+    assert!(kmem_charge(k, KmemClass::CapTable, u64::from(base) * 1024));
+    assert!(!kmem_charge(k, KmemClass::PageTable, u64::from(640 / div) * 1024 + 1), "the default is a limit");
+    set_kmem_limit_kib(k, 7);
+    assert_eq!(kmem_limit_kib(k), 7, "a declared limit is kept");
+    let unlimited = domain::create().expect("a free domain");
+    set_kmem_limit_kib(unlimited, 0);
+    assert_eq!(kmem_limit_kib(unlimited), base, "no frame limit: the base alone");
+    free_all(k);
+    free_all(unlimited);
+}

@@ -341,6 +341,27 @@ azos_common::ro_hook! {
     static KMEM_DISCHARGE_HOOK: KmemDischargeHook;
 }
 
+azos_common::ro_hook! {
+    static KMEM_CHARGE_ATOMIC_HOOK: KmemChargeHook;
+}
+
+/// Register the charge for contexts that may hold a spinlock or run with
+/// interrupts off or on a real-time path: it records a refusal in the lock-free
+/// ring only (`azos_sched::domain::kmem_charge_atomic`). Boot, once.
+pub fn set_kmem_atomic_hook(charge: KmemChargeHook) {
+    KMEM_CHARGE_ATOMIC_HOOK.set(charge);
+}
+
+/// [`kmem_charge`] for such a context. Without the atomic hook registered it is
+/// the plain charge.
+#[inline]
+pub fn kmem_charge_atomic(key: u32, class: u8, bytes: u64) -> bool {
+    match KMEM_CHARGE_ATOMIC_HOOK.get() {
+        Some(f) => f(key, class, bytes),
+        None => kmem_charge(key, class, bytes),
+    }
+}
+
 /// Register the kernel-memory hooks. Boot, once.
 pub fn set_kmem_hooks(charge: KmemChargeHook, discharge: KmemDischargeHook) {
     KMEM_DISCHARGE_HOOK.set(discharge);

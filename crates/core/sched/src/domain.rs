@@ -906,9 +906,23 @@ pub fn kmem_discharge(key: Key, class: KmemClass, bytes: u64) {
     }
 }
 
-/// Declare the kernel-memory limit, in KiB (0 = none).
+/// The kernel-memory limit, in KiB, of a row that declares none: Kconfig
+/// `KMEM_DEFAULT_KIB` plus one KiB per `KMEM_DEFAULT_PAGES_DIV` pages of its
+/// frame base (its page tables). `0` with the default off.
+/// Canary `kmem-default-off-canary`: a row that declares none is unbounded.
+pub fn default_kmem_kib(base_pages: u32) -> u32 {
+    if azos_limits::KMEM_DEFAULT_KIB == 0 || cfg!(feature = "kmem-default-off-canary") {
+        return 0;
+    }
+    (azos_limits::KMEM_DEFAULT_KIB as u32).saturating_add(base_pages / azos_limits::KMEM_DEFAULT_PAGES_DIV as u32)
+}
+
+/// Declare the kernel-memory limit, in KiB. `0`: the row declared none, so the
+/// default ([`default_kmem_kib`]) applies, from the frame base the row declared
+/// just before.
 pub fn set_kmem_limit_kib(key: Key, kib: u32) {
     if let Some(d) = get(key) {
+        let kib = if kib != 0 { kib } else { default_kmem_kib(d.budget.base()) };
         d.kmem.set_limit_kib(kib);
     }
 }

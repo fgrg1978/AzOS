@@ -736,10 +736,17 @@ Kernel-memory classes (`KmemClass`):
 | `CapTable` | The Domain's capability table, once, when the Domain first claims it. | The Domain |
 | `EpQueue` | One endpoint's slot and call queue. | The Domain that creates (or first claims) the endpoint |
 | `MemObjMeta` | One MemObj region's metadata (frame array, holder records). | The Domain of the object's creator, for its whole life (a MOVE changes the frame charge, not this one) |
-| `PageTable` | A page-table frame grown by the Domain's own mappings after its address space was installed. Also counted in the frame budget: two ledgers, two limits. | The task whose own root the table is under. The table a first touch of a reserved page builds is promised: its frame and these bytes are charged past the limit (`KmemBudget::charge_unrefused`), never refused |
+| `PageTable` | A page-table frame grown by the Domain's own mappings after its address space was installed. Also counted in the frame budget: two ledgers, two limits. | The task whose own root the table is under. The table a first touch of a reserved page builds is promised: its frame and these bytes are charged past the limit (`KmemBudget::charge_unrefused`), never refused. The overshoot is bounded by the tables of the Domain's reserved pages: at most one per distinct 2 MiB touched, so about `mem_pages` x 4 KiB in the sparse worst case (a table per page) and `mem_pages / 128` KiB when the pages are dense. It goes back with the unmap or the exit; a plain table charge is refused until it has |
 | `IoRing` | One io_ring's table entry (`IoRingState`), while the ring lives; the ring's page is a frame of the budget. Both are charged to the calling process's Domain at create and given back by destroy, a release and the owner's exit. | The Domain of the creating process |
 | `Port` | One event port's record (`Port`: sources, queue, waiters), until the port is destroyed or its owner exits. | The Domain of the creating task |
 | `Bounce` | A block call's bounce buffer: `len` bytes (at most the ring's data window, `RING_DATA_BUF_SIZE`, 2048) of kernel heap, for as long as the call, or the queued request, holds it. Refused: the call answers `ENOMEM`. | The Domain of the submitting task |
+
+A row that declares no `kmem_kib` gets the preset's default: Kconfig
+`KMEM_DEFAULT_KIB` (32 on embedded, 96 on SBC and desktop, 384 on server) plus
+`mem_pages / KMEM_DEFAULT_PAGES_DIV` (64) KiB for its page tables, set where the
+row's limits are installed (`domain::set_kmem_limit_kib`); `KMEM_DEFAULT_KIB = 0`
+turns it off, and a row may declare more. The base is about the sum of the
+per-task quotas of the class's own limits at their defaults.
 
 `domain::kmem_charge` records a `Rule::KmemCharge` decision on refusal.
 `kmem_charge_atomic` is for contexts that may hold a spinlock or have

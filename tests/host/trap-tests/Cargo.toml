@@ -26,6 +26,7 @@ azos_sync = { path = "shims/sync", package = "trap_test_sync" }
 # Canary (host row, sched-wake-tests): an exec admits its image without counting what the objects keep.
 exec-admit-ignores-objects-canary = []
 fresh-reset-walks-hook-canary = []
+kmem-default-off-canary = []
 # Mirrors the kernel's `linux-abi` (Kconfig LINUX_ABI): on, because the tests drive the
 # return-to-user work the pulled-in trap code runs for the Linux personality.
 default = ["linux-abi"]

@@ -264,6 +264,8 @@ ipc-admit-canary = []
 block-scope-canary = []
 # Canary (host row, syscall-tests): a block call's bounce buffer is not billed to its Domain.
 block-bounce-unbilled-canary = []
+# Canary (host row, syscall-tests): the submit path's bounce charge is the plain one.
+block-bounce-plain-on-rt-canary = []
 # Mirrors azos_syscall's vdso-bind-canary in the pulled-in sensor_host.rs: a robot
 # sensor binds without the Robot domain. Off: the real behaviour.
 vdso-bind-canary = []

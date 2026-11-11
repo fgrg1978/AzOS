@@ -83,24 +83,38 @@ pub(crate) fn bounce(len: usize) -> Option<alloc::vec::Vec<u8>> {
 pub(crate) struct BilledBounce {
     buf: alloc::vec::Vec<u8>,
     key: u32,
+    /// The bytes charged, which a drop gives back whatever the buffer has become.
+    billed: u32,
 }
 
 impl BilledBounce {
     /// No buffer, nothing billed: a free pending slot's.
-    pub(crate) const EMPTY: BilledBounce = BilledBounce { buf: alloc::vec::Vec::new(), key: 0 };
+    pub(crate) const EMPTY: BilledBounce = BilledBounce { buf: alloc::vec::Vec::new(), key: 0, billed: 0 };
 
     /// `len` zeroed bytes charged to the Domain of task `tid`; `None` when the
     /// ledger refuses them (the caller answers `ENOMEM`) or the heap cannot give them.
+    /// `atomic`: the caller is a submit that may be real time or hold a lock: the
+    /// refusal is recorded in the lock-free ring only, never flushed.
     /// Canary `block-bounce-unbilled-canary`: the bytes are not billed.
-    pub(crate) fn new(tid: u32, len: usize) -> Option<BilledBounce> {
+    pub(crate) fn new(tid: u32, len: usize, atomic: bool) -> Option<BilledBounce> {
+        // A bounce is at most the ring's data window (2048 bytes), far inside a u32.
+        let billed = u32::try_from(len).ok()?;
         let key = if cfg!(feature = "block-bounce-unbilled-canary") { 0 } else { crate::block_host::domain_key(tid) };
-        if !azos_ipc::cap_store::kmem_charge(key, azos_ipc::cap_store::KMEM_BOUNCE, len as u64) {
+        let class = azos_ipc::cap_store::KMEM_BOUNCE;
+        // Canary `block-bounce-plain-on-rt-canary`: the submit path charges like a call that may sleep.
+        let atomic = atomic && !cfg!(feature = "block-bounce-plain-on-rt-canary");
+        let ok = if atomic {
+            azos_ipc::cap_store::kmem_charge_atomic(key, class, len as u64)
+        } else {
+            azos_ipc::cap_store::kmem_charge(key, class, len as u64)
+        };
+        if !ok {
             return None;
         }
         match bounce(len) {
-            Some(buf) => Some(BilledBounce { buf, key }),
+            Some(buf) => Some(BilledBounce { buf, key, billed }),
             None => {
-                azos_ipc::cap_store::kmem_discharge(key, azos_ipc::cap_store::KMEM_BOUNCE, len as u64);
+                azos_ipc::cap_store::kmem_discharge(key, class, len as u64);
                 None
             }
         }
@@ -118,8 +132,8 @@ impl core::ops::DerefMut for BilledBounce {
 
 impl Drop for BilledBounce {
     fn drop(&mut self) {
-        if self.key != 0 && !self.buf.is_empty() {
-            azos_ipc::cap_store::kmem_discharge(self.key, azos_ipc::cap_store::KMEM_BOUNCE, self.buf.len() as u64);
+        if self.key != 0 && self.billed != 0 {
+            azos_ipc::cap_store::kmem_discharge(self.key, azos_ipc::cap_store::KMEM_BOUNCE, u64::from(self.billed));
         }
     }
 }
@@ -180,7 +194,7 @@ pub(crate) fn scope(badge: u32, write: bool, sector: u64, len: usize) -> Result<
 /// sees it.
 pub fn block_io(badge: u32, write: bool, sector: u64, buf: *mut u8, len: usize) -> OpResult {
     let (lba, count) = scope(badge, write, sector, len)?;
-    let Some(mut kbuf) = BilledBounce::new(azos_sched::current_task_tid(), len) else {
+    let Some(mut kbuf) = BilledBounce::new(azos_sched::current_task_tid(), len, false) else {
         return Err(Errno::ENOMEM.to_syscall_ret() as i32);
     };
     azos_drv_block::blkdev::rt_io_check();

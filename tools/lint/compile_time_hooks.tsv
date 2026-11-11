@@ -31,6 +31,7 @@ blk-lock-wait-canary	pending
 blk-poll-canary	pending	
 blk-stall-canary	pending	
 boot-count-smoke	pending	
+budget-exec-zeroes-canary	pending	crates/core/mm/src/budget.rs: reset_keeping, at an exec (ktest budget_exec_keeps_the_object_pages)
 companion-lies-smoke	pending	a smoke kernel_main starts (kernel/src/smokes/): its task, a runtime smoke= name
 cap-deny-smoke	pending	
 captest-row	pending	adds rows to the built-in topology (crates/core/topology/src/builder.rs): a runtime name needs the row gated at run time too (open)

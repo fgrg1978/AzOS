@@ -251,16 +251,31 @@ fn a_bounce_buffer_is_billed_to_the_callers_kmem_ledger_while_it_lives() {
     let _g = serial();
     let pt = space();
     ipc_task_pool::shim_bind(1, 59);
+    static ATOMIC_USED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    fn charge_atomic(key: u32, class: u8, bytes: u64) -> bool {
+        ATOMIC_USED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        charge(key, class, bytes)
+    }
     azos_ipc::cap_store::set_kmem_hooks(charge, discharge);
+    azos_ipc::cap_store::set_kmem_atomic_hook(charge_atomic);
+    ATOMIC_USED.store(0, std::sync::atomic::Ordering::SeqCst);
     *LEDGER.lock().unwrap() = (0, 3000);
-    let a = crate::block_host::BilledBounce::new(1, 2048).expect("fits");
+    let a = crate::block_host::BilledBounce::new(1, 2048, false).expect("fits");
     assert_eq!((a.len(), LEDGER.lock().unwrap().0), (2048, 2048), "the bytes of the buffer are billed");
-    assert!(crate::block_host::BilledBounce::new(1, 2048).is_none(), "a second 2048 is past 3000");
+    assert!(crate::block_host::BilledBounce::new(1, 2048, false).is_none(), "a second 2048 is past 3000");
     assert_eq!(LEDGER.lock().unwrap().0, 2048, "a refusal bills nothing");
-    let b = crate::block_host::BilledBounce::new(1, 512).expect("512 more fits");
+    let b = crate::block_host::BilledBounce::new(1, 512, false).expect("512 more fits");
     assert_eq!(LEDGER.lock().unwrap().0, 2560);
     drop(a);
     assert_eq!(LEDGER.lock().unwrap().0, 512, "dropping gives the bytes back");
+    // A submit that may be real time charges through the atomic hook (a refusal
+    // recorded in the lock-free ring, never flushed), and bills the same bytes.
+    assert_eq!(ATOMIC_USED.load(std::sync::atomic::Ordering::SeqCst), 0, "the calls above were plain");
+    let r = crate::block_host::BilledBounce::new(1, 256, true).expect("fits");
+    assert_eq!(ATOMIC_USED.load(std::sync::atomic::Ordering::SeqCst), 1, "the submit path used the atomic charge");
+    assert_eq!(LEDGER.lock().unwrap().0, 768);
+    drop(r);
+    assert_eq!(LEDGER.lock().unwrap().0, 512, "and gives back what it billed");
     let mut pending = crate::block_host::BilledBounce::EMPTY;
     core::mem::swap(&mut pending, &mut { b });
     assert_eq!(LEDGER.lock().unwrap().0, 512, "a buffer moved into a queue slot is still billed");
@@ -269,5 +284,6 @@ fn a_bounce_buffer_is_billed_to_the_callers_kmem_ledger_while_it_lives() {
     *LEDGER.lock().unwrap() = (0, 0);
     // The hooks are process-wide: leave them charging nothing.
     azos_ipc::cap_store::set_kmem_hooks(|_, _, _| true, |_, _, _| {});
+    azos_ipc::cap_store::set_kmem_atomic_hook(|_, _, _| true);
     azos_sched::shim_forget_space(pt);
 }

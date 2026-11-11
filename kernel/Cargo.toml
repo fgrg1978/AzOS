@@ -260,6 +260,8 @@ kmem-cache-cross-type-canary = ["azos_mm/kmem-cache-cross-type-canary"]
 # A private anonymous page's fault believes the leaf over its object's slot:
 # the ktest `anon_fault_decides_from_the_slot_not_the_leaf` goes red.
 mm-pte-truth-canary = ["azos_mm/mm-pte-truth-canary"]
+# ktest `budget_exec_keeps_the_object_pages`: the exec's budget reset keeps nothing.
+budget-exec-zeroes-canary = ["azos_mm/budget-exec-zeroes-canary"]
 group-pin-leader-only-canary = ["azos_sched/group-pin-leader-only-canary"]
 pin-effective-priority-canary = ["azos_sched/pin-effective-priority-canary"]
 group-member-scan-canary = ["azos_sched/group-member-scan-canary"]

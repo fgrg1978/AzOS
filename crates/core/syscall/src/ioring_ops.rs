@@ -677,7 +677,8 @@ fn block_start(owner_tid: u32, badge: u32, write: bool, sector: u64, buf: *const
         // whose `block_io` writes it back (`note_external_read`) and reads.
         return BlockStart::Dirty;
     }
-    let Some(mut kbuf) = crate::block_host::BilledBounce::new(owner_tid, len) else {
+    // The submit may be a real-time task's, in its own pass: the atomic charge.
+    let Some(mut kbuf) = crate::block_host::BilledBounce::new(owner_tid, len, true) else {
         return BlockStart::Refused(errno(Errno::ENOMEM));
     };
     if write {

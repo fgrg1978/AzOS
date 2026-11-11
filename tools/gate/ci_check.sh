@@ -13967,6 +13967,14 @@ host_job host_canary_row "kmem: a ring's exit keeps the charge canary" ipc-tests
     a_ring_is_charged_a_frame_and_its_entry_and_both_are_given_back
 host_job host_canary_row "kmem: a bounce buffer unbilled canary" syscall-tests block-bounce-unbilled-canary \
     a_bounce_buffer_is_billed_to_the_callers_kmem_ledger_while_it_lives
+host_job host_canary_row "kmem: a submit's bounce charged plain canary" syscall-tests block-bounce-plain-on-rt-canary \
+    a_bounce_buffer_is_billed_to_the_callers_kmem_ledger_while_it_lives
+# A row that declares no kmem_kib gets the preset's default (KMEM_DEFAULT_KIB
+# plus mem_pages / KMEM_DEFAULT_PAGES_DIV), a declared one is kept.
+# kmem-default-off-canary: a row that declares none is unbounded.
+host_job host_feature_row "kmem: the preset default (sched-wake)" sched-wake-tests "" a_row_with_no_kmem_kib_gets_the_preset_default_and_a_declared_one_is_kept
+host_job host_canary_row "kmem: the default off canary" sched-wake-tests kmem-default-off-canary \
+    a_row_with_no_kmem_kib_gets_the_preset_default_and_a_declared_one_is_kept
 # The same holes through the frozen syscalls (syscall-tests): mprotect in the shm
 # window past the map's rights; a MOVE through the capability transfer.
 host_job host_canary_row "memobj: protect past the map canary (syscall)" syscall-tests memobj-protect-max-canary \
@@ -17705,6 +17713,7 @@ PY
     par "ktest cap table cross type canary (rv)" ktest_row "ktest cap table cross type canary (rv)" rv ",cap-table-cross-type-canary" "cap_table_cache_is_type_stable"
     par "ktest task cross type canary (rv)" ktest_row "ktest task cross type canary (rv)" rv ",task-cross-type-canary" "task_slots_hold_tasks_from_the_task_cache"
     par "ktest kmem preload canary (rv)" ktest_row "ktest kmem preload canary (rv)" rv ",kmem-preload-canary" "kmem_preload_fills_and_seals_the_boot_caches"
+    par "ktest exec keeps object pages canary (rv)" ktest_row "ktest exec keeps object pages canary (rv)" rv ",budget-exec-zeroes-canary" "budget_exec_keeps_the_object_pages"
     par "ktest free_pages in flight canary (arm)" ktest_row "ktest free_pages in flight canary (arm)" arm ",pmm-inflight-canary" "pmm_free_pages_counts_frames_in_flight"
     par "ktest buddy rotate canary (arm)" ktest_row "ktest buddy rotate canary (arm)" arm ",buddy-rotate-hot-canary" "pmm_new_seed_walks_no_list_on_alloc"
     par "ktest kstack reuse canary (arm)" ktest_row "ktest kstack reuse canary (arm)" arm ",kstack-reuse-no-shootdown-canary" "kstack_reused_slot_is_seen_fresh_on_every_cpu"
@@ -17716,6 +17725,7 @@ PY
     par "ktest cap table cross type canary (arm)" ktest_row "ktest cap table cross type canary (arm)" arm ",cap-table-cross-type-canary" "cap_table_cache_is_type_stable"
     par "ktest task cross type canary (arm)" ktest_row "ktest task cross type canary (arm)" arm ",task-cross-type-canary" "task_slots_hold_tasks_from_the_task_cache"
     par "ktest kmem preload canary (arm)" ktest_row "ktest kmem preload canary (arm)" arm ",kmem-preload-canary" "kmem_preload_fills_and_seals_the_boot_caches"
+    par "ktest exec keeps object pages canary (arm)" ktest_row "ktest exec keeps object pages canary (arm)" arm ",budget-exec-zeroes-canary" "budget_exec_keeps_the_object_pages"
     par "ktest clone against maps in flight canary (rv)" ktest_row "ktest clone against maps in flight canary (rv)" rv ",memobj-map-unrecorded-canary" "memobj_clone_stays_a_snapshot_against_maps_in_flight"
     par "ktest fork inherit against a clone canary (rv)" ktest_row "ktest fork inherit against a clone canary (rv)" rv ",memobj-inherit-unmarked-canary" "memobj_fork_inherit_books_the_parents_access_and_a_clone_copies"
     par "ktest clone against maps in flight canary (arm)" ktest_row "ktest clone against maps in flight canary (arm)" arm ",memobj-map-unrecorded-canary" "memobj_clone_stays_a_snapshot_against_maps_in_flight"
@@ -19839,6 +19849,7 @@ CPU 5 lacks hwcap bits"
     par "ktest cap table cross type canary (x86)" x86_ktest_row "ktest cap table cross type canary (x86)" ",cap-table-cross-type-canary" "cap_table_cache_is_type_stable"
     par "ktest task cross type canary (x86)" x86_ktest_row "ktest task cross type canary (x86)" ",task-cross-type-canary" "task_slots_hold_tasks_from_the_task_cache"
     par "ktest kmem preload canary (x86)" x86_ktest_row "ktest kmem preload canary (x86)" ",kmem-preload-canary" "kmem_preload_fills_and_seals_the_boot_caches"
+    par "ktest exec keeps object pages canary (x86)" x86_ktest_row "ktest exec keeps object pages canary (x86)" ",budget-exec-zeroes-canary" "budget_exec_keeps_the_object_pages"
     par "ktest clone against maps in flight canary (x86)" x86_ktest_row "ktest clone against maps in flight canary (x86)" ",memobj-map-unrecorded-canary" "memobj_clone_stays_a_snapshot_against_maps_in_flight"
     par "ktest fork inherit against a clone canary (x86)" x86_ktest_row "ktest fork inherit against a clone canary (x86)" ",memobj-inherit-unmarked-canary" "memobj_fork_inherit_books_the_parents_access_and_a_clone_copies"
     par "ktest blk reap once canary (x86)" x86_ktest_row "ktest blk reap once canary (x86)" "" "blk_reap_reports_once" "canary=blk-reap-unlocked" $AZOS_OUT/build/disk-x86_64.img

@@ -166,6 +166,7 @@ pub(crate) fn install_sched_hooks() {
     // are charged to its kernel-memory ledger (`azos_sched::domain`), against
     // its row's `kmem_kib`. Before the first user task.
     azos_ipc::cap_store::set_kmem_hooks(kmem_charge, kmem_discharge);
+    azos_ipc::cap_store::set_kmem_atomic_hook(kmem_charge_atomic);
     // D3/L4: a warrant's deadline is read against the monotonic clock the v2
     // call's deadline uses (`ipc_v2::sys_ipc_call_v2`). Before the first user
     // task: unset, a warrant with a deadline reads as expired.
@@ -3677,6 +3678,14 @@ const _: () = {
 fn kmem_charge(key: u32, class: u8, bytes: u64) -> bool {
     azos_mm::budget::KmemClass::from_index(class)
         .is_some_and(|c| azos_sched::domain::kmem_charge(key, c, bytes))
+}
+
+/// `azos_ipc::cap_store::set_kmem_atomic_hook`: [`kmem_charge`] for a context
+/// that may hold a spinlock or be a real-time submit; its refusal is recorded
+/// in the lock-free ring only.
+fn kmem_charge_atomic(key: u32, class: u8, bytes: u64) -> bool {
+    azos_mm::budget::KmemClass::from_index(class)
+        .is_some_and(|c| azos_sched::domain::kmem_charge_atomic(key, c, bytes))
 }
 
 /// `azos_ipc::cap_store::set_kmem_hooks`: give a Domain's ledger back.

@@ -3385,6 +3385,39 @@ azos_ktest::ktest_late! {
     }
 }
 
+// An exec keeps what the Domain's objects hold in its budget. The Domain of
+// this task holds a MemObj of 4 pages (charged to it at create); the budget
+// reset an exec's `set_current_user_info` makes (`domain::reset_budget`, which
+// asks the retained hook `azos_ipc::exec_retained_pages` registered at boot) must
+// leave those 4 in the count, so that the release that comes later lands on
+// them. The real hook over the real object table; the exec's admission and
+// install around it are in the host rows (sched-wake-tests domain_tests).
+// Canary `budget-exec-zeroes-canary`: the reset keeps nothing.
+azos_ktest::ktest_late! {
+    fn budget_exec_keeps_the_object_pages() {
+        use azos_ipc::memobj::{memobj_create_spec, memobj_release, MemPerms, MemSpec};
+        let Some(key) = azos_sched::scheduler::current_domain() else { return Err("no Domain") };
+        let tid = azos_sched::scheduler::current_task_tid();
+        let before = azos_sched::domain::used_limit(key).0;
+        let held = azos_ipc::memobj::memobj_charged_pages(key);
+        let id = memobj_create_spec(tid, 4, &MemSpec::anon(MemPerms::ReadWrite)).map_err(|_| "no object")?;
+        if azos_sched::domain::used_limit(key).0 != before + 4 {
+            let _ = memobj_release(tid, id);
+            return Err("the object was not charged to the Domain");
+        }
+        azos_sched::domain::reset_budget(key);
+        let kept = azos_sched::domain::used_limit(key).0;
+        let released = memobj_release(tid, id);
+        let after = azos_sched::domain::used_limit(key).0;
+        // Put the count back where this test found it.
+        azos_sched::domain::charge_unrefused(key, before.saturating_sub(after));
+        if !released { return Err("the object was not released"); }
+        if kept != held + 4 { return Err("the exec's reset did not keep the objects' pages in the count"); }
+        if after != held { return Err("the release did not leave the count at the other objects' pages"); }
+        Ok(())
+    }
+}
+
 // A real-time thread pins its whole group's memory: reclaim leaves alone what
 // a process maps when any thread of the process is real-time, not only the
 // leader (`azos_sched::group::any_member`, `Host::pins_memory`). The member is

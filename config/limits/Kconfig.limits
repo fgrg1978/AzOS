@@ -1358,6 +1358,39 @@ config MAX_MEMOBJ_HOLDERS
       in the static table (MEMOBJS). At most 255: the table indexes its rows
       with 8 bits (a compile-time assertion in memobj.rs).
 
+config KMEM_DEFAULT_KIB
+    int "Kernel-memory ledger of a row that declares none: base (KiB)"
+    range 0 1048576
+    default 32  if HWCLASS_EMBEDDED
+    default 96  if (HWCLASS_SBC || HWCLASS_DESKTOP)
+    default 384 if HWCLASS_SERVER
+    default 96
+    help
+      crates/core/sched/src/domain.rs, `set_kmem_limit_kib`. A row's `kmem_kib`
+      bounds what the kernel keeps for its Domain (capability table,
+      endpoints, MemObj metadata, run-time page tables, io_rings, ports, block
+      bounce buffers). A row that declares none (0) used to be unbounded; with
+      this set it gets this many KiB plus `mem_pages / KMEM_DEFAULT_PAGES_DIV`
+      KiB for its page tables. 0 turns the default off (a row with no
+      `kmem_kib` is then unbounded, as before). A row may declare more.
+
+      The base is the sum of the per-task quotas of the class's own limits at
+      their defaults (capability table, IPC_ENDPOINTS_PER_TASK endpoints,
+      MAX_MEMOBJS / 2 MemObjs, MAX_PORTS / 2 ports, a few rings, a few bounce
+      buffers), rounded up.
+
+      Cost: none: it is a limit, not a reservation.
+
+config KMEM_DEFAULT_PAGES_DIV
+    int "Kernel-memory default: one KiB of page tables per this many mem_pages"
+    range 1 65536
+    default 64
+    help
+      See KMEM_DEFAULT_KIB. One 4 KiB table maps 2 MiB (512 pages): a row of
+      `mem_pages` pages needs about mem_pages / 128 KiB of tables when they
+      are dense; the default doubles that for slack. A sparse address space
+      needs more (a table per touched 2 MiB): declare `kmem_kib` in its row.
+
 config IORING_MAX_PARKED
     int "io_ring: entries one ring holds parked (timers, waits, fsyncs)"
     range 1 32
