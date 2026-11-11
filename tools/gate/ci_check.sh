@@ -12501,6 +12501,20 @@ host_feature_row() { # <label> <suite> <features> <test fn>
         echo "$out" | grep -m4 -E "^error|test result|panicked at" | sed 's/^/      /'
     fi
 }
+# host_group_row is the pass row of a group of tests: every test whose path
+# contains <filter> passes (at least one runs), with the suite's default features.
+host_group_row() { # <label> <suite> <filter>
+    local label="$1" suite="$2" filter="$3" out
+    ci_tier_skips "$label" && return 0
+    printf "  %-26s" "${label}..."
+    CARGO_TARGET_DIR="$AZOS_OUT/target/host-canary/${suite}-group" \
+        host_cargo out "${REPO_ROOT}/tests/host/${suite}" test --release -- "$filter"
+    if echo "$out" | qgrep -qE "test result: ok\. [1-9][0-9]* passed; 0 failed"; then ok
+    else
+        bad; echo "      $suite: the tests named $filter did not all pass"
+        echo "$out" | grep -m4 -E "^error|test result|panicked at" | sed 's/^/      /'
+    fi
+}
 host_job host_feature_row "mm: pool funnel (model)" mm-tests hyp-monitor words_in_the_armed_pool_go_to_the_monitor_and_nothing_else_does
 host_job host_feature_row "mm: pool sizing (model)" mm-tests hyp-monitor the_pool_is_sized_from_the_ram_the_stack_window_and_the_margin
 host_job host_feature_row "trap: expected kernel fault (model)" trap-tests ktest an_armed_kernel_fault_resumes_at_its_target_once
@@ -13877,6 +13891,32 @@ host_job host_canary_row "mm: restore loses its slot to a store canary" mm-tests
     a_store_does_not_take_the_slot_a_restore_made_room_in
 host_job host_canary_row "mm: budget racy charge canary" mm-tests budget-racy-charge-canary \
     concurrent_charges_never_pass_the_limit_or_lose_an_update
+# The budget ledgers under stress (tests/host/mm-tests/src/budget_stress.rs,
+# tests/host/syscall-tests/src/budget_sites.rs, sched-wake-tests domain_tests):
+# a refusal changes nothing, the integer limits saturate, several harts end at
+# the exact sum, the level does not flap at a watermark, locked and real-time
+# Domains never reclaim and a promised restore is never refused, every charge
+# site the host can drive has its discharge, and a dead Domain gives its growth
+# back. Each canary puts one hole back and its row must go red.
+host_job host_group_row "budget: a refusal changes nothing (model)" mm-tests budget_stress::all_or_nothing::
+host_job host_group_row "budget: saturation and model check (model)" mm-tests budget_stress::saturating::
+host_job host_group_row "budget: many harts close exactly (model)" mm-tests budget_stress::harts::
+host_job host_group_row "budget: pressure hysteresis (model)" mm-tests budget_stress::hysteresis::
+host_job host_group_row "budget: locked, RT and restore (model)" mm-tests budget_stress::locked_rt::
+host_job host_group_row "budget: charge sites have their discharge (syscall)" syscall-tests budget_sites::
+host_job host_feature_row "budget: a death gives the growth back (sched-wake)" sched-wake-tests "" a_domains_death_gives_its_growth_back_to_the_pool
+host_job host_canary_row "budget: kmem class wraps canary" mm-tests kmem-class-wrap-canary \
+    a_class_word_saturates_with_the_sum_instead_of_wrapping
+host_job host_canary_row "budget: kmem racy charge canary" mm-tests kmem-racy-charge-canary \
+    kmem_charges_and_discharges_from_many_harts_close_exactly
+host_job host_canary_row "budget: pressure flaps canary" mm-tests pressure-flap-canary \
+    an_oscillation_around_a_watermark_is_one_change
+host_job host_canary_row "budget: restore refused canary" mm-tests budget-restore-refused-canary \
+    a_promised_restore_is_charged_at_and_over_the_limit
+host_job host_canary_row "budget: death keeps the growth canary" sched-wake-tests budget-death-keeps-growth-canary \
+    a_domains_death_gives_its_growth_back_to_the_pool
+host_job host_canary_row "budget: munmap keeps the charge canary" syscall-tests budget-munmap-keeps-charge-canary \
+    every_charge_site_the_host_can_drive_has_its_discharge
 # The same holes through the frozen syscalls (syscall-tests): mprotect in the shm
 # window past the map's rights; a MOVE through the capability transfer.
 host_job host_canary_row "memobj: protect past the map canary (syscall)" syscall-tests memobj-protect-max-canary \

@@ -151,6 +151,57 @@ Operations on an object, all in `memobj.rs`:
 | Move | `memobj_move` hands a task's references, its charge (when it holds the owning reference) and its ownership to another task. |
 | Share | The IPC transfer's duplicate entry derives an attenuated capability; the receiver's map is bounded by the rights it received. |
 
+### MemObj and budget limits (contract)
+
+Limits on the objects themselves (`memobj.rs`, Kconfig in
+`config/limits/Kconfig.limits`):
+
+| Limit | Value | Refused as |
+|-------|-------|------------|
+| Objects in the machine | `MAX_MEMOBJS` (Kconfig, 4 to 256; 8 embedded, 32 SBC and desktop, 64 server) | `NoMem` at create and clone |
+| Objects one task owns | `MAX_MEMOBJS_PER_TASK` = `MAX_MEMOBJS / 2`; the kernel owner has none. Counted at create, clone and on the receiving side of a MOVE | `NoMem`; a MOVE is not carried out (`transferred == false`) |
+| Pages per object | `MAX_MEMOBJ_PAGES` = 64, fixed at creation (no resize) | `BadArg` |
+| Holders per object | `MAX_MEMOBJ_HOLDERS` (Kconfig, 2 to 255, default 8): one row per task holding a reference, each with at most one mapping record | a clone, acquire or MOVE that needs a new row is refused |
+
+Charge rules for the Domain that pays (`PageBudget`, and `KmemBudget` class
+`MemObjMeta`; `charge_region`, `memobj_move`, the release path):
+
+- **Create and clone** charge the frames to the owner's Domain (`charge_key`)
+  and `size_of::<MemObj>()` bytes to the same Domain's `MemObjMeta` (`meta_key`),
+  all or nothing: if the second charge is refused the first goes back and the
+  call answers `NoMem`. A kernel owner (key 0) and a Paged object are charged
+  nothing.
+- **MOVE of the owning reference** charges the receiver's Domain the whole
+  object first; a refusal, or a receiver with no Domain, leaves the object with
+  the sender. Only then is the sender's charge given back and `charge_key`
+  changed. `meta_key` does not move: the metadata stays charged to the creator's
+  Domain for the object's life. An object with a page out (swapped or in
+  flight) is not moved while its owner holds it (`Busy`): the Domain that
+  stored a page restores it.
+- **The last release** gives the frames back to `charge_key` and the metadata to
+  `meta_key`, from whichever task drops the last reference; pages that are out
+  were given back when they left and are not given back twice. A **purge** of a
+  volatile object gives the frames back at once and clears `charge_key`; the
+  metadata stays until the object goes.
+- **A restore** of a compressed or swapped page charges the page again to
+  `charge_key` with `charge_restore`, which is never refused and may take the
+  count past the limit; the next plain charge is refused until the overshoot is
+  given back.
+- **Not charged:** the copy a copy-on-write break makes (it cannot be refused;
+  admission counts the copies), a Paged object's pages, and anything of a kernel
+  owner. Mappings (`mmap`, `brk`, a module-window placement, a fork child's
+  inherited reservation) charge the whole request before anything is made and
+  `munmap` gives back what the range held, reserved or touched; a shrink of the
+  break is not supported, so its charge stays until the address space is
+  discarded. A ring's buffer page is charged to its creator's Domain and given
+  back to it on teardown.
+- **Arithmetic:** every charge is a compare-and-swap loop that saturates, a
+  refusal changes no counter, a discharge floors at zero, and a Domain's death
+  returns the growth it took from the growth pool. The host rows are in
+  `tests/host/mm-tests/src/budget_stress.rs` (the ledgers) and
+  `tests/host/syscall-tests/src/budget_sites.rs` (charge sites against their
+  discharges).
+
 Source: `crates/core/mm/src/memobj.rs`.
 
 ## Object rmap
@@ -645,8 +696,8 @@ what that leaves of the free pages is the **growth pool**
 (`budget::set_growth_pool`). Every growth takes its pages from the pool
 atomically and is refused when the pool cannot hold it, so no Domain's growth
 can take a frame another Domain's base (a real-time row's precommitted maps
-included) was promised; a new declaration of the limit (exec, the Domain's
-end) gives the growth back. Admission refuses rows whose growth, `(ceiling -
+included) was promised; a new declaration of the limit (exec) or the Domain's death (its last
+member leaving) gives the growth back. Admission refuses rows whose growth, `(ceiling -
 base) × instances` over every row, does not fit the pool; a ceiling below the
 base; and a ceiling on a locked, real-time or kernel row, where it would change
 nothing. A package row's ceiling is bounded by its signer's `mem_pages_max`.
@@ -678,7 +729,7 @@ Kernel-memory classes (`KmemClass`):
 |-------|---------|------------|
 | `CapTable` | The Domain's capability table, once, when the Domain first claims it. | The Domain |
 | `EpQueue` | One endpoint's slot and call queue. | The Domain that creates (or first claims) the endpoint |
-| `MemObjMeta` | One MemObj region's metadata (frame array, holder records). | The Domain that holds the object's charge |
+| `MemObjMeta` | One MemObj region's metadata (frame array, holder records). | The Domain of the object's creator, for its whole life (a MOVE changes the frame charge, not this one) |
 | `PageTable` | A page-table frame grown by the Domain's own mappings after its address space was installed. Also counted in the frame budget: two ledgers, two limits. | The task whose own root the table is under |
 
 `domain::kmem_charge` records a `Rule::KmemCharge` decision on refusal.
