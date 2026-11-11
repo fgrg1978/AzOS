@@ -31,6 +31,8 @@ dt-unknown-peripheral-canary = []
 dt-bare-token-canary = []
 # Canary: a listed generic fallback after an unknown specific compatible makes a peripheral.
 dt-fallback-canary = []
+# Canary: a cut or non-UTF-8 compatible string is ignored, so the kept strings alone classify the node.
+dt-lossy-compatible-canary = []
 # Canary: a dma-coherent inherited from a bus above the node makes it a bus master.
 dt-inherited-coherent-canary = []
 # Gate canary only: opening a bus master's I/O ports books nothing, so a native driver can

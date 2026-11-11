@@ -304,6 +304,21 @@ fn a_generic_fallback_after_an_unknown_specific_compatible_is_not_decisive() {
     assert_eq!(dt_role(["ns16550a", "qcom,geni-uart"].into_iter()), DtRole::Master, "a controller anywhere");
 }
 
+/// **A `compatible` that is cut or not UTF-8 classifies as unknown (a master):**
+/// the string that was lost may be the controller token.
+///
+/// **Canary.** `dt-lossy-compatible-canary`: the kept strings alone decide.
+#[test]
+fn a_truncated_or_non_utf8_compatible_is_never_a_listed_peripheral() {
+    let mut cut = b"ns16550a\0".to_vec();
+    cut.extend_from_slice(&[b'a'; 90]);
+    cut.extend_from_slice(b"\0snps,dwc3\0");
+    assert!(dt(&cut, "m@1").may_master_bus(), "cut list");
+    assert!(dt(b"ns16550a\0xhci\xff\0", "m@2").may_master_bus(), "non-UTF-8 string");
+    assert!(dt(b"\xff\0ns16550a\0", "m@3").may_master_bus(), "non-UTF-8 first string");
+    assert!(!dt(b"ns16550a\0", "p@1").may_master_bus(), "an intact listed node stays a peripheral");
+}
+
 /// **A peripheral that the firmware gave a DMA property is a master:** the
 /// properties are the firmware's statement and outrank the table.
 #[test]

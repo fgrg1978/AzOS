@@ -79,6 +79,8 @@ pub struct Device {
     pub virtio_id: u32,
     compat: [u8; COMPAT_LEN],
     compat_len: u8,
+    /// A `compatible` string was cut or is not UTF-8, so the kept list does not say what the node is.
+    compat_lossy: bool,
     /// The first register window (DT `reg`, the virtio-mmio window, a
     /// published PCI BAR); 0 while unknown.
     pub base: u64,
@@ -149,6 +151,7 @@ impl Device {
                     || self.has_iommu
                     || self.dma_offset != 0
                     || self.dma_mask != u64::MAX
+                    || (self.compat_lossy && !cfg!(feature = "dt-lossy-compatible-canary"))
                     || crate::masters::dt_role(self.compatible()) != crate::masters::DtRole::Peripheral
             }
         }
@@ -167,6 +170,7 @@ impl Device {
             virtio_id: 0,
             compat: [0; COMPAT_LEN],
             compat_len: 0,
+            compat_lossy: false,
             base: 0,
             size: 0,
             reg2: None,
@@ -306,7 +310,12 @@ impl Device {
     fn set_compatible(&mut self, list: &[u8]) {
         let mut used = 0usize;
         for s in list.split(|&b| b == 0).filter(|s| !s.is_empty()) {
+            if core::str::from_utf8(s).is_err() {
+                self.compat_lossy = true;
+                continue;
+            }
             if used + s.len() + 1 > COMPAT_LEN {
+                self.compat_lossy = true;
                 break;
             }
             self.compat[used..used + s.len()].copy_from_slice(s);

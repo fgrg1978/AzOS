@@ -13904,6 +13904,8 @@ host_job host_canary_row "ring-3: admission option flag canary" topology-tests a
     admission_check_refuses_a_row_a_rule_forbids
 host_job host_canary_row "ring-3: dt generic fallback canary" hwbus-tests dt-fallback-canary \
     a_generic_fallback_after_an_unknown_specific_compatible_is_not_decisive
+host_job host_canary_row "ring-3: dt lossy compatible canary" hwbus-tests dt-lossy-compatible-canary \
+    a_truncated_or_non_utf8_compatible_is_never_a_listed_peripheral
 host_job host_canary_row "ring-3: dt inherited coherence canary" hwbus-tests dt-inherited-coherent-canary \
     a_dma_coherent_inherited_from_a_bus_makes_no_master
 host_job host_canary_row "ring-3: line grant record silent canary (ipc)" ipc-tests line-grant-silent-canary \
