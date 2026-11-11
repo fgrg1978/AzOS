@@ -188,6 +188,9 @@ fd-pos-lock-canary = []
 # Host canary: FAT-sector claims exclude nothing; fs-tests'
 # concurrent-mutator test must lose an update. Never in a real build.
 fat-sector-claim-canary = []
+# Host canary: the volume's mutation claim excludes nothing and a handle's
+# directory-entry update does not re-check the name (fs-tests `dir_claim`).
+fat-dir-unserialised-canary = []
 
 # Power-loss safety (S3) canaries, each must turn a fs-tests `s3` test red.
 #   fat-dirty-bit-canary:       the mount never sets the volume dirty flag

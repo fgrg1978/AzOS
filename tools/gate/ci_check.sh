@@ -13915,6 +13915,14 @@ host_job host_canary_row "ext4: a listed entry is resolved by path canary" ext4-
     listing_a_directory_costs_steps_linear_in_its_entries
 host_job host_canary_row "fs: a directory listing never resumes canary" fs-tests dir-cursor-canary \
     a_listing_resumes_where_the_last_call_stopped
+host_job host_canary_row "fs: two creators lose a name canary" fs-tests fat-dir-unserialised-canary \
+    two_creators_in_one_directory_keep_both_names
+host_job host_canary_row "fs: two creators of one name canary" fs-tests fat-dir-unserialised-canary \
+    two_creators_of_one_name_make_one_entry
+host_job host_canary_row "fs: journal slot shared by two ops canary" fs-tests fat-dir-unserialised-canary \
+    a_second_journaled_op_never_starts_over_a_pending_record
+host_job host_canary_row "fs: a stale handle rewrites another entry canary" fs-tests fat-dir-unserialised-canary \
+    a_handle_of_an_unlinked_file_does_not_update_the_entry_that_reused_its_slot
 host_job host_canary_row "call task: no deadline to the server canary (devif)" devif-tests call-deadline-canary \
     a_call_through_the_task_carries_the_clients_deadline_to_the_server
 host_job host_canary_row "ring-3: dt inherited coherence canary" hwbus-tests dt-inherited-coherent-canary \

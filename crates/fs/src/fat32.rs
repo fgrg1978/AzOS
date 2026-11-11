@@ -692,6 +692,18 @@ pub struct Vol {
     fat_sector_wq: azos_sync::waitqueue::WaitQueue,
     /// One [`ClaimPi`] per FAT-sector claim slot.
     fat_sector_pi: [ClaimPi; 64],
+    /// The mutation claim ([`mutation_claim`]): one directory-changing
+    /// operation of the volume at a time. Directory sectors and the journal
+    /// sector are read-modify-written with no per-sector claim, so two such
+    /// operations interleaved lose an entry or share the one journal record.
+    /// Held across device waits, never with a `SpinLock`, and never nested:
+    /// the FAT-sector and write-back claims are taken inside it, never the
+    /// other way round. `fat-dir-unserialised-canary` takes nothing.
+    mut_busy: core::sync::atomic::AtomicBool,
+    mut_owner: core::sync::atomic::AtomicU32,
+    mut_gen: core::sync::atomic::AtomicU32,
+    mut_wq: azos_sync::waitqueue::WaitQueue,
+    mut_pi: ClaimPi,
     /// The task holding the write-back claim (`caller_tid`), 0 when free.
     wb_busy: core::sync::atomic::AtomicBool,
     wb_owner: core::sync::atomic::AtomicU32,
@@ -789,6 +801,11 @@ impl Vol {
             fat_sector_owner: [const { core::sync::atomic::AtomicU32::new(0) }; 64],
             fat_sector_wq: azos_sync::waitqueue::WaitQueue::new(),
             fat_sector_pi: [const { ClaimPi::new() }; 64],
+            mut_busy: core::sync::atomic::AtomicBool::new(false),
+            mut_owner: core::sync::atomic::AtomicU32::new(0),
+            mut_gen: core::sync::atomic::AtomicU32::new(0),
+            mut_wq: azos_sync::waitqueue::WaitQueue::new(),
+            mut_pi: ClaimPi::new(),
             wb_busy: core::sync::atomic::AtomicBool::new(false),
             wb_owner: core::sync::atomic::AtomicU32::new(0),
             wb_gen: core::sync::atomic::AtomicU32::new(0),
@@ -1043,7 +1060,8 @@ pub fn fat32_claims_held_by(tid: u32) -> u32 {
     fat32_claims_held_by_on(&BOOT, tid)
 }
 
-/// FAT-sector claims task `tid` holds (0 or 1: claims never nest). The panic
+/// Claims task `tid` holds: a FAT-sector claim, the write-back claim and the
+/// mutation claim (a FAT-sector claim nests inside the other two). The panic
 /// path adds it to the task's held `Mutex` count: a claim abandoned by a
 /// contained task would block every later update of its FAT sectors.
 pub fn fat32_claims_held_by_on(v: &'static Vol, tid: u32) -> u32 {
@@ -1051,6 +1069,7 @@ pub fn fat32_claims_held_by_on(v: &'static Vol, tid: u32) -> u32 {
     if tid == 0 { return 0; }
     v.fat_sector_owner.iter().filter(|o| o.load(SeqCst) == tid).count() as u32
         + (v.wb_owner.load(SeqCst) == tid) as u32
+        + (v.mut_owner.load(SeqCst) == tid) as u32
 }
 
 /// `fat-pi-io-probe` (the `lat-fat` smoke): FAT32 device I/O issued while
@@ -1661,6 +1680,47 @@ fn wb_wake() {
     }
 }
 
+/// The volume's mutation claim; released on drop.
+struct MutationClaim {
+    v: &'static Vol,
+    held: bool,
+}
+
+/// Take the mutation claim, sleeping while another directory-changing
+/// operation of the volume holds it. Never called with a `SpinLock` held,
+/// never nested.
+fn mutation_claim(v: &'static Vol) -> MutationClaim {
+    use core::sync::atomic::Ordering::SeqCst;
+    let none = cfg!(feature = "fat-dir-unserialised-canary");
+    let me = azos_sync::waitqueue::caller_tid();
+    let mut w = ClaimWait::default();
+    loop {
+        let gen = v.mut_gen.load(SeqCst);
+        if none || v.mut_pi.try_take(|| !v.mut_busy.swap(true, SeqCst), &v.mut_owner, me, &mut w) {
+            return MutationClaim { v, held: !none };
+        }
+        v.mut_pi.lend(&v.mut_owner, me, &mut w);
+        v.mut_wq.wait_if_for(azos_sync::waitstat::Site::FatMutate, || v.mut_gen.load(SeqCst) == gen);
+    }
+}
+
+impl Drop for MutationClaim {
+    fn drop(&mut self) {
+        use core::sync::atomic::Ordering::SeqCst;
+        if !self.held { return; }
+        let v = self.v;
+        v.mut_pi.release(&v.mut_owner, || v.mut_busy.store(false, SeqCst));
+        v.mut_gen.fetch_add(1, SeqCst);
+        v.mut_wq.wake_all();
+    }
+}
+
+/// The calling operation holds the mutation claim (a check for the functions
+/// that need it).
+fn mutation_held(v: &'static Vol) -> bool {
+    cfg!(feature = "fat-dir-unserialised-canary") || v.mut_busy.load(core::sync::atomic::Ordering::SeqCst)
+}
+
 /// The write-back claim; released on drop.
 struct WbClaim {
     v: &'static Vol,
@@ -2093,8 +2153,9 @@ pub fn fat32_locks_available() -> bool {
 
 /// Non-blocking check for whether the FAT32 locks (`FAT32` volume state,
 /// `SECTOR_CACHE`) are free and no FAT-sector claim (`Vol::fat_sector_busy`)
-/// is out. A claimed sector's next updater sleeps on a wait queue, which the
-/// panic handler must not reach.
+/// is out, nor the write-back claim nor the mutation claim. A claimed
+/// sector's next updater sleeps on a wait queue, which the panic handler
+/// must not reach.
 ///
 /// Intended for callers that must never block (e.g. the panic handler),
 /// mirroring `vfs::vfs_fs_lock_available()`. Any FAT32-backed VFS
@@ -2107,6 +2168,7 @@ pub fn fat32_locks_available_on(v: &'static Vol) -> bool {
     v.fat32.try_lock().is_some() && v.sector_cache.try_lock().is_some()
         && v.fat_sector_busy.load(core::sync::atomic::Ordering::SeqCst) == 0
         && !v.wb_busy.load(core::sync::atomic::Ordering::SeqCst)
+        && !v.mut_busy.load(core::sync::atomic::Ordering::SeqCst)
 }
 
 /// [`fat32_cache_invalidate_on`] on the boot volume ([`BOOT`]).
@@ -4052,9 +4114,11 @@ const SWAP_ZERO_CHUNK: usize = 4096;
 /// are durable (held until then, or freed after a barrier), so a cut leaves a
 /// leaked tail (the mount check reclaims it), never a live entry over free
 /// clusters. This is the swap file's shrink; an ordinary truncate to a length
-/// that is not zero still rewrites the file (`Fat32Fs::truncate`).
+/// that is not zero still rewrites the file (`Fat32Fs::truncate`). The
+/// mutation claim is held, and `e` was read under it.
 fn fat32_trim_file(v: &'static Vol, f: &FName, e: RootEntry, new_size: u32) -> Result<(), crate::vfs::FsErr> {
     use crate::vfs::FsErr;
+    debug_assert!(mutation_held(v));
     let bpc = v.fat32.lock().bytes_per_clus.max(1);
     let keep = new_size.div_ceil(bpc).max(1);
     let last = chain_nth(v, e.cluster, keep - 1).map_err(fs_err)?;
@@ -4484,20 +4548,29 @@ pub fn fat32_unlink_root(name83: &[u8; 11]) -> Result<(), ()> {
 /// (see [`fat32_unlink_path`]), so the dirent is gone from the medium
 /// before its clusters can be handed out again.
 pub fn fat32_unlink_root_on(v: &'static Vol, name83: &[u8; 11]) -> Result<(), ()> {
-    unlink_at(v, &FName::root(v, name83))
+    unlink_at(v, &FName::root(v, name83)).map(|_| ())
 }
 
 /// [`fat32_unlink_root`] for a file in any directory.
-fn unlink_at(v: &'static Vol, f: &FName) -> Result<(), ()> {
+///
+/// Answers the first cluster of the entry it removed, read from the entry
+/// under the mutation claim: the caller frees that chain and no other.
+fn unlink_at(v: &'static Vol, f: &FName) -> Result<u32, ()> {
     // Before, so the dirent goes with no dirty page waiting to create it
     // again; after, for a page a writer dirtied in between.
     cache_forget(v, &f.key);
-    let r = unlink_inner(v, f.dir, &f.name);
+    let r = {
+        let _m = mutation_claim(v);
+        unlink_inner(v, f.dir, &f.name)
+    };
     cache_forget(v, &f.key);
     r
 }
 
-fn unlink_inner(v: &'static Vol, dir: u32, name83: &[u8; 11]) -> Result<(), ()> {
+/// Remove `name83` from `dir`; the first cluster the entry held. The
+/// mutation claim is held.
+fn unlink_inner(v: &'static Vol, dir: u32, name83: &[u8; 11]) -> Result<u32, ()> {
+    debug_assert!(mutation_held(v));
     let (spc, data_start, fat_sz32, data_clusters) = {
         let fv = v.fat32.lock();
         (fv.secs_per_clus, fv.data_start, fv.fat_sz32, fv.data_clusters)
@@ -4534,6 +4607,13 @@ fn unlink_inner(v: &'static Vol, dir: u32, name83: &[u8; 11]) -> Result<(), ()> 
                 if &ent_name == name83 {
                     // Step 1: Journal PENDING before modifying directory.
                     let sector_num = first_sector + s;
+                    let cluster_of = (u32::from(u16::from_le_bytes([
+                        sec_buf[off + DIRENT_OFF_FST_CLUS_HI],
+                        sec_buf[off + DIRENT_OFF_FST_CLUS_HI + 1],
+                    ])) << 16) | u32::from(u16::from_le_bytes([
+                        sec_buf[off + DIRENT_OFF_FST_CLUS_LO],
+                        sec_buf[off + DIRENT_OFF_FST_CLUS_LO + 1],
+                    ]));
                     let journal = JournalEntry {
                         magic: JOURNAL_MAGIC,
                         state: JOURNAL_PENDING,
@@ -4570,7 +4650,7 @@ fn unlink_inner(v: &'static Vol, dir: u32, name83: &[u8; 11]) -> Result<(), ()> 
                     fat32_journal_write(v, &committed)?;
 
                     // Step 4: Clear journal.
-                    return fat32_journal_clear(v);
+                    return fat32_journal_clear(v).map(|()| cluster_of);
                 }
             }
         }
@@ -4627,7 +4707,10 @@ fn rename_at(v: &'static Vol, from: &FName, to: &FName) -> Result<(), crate::vfs
     // under either name is not the file's afterwards.
     crate::vfs::page_cache_flush_file(v.fs, &from.key)?;
     cache_forget(v, &to.key);
-    let r = rename_inner(v, from, to);
+    let r = {
+        let _m = mutation_claim(v);
+        rename_inner(v, from, to)
+    };
     cache_forget(v, &from.key);
     if is_dir {
         crate::vfs::page_cache_drop(v.fs, None, 0);
@@ -4642,6 +4725,7 @@ fn fat32_lookup_dir_entry(v: &'static Vol, f: &FName) -> Option<RootEntry> {
 
 fn rename_inner(v: &'static Vol, from: &FName, to: &FName) -> Result<(), crate::vfs::FsErr> {
     use crate::vfs::FsErr;
+    debug_assert!(mutation_held(v));
     // Every `Err(())` below is a block-device or journal failure, which is
     // what `Io` means; the answers that say WHY the call was refused are
     // decided up front, before anything is written.
@@ -4911,7 +4995,11 @@ pub fn fat32_write_file_on(v: &'static Vol, name83: &[u8; 11], data: &[u8]) -> R
 
 /// [`fat32_write_file`] for a file in any directory.
 fn write_file_at(v: &'static Vol, f: &FName, data: &[u8]) -> Result<(), ()> {
-    write_file_journaled(v, f, data)?;
+    write_file_at_in(v, f, data, false)
+}
+
+fn write_file_at_in(v: &'static Vol, f: &FName, data: &[u8], only_new: bool) -> Result<(), ()> {
+    write_file_journaled(v, f, data, only_new)?;
     // The whole-file write is complete on the device's side; make it durable
     // before telling the caller it is written (`vfs_close` reports this
     // result, and `CRASH.LOG`/`BOOTMETA` are written this way).
@@ -4954,24 +5042,37 @@ pub fn fat32_write_file_queued_on(v: &'static Vol, name83: &[u8; 11], data: &[u8
 
 /// [`fat32_write_file_queued`] for a file in any directory.
 fn write_file_queued_at(v: &'static Vol, f: &FName, data: &[u8]) -> Result<(), ()> {
+    write_file_queued_at_in(v, f, data, false)
+}
+
+fn write_file_queued_at_in(v: &'static Vol, f: &FName, data: &[u8], only_new: bool) -> Result<(), ()> {
     if !wb_active(v) || cfg!(feature = "wb-close-flushes-canary") {
-        return write_file_at(v, f, data);
+        return write_file_at_in(v, f, data, only_new);
     }
-    write_file_journaled(v, f, data)
+    write_file_journaled(v, f, data, only_new)
 }
 
 /// The journaled create/overwrite protocol behind [`fat32_write_file`].
-fn write_file_journaled(v: &'static Vol, f: &FName, data: &[u8]) -> Result<(), ()> {
+///
+/// `only_new`: an existing entry is left as it is (`Ok`), decided under the
+/// claim that makes the insert.
+fn write_file_journaled(v: &'static Vol, f: &FName, data: &[u8], only_new: bool) -> Result<(), ()> {
     if !v.fat32.lock().mounted { return Err(()); }
     // The cached pages are the old file's; again after, for a page a writer
     // dirtied while the new file was being made.
     cache_forget(v, &f.key);
-    let r = write_file_journaled_inner(v, f, data);
+    let r = {
+        let _m = mutation_claim(v);
+        if only_new && lookup_entry(v, f.dir, &f.name).is_ok() { return Ok(()); }
+        write_file_journaled_inner(v, f, data)
+    };
     cache_forget(v, &f.key);
     r
 }
 
+/// The body of [`write_file_journaled`], the mutation claim held.
 fn write_file_journaled_inner(v: &'static Vol, f: &FName, data: &[u8]) -> Result<(), ()> {
+    debug_assert!(mutation_held(v));
 
     // Read-only: is this an overwrite, and if so, where does the old dirent
     // live? Nothing is modified here — the old file is still fully intact
@@ -5176,8 +5277,7 @@ pub fn fat32_unlink_path(name: &[u8]) -> Result<(), ()> {
 /// deleted dirent and a leaked chain.
 pub fn fat32_unlink_path_on(v: &'static Vol, name: &[u8]) -> Result<(), ()> {
     let name83 = path_to_83_local(name).ok_or(())?;
-    let cluster = fat32_lookup_root_on(v, &name83).map(|(c, _)| c).unwrap_or(0);
-    fat32_unlink_root_on(v, &name83)?;
+    let cluster = unlink_at(v, &FName::root(v, &name83))?;
     if cluster >= 2 { fat32_free_chain_on(v, cluster); }
     Ok(())
 }
@@ -5672,6 +5772,8 @@ struct OpenFileEntry {
     dir_sector: u32,
     /// Byte offset within `dir_sector` of the dirent.
     dir_offset: u16,
+    /// The 8.3 name the dirent had when the handle found it.
+    name83: [u8; 11],
     /// First cluster of the file's data chain (0 = empty file).
     first_cluster: u32,
     /// Current file size in bytes (as known to the handle).
@@ -5693,6 +5795,7 @@ const EMPTY_OPEN_FILE: OpenFileEntry = OpenFileEntry {
     generation: 0,
     dir_sector: 0,
     dir_offset: 0,
+    name83: [0; 11],
     first_cluster: 0,
     size: 0,
     pos: 0,
@@ -5944,7 +6047,8 @@ fn resolve_parent<'a>(v: &'static Vol, path: &'a [u8]) -> Result<(u32, &'a [u8])
 /// If no slot exists and the chain is full, extends the directory by
 /// allocating a new cluster.
 ///
-/// Returns the sector and offset where the entry landed.
+/// Returns the sector and offset where the entry landed. The mutation claim
+/// is held: the slot found here is still free when the sector is written.
 fn dir_insert(
     v: &'static Vol, dir_cluster: u32,
     name83: &[u8; 11],
@@ -5952,6 +6056,7 @@ fn dir_insert(
     size: u32,
     attr: u8,
 ) -> Result<(u32, u16), FsError> {
+    debug_assert!(mutation_held(v));
     let (spc, data_start, fat_sz32, data_clusters) = {
         let fv = v.fat32.lock();
         (fv.secs_per_clus, fv.data_start, fv.fat_sz32, fv.data_clusters)
@@ -6082,24 +6187,33 @@ fn write_dirent_into_buf(
 fn dir_update_meta(
     v: &'static Vol, dir_sector: u32,
     dir_offset: u16,
+    name83: &[u8; 11],
     first_cluster: u32,
     size: u32,
 ) -> Result<(), FsError> {
-    dir_update_meta_in(v, dir_sector, dir_offset, first_cluster, size, false)
+    dir_update_meta_in(v, dir_sector, dir_offset, name83, first_cluster, size, false)
 }
 
 /// [`dir_update_meta`] with the sector written ahead (`write_sector_ahead`)
-/// when `ahead`.
+/// when `ahead`. The mutation claim is held, and the slot must still name
+/// `name83`: an entry unlinked or replaced since the handle found it (the slot
+/// reused by another file) is `NotFound`, never overwritten.
 fn dir_update_meta_in(
     v: &'static Vol, dir_sector: u32,
     dir_offset: u16,
+    name83: &[u8; 11],
     first_cluster: u32,
     size: u32,
     ahead: bool,
 ) -> Result<(), FsError> {
+    debug_assert!(mutation_held(v));
     let mut buf = [0u8; SECTOR_SIZE];
     read_sector(v, dir_sector, &mut buf).map_err(|()| FsError::Io)?;
     let off = dir_offset as usize;
+    if off + FAT32_DIR_ENTRY_SIZE > SECTOR_SIZE { return Err(FsError::Io); }
+    if buf[off..off + 11] != *name83 && !cfg!(feature = "fat-dir-unserialised-canary") {
+        return Err(FsError::NotFound);
+    }
     let hi = ((first_cluster >> 16) & 0xFFFF) as u16;
     let lo = (first_cluster & 0xFFFF) as u16;
     buf[off + DIRENT_OFF_FST_CLUS_HI..off + DIRENT_OFF_FST_CLUS_HI + 2]
@@ -6363,6 +6477,9 @@ fn open_entry(v: &'static Vol, _vol: Volume, path: &[u8], flags: u32, cache_name
 /// [`open_entry`] for a file whose directory is already resolved (`flags`
 /// checked, volume mounted).
 fn open_at(v: &'static Vol, parent_cluster: u32, name83: &[u8; 11], flags: u32, cache_name: Option<crate::vfs::InodeKey>) -> Result<Fat32File, FsError> {
+    // The lookup and the insert it may lead to are one step, and a truncate
+    // changes the entry and the journal: both under the mutation claim.
+    let _m = (flags & (open_flags::CREATE | open_flags::TRUNCATE) != 0).then(|| mutation_claim(v));
 
     let (dir_sector, dir_offset, first_cluster, size) =
         match dir_find_in(v, parent_cluster, name83) {
@@ -6390,6 +6507,7 @@ fn open_at(v: &'static Vol, parent_cluster: u32, name83: &[u8; 11], flags: u32, 
         generation: 0,
         dir_sector,
         dir_offset,
+        name83: *name83,
         first_cluster,
         size,
         pos: 0,
@@ -6431,7 +6549,7 @@ fn open_at(v: &'static Vol, parent_cluster: u32, name83: &[u8; 11], flags: u32, 
         journal_barrier(v).map_err(|()| FsError::Io)?;
 
         let defer = defer_frees(v);
-        dir_update_meta(v, dir_sector, dir_offset, 0, 0)?;
+        dir_update_meta(v, dir_sector, dir_offset, name83, 0, 0)?;
         if !defer && old_cluster >= FAT32_FIRST_DATA_CLUSTER {
             fat32_free_chain_on(v, old_cluster);
         }
@@ -6771,12 +6889,16 @@ pub fn fat32_fsync_on(v: &'static Vol, file: Fat32File) -> Result<(), FsError> {
         Ok(()) | Err(FsError::Unsupported) => {}
         Err(e) => return Err(e),
     }
-    dir_update_meta(v, 
-        snapshot.dir_sector,
-        snapshot.dir_offset,
-        snapshot.first_cluster,
-        snapshot.size,
-    )?;
+    {
+        let _m = mutation_claim(v);
+        dir_update_meta(v,
+            snapshot.dir_sector,
+            snapshot.dir_offset,
+            &snapshot.name83,
+            snapshot.first_cluster,
+            snapshot.size,
+        )?;
+    }
     let _ = journal_settle(v);
     device_flush(v)?;
     wb_take_error(v)?;
@@ -6825,12 +6947,16 @@ pub fn fat32_close_on(v: &'static Vol, file: Fat32File) -> Result<(), FsError> {
 pub fn fat32_release(v: &'static Vol, file: Fat32File) -> Result<(), FsError> {
     let snapshot = snapshot_handle(v, file)?;
     let r = if snapshot.dirty && wb_active(v) && !cfg!(feature = "fw-entry-per-write-canary") {
-        dir_update_meta_in(v, snapshot.dir_sector, snapshot.dir_offset,
+        let _m = mutation_claim(v);
+        dir_update_meta_in(v, snapshot.dir_sector, snapshot.dir_offset, &snapshot.name83,
             snapshot.first_cluster, snapshot.size, true)
     } else if snapshot.dirty {
         match order_barrier(v) {
-            Ok(()) | Err(FsError::Unsupported) => dir_update_meta(v, 
-                snapshot.dir_sector, snapshot.dir_offset, snapshot.first_cluster, snapshot.size),
+            Ok(()) | Err(FsError::Unsupported) => {
+                let _m = mutation_claim(v);
+                dir_update_meta(v, snapshot.dir_sector, snapshot.dir_offset, &snapshot.name83,
+                    snapshot.first_cluster, snapshot.size)
+            }
             Err(e) => Err(e),
         }
     } else {
@@ -6992,6 +7118,8 @@ pub fn fat32_mkdir_on(v: &'static Vol, _vol: Volume, path: &[u8]) -> Result<(), 
     let (parent_cluster, last) = resolve_parent(v, path)?;
     let name83 = component_to_83(last).ok_or(FsError::InvalidArg)?;
 
+    // The exists check and the insert are one step.
+    let _m = mutation_claim(v);
     // Fail if an entry already exists.
     if dir_find_in(v, parent_cluster, &name83).is_ok() { return Err(FsError::Exists); }
 
@@ -7207,8 +7335,7 @@ impl crate::vfs::FileSystem for Fat32Fs {
     fn unlink(&self, key: &crate::vfs::InodeKey) -> Result<(), ()> {
         let v = self.vol;
         let f = named(v, key).ok_or(())?;
-        let cluster = lookup_entry(v, f.dir, &f.name).map(|e| e.cluster).unwrap_or(0);
-        unlink_at(v, &f)?;
+        let cluster = unlink_at(v, &f)?;
         if cluster >= 2 { fat32_free_chain_on(v, cluster); }
         Ok(())
     }
@@ -7383,9 +7510,8 @@ impl crate::vfs::FileSystem for Fat32Fs {
     fn create(&self, key: &crate::vfs::InodeKey) -> Result<(), crate::vfs::FsErr> {
         let v = self.vol;
         let f = FName::of_key(v, key).map_err(fs_err)?;
-        if lookup_entry(v, f.dir, &f.name).is_ok() { return Ok(()); }
         // Queued under write-back, like `write_all`: durable at fsync/sync.
-        write_file_queued_at(v, &f, &[]).map_err(|()| crate::vfs::FsErr::Io)
+        write_file_queued_at_in(v, &f, &[], true).map_err(|()| crate::vfs::FsErr::Io)
     }
 
     /// Every length through the journaled whole-file write, the path every
@@ -7426,6 +7552,12 @@ impl crate::vfs::FileSystem for Fat32Fs {
                 // stamped with that later epoch (`defer_free`). A chain freed
                 // at once (write-through, `FS_DEFERRED_FREE` off) keeps the
                 // entry in the current epoch, ordered before the free.
+                //
+                // The entry is read again under the mutation claim: the chain
+                // freed below is the one the entry names now.
+                let _m = mutation_claim(v);
+                let e = lookup_entry(v, f.dir, &f.name).map_err(|()| FsErr::NotFound)?;
+                if e.attr & ATTR_DIRECTORY != 0 { return Err(FsErr::Invalid); }
                 let (sector, off) = find_dirent_location(v, f.dir, &f.name).map_err(|()| FsErr::Io)?;
                 let ahead = defer_frees(v) && !cfg!(feature = "fw-entry-per-write-canary");
                 dirent_clus_size_in(v, sector, off, 0, 0, ahead).map_err(|()| FsErr::Io)?;
@@ -7464,11 +7596,16 @@ impl crate::vfs::FileSystem for Fat32Fs {
         use crate::vfs::FsErr;
         let key = self.key_for(name).ok_or(FsErr::Invalid)?;
         let f = FName::of_key(v, &key).map_err(fs_err)?;
-        let e = lookup_entry(v, f.dir, &f.name).map_err(|()| FsErr::NotFound)?;
-        if e.attr & ATTR_DIRECTORY == 0 { return Err(FsErr::NotDir); }
-        if !fat32_dir_is_empty(v, e.cluster).map_err(|()| FsErr::Io)? { return Err(FsErr::NotEmpty); }
-        unlink_at(v, &f).map_err(|()| FsErr::Io)?;
-        if e.cluster >= FAT32_FIRST_DATA_CLUSTER { fat32_free_chain_on(v, e.cluster); }
+        // The emptiness check and the removal are one step: a create in the
+        // directory takes the same claim.
+        let cluster = {
+            let _m = mutation_claim(v);
+            let e = lookup_entry(v, f.dir, &f.name).map_err(|()| FsErr::NotFound)?;
+            if e.attr & ATTR_DIRECTORY == 0 { return Err(FsErr::NotDir); }
+            if !fat32_dir_is_empty(v, e.cluster).map_err(|()| FsErr::Io)? { return Err(FsErr::NotEmpty); }
+            unlink_inner(v, f.dir, &f.name).map_err(|()| FsErr::Io)?
+        };
+        if cluster >= FAT32_FIRST_DATA_CLUSTER { fat32_free_chain_on(v, cluster); }
         Ok(())
     }
 
@@ -7507,7 +7644,9 @@ impl crate::vfs::FileSystem for Fat32Fs {
         } else if want == 0 && e.size != 0 {
             self.truncate(key, 0)?;
         } else if want < e.size {
-            fat32_trim_file(v, &f, e, want)?;
+            let _m = mutation_claim(v);
+            let e = lookup_entry(v, f.dir, &f.name).map_err(|()| FsErr::NotFound)?;
+            if want < e.size { fat32_trim_file(v, &f, e, want)?; }
         }
         fat32_sync_checked_on(v).map_err(fs_err)
     }

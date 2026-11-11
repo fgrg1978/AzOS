@@ -204,6 +204,9 @@ mod crash_dump;
 // FAT32 files below the root, through the VFS: `subdirs.rs`.
 #[cfg(test)]
 mod subdirs;
+// Directory-changing operations of one volume are serialised: `dir_claim.rs`.
+#[cfg(test)]
+mod dir_claim;
 #[cfg(test)]
 mod envelope_delete;
 // Every mounted volume made durable (orderly power-off, `Power::sync`): `sync_all.rs`.

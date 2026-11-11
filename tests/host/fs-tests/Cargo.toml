@@ -134,6 +134,9 @@ fat-mutate-spin-canary = []
 # Declared so the cfgs are known. `fat-sector-claim-canary` is
 # the concurrent-mutator test's canary; the other two are kernel-only.
 fat-sector-claim-canary = []
+# The mutation claim excludes nothing and an entry update does not re-check
+# the name (`dir_claim`).
+fat-dir-unserialised-canary = []
 # A retired mount's inodes left on its backend (see crates/fs).
 usb-volume-stale-fd-canary = []
 # FX12: declared so the cfg is known; the kernel's `ktest` feature turns it

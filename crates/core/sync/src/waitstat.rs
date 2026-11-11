@@ -44,6 +44,9 @@ pub enum Site {
     FatSector,
     /// A flusher waiting for the FAT write-back claim (`fat32::wb_claim`).
     FatWriteback,
+    /// A directory-changing operation waiting for the volume's mutation claim
+    /// (`fat32::mutation_claim`).
+    FatMutate,
     /// A task waiting for a `claim::Claim` (the F1 exchange).
     Claim,
     /// A request waiting for its turn at a controller (`dev_queue::DevQueue`).
@@ -57,7 +60,7 @@ pub enum Site {
 }
 
 /// How many sites there are.
-pub const SITES: usize = 9;
+pub const SITES: usize = 10;
 
 impl Site {
     /// Every site, in the order of the counters.
@@ -66,6 +69,7 @@ impl Site {
         Site::BlockSpace,
         Site::FatSector,
         Site::FatWriteback,
+        Site::FatMutate,
         Site::Claim,
         Site::DevQueue,
         Site::Ads1115,
@@ -80,6 +84,7 @@ impl Site {
             Site::BlockSpace => "block_space",
             Site::FatSector => "fat_sector",
             Site::FatWriteback => "fat_writeback",
+            Site::FatMutate => "fat_mutate",
             Site::Claim => "claim",
             Site::DevQueue => "dev_queue",
             Site::Ads1115 => "ads1115",
