@@ -52,7 +52,10 @@ const SCHED: &str = "[class.best_effort]\ncpu_budget_min_pct = 5\npolicy = \"fai
 /// `endpoint.ho_term`, `HOJOB.ELF` receives it, and `HOOTHER.ELF` serves
 /// `endpoint.ho_other`, which nobody receives. And the lookup by name's
 /// (`named_cap_tests`): `HOGATE` grants call rights with the same rights on
-/// `endpoint.ho_login` and `endpoint.ho_term`.
+/// `endpoint.ho_login` and `endpoint.ho_term`. `HOGATE` is a kernel row (no
+/// `.ELF` name) on purpose: it holds `transfer` on endpoints it does not serve,
+/// which the neverallow rule `endpoint-grant-transfer-server-only` refuses a
+/// ring-3 row, and the lookup under test does not depend on the row's ring.
 const CAPS: &str = "format = 8\n\
 [task.JOBS.ELF]\ncaps = []\n\
 [task.CAPPED.ELF]\ncaps = []\n\
