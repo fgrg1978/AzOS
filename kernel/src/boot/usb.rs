@@ -429,7 +429,8 @@ mod host {
         #[cfg(any(feature = "usb-storage", feature = "usb-net", feature = "usb-uvc"))]
         let reach = hc.dma_mask();
         // SAFETY: the controller started: every field is written.
-        let usb = unsafe { slot.assume_init() };
+        let mut usb = unsafe { slot.assume_init() };
+        usb.set_admission(admission());
         *STATE.lock() = Some(State {
             usb,
             events,
@@ -437,6 +438,21 @@ mod host {
             dma: (domain, reach),
         });
         Ok(())
+    }
+
+    /// The signed topology's `[usb.*]` rows as the core's admission rules; with
+    /// no verified topology there are none, and the build's default applies.
+    fn admission() -> azos_usb::admit::Admission {
+        let mut a = azos_usb::admit::Admission::build();
+        for r in azos_topology::get().map_or(&[][..], |t| t.usb_rules()) {
+            a.push(azos_usb::admit::Row {
+                vid: r.vid,
+                pid: r.pid,
+                class: r.class,
+                allow: r.authorize == azos_topology::UsbAuthorize::Allow,
+            });
+        }
+        a
     }
 
     /// Attach the xHCI function `f` the PCI bring-up found. `dma_mask` is the

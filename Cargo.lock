@@ -1186,6 +1186,7 @@ version = "0.1.0"
 dependencies = [
  "azos_cam_ring",
  "azos_chaos",
+ "azos_decision",
  "azos_devif",
  "azos_dma",
  "azos_drv_api",

@@ -21,6 +21,7 @@
 //! | `canary-modifier-order` | modifiers after the keys of the same report | `modifiers_come_before_the_keys_of_their_report` |
 //! | `canary-tier` | the hub tier is not compared | `a_device_behind_too_many_hubs_is_refused` |
 //! | `canary-composite` | a keyboard that is also storage is admitted | `a_keyboard_that_is_also_storage_is_refused` |
+//! | `canary-admit-all` | the core offers a keyboard to the driver whatever the topology rows say | `a_keyboard_no_topology_row_admits_never_reaches_the_driver_and_leaves_a_record` |
 //! | `canary-no-record` | the decision is not recorded | `every_authorization_is_recorded` |
 
 pub mod fixtures;

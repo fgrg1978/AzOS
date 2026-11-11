@@ -35,6 +35,7 @@
 //! kernel/src/boot/usb.rs.
 #![no_std]
 
+pub mod admit;
 pub mod class;
 #[cfg(feature = "dwc2")]
 pub mod dwc2;

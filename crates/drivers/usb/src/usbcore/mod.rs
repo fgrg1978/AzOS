@@ -52,6 +52,7 @@ use azos_devif::outcome::{BAD_ARGUMENT, BUSY, DENIED, FAULT, NO_RESOURCE, OK, UN
 use azos_devif::Out;
 use azos_rings::Producer;
 
+use crate::admit::Admission;
 use crate::class::{Claim, Registry, UsbDevice, WHOLE_DEVICE};
 use crate::event::{EventKind, UsbEvent, EVENT_DEPTH};
 use crate::hw::{Clock, DmaBuf, Memory, Regs, PAGE};
@@ -229,6 +230,8 @@ pub struct Stats {
     /// Completions that did not fit a pipe's ring (a driver exceeding the
     /// depth).
     pub completions_lost: u32,
+    /// Interfaces the admission rows refused to every class driver.
+    pub refused: u32,
 }
 
 const NO_EVENT: Option<UsbEvent> = None;
@@ -254,6 +257,7 @@ pub struct Usb<'q, R: Regs, M: Memory, C: Clock> {
     hubbuf: DmaBuf,
     seq: u32,
     pub(crate) stats: Stats,
+    admission: Admission,
 }
 
 /// Bytes of `ctl` the core uses for the data stage of its control transfers.
@@ -368,10 +372,17 @@ impl<'q, R: Regs, M: Memory, C: Clock> Usb<'q, R, M, C> {
             core::ptr::addr_of_mut!((*p).hubbuf).write(hubbuf);
             core::ptr::addr_of_mut!((*p).seq).write(0);
             core::ptr::addr_of_mut!((*p).stats).write(Stats::default());
+            core::ptr::addr_of_mut!((*p).admission).write(Admission::build());
             &mut *p
         };
         u.look_at_connected_ports();
         Ok(u)
+    }
+
+    /// The rows that decide which interfaces may bind a class driver; until
+    /// they are set the build's own default applies ([`Admission::build`]).
+    pub fn set_admission(&mut self, admission: Admission) {
+        self.admission = admission;
     }
 
     /// Every root port with something connected is enumerated on the next

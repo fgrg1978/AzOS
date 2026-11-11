@@ -106,12 +106,12 @@ fn set_idle(r: &[[u8; 8]]) -> bool {
     r.iter().any(|s| s[0] == 0x21 && s[1] == 0x0a)
 }
 
-/// The `usb-authorize` records of the device `vid_pid`.
+/// The HID driver's `usb-authorize` records (reasons 0 to 3) of the device `vid_pid`.
 fn records(vid_pid: u32) -> Vec<ProvenanceRecord> {
     let mut ids = vec![0u64; 1024];
     let f = Filter { rule: Some(azos_decision::Rule::UsbAuthorize as u8), verdict: None, subject: None, after: 0 };
     let n = azos_decision::query(&f, &mut ids);
-    ids[..n].iter().filter_map(|&i| azos_decision::lookup(i)).filter(|r| r.n[0] == vid_pid as u64).collect()
+    ids[..n].iter().filter_map(|&i| azos_decision::lookup(i)).filter(|r| r.n[0] == vid_pid as u64 && r.n[2] < 4).collect()
 }
 
 #[test]
@@ -341,6 +341,32 @@ fn the_table_is_full_when_every_slot_is_claimed() {
 }
 
 // ---- Authorization ----
+
+#[test]
+fn a_keyboard_no_topology_row_admits_never_reaches_the_driver_and_leaves_a_record() {
+    let mut b = Bench::new(ADMIT);
+    let mut rows = azos_usb::admit::Admission::with_default(true);
+    rows.push(azos_usb::admit::Row { vid: Some(0x046d), pid: None, class: Some(8), allow: true });
+    b.rig.usb.set_admission(rows);
+    let kb = keyboard_with_descriptor(0x4444, 0x0001);
+    b.rig.hw.attach_root(2, kb.clone());
+    b.settle();
+    assert_eq!(b.hid.0.state(0), State::Free, "never offered");
+    assert!(requests(&kb).iter().all(|r| !asked_for_report_descriptor(std::slice::from_ref(r))));
+    b.rig.hw.inject_in(&kb, 1, &[0, 0, 4, 0, 0, 0, 0, 0]);
+    b.run(50);
+    assert!(b.events().is_empty());
+    let mut ids = vec![0u64; 1024];
+    let f = Filter { rule: Some(azos_decision::Rule::UsbAuthorize as u8), verdict: Some(1), subject: Some(2), after: 0 };
+    let n = azos_decision::query(&f, &mut ids);
+    let rec: Vec<_> = ids[..n]
+        .iter()
+        .filter_map(|&i| azos_decision::lookup(i))
+        .filter(|r| r.n[0] == 0x4444_0001)
+        .collect();
+    assert_eq!(rec.len(), 1);
+    assert_eq!(rec[0].n[2], azos_usb::admit::Reason::NoRow as u64);
+}
 
 #[test]
 fn a_build_that_admits_no_hid_refuses_a_keyboard_before_it_talks_to_it() {

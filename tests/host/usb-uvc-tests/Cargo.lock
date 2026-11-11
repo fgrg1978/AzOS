@@ -29,6 +29,16 @@ name = "azos_common"
 version = "0.1.0"
 
 [[package]]
+name = "azos_decision"
+version = "0.1.0"
+dependencies = [
+ "azos_common",
+ "azos_limits",
+ "azos_records",
+ "azos_seclog",
+]
+
+[[package]]
 name = "azos_devif"
 version = "0.1.0"
 dependencies = [
@@ -90,6 +100,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "azos_records"
+version = "0.1.0"
+dependencies = [
+ "azos_limits",
+ "azos_rings",
+ "azos_seclog",
+]
+
+[[package]]
 name = "azos_rings"
 version = "0.1.0"
 
@@ -101,11 +120,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "azos_seclog"
+version = "0.1.0"
+dependencies = [
+ "azos_rings",
+]
+
+[[package]]
 name = "azos_usb"
 version = "0.1.0"
 dependencies = [
  "azos_cam_ring",
  "azos_chaos",
+ "azos_decision",
  "azos_devif",
  "azos_dma",
  "azos_drv_api",

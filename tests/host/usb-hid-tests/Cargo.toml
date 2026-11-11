@@ -29,6 +29,7 @@ canary-modifier-order = ["azos_usb_hid/canary-modifier-order"]
 canary-tier = ["azos_usb_hid/canary-tier"]
 canary-composite = ["azos_usb_hid/canary-composite"]
 canary-no-record = ["azos_usb_hid/canary-no-record"]
+canary-admit-all = ["azos_usb/canary-admit-all"]
 canary-ep0-close-no-abort = ["azos_usb/canary-ep0-close-no-abort"]
 
 [profile.release]

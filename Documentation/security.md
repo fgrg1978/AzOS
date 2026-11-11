@@ -512,6 +512,12 @@ all-zero entry would pass DMA through, so a fresh table starts blocked.
 A Linux driver server that drives a bus master on a
 board without an IOMMU is not built yet: no driver class is declared.
 
+## USB device admission
+
+A USB device names its own class, and nothing it says about itself is trusted. Before the USB core offers an interface to any class driver (HID, mass storage, CDC serial and network, UVC, SMSC95xx) it asks `azos_usb::admit::Admission::decide`, which follows the signed topology's `[usb.NAME]` rows (`vid`, `pid`, `class`, `authorize = "allow" | "deny"`): the first row whose selectors all match the device's ids and the interface's class decides, and an interface no row matches is refused. With no row at all the build decides (Kconfig `USB_ADMIT_WITHOUT_ROWS`: development builds admit, release and certifiable builds refuse; no verified topology counts as no rows). More rows than the core holds admit nothing. A refused interface is never offered to a driver, so an unadmitted keyboard types nothing into the console, an unadmitted stick is never mounted, an unadmitted network function is never registered (and never runs DHCP), and an unadmitted camera is never a frame source. Hubs belong to the core and need no row. The HID driver then applies its own checks (`USB_BIND_MAX_TIER`, `USB_HID_REFUSE_COMPOSITE`, `USB_HID_ADMIT`) on top.
+
+Every decision is a record of the rule `usb-authorize` (subject: the root port; numbers: vendor/product, the interface's class triple, the reason). Core reasons: 4 a row admits, 5 a row refuses, 6 rows exist and none matches, 7 no rows and the build refuses, 8 no rows and the build admits; reasons 0 to 3 are the HID driver's.
+
 ## Secure boot and signed artefacts
 
 Source: `crates/core/ota/src/secure_boot.rs`, `crates/core/ota/build.rs`,
