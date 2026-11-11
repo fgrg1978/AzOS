@@ -23,6 +23,10 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(loom)'] }
 # The pulled mmio_cap.rs's canary: a writable window on a bus master is granted
 # whatever the policy (`a_writable_window_on_a_bus_master_needs_the_policy` goes red).
 writable-master-canary = []
+# Host canary: a `[usb.*]` row's `port` selector matches every port.
+usb-port-ignored-canary = ["azos_topology/usb-port-ignored-canary"]
+# Host canary: the default topology carries no `[usb.*]` row.
+usb-default-rows-canary = ["azos_topology/usb-default-rows-canary"]
 # Host canary (tests/host/topology-tests): `irq.<selector>` mints a line a kernel device shares.
 irq-selector-shared-canary = []
 # Host canary (tests/host/topology-tests): an I/O port grant over a bus master's BAR skips the master policy.

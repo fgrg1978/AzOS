@@ -27069,6 +27069,20 @@ cat /usb/HELLO.TXT" 150 \
             "[USB] mass storage" "[USB] volume mounted at /usb: FAT32 at LBA 2048 (1 partition(s))" "stick says hello"
         rm -rf "$dir"
     }
+    # The topology's [usb.*] rows reach the core: with the development topology
+    # ending in a deny-all (`usb-deny-test`) the stick is never offered to the
+    # mass-storage driver, and the refusal is told on the console.
+    usb_deny_row() { # usb_deny_row <label> <rv|arm> <features>
+        local dir="$CI_LOG_DIR/usb-deny-$2" stick
+        rm -rf "$dir"; mkdir -p "$dir/files"; stick="$dir/stick.img"
+        printf 'stick says hello\n' >"$dir/files/HELLO.TXT"
+        if ! usb_stick_image "$stick" "$dir/files/HELLO.TXT"; then printf "  %-26s" "$1..."; bad; echo "      the stick image did not build"; return; fi
+        USH_QEMU_EXTRA="$(usb_stick_args "$stick")" USH_FORBID="$RECOVERY_PROMPT_RE|PAGE FAULT|\[USB\] mass storage|volume mounted" \
+            ushell_row "$1" "$2" "$3" PASS \
+            "#wait \[USB\] admission refused" 150 \
+            "[USB] admission refused an interface"
+        rm -rf "$dir"
+    }
     # Crash-log export: the shell copies CRASH.LOG and CRASH.OLD to the stick
     # through its /usb write tree; the orderly power-off ejects the volume.
     # Then, on the host: the two files are on the stick with their bytes and
@@ -27214,6 +27228,7 @@ args vk1 'vk 2'" 40 \
         # USB mass storage with its volume (helpers above `usb_stick_image`).
         # The USB features are not `base` ones: a gate build names them.
         par_row usb_mount_row "usb: stick volume mounted beside /fat ($ush_isa)" "$ush_isa" "$ush_feat,pci,usb-xhci,usb-storage-volume"
+        par_row usb_deny_row "usb: stick refused by the topology rows ($ush_isa)" "$ush_isa" "$ush_feat,pci,usb-xhci,usb-storage-volume,usb-deny-test"
         par "usb: crash log exported to the stick ($ush_isa)" usb_export_row \
             "usb: crash log exported to the stick ($ush_isa)" "usb: exported log on the stick, volume clean ($ush_isa)" \
             "$ush_isa" "$ush_feat,pci,usb-xhci,usb-storage-volume"

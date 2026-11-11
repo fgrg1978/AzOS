@@ -63,6 +63,13 @@ topo-verify-skip-canary = []
 # turn its gate row red. Never in a shipped build.
 topo-sched-hash-canary = []
 topo-device-canary = []
+# Host canary, never in a real build: a `[usb.*]` row's `port` selector matches every port.
+usb-port-ignored-canary = []
+# Host canary, never in a real build: the default topology carries no `[usb.*]` row.
+usb-default-rows-canary = []
+# Gate row `usb: unadmitted stick is refused`, never in a real build: the development
+# topology ends its `[usb.*]` rows with a deny-all instead of an allow-all.
+usb-deny-test = []
 topo-replay-canary = []
 emit-target-riscv64 = []
 emit-target-aarch64 = []

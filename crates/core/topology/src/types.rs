@@ -2576,10 +2576,13 @@ impl<'a> ModelSpec<'a> {
     }
 }
 
-/// One `[usb.NAME]` row (CAPS.TOML format 8): whether a USB device may bind a
-/// driver. Rows are tried in file order and the first match wins; a row with
-/// no selector matches every device and ends the list. A device no row
-/// matches is refused.
+/// One `[usb.NAME]` row (CAPS.TOML format 8): whether a USB interface may bind
+/// a driver. Rows are tried in file order and the first match wins; a row with
+/// no selector matches every interface and ends the list. An interface no row
+/// matches is refused. `vid` and `pid` name the device, `port` the root port it
+/// hangs below (on any hub tier), and `class` the class of the interface (not
+/// the device's), so a CDC network function needs rows for classes 2 and 10 or
+/// a `vid`/`pid` row.
 ///
 /// Consumed by the USB core (`Rule::UsbAuthorize` records).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -2590,8 +2593,11 @@ pub struct UsbSpec<'a> {
     pub vid: Option<u16>,
     /// `pid`: the product id (4 hex digits); needs `vid`.
     pub pid: Option<u16>,
-    /// `class`: the device or interface class code, if the row selects one.
+    /// `class`: the interface class code, if the row selects one.
     pub class: Option<u8>,
+    /// `port`: the root port (1-based) the device hangs below, if the row
+    /// selects one: the physical port of an on-board device.
+    pub port: Option<u8>,
     /// `authorize`: what happens to a device the row matches.
     pub authorize: UsbAuthorize,
 }
@@ -2599,17 +2605,17 @@ pub struct UsbSpec<'a> {
 impl<'a> UsbSpec<'a> {
     /// An empty placeholder.
     pub const fn empty() -> Self {
-        Self { name: MaybeStr::from_bytes(&[]), vid: None, pid: None, class: None, authorize: UsbAuthorize::Allow }
+        Self { name: MaybeStr::from_bytes(&[]), vid: None, pid: None, class: None, port: None, authorize: UsbAuthorize::Allow }
     }
 
     /// Does the row match every device?
     pub const fn is_catch_all(&self) -> bool {
-        self.vid.is_none() && self.class.is_none()
+        self.vid.is_none() && self.class.is_none() && self.port.is_none()
     }
 
     /// Do `self` and `o` select the same devices?
     fn same_selector(&self, o: &Self) -> bool {
-        self.vid == o.vid && self.pid == o.pid && self.class == o.class
+        self.vid == o.vid && self.pid == o.pid && self.class == o.class && self.port == o.port
     }
 }
 
@@ -3005,11 +3011,11 @@ impl<'a> Topology<'a> {
 
     /// What the `[usb.NAME]` rows decide for a device: the first row that
     /// matches, or [`UsbAuthorize::Deny`] when none does.
-    pub fn usb_decision(&self, vid: u16, pid: u16, class: u8) -> UsbAuthorize {
+    pub fn usb_decision(&self, port: u8, vid: u16, pid: u16, class: u8) -> UsbAuthorize {
         self.usb_rules()
             .iter()
             .find(|r| {
-                r.vid.is_none_or(|v| v == vid) && r.pid.is_none_or(|p| p == pid) && r.class.is_none_or(|c| c == class)
+                (cfg!(feature = "usb-port-ignored-canary") || r.port.is_none_or(|n| n == port)) && r.vid.is_none_or(|v| v == vid) && r.pid.is_none_or(|p| p == pid) && r.class.is_none_or(|c| c == class)
             })
             .map_or(UsbAuthorize::Deny, |r| r.authorize)
     }
@@ -3017,9 +3023,9 @@ impl<'a> Topology<'a> {
     /// Append a `[usb.NAME]` row. `Err(DuplicateRow(Usb))` for a repeated name,
     /// a row that an earlier one with the same selector or a catch-all makes
     /// unreachable, or a full table; `Err(BadRow(Usb))` for a name outside the
-    /// endpoint alphabet or a `pid` without a `vid`.
+    /// endpoint alphabet, a `pid` without a `vid` or `port = 0`.
     pub fn push_usb(&mut self, spec: UsbSpec<'a>) -> Result<(), AdmissionError> {
-        if !import_name_ok(spec.name.as_bytes()) || (spec.pid.is_some() && spec.vid.is_none()) {
+        if !import_name_ok(spec.name.as_bytes()) || (spec.pid.is_some() && spec.vid.is_none()) || spec.port == Some(0) {
             return Err(AdmissionError::BadRow(RowKind::Usb));
         }
         if self.usb_rules().iter().any(|r| r.name == spec.name || r.is_catch_all() || r.same_selector(&spec))

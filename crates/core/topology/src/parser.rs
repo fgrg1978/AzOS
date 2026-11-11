@@ -2712,7 +2712,7 @@ impl<'a> ModelStage<'a> {
     }
 }
 
-/// A `[usb.NAME]` section: `authorize` (required), `vid`, `pid`, `class`.
+/// A `[usb.NAME]` section: `authorize` (required), `vid`, `pid`, `class`, `port`.
 struct UsbStage<'a> {
     spec: UsbSpec<'a>,
     seen: u16,
@@ -2730,6 +2730,7 @@ impl<'a> UsbStage<'a> {
             b"vid" => 2,
             b"pid" => 4,
             b"class" => 8,
+            b"port" => 16,
             _ => return Err(ParseError::UnknownField),
         };
         claim(&mut self.seen, bit)?;
@@ -2740,7 +2741,8 @@ impl<'a> UsbStage<'a> {
             }
             2 => self.spec.vid = Some(usb_id_value(after)?),
             4 => self.spec.pid = Some(usb_id_value(after)?),
-            _ => self.spec.class = Some(uint_only(after, u8::MAX as u64)? as u8),
+            8 => self.spec.class = Some(uint_only(after, u8::MAX as u64)? as u8),
+            _ => self.spec.port = Some(uint_only(after, u8::MAX as u64)? as u8),
         }
         Ok(())
     }

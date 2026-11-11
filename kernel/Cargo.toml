@@ -460,6 +460,9 @@ dma-contig-canary = []
 topo-verify-skip-canary = ["azos_topology/topo-verify-skip-canary"]
 topo-sched-hash-canary = ["azos_topology/topo-sched-hash-canary"]
 topo-device-canary = ["azos_topology/topo-device-canary"]
+# Gate row `usb: unadmitted stick is refused`: the development topology ends its
+# [usb.*] rows with a deny-all.
+usb-deny-test = ["azos_topology/usb-deny-test"]
 topo-replay-canary = ["azos_topology/topo-replay-canary"]
 # Per-function `#[wcet(...)]` runtime telemetry. Default OFF (CI gate
 # rejected, KILL2). Opt-in on real hardware (VF2/K1) where rdcycle is reliable.

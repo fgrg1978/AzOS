@@ -305,7 +305,7 @@ impl<'q, R: Regs, M: Memory, C: Clock> Usb<'q, R, M, C> {
         if !d.is_hub() {
             for (ix, i) in d.config.interfaces().iter().enumerate() {
                 let triple = (i.class as u32) << 16 | (i.subclass as u32) << 8 | i.protocol as u32;
-                let reason = self.admission.decide((d.vid_pid() >> 16) as u16, d.vid_pid() as u16, i.class);
+                let reason = self.admission.decide(d.root_port, (d.vid_pid() >> 16) as u16, d.vid_pid() as u16, i.class);
                 admit::record(d.root_port, d.vid_pid(), triple, reason);
                 if !reason.admitted() {
                     self.stats.refused = self.stats.refused.saturating_add(1);

@@ -9,8 +9,8 @@
 //! filesystem parsed in ring 0. The core asks [`Admission::decide`] before it
 //! offers an interface to any registered class driver. The answer follows the
 //! signed topology's `[usb.NAME]` rows, copied in with [`Admission::push`]: the
-//! first row whose `vid`, `pid` and `class` all match decides (`class` is the
-//! interface's), and an interface no row matches is refused. With no row at
+//! first row whose `port` (root port), `vid`, `pid` and `class` all match
+//! decides (`class` is the interface's, never the device's), and an interface no row matches is refused. With no row at
 //! all the build decides (Kconfig `USB_ADMIT_WITHOUT_ROWS`: development builds
 //! admit, release and certifiable builds refuse).
 //!
@@ -27,6 +27,7 @@ pub const MAX_ROWS: usize = azos_limits::TOPOLOGY_MAX_USB_RULES as usize;
 /// One `[usb.NAME]` row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Row {
+    pub port: Option<u8>,
     pub vid: Option<u16>,
     pub pid: Option<u16>,
     pub class: Option<u8>,
@@ -77,7 +78,7 @@ impl Admission {
 
     pub const fn with_default(open_without_rows: bool) -> Self {
         Self {
-            rows: [Row { vid: None, pid: None, class: None, allow: false }; MAX_ROWS],
+            rows: [Row { port: None, vid: None, pid: None, class: None, allow: false }; MAX_ROWS],
             len: 0,
             open_without_rows,
             overflow: false,
@@ -99,10 +100,11 @@ impl Admission {
         &self.rows[..self.len]
     }
 
-    /// May the interface of `class` of the device `vid`:`pid` bind a driver?
-    pub fn decide(&self, vid: u16, pid: u16, class: u8) -> Reason {
+    /// May the interface of `class` of the device `vid`:`pid` below root port
+    /// `port` bind a driver?
+    pub fn decide(&self, port: u8, vid: u16, pid: u16, class: u8) -> Reason {
         #[cfg(feature = "canary-admit-all")]
-        let _ = (vid, pid, class);
+        let _ = (port, vid, pid, class);
         #[cfg(feature = "canary-admit-all")]
         return Reason::Row;
         #[cfg(not(feature = "canary-admit-all"))]
@@ -114,7 +116,7 @@ impl Admission {
                 return if self.open_without_rows { Reason::OpenWithoutRows } else { Reason::NoRows };
             }
             for r in self.rows() {
-                if r.vid.is_none_or(|v| v == vid) && r.pid.is_none_or(|p| p == pid) && r.class.is_none_or(|c| c == class) {
+                if r.port.is_none_or(|n| n == port) && r.vid.is_none_or(|v| v == vid) && r.pid.is_none_or(|p| p == pid) && r.class.is_none_or(|c| c == class) {
                     return if r.allow { Reason::Row } else { Reason::RowRefuses };
                 }
             }

@@ -17,12 +17,15 @@ use azos_abi::cap::{CapKind, CapPerms};
 use crate::placement::{Host, PlaceSpec};
 use crate::types::{
     CapSpec, ClassSpec, MaybeStr, PolicyKind, PolicyScope, PolicySpec, Preemption, SchedConfig, Topology, VolumeFormat,
-    VolumeSpec,
+    UsbAuthorize, UsbSpec, VolumeSpec,
 };
 
 // ──────────────────────────────────────────────────────────────────────────
 // Static literals — used as borrows in the resulting topology
 // ──────────────────────────────────────────────────────────────────────────
+
+/// Vendor id of the SMSC (Microchip) USB Ethernet functions on the Raspberry Pi 3 B's hub.
+const USB_VID_SMSC: u16 = 0x0424;
 
 const NAME_SAFETY: &[u8] = b"safety_critical";
 const NAME_HARD_RT: &[u8] = b"hard_rt";
@@ -2331,6 +2334,28 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
         topo.set_last_task_mem_pages(COMPMGR_MEM_PAGES);
         topo.set_last_task_start(true);
         topo.set_last_task_restart(crate::types::RestartPolicy::OnFailure);
+    }
+    // On-board USB devices are admitted by physical port and id; a device the
+    // user plugs in needs a row of its own. A build that binds USB class drivers
+    // without any row (development) ends the list with an allow-all row.
+    if !cfg!(feature = "usb-default-rows-canary") {
+        if azos_limits::USB_SMSC95XX {
+            topo.push_usb(UsbSpec {
+                name: MaybeStr::from_bytes(b"onboard-lan95xx"),
+                vid: Some(USB_VID_SMSC),
+                pid: None,
+                class: None,
+                port: Some(1),
+                authorize: UsbAuthorize::Allow,
+            })
+            .expect("default_minimal_topology: usb row push failed");
+        }
+        if azos_limits::USB_ADMIT_WITHOUT_ROWS {
+            // The gate's refusal row: the list ends with a deny-all instead.
+            let authorize = if cfg!(feature = "usb-deny-test") { UsbAuthorize::Deny } else { UsbAuthorize::Allow };
+            topo.push_usb(UsbSpec { name: MaybeStr::from_bytes(b"dev-open"), authorize, ..UsbSpec::empty() })
+                .expect("default_minimal_topology: usb row push failed");
+        }
     }
     // The row `neverallow-row-canary` exists to declare: a ring-3 image that
     // is not an actuation row holding a PWM channel with write access, which

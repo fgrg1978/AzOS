@@ -336,6 +336,9 @@ mod host {
     /// Held by the `usb` task for the length of a service call, which sleeps in
     /// enumeration: a sleeping mutex, not a spinlock.
     static STATE: Mutex<Option<State>> = Mutex::new(None);
+    /// Refusals the console has been told about, and how many lines it gets.
+    static REFUSED_SEEN: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+    const REFUSED_LOGGED_MAX: u32 = 8;
 
     /// The lister as the core sees it: a class driver that takes `LISTER`'s lock
     /// per call (the registry holds it for a whole service call, which sleeps).
@@ -429,8 +432,7 @@ mod host {
         #[cfg(any(feature = "usb-storage", feature = "usb-net", feature = "usb-uvc"))]
         let reach = hc.dma_mask();
         // SAFETY: the controller started: every field is written.
-        let mut usb = unsafe { slot.assume_init() };
-        usb.set_admission(admission());
+        let usb = unsafe { slot.assume_init() };
         *STATE.lock() = Some(State {
             usb,
             events,
@@ -446,6 +448,7 @@ mod host {
         let mut a = azos_usb::admit::Admission::build();
         for r in azos_topology::get().map_or(&[][..], |t| t.usb_rules()) {
             a.push(azos_usb::admit::Row {
+                port: r.port,
                 vid: r.vid,
                 pid: r.pid,
                 class: r.class,
@@ -651,6 +654,11 @@ mod host {
     /// Start the `usb` task, once the scheduler exists. A no-op without a
     /// controller.
     pub(crate) fn start_usb_task() {
+        // The signed topology is installed after the controller starts and
+        // before this task, which is the only place enumeration happens.
+        if let Some(st) = STATE.lock().as_mut() {
+            st.usb.set_admission(admission());
+        }
         #[cfg(any(feature = "usb-storage", feature = "usb-net", feature = "usb-uvc"))]
         let Some((domain, mask)) = STATE.lock().as_ref().map(|s| s.dma) else { return };
         #[cfg(feature = "usb-storage")]
@@ -1217,6 +1225,12 @@ mod host {
         }
         st.usb.service(&mut reg);
         drop(reg);
+        // A refusal is a decision record; the console says that one was made.
+        let refused = st.usb.stats().refused;
+        let seen = REFUSED_SEEN.swap(refused, core::sync::atomic::Ordering::Relaxed);
+        if refused > seen && seen < REFUSED_LOGGED_MAX {
+            kprintln!("[USB] admission refused an interface: no [usb.*] row admits it (decision record usb-authorize)");
+        }
         // The class drivers' second half: what needs the core, after its turn.
         #[cfg(feature = "usb-uvc")]
         camera_turn(&mut st.usb);

@@ -452,13 +452,39 @@ fn a_malformed_numa_envelope_or_usb_row_is_refused() {
 fn usb_rules_are_tried_in_order_and_default_to_deny() {
     let t = ok(&USB);
     // Hub: allowed by its id. Storage class 8: denied before the catch-all.
-    assert_eq!(t.usb_decision(0x1d6b, 0x0002, 9), UsbAuthorize::Allow);
-    assert_eq!(t.usb_decision(0x1d6b, 0x0003, 8), UsbAuthorize::Deny);
-    assert_eq!(t.usb_decision(0x0781, 0x5567, 3), UsbAuthorize::Allow);
+    assert_eq!(t.usb_decision(1, 0x1d6b, 0x0002, 9), UsbAuthorize::Allow);
+    assert_eq!(t.usb_decision(1, 0x1d6b, 0x0003, 8), UsbAuthorize::Deny);
+    assert_eq!(t.usb_decision(1, 0x0781, 0x5567, 3), UsbAuthorize::Allow);
     let t = ok("[usb.hid]\nclass = 3\nauthorize = \"allow\"\n");
-    assert_eq!(t.usb_decision(0x046d, 0xc077, 3), UsbAuthorize::Allow);
-    assert_eq!(t.usb_decision(0x046d, 0xc077, 8), UsbAuthorize::Deny, "no row matches: refused");
-    assert_eq!(ok("").usb_decision(1, 2, 3), UsbAuthorize::Deny, "no rows: everything refused");
+    assert_eq!(t.usb_decision(1, 0x046d, 0xc077, 3), UsbAuthorize::Allow);
+    assert_eq!(t.usb_decision(1, 0x046d, 0xc077, 8), UsbAuthorize::Deny, "no row matches: refused");
+    assert_eq!(ok("").usb_decision(1, 1, 2, 3), UsbAuthorize::Deny, "no rows: everything refused");
+}
+
+#[test]
+fn a_usb_row_can_name_the_root_port_of_an_on_board_device() {
+    let t = ok("[usb.lan]\nvid = \"0424\"\nport = 1\nauthorize = \"allow\"\n");
+    assert_eq!(t.usb_decision(1, 0x0424, 0xec00, 255), UsbAuthorize::Allow);
+    assert_eq!(t.usb_decision(2, 0x0424, 0xec00, 255), UsbAuthorize::Deny, "the same ids on another port");
+    assert_eq!(t.usb_rules()[0].port, Some(1));
+    assert_eq!(refused("[usb.lan]\nport = 0\nauthorize = \"allow\"\n"), bad(RowKind::Usb));
+}
+
+#[test]
+fn the_default_topology_admits_the_on_board_usb_ethernet_and_a_dev_build_everything() {
+    let t = azos_topology::default_minimal();
+    if azos_limits::USB_SMSC95XX {
+        assert_eq!(t.usb_decision(1, 0x0424, 0xec00, 255), UsbAuthorize::Allow, "the Pi's LAN95xx on root port 1");
+        if !azos_limits::USB_ADMIT_WITHOUT_ROWS {
+            assert_eq!(t.usb_decision(2, 0x0424, 0xec00, 255), UsbAuthorize::Deny);
+            assert_eq!(t.usb_decision(1, 0x0781, 0x5567, 8), UsbAuthorize::Deny, "a stick needs a row of its own");
+        }
+    }
+    if azos_limits::USB_ADMIT_WITHOUT_ROWS {
+        assert_eq!(t.usb_decision(1, 0x0781, 0x5567, 8), UsbAuthorize::Allow, "development builds keep admitting");
+    } else if !azos_limits::USB_SMSC95XX {
+        assert!(t.usb_rules().is_empty());
+    }
 }
 
 #[test]

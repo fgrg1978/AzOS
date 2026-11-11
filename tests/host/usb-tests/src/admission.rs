@@ -10,7 +10,7 @@ use crate::devices::{keyboard, stick};
 use crate::harness::Rig;
 
 fn row(vid: Option<u16>, pid: Option<u16>, class: Option<u8>, allow: bool) -> Row {
-    Row { vid, pid, class, allow }
+    Row { port: None, vid, pid, class, allow }
 }
 
 fn admission(open: bool, rows: &[Row]) -> Admission {
@@ -89,15 +89,22 @@ fn more_rows_than_fit_admit_nothing() {
     for _ in 0..=azos_usb::admit::MAX_ROWS {
         a.push(row(None, None, None, true));
     }
-    assert_eq!(a.decide(1, 2, 3), Reason::NoRow);
+    assert_eq!(a.decide(1, 1, 2, 3), Reason::NoRow);
 }
 
 #[test]
 fn the_reasons_say_why() {
     let a = admission(false, &[row(Some(1), None, None, true), row(Some(2), None, None, false)]);
-    assert_eq!(a.decide(1, 9, 3), Reason::Row);
-    assert_eq!(a.decide(2, 9, 3), Reason::RowRefuses);
-    assert_eq!(a.decide(3, 9, 3), Reason::NoRow);
-    assert_eq!(admission(false, &[]).decide(1, 1, 1), Reason::NoRows);
-    assert_eq!(admission(true, &[]).decide(1, 1, 1), Reason::OpenWithoutRows);
+    assert_eq!(a.decide(1, 1, 9, 3), Reason::Row);
+    assert_eq!(a.decide(1, 2, 9, 3), Reason::RowRefuses);
+    assert_eq!(a.decide(1, 3, 9, 3), Reason::NoRow);
+    assert_eq!(admission(false, &[]).decide(1, 1, 1, 1), Reason::NoRows);
+    assert_eq!(admission(true, &[]).decide(1, 1, 1, 1), Reason::OpenWithoutRows);
+}
+
+#[test]
+fn a_row_can_name_the_root_port() {
+    let a = admission(false, &[Row { port: Some(1), vid: Some(0x0424), pid: None, class: None, allow: true }]);
+    assert_eq!(a.decide(1, 0x0424, 0xec00, 255), Reason::Row);
+    assert_eq!(a.decide(2, 0x0424, 0xec00, 255), Reason::NoRow);
 }

@@ -784,6 +784,7 @@ fn emit_format8<W: Write>(topo: &Topology<'_>, out: &mut W) -> Result<(), EmitEr
         if let Some(v) = r.vid { writeln!(out, "vid = \"{:04x}\"", v)?; }
         if let Some(p) = r.pid { writeln!(out, "pid = \"{:04x}\"", p)?; }
         if let Some(c) = r.class { writeln!(out, "class = {}", c)?; }
+        if let Some(n) = r.port { writeln!(out, "port = {}", n)?; }
         writeln!(out, "authorize = \"{}\"", r.authorize.as_str())?;
     }
     Ok(())

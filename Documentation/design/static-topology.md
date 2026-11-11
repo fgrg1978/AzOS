@@ -693,7 +693,7 @@ authorize = "allow"
 | `[rtc]` | `dev` (required); `utc` (boolean, default `true`). | At most one section. |
 | `[nic.NAME]` | `dev` required; `mtu` (576 to 9216, default 1500); `mac` (`aa:bb:cc:dd:ee:ff`). | One row per device. A MAC is unicast, not all-zero, and in no other row. |
 | `[model.NAME]` | `bundle` (64 hex digits, required); `variant` (a name). | Bundle not all-zero and in no other row. |
-| `[usb.NAME]` | `authorize` (`allow`, `deny`; required); `vid`, `pid` (4 hex digits each), `class` (0 to 255). | Rules are tried in file order, the first match decides, and a device no rule matches is refused. A `pid` needs a `vid`. A row without `vid` or `class` matches every device and ends the list; a repeated selector is unreachable. |
+| `[usb.NAME]` | `authorize` (`allow`, `deny`; required); `vid`, `pid` (4 hex digits each), `class` (0 to 255, the interface's class), `port` (1 to 255, the root port the device hangs below). | Rules are tried in file order, the first match decides, and an interface no rule matches is refused. A `pid` needs a `vid`. A row without `vid`, `class` or `port` matches every device and ends the list; a repeated selector is unreachable. |
 
 `verity_root` is the `[volume.NAME]` key above; format 8 adds no second one.
 

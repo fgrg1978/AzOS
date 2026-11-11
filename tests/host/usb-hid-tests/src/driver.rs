@@ -346,7 +346,7 @@ fn the_table_is_full_when_every_slot_is_claimed() {
 fn a_keyboard_no_topology_row_admits_never_reaches_the_driver_and_leaves_a_record() {
     let mut b = Bench::new(ADMIT);
     let mut rows = azos_usb::admit::Admission::with_default(true);
-    rows.push(azos_usb::admit::Row { vid: Some(0x046d), pid: None, class: Some(8), allow: true });
+    rows.push(azos_usb::admit::Row { port: None, vid: Some(0x046d), pid: None, class: Some(8), allow: true });
     b.rig.usb.set_admission(rows);
     let kb = keyboard_with_descriptor(0x4444, 0x0001);
     b.rig.hw.attach_root(2, kb.clone());
