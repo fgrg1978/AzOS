@@ -1020,6 +1020,10 @@ impl<R: Regs, M: Memory, C: Clock> Xhci<R, M, C> {
         if specs.is_empty() || specs.len() > params.len() {
             return Err(Error::Invalid);
         }
+        // DCI 1 is endpoint 0, which the core owns.
+        if !cfg!(feature = "canary-ep0-data-endpoint") && specs.iter().any(|s| s.dci < 2) {
+            return Err(Error::Invalid);
+        }
         let mut add = 1u32;
         let mut pages = [DmaBuf::EMPTY; 8];
         for (i, s) in specs.iter().enumerate() {

@@ -1004,3 +1004,14 @@ fn a_noncoherent_controller_enumerates_through_a_hub_and_reuses_its_pages() {
         assert_eq!(rig.usb.devices().count(), 1, "round {round}: only the hub is left");
     }
 }
+
+#[test]
+fn an_endpoint_numbered_0_is_not_a_data_endpoint() {
+    let cfg = config_desc(1, &[iface(0, 8, 6, 0x50, vec![ep(0x80, 2, 512, 0), ep(0x00, 2, 512, 0), ep(0x82, 2, 512, 0)])]);
+    let (c, _) = azos_usb::usbcore::desc::parse_config_lenient(&cfg);
+    let c = c.expect("a configuration");
+    let eps = c.interfaces()[0].endpoints();
+    assert_eq!(eps.len(), 1, "{eps:?}");
+    assert_eq!(eps[0].address, 0x82);
+    assert_eq!(c.dropped, 2);
+}

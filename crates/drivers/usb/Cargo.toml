@@ -155,3 +155,5 @@ canary-uvc-alt = ["uvc"]
 canary-uvc-payload-overflow = ["uvc"]
 # Every interface is offered to the class drivers whatever the admission rows say.
 canary-admit-all = []
+# An endpoint numbered 0 in a configuration descriptor is a data endpoint (xHCI DCI 1).
+canary-ep0-data-endpoint = []

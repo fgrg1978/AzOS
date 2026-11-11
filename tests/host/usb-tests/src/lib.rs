@@ -14,6 +14,7 @@
 //! | canary | what it breaks | test |
 //! |---|---|---|
 //! | `canary-admit-all` | every interface is offered to the class drivers whatever the admission rows say | `admission::` (all) |
+//! | `canary-ep0-data-endpoint` | an endpoint numbered 0 in a configuration descriptor is kept as a data endpoint | `an_endpoint_numbered_0_is_not_a_data_endpoint` |
 //! | `canary-ac64` | DMA above 4 GiB on a 32-bit controller | `controller_without_ac64_gets_low_memory` |
 //! | `canary-csz` | 32-byte contexts on a 64-byte controller | `controller_with_64_byte_contexts_enumerates` |
 //! | `canary-scratchpad` | scratchpad count read from the low field | `scratchpad_count_is_the_split_field` |

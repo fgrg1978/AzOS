@@ -416,6 +416,12 @@ pub fn parse_config_lenient(b: &[u8]) -> (Option<ConfigDesc>, Option<DescError>)
                     cur = None;
                 }
             }
+            // Endpoint number 0 is the control endpoint, never a data one.
+            DT_ENDPOINT if len >= 7 && d[2] & 0x0f == 0 && !cfg!(feature = "canary-ep0-data-endpoint") => {
+                c.dropped = c.dropped.saturating_add(1);
+                last_ep = None;
+                last_alt_ep = None;
+            }
             DT_ENDPOINT if len >= 7 => {
                 if let Some((iface, alt)) = alt_cur {
                     let n = c.num_alt_endpoints as usize;
