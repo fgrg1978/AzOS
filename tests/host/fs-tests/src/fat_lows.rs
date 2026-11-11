@@ -145,3 +145,36 @@ fn a_mount_that_fails_in_recovery_leaves_nothing_for_the_next_medium() {
     assert_eq!(fat32::fat32_mount(), Ok(()));
     assert_eq!(fat32::fat32_lookup_root(b"C       TXT"), Ok((3, 5)), "the second medium was read with the first one's geometry");
 }
+
+/// **A failed write frees what it linked, not what a size says.** Two handles
+/// of one file: B extends the file by a cluster and has not recorded the size;
+/// A, whose size is older, writes past the end of a full volume and fails. A
+/// linked nothing, so B's cluster stays in the chain.
+#[test]
+fn a_failed_write_does_not_free_the_clusters_another_handle_added() {
+    let _g = serial();
+    let _wt = crate::write_through();
+    let g = Geom::default();
+    let mut img = build(&g);
+    set_fat(&mut img, &g, 2, EOC);
+    mount(img);
+    let vol = fat32::Volume::assume_mounted();
+    let rw = fat32::open_flags::WRITE | fat32::open_flags::CREATE;
+    let a = fat32::fat32_open(vol, b"/F.DAT", rw).expect("A");
+    assert_eq!(fat32::fat32_write(a, b"x"), Ok(1));
+    assert_eq!(fat32::fat32_fsync(a), Ok(()));
+    let b = fat32::fat32_open(vol, b"/F.DAT", fat32::open_flags::WRITE).expect("B");
+    assert_eq!(fat32::fat32_seek(b, fat32::SeekFrom::Start(1)), Ok(1));
+    assert_eq!(fat32::fat32_write(b, &[7u8; 600]), Ok(600));
+    // Every other cluster goes to a third file.
+    let x = fat32::fat32_open(vol, b"/X.DAT", rw).expect("X");
+    let _ = fat32::fat32_write(x, &vec![1u8; 300 * 512]);
+    let before = fs_test_drivers::disk_peek(g.rsvd as u64).unwrap();
+    let (c0, c1) = (3u32, fat_of(&before, 3));
+    assert!((2..210).contains(&c1) && fat_of(&before, c1) == EOC, "premise: F is two clusters ({c1})");
+    assert_eq!(fat32::fat32_seek(a, fat32::SeekFrom::Start(1024)), Ok(1024));
+    assert!(fat32::fat32_write(a, b"y").is_err(), "the volume is full");
+    let after = fs_test_drivers::disk_peek(g.rsvd as u64).unwrap();
+    assert_eq!(fat_of(&after, c0), c1, "A's failure cut B's cluster out of the chain");
+    assert_eq!(fat_of(&after, c1), EOC, "B's cluster was freed");
+}

@@ -150,6 +150,8 @@ overlay-raw-compare-canary = []
 fat-low-hardening-canary = []
 # A mount that fails after publishing its geometry stays mounted (`fat_lows`).
 fat-mount-leak-canary = []
+# A failed write cuts the chain by its handle's stale size (`fat_lows`).
+fat-stale-size-cut-canary = []
 # A retired mount's inodes left on its backend (see crates/fs).
 usb-volume-stale-fd-canary = []
 # FX12: declared so the cfg is known; the kernel's `ktest` feature turns it

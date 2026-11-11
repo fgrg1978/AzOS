@@ -6313,7 +6313,12 @@ fn chain_step(v: &'static Vol, cluster: u32, n: u32) -> Result<u32, FsError> {
 /// Walk the cluster chain starting at `first_cluster` to the `n`-th position,
 /// allocating new clusters as needed.  The final cluster is marked as
 /// end-of-chain.  Returns the cluster number at position `n`.
-fn chain_nth_or_extend(v: &'static Vol, first_cluster: u32, n: u32) -> Result<u32, FsError> {
+///
+/// `first_link` records, once, the cluster this call hung its first new
+/// cluster after: what a failed write gives back is what it linked, no more.
+fn chain_nth_or_extend(
+    v: &'static Vol, first_cluster: u32, n: u32, first_link: &mut Option<u32>,
+) -> Result<u32, FsError> {
     if first_cluster < FAT32_FIRST_DATA_CLUSTER { return Err(FsError::InvalidArg); }
     // Same bound as `chain_nth`: no legitimate chain can be longer than the
     // number of entries the FAT holds, and refusing early stops a crafted
@@ -6374,6 +6379,7 @@ fn chain_nth_or_extend(v: &'static Vol, first_cluster: u32, n: u32) -> Result<u3
             if cfg!(feature = "fw-chain-walk-canary") {
                 fat32_write_fat_entry(v, fresh, FAT32_END_OF_CHAIN).map_err(|()| FsError::Io)?;
             }
+            first_link.get_or_insert(cur);
             cur = fresh;
         } else {
             cur = next;
@@ -6408,6 +6414,7 @@ fn zero_fill_range(
     bytes_per_clus: u32,
     spc: u32,
     data_start: u32,
+    first_link: &mut Option<u32>,
 ) -> Result<(), FsError> {
     let mut pos = start;
     // The last (index, cluster) reached, as in `write_loop`: the next sector
@@ -6418,8 +6425,8 @@ fn zero_fill_range(
         let offset_in_cluster = (pos % bytes_per_clus) as usize;
         let cluster = match cursor {
             Some((i, c)) if i == cluster_index => c,
-            Some((i, c)) if i + 1 == cluster_index => chain_nth_or_extend(v, c, 1)?,
-            _ => chain_nth_or_extend(v, first_cluster, cluster_index)?,
+            Some((i, c)) if i + 1 == cluster_index => chain_nth_or_extend(v, c, 1, first_link)?,
+            _ => chain_nth_or_extend(v, first_cluster, cluster_index, first_link)?,
         };
         cursor = Some((cluster_index, cluster));
         let first_sector = cluster_first_sector(data_start, cluster, spc)
@@ -6793,12 +6800,13 @@ fn fat32_write_raw(v: &'static Vol, file: Fat32File, buf: &[u8]) -> Result<usize
     // physically on the newly linked clusters exposed as file data. See
     // `zero_fill_range`.
     let mut written = 0usize;
+    let mut first_link = None;
     let outcome = if e.pos > e.size {
-        zero_fill_range(v, e.first_cluster, e.size, e.pos, bytes_per_clus, spc, data_start)
+        zero_fill_range(v, e.first_cluster, e.size, e.pos, bytes_per_clus, spc, data_start, &mut first_link)
     } else {
         Ok(())
     }
-    .and_then(|()| write_loop(v, &mut e, buf, &mut written, bytes_per_clus, spc, data_start));
+    .and_then(|()| write_loop(v, &mut e, buf, &mut written, bytes_per_clus, spc, data_start, &mut first_link));
 
     // Nothing landed and the chain was started by this call: hand the chain
     // back and leave the handle as it was. Kept, it would be allocated and
@@ -6807,10 +6815,15 @@ fn fat32_write_raw(v: &'static Vol, file: Fat32File, buf: &[u8]) -> Result<usize
         if let Some(fresh) = fresh_first {
             fat32_free_chain_on(v, fresh);
             e = before;
-        } else if !cfg!(feature = "fat-hole-unbounded-canary") {
-            // A hole that stopped part-way (a full volume) linked clusters the
-            // file's size does not reach: give them back.
+        } else if cfg!(feature = "fat-stale-size-cut-canary") {
             cut_chain_beyond(v, e.first_cluster, e.size, bytes_per_clus);
+        } else if let Some(anchor) = first_link {
+            // A write that failed without landing a byte (a full volume)
+            // gives back the clusters it linked itself. The handle's size is
+            // not consulted: another handle of the file may have extended it.
+            if !cfg!(feature = "fat-hole-unbounded-canary") {
+                cut_chain_after(v, anchor);
+            }
         }
     }
     // Persist updated size/position/dirty/first_cluster back into the slot —
@@ -6829,8 +6842,18 @@ fn fat32_write_raw(v: &'static Vol, file: Fat32File, buf: &[u8]) -> Result<usize
     }
 }
 
-/// Free the clusters of the chain at `first` past those that cover `size`
-/// bytes (at least one): a failed write's links. The new end of the chain is
+/// Free the chain after `anchor`: the clusters a failed write linked. The new
+/// end of the chain is written before the tail is freed. Best effort.
+fn cut_chain_after(v: &'static Vol, anchor: u32) {
+    let Ok(tail) = fat32_next_cluster(v, anchor) else { return };
+    if tail < FAT32_FIRST_DATA_CLUSTER || tail >= FAT32_EOC { return; }
+    if fat32_write_fat_entry(v, anchor, FAT32_END_OF_CHAIN).is_ok() {
+        fat32_free_chain_on(v, tail);
+    }
+}
+
+/// `fat-stale-size-cut-canary` only: free the clusters of the chain at `first`
+/// past those that cover `size` bytes (at least one). The new end of the chain is
 /// written before the tail is freed. Best effort; what it cannot cut stays
 /// linked and the mount check's size comparison reports it.
 fn cut_chain_beyond(v: &'static Vol, first: u32, size: u32, bytes_per_clus: u32) {
@@ -6854,6 +6877,7 @@ fn write_loop(
     bytes_per_clus: u32,
     spc: u32,
     data_start: u32,
+    first_link: &mut Option<u32>,
 ) -> Result<(), FsError> {
     // The last (index, cluster) reached. The next sector is in
     // that cluster or the one after it, one FAT step away, so a write of n
@@ -6867,8 +6891,8 @@ fn write_loop(
         let cluster = match cursor {
             Some((i, c)) if i == cluster_index && !cfg!(feature = "fw-chain-walk-canary") => c,
             Some((i, c)) if i + 1 == cluster_index && !cfg!(feature = "fw-chain-walk-canary") =>
-                chain_nth_or_extend(v, c, 1)?,
-            _ => chain_nth_or_extend(v, e.first_cluster, cluster_index)?,
+                chain_nth_or_extend(v, c, 1, first_link)?,
+            _ => chain_nth_or_extend(v, e.first_cluster, cluster_index, first_link)?,
         };
         cursor = Some((cluster_index, cluster));
         let first_sector = cluster_first_sector(data_start, cluster, spc)

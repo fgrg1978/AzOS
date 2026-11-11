@@ -13945,6 +13945,8 @@ host_job host_canary_row "fs: a limited check serves read-write canary" fs-tests
     the_check_verdict_follows_the_policy
 host_job host_canary_row "fs: a failed mount stays mounted canary" fs-tests fat-mount-leak-canary \
     a_mount_that_fails_in_recovery_leaves_nothing_for_the_next_medium
+host_job host_canary_row "fs: a failed write cuts by a stale size canary" fs-tests fat-stale-size-cut-canary \
+    a_failed_write_does_not_free_the_clusters_another_handle_added
 host_job host_canary_row "call task: no deadline to the server canary (devif)" devif-tests call-deadline-canary \
     a_call_through_the_task_carries_the_clients_deadline_to_the_server
 host_job host_canary_row "ring-3: dt inherited coherence canary" hwbus-tests dt-inherited-coherent-canary \

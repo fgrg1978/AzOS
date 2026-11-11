@@ -212,6 +212,9 @@ fat-low-hardening-canary = []
 # Host canary: a mount that fails after publishing its geometry stays mounted
 # (fs-tests `fat_lows`).
 fat-mount-leak-canary = []
+# Host canary: a failed write cuts the chain beyond its handle's (possibly
+# stale) size instead of freeing only what it linked (fs-tests `fat_lows`).
+fat-stale-size-cut-canary = []
 
 # Power-loss safety (S3) canaries, each must turn a fs-tests `s3` test red.
 #   fat-dirty-bit-canary:       the mount never sets the volume dirty flag
