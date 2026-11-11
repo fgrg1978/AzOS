@@ -116,6 +116,9 @@ exec-floor-canary = []
 # Canary: a forked Linux child is also granted `/fat` read-write,
 # which its row does not declare. The gate's fork row must fail with it.
 linux-abi-fork-canary = []
+# Canary: an exec into another row leaves the task at the caller row's class,
+# priority and timer slack. The gate's exec-row row must fail with it.
+exec-row-sched-canary = []
 # D6 canary: a child the ring-3 runtime hosts gets no startup block, so the
 # runtime starts on its defaults (the console, `/`) and the descriptors and
 # working directory of its spawn request are lost. The gate's spawn-hand-over

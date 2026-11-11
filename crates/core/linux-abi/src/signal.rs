@@ -288,6 +288,16 @@ pub fn read_frame(arch: Arch, w: &[u64]) -> Option<(Context, u64, bool)> {
     })
 }
 
+/// [`read_frame`] for a frame whose program counter must lie below `top`, the
+/// end of user space: a restored `pc` at a kernel address would only fault the
+/// task at its first instruction, so it is refused here, as a resume of a
+/// hosted frame is.
+///
+/// Canary `sigreturn-pc-unbounded-canary`: any `pc` is accepted.
+pub fn read_frame_below(arch: Arch, w: &[u64], top: u64) -> Option<(Context, u64, bool)> {
+    read_frame(arch, w).filter(|r| cfg!(feature = "sigreturn-pc-unbounded-canary") || r.0.pc < top)
+}
+
 /// The riscv64 sigreturn trampoline: `li a7, 139; ecall`. The kernel maps it
 /// read-execute into every user address space (riscv64 musl has no
 /// `SA_RESTORER`; Linux's own riscv64 kernel returns through its vDSO the

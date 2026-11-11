@@ -52,6 +52,9 @@ rt-levels-never-canary = ["azos_abi/rt-levels-never-canary"]
 # `sched-rt` admit and `sched-rt-util` u93/suspend smokes were; their three
 # tests must go red.
 rt-hart-load-canary = []
+# Canary of `row_gate.rs`: a fork child is never refused past its row's
+# `instances`; `a_fork_child_is_refused_past_its_rows_instances` must go red.
+fork-row-instance-canary = []
 
 [dependencies]
 # Kconfig CHAOS / DECISION_RECORDS_DEV sites in the #[path]-pulled sources

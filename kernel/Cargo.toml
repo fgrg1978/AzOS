@@ -285,10 +285,16 @@ task-view-stale-canary = []
 # Canary: orphans are not re-parented (the orphan rows go red).
 # Never in a real build.
 orphan-reparent-canary = ["azos_sched/orphan-reparent-canary"]
+# Canary: a fork child is never refused past its row's `instances` (the Linux
+# fork-past-instances row goes red). Never in a real build.
+fork-row-instance-canary = ["azos_sched/fork-row-instance-canary"]
 # Canary: the subreaper mark is never set (the shell's orphan rows go
 # red). Never in a real build.
 subreaper-mark-canary = ["azos_sched/subreaper-mark-canary"]
 linux-abi-fork-canary = ["azos_syscall/linux-abi-fork-canary", "azos_topology/linux-abi-test"]
+# Canary: an exec into another row keeps the caller row's class and priority
+# (the gate's exec-row canary row goes red). Never in a real build.
+exec-row-sched-canary = ["linux-exec-row-test", "azos_syscall/exec-row-sched-canary"]
 linux-busybox-test = ["azos_topology/linux-busybox-test"]
 linux-threads-test = ["azos_topology/linux-threads-test", "linux-abi-test"]
 # A streamed image changed between its two reads (refused,

@@ -19,6 +19,14 @@ writev-per-segment-canary = []
 # x86_64 again, so a Linux row the ring-3 runtime does not host is admitted
 # and mistranslated; `x86_64_has_no_in_kernel_table` fails.
 x86-in-kernel-table-canary = []
+# Gate canary: `st_size` is the plain cast and `st_blocks` the unchecked sum,
+# which overflows for a size near `i64::MAX`; `a_huge_size_does_not_overflow_stat` fails.
+stat-size-wrap-canary = []
+# Gate canary: the unanswered-call tally counts nothing; `the_tally_counts_each_number` fails.
+tally-unrecorded-canary = []
+# Gate canary: `rt_sigreturn` restores any program counter, kernel addresses
+# included; `a_frame_with_a_kernel_pc_is_not_restored` fails.
+sigreturn-pc-unbounded-canary = []
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("azos"))'] }

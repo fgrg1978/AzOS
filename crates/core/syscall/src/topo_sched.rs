@@ -190,6 +190,50 @@ pub fn resolve_image(image: &'static str, fallback: Option<&'static str>) -> (To
     }
 }
 
+/// May a task exec into the row named `row`? Not when the row declares a
+/// real-time reservation: admission (`azos_sched::rt::check`/`reserve`, the
+/// hart it is pinned to) is a spawn's, and an exec gives the reservation to no
+/// one.
+pub fn exec_may_enter(row: &str) -> bool {
+    !matches!(resolve(row.as_bytes()), TopoSched::Apply { rt: Some(_), .. })
+}
+
+/// The task `tid`, which has just exec'd into row `row`, runs as the row says
+/// and not as the row it left: the reservation it held and the hart it pinned
+/// go; its class, priority, timer slack and call budget are the row's, as a
+/// spawn of the row gives them. A row the topology does not name, or no
+/// topology, changes nothing; a class this build does not schedule leaves the
+/// default priority, as a spawn does.
+///
+/// Canary `exec-row-sched-canary`: the caller's row keeps its class, priority
+/// and slack.
+pub fn apply_exec_row(tid: u32, row: &str) {
+    if cfg!(feature = "exec-row-sched-canary") {
+        return;
+    }
+    let Some(idx) = azos_sched::idx_for_tid(tid) else { return };
+    let (params, slack, budget) = match resolve(row.as_bytes()) {
+        TopoSched::NoRow => return,
+        TopoSched::Refused => ((azos_sched::DEFAULT_PRIORITY, azos_sched::task::DEFAULT_SCHED_CLASS_RAW), false, 0),
+        TopoSched::Apply { priority, class, .. } => {
+            let topo = azos_topology::get();
+            (
+                (priority, class as u8),
+                topo.is_some_and(|t| t.row_timer_slack(row.as_bytes())),
+                topo.and_then(|t| t.row_place(row.as_bytes())).map_or(0, |p| p.call_budget_us as u64),
+            )
+        }
+    };
+    if azos_sched::rt::task_reservation(idx).is_some() {
+        azos_sched::rt::withdraw(idx, azos_sched::current_sched_params().0);
+    }
+    azos_sched::set_current_sched_params(params.0, params.1);
+    if let Some(sc) = azos_sched::classes::sc_of(idx) {
+        sc.set_timer_slack_row(slack);
+        sc.set_call_budget(budget);
+    }
+}
+
 /// QoS timer tolerance: record on task `tid`'s scheduling context that its
 /// row (`row`, the name `resolve_image` answered with) says
 /// `timer_slack = true`. Where the row is applied, once, so the timer heap

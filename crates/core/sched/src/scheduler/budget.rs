@@ -701,58 +701,20 @@ pub fn note_mm_quota_refusal() {
 // A row declares `instances = N` (default 1) and memory admission counted N
 // copies of its budget (plus one COW copy each when its image may fork). This
 // count keeps the running system inside what was counted: at most N live
-// spawned (or exec'd) instances of a row. Fork children are NOT instances
-// they are bounded by the memory budget, and the
-// COW copy admission charges a forking row is what pays for them. A task
+// spawned (or exec'd) instances of a row. A fork child IS one: each child
+// holds a budget of its own, so the row's `instances` is the bound on how
+// many processes of the row (parents and forked children) are live; a row
+// that forks declares as many as it needs. A task
 // holds at most one count (`TaskMem::row`) and gives it back at exit. Rows
 // are identified by index + 1, as `TaskMem::row` stores them.
 //
 // A gate, not a statistic: every claim is a compare-exchange against the cap,
 // so two harts cannot both take the last instance.
 
+pub use crate::row_gate::{row_cap, row_claim, row_claim_for_fork, row_live, row_release};
+
 const ROW_SLOTS: usize = azos_limits::MAX_TASKS;
-
-static ROW_LIVE: [AtomicU32; ROW_SLOTS] = [const { AtomicU32::new(0) }; ROW_SLOTS];
 static MM_INSTANCE_REFUSALS: AtomicU32 = AtomicU32::new(0);
-
-/// Take one live-instance count of `row` (index + 1) whose `instances` is
-/// `cap`. `true` for row 0 (no row: nothing is counted). `false`, and
-/// nothing taken, when `cap` instances are already live.
-pub fn row_claim(row: u16, cap: u16) -> bool {
-    let i = row as usize;
-    if i == 0 || i > ROW_SLOTS {
-        return true;
-    }
-    let live = &ROW_LIVE[i - 1];
-    let mut cur = live.load(Ordering::Relaxed);
-    loop {
-        if cur >= cap as u32 {
-            return false;
-        }
-        match live.compare_exchange_weak(cur, cur + 1, Ordering::AcqRel, Ordering::Relaxed) {
-            Ok(_) => return true,
-            Err(now) => cur = now,
-        }
-    }
-}
-
-/// Give back a count taken by [`row_claim`]. Saturates at 0.
-pub fn row_release(row: u16) {
-    let i = row as usize;
-    if i == 0 || i > ROW_SLOTS {
-        return;
-    }
-    let _ = ROW_LIVE[i - 1].fetch_update(Ordering::AcqRel, Ordering::Relaxed, |v| v.checked_sub(1));
-}
-
-/// Instances of `row` (index + 1) live now.
-pub fn row_live(row: u16) -> u32 {
-    let i = row as usize;
-    if i == 0 || i > ROW_SLOTS {
-        return 0;
-    }
-    ROW_LIVE[i - 1].load(Ordering::Relaxed)
-}
 
 // ── Kconfig `LOCKED_HUGE_LEAVES`: the boot-reserved region of a row ──────────
 //
@@ -1461,6 +1423,12 @@ pub(crate) fn slot_is_linux(idx: usize) -> bool {
 /// Is the current task a Linux task?
 pub fn current_is_linux() -> bool {
     azos_limits::LINUX_ABI && current_slot().is_some_and(slot_is_linux)
+}
+
+/// Is `tid` a live Linux task? A personality entry whose TID is not one has
+/// outlived its process (the TID may be a native task's by now) and is free.
+pub fn tid_is_linux(tid: u32) -> bool {
+    azos_limits::LINUX_ABI && idx_for_tid(tid).is_some_and(slot_is_linux)
 }
 
 /// Does the task in slot `idx` carry a foreign ABI's per-thread CPU state

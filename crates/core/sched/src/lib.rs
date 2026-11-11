@@ -18,6 +18,8 @@ pub mod ready_list;
 /// Band budget and EDF + CBS arithmetic (host-tested).
 pub mod rt_core;
 pub mod rt_receipt;
+/// Live instances per topology row (host-tested).
+pub mod row_gate;
 pub mod timer_heap;
 pub mod wake_list;
 pub mod scheduler;

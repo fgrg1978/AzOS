@@ -2490,7 +2490,7 @@ mod image_profiles {
     /// **Canary.** Add `SYS_SPAWN_EX` to `BUSYBOX.ELF`'s row: red.
     #[test]
     fn a_third_party_row_lists_only_what_the_personality_reaches() {
-        let mut reach: BTreeSet<u16> = azos_linux_abi::TABLE.iter().flat_map(|e| e.2.iter().copied()).collect();
+        let mut reach: BTreeSet<u16> = azos_linux_abi::TABLE.iter().flat_map(|e| e.native.iter().copied()).collect();
         // ... and the native calls the ring-3 runtime makes for itself.
         reach.extend(azos_linux_rt::RUNTIME_NATIVE.iter().copied());
         let base: BTreeSet<&str> = IMAGE_PROFILES.iter().map(|p| p.image).collect();
@@ -2675,7 +2675,7 @@ mod image_profiles {
         let (nrs, ops) = derive_files("LXRT", Lang::Rust, files);
         let mut allowed: BTreeSet<u16> = azos_linux_rt::RUNTIME_NATIVE.iter().copied().collect();
         for e in azos_linux_abi::TABLE {
-            allowed.extend(e.2.iter().copied());
+            allowed.extend(e.native.iter().copied());
         }
         let n = numbers();
         let name = |x: u16| n.iter().find(|(_, v)| **v == x).map(|(k, _)| k.clone()).unwrap_or(format!("{x}"));

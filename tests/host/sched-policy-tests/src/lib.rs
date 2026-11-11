@@ -50,6 +50,11 @@ pub mod sc;
 #[path = "../../../../crates/core/sched/src/slot_bitmap.rs"]
 pub mod slot_bitmap;
 
+#[path = "../../../../crates/core/sched/src/row_gate.rs"]
+pub mod row_gate;
+#[cfg(test)]
+mod row_gate_tests;
+
 /// `scheduler::ring_claim_audit`'s slot sets, at the fleet profile's
 /// `MAX_TASKS` (4096, `config/limits/Kconfig.limits`), with slots on both sides of word
 /// boundaries.

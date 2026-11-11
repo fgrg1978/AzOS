@@ -12480,6 +12480,10 @@ host_job host_canary_row "fs: a change by name drops the floor canary" fs-tests 
 host_job host_canary_row "fs: the tree ops do not tell the root canary (syscall)" syscall-tests beneath-root-canary the_ops_that_change_the_tree_name_the_directory_they_are_rooted_at
 host_job host_canary_row "containment: the companion link exempt canary (syscall)" syscall-tests link-exempt-canary a_contained_engine_writes_only_its_companion_socket
 host_job host_canary_row "linux: the personality's stat and listing ask no tree canary (syscall)" syscall-tests linux-path-unfloored-canary the_personality_stats_and_lists_beneath_the_covering_tree
+host_job host_canary_row "linux: stat of a huge size canary (linux-abi)" linux-abi-tests stat-size-wrap-canary a_huge_size_does_not_overflow_stat
+host_job host_canary_row "linux: sigreturn pc canary (linux-abi)" linux-abi-tests sigreturn-pc-unbounded-canary a_frame_with_a_kernel_pc_is_not_restored
+host_job host_canary_row "linux: unanswered tally canary (linux-abi)" linux-abi-tests tally-unrecorded-canary the_tally_counts_each_number
+host_job host_canary_row "linux: fork past instances canary (sched)" sched-policy-tests fork-row-instance-canary a_fork_child_is_refused_past_its_rows_instances
 host_job host_canary_row "ext4: an open's badge is its slot canary" ext4-tests badge-slot-canary a_badge_from_an_earlier_server_reaches_nothing
 host_job host_canary_row "ext4: a late block completion taken canary" ext4-tests stale-completion-canary a_late_completion_is_dropped
 host_job host_canary_row "ext4: the server's row holds one more partition canary" topology-tests ext4d-grant-canary ext4d_holds_its_partition_endpoint_and_region_and_nothing_else
@@ -28325,8 +28329,16 @@ echo after-bb-int \$?"
                 USH_DISK=busybox USH_FAULTS=3 USH_FORBID="$RECOVERY_PROMPT_RE|lx: .* FAIL" par_row ushell_row "linux: execve into another row ($ush_isa)" "$ush_isa" "$ush_feat,linux-exec-row-test" PASS \
                     "busybox sh -c 'echo x > /fat/BBX.TXT && echo bb-fat-ok; exec /fat/LXHELLO.ELF from-bb'
 echo after-x \$?" 180 \
-                    "bb-fat-ok" "execve into row LXHELLO.ELF (from row BUSYBOX.ELF)" \
+                    "bb-fat-ok" "execve into row LXHELLO.ELF (from row BUSYBOX.ELF)" "class=best_effort prio=27" \
                     "lx: create outside caps refused ok" "lx: done failures=0" "after-x 0"
+                # The exec'd image runs at its own row's class and priority
+                # (BUSYBOX.ELF's row is a notch away from LXHELLO.ELF's under
+                # this test). Canary `exec-row-sched-canary`: the caller row's
+                # priority stays, and the line reads prio=25.
+                USH_DISK=busybox USH_FAULTS=3 USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "linux: execve row scheduling canary ($ush_isa)" "$ush_isa" "$ush_feat,exec-row-sched-canary" FAIL \
+                    "busybox sh -c 'echo x > /fat/BBX.TXT && echo bb-fat-ok; exec /fat/LXHELLO.ELF from-bb'
+echo after-x \$?" 180 \
+                    "bb-fat-ok" "execve into row LXHELLO.ELF (from row BUSYBOX.ELF)" "class=best_effort prio=27"
                 exec_refused_script="busybox sh -c 'exec /fat/LXHELLO.ELF from-bb'
 echo after-x \$?"
                 USH_DISK=busybox USH_FORBID="$RECOVERY_PROMPT_RE|lx: hello" par_row ushell_row "linux: execve into a row, no grant ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-test" PASS \
@@ -28335,6 +28347,17 @@ echo after-x \$?"
                 USH_DISK=busybox USH_FORBID="$RECOVERY_PROMPT_RE" USH_QEMU_EXTRA="-append canary=exec-grant-skip" par_row ushell_row "linux: execve launch canary ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-test" FAIL \
                     "$exec_refused_script" 150 \
                     "execve REFUSED: row BUSYBOX.ELF holds no launch grant for LXHELLO.ELF (exec-grant record)"
+                # A fork child counts against its row's `instances`
+                # (BUSYBOX.ELF declares 4): the shell and three background
+                # children fit, the fourth fork is refused and the shell says
+                # so. Canary `fork-row-instance-canary`: no fork is refused.
+                fork_cap_script="busybox sh -c 'sleep 2 & sleep 2 & sleep 2 & sleep 2 & wait; echo fork-cap-done'"
+                USH_DISK=busybox USH_FORBID="$RECOVERY_PROMPT_RE|PAGE FAULT|SECCOMP" par_row ushell_row "linux: fork past the row's instances ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-test" PASS \
+                    "$fork_cap_script" 150 \
+                    "can't fork" "fork-cap-done"
+                USH_DISK=busybox USH_FORBID="$RECOVERY_PROMPT_RE" par_row ushell_row "linux: fork instances canary ($ush_isa)" "$ush_isa" "$ush_feat,linux-busybox-test,fork-row-instance-canary" FAIL \
+                    "$fork_cap_script" 150 \
+                    "can't fork" "fork-cap-done"
             fi
             # The BusyBox row is a deployment's, not only the gate's.
             # A kernel built from a `.config` with USERSPACE_GPL + BUSYBOX

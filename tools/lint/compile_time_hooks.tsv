@@ -80,6 +80,7 @@ exec-bounce-pi-canary	pending
 exec-no-dethread-canary	pending	
 exec-no-pid-swap-canary	pending	
 exec-regs-canary	hot	a site on kernel/src/entry/aarch64/trap.rs, kernel/src/entry/riscv64/trap.rs, kernel/src/entry/x86_64/trap.rs
+exec-row-sched-canary	pending	
 exec-sig-handover-canary	pending	
 exit-irq-masked-canary	hot	crates/core/sched/src/scheduler/lifecycle.rs: task_exit_with_code, the exit path of every task
 exit-satp-canary	pending	
@@ -97,6 +98,7 @@ file-census	pending
 foreign-regs-canary	pending	
 fork-profile	pending	
 fork-refusal-probe	pending	a smoke kernel_main starts (kernel/src/smokes/): its task, a runtime smoke= name
+fork-row-instance-canary	pending	
 fs-base-cache-canary	pending	
 futex-wake-noop-canary	pending	
 fw-chain-walk-canary	pending	

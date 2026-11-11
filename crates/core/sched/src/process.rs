@@ -2055,11 +2055,15 @@ pub enum ForkRefusalSite {
     /// The clone of the parent's mappings found them inconsistent (a resident
     /// page with no leaf): refused, not an out-of-memory.
     CloneInvariant = 9,
+    /// The parent's row already has `instances` live processes: a fork child
+    /// is one more, refused past the cap.
+    Instances = 10,
 }
 
-const FORK_REFUSAL_SITES: usize = 10;
+const FORK_REFUSAL_SITES: usize = 11;
 
 static FORK_REFUSAL_COUNTS: [core::sync::atomic::AtomicU32; FORK_REFUSAL_SITES] = [
+    core::sync::atomic::AtomicU32::new(0),
     core::sync::atomic::AtomicU32::new(0),
     core::sync::atomic::AtomicU32::new(0),
     core::sync::atomic::AtomicU32::new(0),
@@ -2084,6 +2088,7 @@ fn fork_refusal_site_name(site: ForkRefusalSite) -> &'static str {
         ForkRefusalSite::MemBudget => "mem-budget",
         ForkRefusalSite::SpaceExhausted => "space-exhausted",
         ForkRefusalSite::CloneInvariant => "clone-invariant",
+        ForkRefusalSite::Instances => "row-instances",
     }
 }
 
@@ -2316,6 +2321,20 @@ fn fork_hooked_inner(
     // critical section, not to a new process.
     let t_ph = crate::prof::t();
     let (child_prio, child_class) = crate::scheduler::current_sched_params();
+    // The child is one of its row's live instances (see `row_claim`), refused
+    // past the row's `instances` before any task exists for it. Given back on
+    // the failure exits below; from `set_task_mem_row` on, its exit does.
+    let parent_row = crate::scheduler::current_proc_mem_row();
+    if !crate::scheduler::row_claim_for_fork(parent_row) {
+        let live = crate::scheduler::row_live(parent_row);
+        let n = crate::scheduler::note_mm_instance_refusal();
+        azos_drv_sys::kwarn!(
+            "[MEM] fork REFUSED: its row already has {} of {} live instance(s) (instance refusals: {})",
+            live, crate::scheduler::row_cap(parent_row), n,
+        );
+        azos_mm::aspace::destroy(child_space);
+        return note_fork_refusal(ForkRefusalSite::Instances);
+    }
     // Who created whom, so `wait` knows who to notify: set with the slot, under
     // the exit-notice admission.
     let child_idx = match crate::try_task_create_init(
@@ -2331,6 +2350,7 @@ fn fork_hooked_inner(
         Some(idx) => idx,
         None => {
             azos_mm::aspace::destroy(child_space);
+            crate::scheduler::row_release(parent_row);
             return note_fork_refusal(ForkRefusalSite::PoolExhausted);
         }
     };
@@ -2350,9 +2370,11 @@ fn fork_hooked_inner(
             // Unreachable: the slot was just allocated. Still release the
             // address space — it is not yet published on any task.
             azos_mm::aspace::destroy(child_space);
+            crate::scheduler::row_release(parent_row);
             return note_fork_refusal(ForkRefusalSite::TidLookupMiss);
         }
     };
+    crate::scheduler::set_task_mem_row(child_idx, parent_row);
 
     crate::prof::add(3, t_ph);
     let t_ph = crate::prof::t();

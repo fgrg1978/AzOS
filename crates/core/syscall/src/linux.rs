@@ -205,7 +205,7 @@ pub fn proc_init(tid: u32, row: &str, exe: &[u8]) -> bool {
     }
     let mut t = TABLE.lock();
     let slot = t.iter().position(|p| p.tid == tid).or_else(|| {
-        t.iter().position(|p| p.tid == 0 || azos_sched::idx_for_tid(p.tid).is_none())
+        t.iter().position(|p| p.tid == 0 || !azos_sched::scheduler::tid_is_linux(p.tid))
     });
     let Some(i) = slot else { return false };
     let p = &mut t[i];
@@ -298,7 +298,10 @@ fn reach(num: u64) {
     match azos_sched::scheduler::current_native_verdict(num) {
         FilterVerdict::Allow => {}
         FilterVerdict::Audit => crate::handlers::record_seccomp_audit(num as u16),
-        FilterVerdict::Deny | FilterVerdict::Linux => crate::handlers::seccomp_deny_kill(num),
+        FilterVerdict::Deny | FilterVerdict::Linux => {
+            SECCOMP_REFUSED.record(num);
+            crate::handlers::seccomp_deny_kill(num)
+        }
     }
 }
 
@@ -527,8 +530,9 @@ fn dispatch_slow(num: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64)
         }
         nr::MMAP => sys_mmap(a0, a1, a2, a3, a4, a5),
         nr::MPROTECT => {
-            // Exactly PROT_READ/PROT_WRITE; PROT_EXEC refused.
-            reach(k::SYS_MO_MAP);
+            // Exactly PROT_READ/PROT_WRITE; PROT_EXEC refused. The native
+            // path is `SYS_INVOKE`/`DOMAIN_MPROTECT`.
+            reach(k::SYS_INVOKE);
             lx::errno_from_native(crate::handlers::sys_mprotect(a0, a1, a2), le::ENOMEM)
         }
         nr::MUNMAP => {
@@ -584,6 +588,11 @@ fn dispatch_slow(num: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64)
                 return neg(le::EINVAL);
             }
             let tid = if a0 == 0 { azos_sched::current_task_tid() } else { a0 as u32 };
+            // A task it may not signal is as absent as for `kill`: no probing of TIDs.
+            let me_thread = azos_sched::current_task_tid();
+            if tid != me_thread && !may_signal(azos_sched::current_proc_tid(), me_thread, tid) {
+                return neg(le::ESRCH);
+            }
             let Some(pin) = azos_sched::task_cpu_affinity(tid) else { return neg(le::ESRCH) };
             let online = azos_sched::smp::NUM_ONLINE_CPUS.load(core::sync::atomic::Ordering::Acquire);
             let words = lx::cpu_set::<WORDS>(pin, online);
@@ -596,10 +605,12 @@ fn dispatch_slow(num: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64)
             // PR_SET_CHILD_SUBREAPER, PR_GET_CHILD_SUBREAPER: the
             // same mark as the native `DOMAIN_SUBREAPER`.
             36 => {
+                reach(k::SYS_INVOKE);
                 azos_sched::scheduler::task_subreaper(Some(a1 != 0));
                 0
             }
             37 => {
+                reach(k::SYS_INVOKE);
                 let on = azos_sched::scheduler::task_subreaper(None) as i32;
                 if put_user(a1, &on.to_le_bytes()) { 0 } else { neg(le::EFAULT) }
             }
@@ -609,9 +620,28 @@ fn dispatch_slow(num: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64)
     }
 }
 
+/// Calls answered `-ENOSYS`, per Linux number: what a real binary asks for
+/// that the table lacks (the evidence a call is added on). Read with
+/// [`not_answered`]; the console gets a line at the first few calls of a task
+/// and at each doubling of a number's count.
+static NOT_ANSWERED: lx::tally::Tally = lx::tally::Tally::new();
+/// Translated calls a seccomp profile refused, per native number.
+static SECCOMP_REFUSED: lx::tally::Tally = lx::tally::Tally::new();
+
+/// Calls of Linux number `num` answered `-ENOSYS` since boot.
+pub fn not_answered(num: u64) -> u32 {
+    NOT_ANSWERED.count(num)
+}
+
+/// Calls of native number `num` a Linux task's profile refused since boot.
+pub fn seccomp_refused(num: u64) -> u32 {
+    SECCOMP_REFUSED.count(num)
+}
+
 /// A Linux call the personality does not answer: `-ENOSYS`, reported on the
 /// console the first few times per task, never passed to a native handler.
 fn unanswered(num: u64) -> i64 {
+    let n = NOT_ANSWERED.record(num);
     let first = with_me(|p| {
         let f = p.reported < 16;
         p.reported = p.reported.saturating_add(1);
@@ -623,6 +653,8 @@ fn unanswered(num: u64) -> i64 {
             "[LINUX] tid={} syscall {} not answered by the personality: -ENOSYS",
             azos_sched::current_task_tid(), num,
         );
+    } else if lx::tally::worth_a_line(n) {
+        azos_drv_sys::kprintln!("[LINUX] syscall {} answered -ENOSYS {} times, all tasks", num, n);
     }
     neg(le::ENOSYS)
 }
@@ -1103,15 +1135,24 @@ fn sys_close(fd: u64) -> i64 {
     // names it (`dup3` aliases share one handle). A pipe's two descriptors
     // share one region: its end goes with the last descriptor naming that
     // end, the region with the last naming either.
-    let (named, end_named) = with_me(|p| {
+    // The slot's transition is the token: a second thread closing the same
+    // descriptor finds it closed and releases nothing (the handle number may
+    // already name another file).
+    let (named, end_named) = match with_me(|p| {
+        if p.fds[fd as usize].kind == Kind::Closed {
+            return None;
+        }
         p.fds[fd as usize] = FD_CLOSED;
         if e.kind == Kind::Dir {
             p.dirs[e.dir as usize] = DIR_FREE;
         }
         let same = |f: &FdEnt| f.kind == e.kind && f.handle == e.handle;
-        (p.fds.iter().any(same), p.fds.iter().any(|f| same(f) && f.accmode == e.accmode))
-    })
-    .unwrap_or((true, true));
+        Some((p.fds.iter().any(same), p.fds.iter().any(|f| same(f) && f.accmode == e.accmode)))
+    }) {
+        Some(Some(n)) => n,
+        Some(None) => return neg(le::EBADF),
+        None => (true, true),
+    };
     if e.kind == Kind::Pipe && !end_named {
         return pipe_release(&e, !named);
     }
@@ -1140,6 +1181,7 @@ fn stat_fd(e: FdEnt) -> Result<lx::Stat, i64> {
             st.blksize = 4096;
         }
         Kind::Handle => {
+            reach(k::SYS_INVOKE);
             let fd = crate::handlers::file_desc_of(e.handle as u64).map_err(|r| lx::errno_from_native(r, le::EBADF))?;
             let ops = file_ops().ok_or(neg(le::EIO))?;
             // The size is where the end is; the offset is put back.
@@ -1159,7 +1201,7 @@ fn stat_fd(e: FdEnt) -> Result<lx::Stat, i64> {
         }
         Kind::Closed => return Err(neg(le::EBADF)),
     }
-    st.blocks = (st.size + 511) / 512;
+    st.blocks = lx::blocks_512(st.size);
     Ok(st)
 }
 
@@ -1185,9 +1227,9 @@ fn stat_path(path: &[u8]) -> Result<lx::Stat, i64> {
         ino,
         mode: s.mode,
         nlink: s.nlink.max(1),
-        size: s.size as i64,
+        size: lx::size_word(s.size),
         blksize: 512,
-        blocks: (s.size as i64 + 511) / 512,
+        blocks: lx::blocks_512(lx::size_word(s.size)),
         atime: s.atime as i64,
         mtime: s.mtime as i64,
         ctime: s.ctime as i64,
@@ -1244,6 +1286,7 @@ fn sys_lseek(fd: u64, off: u64, whence: u64) -> i64 {
     }
     match e.kind {
         Kind::Handle => {
+            reach(k::SYS_INVOKE);
             let d = match crate::handlers::file_desc_of(e.handle as u64) {
                 Ok(d) => d,
                 Err(r) => return lx::errno_from_native(r, le::EBADF),
@@ -2285,7 +2328,7 @@ pub fn on_return_to_user(
         let n = sig::head_words(a);
         let restored = {
             let mut buf = FRAME_BUF.lock();
-            match get_user_words(sp, &mut buf[..n]).then(|| sig::read_frame(a, &buf[..n])).flatten() {
+            match get_user_words(sp, &mut buf[..n]).then(|| sig::read_frame_below(a, &buf[..n], azos_sched::process::USER_STACK_TOP as u64)).flatten() {
                 Some((r, mask, true)) => {
                     let f = sig::fp_words(a);
                     get_user_words(sp + 8 * f.start as u64, &mut buf[f.clone()]).then(|| {
@@ -2754,6 +2797,12 @@ fn exec_image(path_ptr: u64, argv_ptr: u64, envp_ptr: u64) -> Result<[usize; FDS
         );
         return Err(neg(le::EACCES));
     }
+    if cross && !crate::topo_sched::exec_may_enter(profile.image) {
+        azos_drv_sys::kwarn!(
+            "[LINUX] tid={} execve REFUSED: row {} declares a real-time reservation, which only a spawn admits", me, profile.image,
+        );
+        return Err(neg(le::EACCES));
+    }
     let mem = if cross { Some(crate::topo_sched::resolve_mem(profile.image, None).0) } else { None };
     let (argv, env) = strs[..al + el].split_at(al);
     let prepared = crate::spawn::with_elf(ops, &img, &path[..plen], &mut buf[..], &mut |elf| {
@@ -2844,8 +2893,10 @@ fn enter_row(me: u32, profile: &'static azos_sched::seccomp::ImageProfile, own: 
         p.row[..n].copy_from_slice(&profile.image.as_bytes()[..n]);
         p.row_len = n as u8;
     });
+    crate::topo_sched::apply_exec_row(me, profile.image);
+    let (prio, class) = azos_sched::current_sched_params();
     azos_drv_sys::kprintln!(
-        "[LINUX] tid={} execve into row {} (from row {}): {} capabilities dropped, {:?}",
-        me, profile.image, own, dropped, seeded,
+        "[LINUX] tid={} execve into row {} (from row {}): {} capabilities dropped, {:?}, class={} prio={}",
+        me, profile.image, own, dropped, seeded, crate::topo_sched::class_name_of(class), prio,
     );
 }

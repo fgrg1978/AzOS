@@ -12,6 +12,12 @@ description = "Host-side tests for the Linux personality's pure half (crates/cor
 azos_linux_abi = { path = "../../../crates/core/linux-abi" }
 azos_abi = { path = "../../../crates/core/abi" }
 
+[features]
+# Canaries of the pure half (crates/core/linux-abi): each makes the named test red.
+stat-size-wrap-canary = ["azos_linux_abi/stat-size-wrap-canary"]
+tally-unrecorded-canary = ["azos_linux_abi/tally-unrecorded-canary"]
+sigreturn-pc-unbounded-canary = ["azos_linux_abi/sigreturn-pc-unbounded-canary"]
+
 [profile.release]
 overflow-checks = true
 

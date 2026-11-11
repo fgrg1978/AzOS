@@ -192,7 +192,7 @@ mod tests {
     #[test]
     fn the_table_has_one_row_per_number() {
         let mut seen = std::collections::HashSet::new();
-        for &(n, name, _reach) in TABLE {
+        for &Syscall { nr: n, name, .. } in TABLE {
             assert!(seen.insert(n), "{name} ({n}) listed twice");
             assert_eq!(number_of(name), Some(n));
         }
@@ -1286,5 +1286,198 @@ mod native_table {
             assert!(!linux_task_runs(false, false, n));
             assert!(!linux_task_runs(false, true, n));
         }
+    }
+}
+
+#[cfg(test)]
+mod stat_and_sigreturn_bounds {
+    use azos_linux_abi::signal as sg;
+    use azos_linux_abi::*;
+
+    /// A size a ring-3 filesystem server answers near `i64::MAX` is a `stat`,
+    /// not a kernel abort (`overflow-checks` is on): the size saturates and
+    /// the blocks never wrap.
+    ///
+    /// **Canary.** `stat-size-wrap-canary` (the plain cast and the unchecked
+    /// sum): the sum overflows and the test fails.
+    #[test]
+    fn a_huge_size_does_not_overflow_stat() {
+        assert_eq!(size_word(u64::MAX), i64::MAX);
+        assert_eq!(size_word(7), 7);
+        assert_eq!(blocks_512(i64::MAX), i64::MAX / 512);
+        assert_eq!(blocks_512(i64::MAX - 100), i64::MAX / 512);
+        assert_eq!(blocks_512(0), 0);
+        assert_eq!(blocks_512(1), 1);
+        assert_eq!(blocks_512(512), 1);
+        assert_eq!(blocks_512(513), 2);
+        assert_eq!(blocks_512(-5), 0, "a negative size has no blocks");
+        let st = Stat { size: size_word(u64::MAX), blocks: blocks_512(size_word(u64::MAX)), ..Stat::default() };
+        assert_eq!(st.to_bytes().len(), STAT_SIZE);
+    }
+
+    /// `rt_sigreturn` restores a frame whose `pc` is in user space and refuses
+    /// one at or above its end, on both ISAs.
+    ///
+    /// **Canary.** `sigreturn-pc-unbounded-canary`: every `pc` is accepted.
+    #[test]
+    fn a_frame_with_a_kernel_pc_is_not_restored() {
+        const TOP: u64 = 0x40_0000_0000;
+        for a in [Arch::Riscv64, Arch::Aarch64] {
+            let mut c = sg::Context { gpr: [0; 32], pc: 0, pstate: 0 };
+            let mut w = vec![0u64; sg::frame_words(a)];
+            c.pc = TOP - 4;
+            assert!(sg::write_frame(a, &mut w, &c, 0, &sg::Info::default(), false).is_some());
+            assert!(sg::read_frame_below(a, &w, TOP).is_some(), "{a:?}: a user pc comes back");
+            c.pc = TOP;
+            assert!(sg::write_frame(a, &mut w, &c, 0, &sg::Info::default(), false).is_some());
+            assert!(sg::read_frame_below(a, &w, TOP).is_none(), "{a:?}: the end of user space is refused");
+            c.pc = 0xffff_ffc0_0000_0000;
+            assert!(sg::write_frame(a, &mut w, &c, 0, &sg::Info::default(), false).is_some());
+            assert!(sg::read_frame_below(a, &w, TOP).is_none(), "{a:?}: a kernel address is refused");
+        }
+    }
+}
+
+/// The table (`src/table.rs`) is the one source of the Linux calls the
+/// personality answers; these tests fail when what is derived from it, or what
+/// should agree with it, drifts: `Documentation/linux-syscalls.md`, the
+/// `reach(..)` calls of `linux.rs` (audit 11-11 L-1), the ring-3 runtime's
+/// numbers.
+///
+/// Run with `UPDATE_LINUX_SYSCALLS_DOC=1` to rewrite the document.
+#[cfg(test)]
+mod table_drift {
+    use azos_linux_abi::*;
+    use std::collections::BTreeSet;
+
+    const DOC: &str = "../../../Documentation/linux-syscalls.md";
+
+    pub fn render() -> String {
+        let mut rows: Vec<&Syscall> = TABLE.iter().collect();
+        rows.sort_by_key(|e| e.nr);
+        let mut s = String::new();
+        s.push_str("<!-- Generated from crates/core/linux-abi/src/table.rs by tests/host/linux-abi-tests (table_drift::the_document_is_the_table); do not edit by hand. -->\n\n");
+        s.push_str("# Linux calls the personality answers\n\n");
+        s.push_str("One row per Linux call (asm-generic numbers, riscv64 and aarch64; the x86-64 face translates to these). A call not listed answers `-ENOSYS` and is counted per number (`azos_linux_abi::tally`), so the next call to add is the one a real binary asked for.\n\n");
+        s.push_str("Class: `needed` is answered in full for what the measured binaries ask of it; `deferred` is answered in a reduced shape and waits for the tally; `never` is refused by design.\n\n");
+        s.push_str("| Number | Call | Class | Native calls reached | Note |\n|---:|---|---|---|---|\n");
+        for e in rows {
+            let native = if e.native_names.is_empty() { "none".to_string() } else { e.native_names.iter().map(|n| format!("`{n}`")).collect::<Vec<_>>().join(", ") };
+            s.push_str(&format!("| {} | `{}` | {} | {} | {} |\n", e.nr, e.name, e.class.name(), native, e.note));
+        }
+        s
+    }
+
+    #[test]
+    fn the_document_is_the_table() {
+        let want = render();
+        if std::env::var_os("UPDATE_LINUX_SYSCALLS_DOC").is_some() {
+            std::fs::write(DOC, &want).unwrap();
+        }
+        let have = std::fs::read_to_string(DOC).unwrap_or_else(|e| panic!("{DOC}: {e}"));
+        assert!(have == want, "Documentation/linux-syscalls.md is not the table: UPDATE_LINUX_SYSCALLS_DOC=1 cargo test --release the_document_is_the_table");
+    }
+
+    #[test]
+    fn every_native_name_is_its_number() {
+        for e in TABLE {
+            assert_eq!(e.native.len(), e.native_names.len(), "{}", e.name);
+            assert!(e.class != Class::Never, "{}: a call refused by design is not in the table", e.name);
+        }
+    }
+
+    /// The `reach(k::X)` calls of `linux.rs`, per call, are the table's native
+    /// numbers: nothing is reached that the table (so every seccomp profile)
+    /// does not list, and what the table lists is reached by the handler or
+    /// named below with the reason it is not.
+    ///
+    /// **Canary (by hand).** Change a `reach(..)` argument in `linux.rs`, or a
+    /// `native` list in `table.rs`: red.
+    #[test]
+    fn the_handlers_reach_what_the_table_lists() {
+        let src: String = std::fs::read_to_string("../../../crates/core/syscall/src/linux.rs").expect("linux.rs");
+        // The native numbers the table lists and no `reach(..)` asks for.
+        let unreached: &[(&str, &str, &str)] = &[
+            ("exit", "SYS_THREAD_EXIT", "a thread's exit is the runtime's; the in-kernel table asks for SYS_EXIT"),
+            ("ppoll", "SYS_SLEEP_UNTIL", "answered by the ring-3 runtime only"),
+            ("clone", "SYS_CAP_CLOSE", "the failed child's descriptors are closed after the fork, no reach"),
+            ("execve", "SYS_CAP_CLOSE", "the close-on-exec descriptors close through sys_close's own reach"),
+            ("execve", "SYS_SPAWN_EX", "the exec hands the image to the scheduler, no native entry"),
+        ];
+        let mut checked = 0;
+        for e in TABLE {
+            let mut reached: BTreeSet<String> = BTreeSet::new();
+            for h in e.handlers {
+                let text = match h.strip_prefix("arm:") {
+                    Some(arm) => {
+                        let at = src.find(&format!("        nr::{arm} =>")).unwrap_or_else(|| panic!("{}: arm {arm} moved", e.name));
+                        let rest = &src[at + 8..];
+                        let end = at + 8 + rest.find("\n        nr::").into_iter().chain(rest.find("\n        _ =>")).min().unwrap_or(rest.len());
+                        src[at..end].to_string()
+                    }
+                    None => {
+                        let at = src.find(&format!("fn {h}(")).unwrap_or_else(|| panic!("{}: fn {h} moved", e.name));
+                        let end = src[at..].find("\n}\n").map_or(src.len(), |x| at + x);
+                        src[at..end].to_string()
+                    }
+                };
+                for part in text.split("reach(k::").skip(1) {
+                    let n: String = part.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+                    reached.insert(n);
+                }
+            }
+            let listed: BTreeSet<String> = e.native_names.iter().map(|s| s.to_string()).collect();
+            let extra: Vec<_> = reached.difference(&listed).collect();
+            assert!(extra.is_empty(), "{}: linux.rs reaches {extra:?}, which the table does not list", e.name);
+            for n in listed.difference(&reached) {
+                assert!(
+                    unreached.iter().any(|u| u.0 == e.name && u.1 == n),
+                    "{}: the table lists {n}, which no handler reaches (add the reach or name it in `unreached`)", e.name
+                );
+            }
+            checked += 1;
+        }
+        assert_eq!(checked, TABLE.len());
+    }
+
+    /// The ring-3 runtime answers the table's numbers: each call it names is
+    /// in the table, and each table call it does not name is one only the
+    /// in-kernel table answers.
+    #[test]
+    fn the_runtime_answers_the_tables_numbers() {
+        let rt = std::fs::read_to_string("../../../userspace/lib/linux_rt/src/lib.rs").expect("linux_rt");
+        let kernel_only = ["rt_sigsuspend", "set_robust_list"];
+        for e in TABLE {
+            let tok = format!("nr::{}", e.name.to_ascii_uppercase());
+            let named = rt.contains(&tok);
+            assert_eq!(!named, kernel_only.contains(&e.name), "{}: the runtime names it = {named}", e.name);
+        }
+    }
+}
+
+#[cfg(test)]
+mod unanswered_tally {
+    use azos_linux_abi::tally::*;
+
+    /// Each number is counted by itself, a number past the table shares the
+    /// last slot, and the console gets a line at each doubling.
+    ///
+    /// **Canary.** `tally-unrecorded-canary`: nothing is counted.
+    #[test]
+    fn the_tally_counts_each_number() {
+        let t = Tally::new();
+        assert_eq!(t.record(435), 1);
+        assert_eq!(t.record(435), 2);
+        assert_eq!(t.record(440), 1);
+        assert_eq!(t.count(435), 2);
+        assert_eq!(t.count(1), 0);
+        t.record(10_000);
+        t.record(u64::MAX);
+        assert_eq!(t.count(NUMBERS as u64 - 1), 2, "numbers past the end share the last slot");
+        let mut seen = Vec::new();
+        t.for_each(|n, c| seen.push((n, c)));
+        assert_eq!(seen, vec![(435, 2), (440, 1), (NUMBERS as u64 - 1, 2)]);
+        let lines: Vec<u32> = (1..=40).filter(|&c| worth_a_line(c)).collect();
+        assert_eq!(lines, vec![1, 2, 4, 8, 16, 32]);
     }
 }

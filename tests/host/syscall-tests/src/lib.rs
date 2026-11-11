@@ -728,6 +728,11 @@ mod handlers {
     }
 
     #[cfg(test)]
+    mod personality_authority {
+        include!("personality_authority.rs");
+    }
+
+    #[cfg(test)]
 
     #[cfg(test)]
 

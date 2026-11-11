@@ -172,8 +172,8 @@ fn dump_sched_counters() {
     // one-shot `[FORK] refusal site first hit: ...` line is what reaches
     // aarch64, which has no counterpart to this riscv64+ipc-census dump.
     let fr = azos_sched::process::fork_refusal_counts();
-    kprintln!("[SCHED-DBG]   fork refusals: kernel-task={} cow-failed={} kernel-slot-collision={} pool-exhausted={} tid-lookup-miss={} fork-ctx-identity-miss={} mem-locked={} mem-budget={} space-exhausted={} clone-invariant={}",
-        fr[0], fr[1], fr[2], fr[3], fr[4], fr[5], fr[6], fr[7], fr[8], fr[9]);
+    kprintln!("[SCHED-DBG]   fork refusals: kernel-task={} cow-failed={} kernel-slot-collision={} pool-exhausted={} tid-lookup-miss={} fork-ctx-identity-miss={} mem-locked={} mem-budget={} space-exhausted={} clone-invariant={} row-instances={}",
+        fr[0], fr[1], fr[2], fr[3], fr[4], fr[5], fr[6], fr[7], fr[8], fr[9], fr[10]);
 
     // K-C29 preemption audit. The counters live in TWO crates and reading only
     // the scheduler side hides the two that matter most: `underflow` says a

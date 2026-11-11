@@ -222,6 +222,10 @@ linux-sig-thread-canary = []
 # unreaped children's notices are dropped (the old behaviour). The orphan
 # rows must fail with it. Never in a real build.
 orphan-reparent-canary = []
+# Canary: a fork child is never refused past its row's `instances`
+# (`row_gate::row_claim_for_fork`). The host row and the Linux fork row go red.
+# Never in a real build.
+fork-row-instance-canary = []
 # Canary: `DOMAIN_SUBREAPER` / `PR_SET_CHILD_SUBREAPER` never set
 # the mark. The shell's orphan rows must fail with it. Never in a real build.
 subreaper-mark-canary = []

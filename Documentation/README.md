@@ -44,6 +44,7 @@ is a one-file map that links into the pages below.
 | Document | What it covers |
 |---|---|
 | [linux.md](linux.md) | The Linux ABI personality and the Linux driver layer. |
+| [linux-syscalls.md](linux-syscalls.md) | The Linux calls the personality answers, generated from its table. |
 | [virtualization.md](virtualization.md) | The hypervisor core and the ring-3 monitor. |
 | [update.md](update.md) | Whole-system updates, packages and livepatch. |
 | [security.md](security.md) | Filters, signatures, memory protections and mitigations. |

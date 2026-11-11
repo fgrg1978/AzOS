@@ -26,7 +26,6 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
-use azos_abi::syscall_nr as k;
 
 /// The ISA a layout is for. The asm-generic syscall table is shared, but a
 /// few layouts and flag values are not.
@@ -75,176 +74,9 @@ pub const fn linux_task_runs(abi: bool, runtime: bool, native: Option<Arch>) -> 
     abi && (runtime || native.is_some())
 }
 
-/// Linux syscall numbers (asm-generic; riscv64 and aarch64 alike).
-pub mod nr {
-    pub const GETCWD: u64 = 17;
-    pub const DUP: u64 = 23;
-    pub const DUP3: u64 = 24;
-    pub const FCNTL: u64 = 25;
-    pub const IOCTL: u64 = 29;
-    pub const CHDIR: u64 = 49;
-    pub const OPENAT: u64 = 56;
-    pub const CLOSE: u64 = 57;
-    pub const PIPE2: u64 = 59;
-    pub const GETDENTS64: u64 = 61;
-    pub const LSEEK: u64 = 62;
-    pub const READ: u64 = 63;
-    pub const WRITE: u64 = 64;
-    pub const READV: u64 = 65;
-    pub const WRITEV: u64 = 66;
-    pub const PPOLL: u64 = 73;
-    pub const NEWFSTATAT: u64 = 79;
-    pub const FSTAT: u64 = 80;
-    pub const EXIT: u64 = 93;
-    pub const EXIT_GROUP: u64 = 94;
-    pub const SET_TID_ADDRESS: u64 = 96;
-    pub const FUTEX: u64 = 98;
-    pub const SET_ROBUST_LIST: u64 = 99;
-    pub const NANOSLEEP: u64 = 101;
-    pub const CLOCK_GETTIME: u64 = 113;
-    pub const SCHED_GETAFFINITY: u64 = 123;
-    pub const SCHED_YIELD: u64 = 124;
-    pub const KILL: u64 = 129;
-    pub const TKILL: u64 = 130;
-    pub const TGKILL: u64 = 131;
-    pub const SIGALTSTACK: u64 = 132;
-    pub const RT_SIGSUSPEND: u64 = 133;
-    pub const RT_SIGACTION: u64 = 134;
-    pub const RT_SIGPROCMASK: u64 = 135;
-    pub const RT_SIGPENDING: u64 = 136;
-    pub const RT_SIGRETURN: u64 = 139;
-    pub const UNAME: u64 = 160;
-    pub const UMASK: u64 = 166;
-    pub const PRCTL: u64 = 167;
-    pub const GETPID: u64 = 172;
-    pub const GETPPID: u64 = 173;
-    pub const GETUID: u64 = 174;
-    pub const GETEUID: u64 = 175;
-    pub const GETGID: u64 = 176;
-    pub const GETEGID: u64 = 177;
-    pub const GETTID: u64 = 178;
-    pub const BRK: u64 = 214;
-    pub const MUNMAP: u64 = 215;
-    pub const CLONE: u64 = 220;
-    pub const EXECVE: u64 = 221;
-    pub const MMAP: u64 = 222;
-    pub const MPROTECT: u64 = 226;
-    pub const WAIT4: u64 = 260;
-}
-
-/// Every Linux number the personality answers, with the native numbers its
-/// translation may reach (empty: answered from the personality's own state
-/// or from a capability the task already holds, with no native entry point).
-///
-/// Anything not listed answers `-ENOSYS` and is recorded.
-pub const TABLE: &[(u64, &str, &[u16])] = &[
-    (nr::GETCWD, "getcwd", &[]),
-    // `dup3` onto an open descriptor closes it first.
-    (nr::DUP, "dup", &[]),
-    (nr::DUP3, "dup3", &[k::SYS_CAP_CLOSE as u16]),
-    (nr::FCNTL, "fcntl", &[]),
-    (nr::IOCTL, "ioctl", &[]),
-    // A directory is recognised with `stat` (250), or by listing (251) for a
-    // mount point the VFS cannot stat.
-    (nr::CHDIR, "chdir", &[k::SYS_INVOKE as u16]),
-    // A file is opened through `Cap<File>` (563) and closed again (566) when
-    // no descriptor is left for it; a directory is recognised as `chdir`
-    // does and read later with `readdir`.
-    (nr::OPENAT, "openat", &[k::SYS_INVOKE as u16, k::SYS_CAP_CLOSE as u16]),
-    (nr::CLOSE, "close", &[k::SYS_CAP_CLOSE as u16]),
-    // The pipe is a memory object with a byte ring in it (`SYS_MO_CREATE`),
-    // closed again (`SYS_CAP_CLOSE`) when no descriptor is left for it.
-    (nr::PIPE2, "pipe2", &[k::SYS_MO_CREATE as u16, k::SYS_CAP_CLOSE as u16]),
-    (nr::GETDENTS64, "getdents64", &[k::SYS_INVOKE as u16]),
-    // Bookkeeping over a held `Cap<File>`: the offset of its open file description.
-    (nr::LSEEK, "lseek", &[]),
-    // The console reads through the input the shell lent its foreground job
-    // (the console's `READ` op).
-    (nr::READ, "read", &[k::SYS_INVOKE as u16]),
-    (nr::WRITE, "write", &[k::SYS_INVOKE as u16]),
-    (nr::READV, "readv", &[k::SYS_INVOKE as u16]),
-    (nr::WRITEV, "writev", &[k::SYS_INVOKE as u16]),
-    (nr::NEWFSTATAT, "newfstatat", &[k::SYS_INVOKE as u16]),
-    // A file's size is read through its held `Cap<File>`; a directory
-    // descriptor is stat'ed by its path.
-    (nr::FSTAT, "fstat", &[k::SYS_INVOKE as u16]),
-    (nr::EXIT, "exit", &[k::SYS_EXIT as u16, k::SYS_THREAD_EXIT as u16]),
-    (nr::EXIT_GROUP, "exit_group", &[k::SYS_EXIT as u16]),
-    // The word the calling thread's exit clears and wakes.
-    (nr::SET_TID_ADDRESS, "set_tid_address", &[]),
-    // `FUTEX_WAIT`/`FUTEX_WAKE` (and their `_BITSET` forms with a
-    // full mask), private to the process.
-    // FUTEX_REQUEUE / CMP_REQUEUE reach SYS_FUTEX_WAKE (a wake
-    // that moves the rest), so a profile that allows the wake allows them.
-    (nr::FUTEX, "futex", &[k::SYS_FUTEX_WAIT as u16, k::SYS_FUTEX_WAKE as u16]),
-    // The robust futex list walked at the thread's exit.
-    (nr::SET_ROBUST_LIST, "set_robust_list", &[]),
-    (nr::NANOSLEEP, "nanosleep", &[k::SYS_SLEEP_UNTIL as u16]),
-    // Only the ring-3 runtime answers it (`poll` shapes: [`poll`]); the
-    // in-kernel table answers `-ENOSYS` and records it. A pipe end reports
-    // its state from memory; the wait between two looks is a sleep.
-    (nr::PPOLL, "ppoll", &[k::SYS_SLEEP_UNTIL as u16]),
-    (nr::CLOCK_GETTIME, "clock_gettime", &[]),
-    (nr::SCHED_YIELD, "sched_yield", &[k::SYS_YIELD as u16]),
-    // One CPU, the one the task runs on (a single-threaded task's view).
-    (nr::SCHED_GETAFFINITY, "sched_getaffinity", &[]),
-    // `PR_SET_NAME`/`PR_GET_NAME` and `PR_{SET,GET}_CHILD_SUBREAPER`
-    // accepted; every other option `-EINVAL`.
-    (nr::PRCTL, "prctl", &[]),
-    (nr::RT_SIGACTION, "rt_sigaction", &[]),
-    (nr::RT_SIGPROCMASK, "rt_sigprocmask", &[]),
-    (nr::RT_SIGPENDING, "rt_sigpending", &[]),
-    // Waits as `nanosleep` does, until a signal is delivered.
-    (nr::RT_SIGSUSPEND, "rt_sigsuspend", &[k::SYS_SLEEP_UNTIL as u16]),
-    // Only `SS_DISABLE` is answered: no alternate stack.
-    (nr::SIGALTSTACK, "sigaltstack", &[]),
-    (nr::RT_SIGRETURN, "rt_sigreturn", &[]),
-    // A signal to another task is the native stop call's authority
-    // (`SYS_ALERT`, 611): the caller's ancestry, by its profile. A
-    // signal to itself reaches nothing.
-    (nr::KILL, "kill", &[k::SYS_ALERT as u16]),
-    (nr::TKILL, "tkill", &[k::SYS_ALERT as u16]),
-    (nr::TGKILL, "tgkill", &[k::SYS_ALERT as u16]),
-    (nr::UNAME, "uname", &[]),
-    (nr::UMASK, "umask", &[]),
-    (nr::GETPID, "getpid", &[]),
-    (nr::GETPPID, "getppid", &[]),
-    (nr::GETUID, "getuid", &[]),
-    (nr::GETEUID, "geteuid", &[]),
-    (nr::GETGID, "getgid", &[]),
-    (nr::GETEGID, "getegid", &[]),
-    (nr::GETTID, "gettid", &[]),
-    (nr::BRK, "brk", &[k::SYS_INVOKE as u16]),
-    (nr::MUNMAP, "munmap", &[k::SYS_MO_UNMAP as u16]),
-    (nr::MMAP, "mmap", &[k::SYS_MO_MAP as u16]),
-    // The pages' read and write permissions, exactly; never execute.
-    (nr::MPROTECT, "mprotect", &[k::SYS_MO_MAP as u16]),
-    (nr::WAIT4, "wait4", &[k::SYS_INVOKE as u16]),
-    // Fork shape only (stage 3): a copy-on-write child of the same image,
-    // reseeded from its row; its inherited descriptors are dup'ed (a file)
-    // or given another handle on the same region (a pipe), closed again if the
-    // child cannot be set up.
-    //
-    // Or a thread (`CLONE_VM | CLONE_FS | CLONE_FILES |
-    // CLONE_SIGHAND | CLONE_THREAD` with a stack), sharing the process's
-    // address space, capabilities and descriptors.
-    (nr::CLONE, "clone", &[k::SYS_FOREIGN_FORK as u16, k::SYS_CAP_CLOSE as u16, k::SYS_THREAD_CREATE as u16]),
-    // Within the caller's own row only (stage 3); its close-on-exec
-    // descriptors are closed.
-    (nr::EXECVE, "execve", &[k::SYS_INVOKE as u16, k::SYS_CAP_CLOSE as u16, k::SYS_SPAWN_EX as u16]),
-];
-
-/// The native numbers Linux call `n` may reach, or `None` if the personality
-/// does not answer `n` (it gets `-ENOSYS`).
-pub fn native_reach(n: u64) -> Option<&'static [u16]> {
-    TABLE.iter().find(|e| e.0 == n).map(|e| e.2)
-}
-
-/// The Linux number of the call named `name` (`"openat"`), for the
-/// derivation in `tests/host/seccomp-tests`.
-pub fn number_of(name: &str) -> Option<u64> {
-    TABLE.iter().find(|e| e.1 == name).map(|e| e.0)
-}
+mod table;
+pub use table::{native_reach, nr, number_of, Class, Syscall, TABLE};
+pub mod tally;
 
 /// Linux errno values (the generic table).
 pub mod errno {
@@ -402,6 +234,26 @@ pub struct Stat {
 
 /// `sizeof(struct stat)` on riscv64 and aarch64 (asm-generic layout).
 pub const STAT_SIZE: usize = 128;
+
+/// A size a filesystem answered, as `st_size`: saturating, so a ring-3
+/// filesystem server's huge value cannot overflow the arithmetic after it.
+///
+/// Canary `stat-size-wrap-canary`: the plain cast and the unchecked sum.
+pub fn size_word(size: u64) -> i64 {
+    if cfg!(feature = "stat-size-wrap-canary") {
+        return size as i64;
+    }
+    i64::try_from(size).unwrap_or(i64::MAX)
+}
+
+/// `st_blocks`: the 512-byte blocks of `size`, rounded up; never negative and
+/// never an overflow.
+pub fn blocks_512(size: i64) -> i64 {
+    if cfg!(feature = "stat-size-wrap-canary") {
+        return (size + 511) / 512;
+    }
+    size.max(0).saturating_add(511) / 512
+}
 
 impl Stat {
     /// The asm-generic `struct stat` (musl `arch/{riscv64,aarch64}/bits/stat.h`):

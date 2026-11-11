@@ -2021,6 +2021,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
         topo.push_task(MaybeStr::from_bytes(TASK_LXHELLO_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), TOOL_PRIORITY, LXHELLO_CAPS)
             .expect("default_minimal_topology: LXHELLO.ELF push failed");
         topo.set_last_task_mem_pages(LXHELLO_MEM_PAGES + LINUX_RUNTIME_PAGES);
+        topo.set_last_task_instances(LINUX_FORK_INSTANCES_TEST);
         topo.set_last_task_abi(crate::types::TaskAbi::Linux)
             .expect("default_minimal_topology: LXHELLO.ELF is a Linux row with no hardware capability");
     }
@@ -2032,9 +2033,10 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
     // BusyBox runs it from the shell; the gate's `linux-busybox-test` adds it
     // to a configuration without the Kconfig option.
     if BUSYBOX_ROW {
-        topo.push_task(MaybeStr::from_bytes(TASK_BUSYBOX_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), TOOL_PRIORITY, BUSYBOX_CAPS)
+        topo.push_task(MaybeStr::from_bytes(TASK_BUSYBOX_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), BUSYBOX_PRIORITY, BUSYBOX_CAPS)
             .expect("default_minimal_topology: BUSYBOX.ELF push failed");
         topo.set_last_task_mem_pages(BUSYBOX_MEM_PAGES + LINUX_RUNTIME_PAGES);
+        topo.set_last_task_instances(BUSYBOX_INSTANCES);
         topo.set_last_task_abi(crate::types::TaskAbi::Linux)
             .expect("default_minimal_topology: BUSYBOX.ELF is a Linux row with no hardware capability");
     }
@@ -2047,6 +2049,7 @@ pub fn fill_default_minimal(topo: &mut Topology<'static>) {
         topo.push_task(MaybeStr::from_bytes(TASK_LXTHR_IMAGE), MaybeStr::from_bytes(NAME_BEST_EFFORT), TOOL_PRIORITY, &[TMP_RW, ROOT_RO])
             .expect("default_minimal_topology: LXTHR.ELF push failed");
         topo.set_last_task_mem_pages(LXTHR_MEM_PAGES + LINUX_RUNTIME_PAGES);
+        topo.set_last_task_instances(LXTHR_INSTANCES);
         topo.set_last_task_abi(crate::types::TaskAbi::Linux)
             .expect("default_minimal_topology: LXTHR.ELF is a Linux row with no hardware capability");
     }
@@ -2441,6 +2444,9 @@ pub const TASK_LXTHR_IMAGE: &[u8] = b"LXTHR.ELF";
 /// four 35-page thread stacks at once.
 #[cfg(feature = "linux-threads-test")]
 const LXTHR_MEM_PAGES: u32 = 384;
+/// Live `LXTHR.ELF` processes: the parent and one forked child.
+#[cfg(feature = "linux-threads-test")]
+const LXTHR_INSTANCES: u16 = 2;
 
 /// Does the built-in topology carry the `BUSYBOX.ELF` row? With the Linux
 /// personality, when the `.config` says `BUSYBOX` (a deployment that ships
@@ -2461,6 +2467,15 @@ pub const TASK_BUSYBOX_IMAGE: &[u8] = b"BUSYBOX.ELF";
 /// (traced on riscv64). 512 leaves room for that and one more
 /// fork level.
 const BUSYBOX_MEM_PAGES: u32 = 512;
+/// Live `BUSYBOX.ELF` processes: the shell and the processes it forks count
+/// against the row (a fork child is an instance), so a pipeline of three and
+/// the shell are 4; a fork past them is refused (`EAGAIN`). The gate row
+/// `linux: fork past the row's instances` forks one more.
+const BUSYBOX_INSTANCES: u16 = 4;
+/// `BUSYBOX.ELF`'s priority. Under `linux-exec-row-test` a notch away from
+/// `LXHELLO.ELF`'s, so the exec between the two rows changes it and the gate
+/// reads the exec'd image's priority (`apply_exec_row`).
+const BUSYBOX_PRIORITY: u8 = if cfg!(feature = "linux-exec-row-test") { TOOL_PRIORITY - 2 } else { TOOL_PRIORITY };
 /// `BUSYBOX.ELF`'s authority: `/tmp` read-write, and the read-only root
 /// directory ([`ROOT_RO`]: it reads where it always could, and writes only
 /// under `/tmp`). Gate only
@@ -2696,6 +2711,10 @@ pub const TASK_LXHELLO_IMAGE: &[u8] = b"LXHELLO.ELF";
 /// and two pages of brk.
 #[cfg(feature = "linux-abi-test")]
 const LXHELLO_MEM_PAGES: u32 = 48;
+/// Live `LXHELLO.ELF` processes: its deepest chain (a child that forks a
+/// grandchild that forks another) beside the parent.
+#[cfg(feature = "linux-abi-test")]
+const LINUX_FORK_INSTANCES_TEST: u16 = 4;
 /// `/tmp` read-write (round 48: its fork test writes one inherited file
 /// from parent and child); nothing under `/fat`.
 #[cfg(all(feature = "linux-abi-test", not(feature = "linux-abi-caps-canary")))]
