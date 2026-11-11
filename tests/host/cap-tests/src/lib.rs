@@ -39,6 +39,9 @@ pub mod cap;
 #[path = "../../../../crates/core/ipc/src/cap_store.rs"]
 pub mod cap_store;
 
+#[path = "../../../../crates/core/ipc/src/file_cap.rs"]
+pub mod file_cap;
+
 // ──────────────────────────────────────────────────────────────────────────
 // cap_store — general (non-delegation) behaviour
 // ──────────────────────────────────────────────────────────────────────────
@@ -560,8 +563,12 @@ mod cap_store_tests {
         let port: Cap<Port> = cap_store::grant(a.tid, CapPerms::RW_DELEGATE, 80).unwrap();
         let mv = |h: CapHandle| CapXfer::new(h, false);
         assert_eq!(cap_store::check_message_caps(a.tid, &[mv(port.raw())]), Ok(()));
-        assert_eq!(cap_store::check_message_caps(a.tid, &[mv(port.raw()), mv(file.raw())]), Err(CapError::WrongKind));
-        assert_eq!(cap_store::check_message_caps(a.tid, &[CapXfer::new(file.raw(), true)]), Err(CapError::WrongKind));
+        assert_eq!(cap_store::check_message_caps(a.tid, &[mv(port.raw()), mv(file.raw())]), Err(CapError::MissingPerms));
+        assert_eq!(cap_store::check_message_caps(a.tid, &[CapXfer::new(file.raw(), true)]), Err(CapError::MissingPerms));
+        let sock: Cap<crate::cap::targets::Socket> = cap_store::grant(a.tid, CapPerms::RW_DELEGATE, 4).unwrap();
+        assert_eq!(cap_store::check_message_caps(a.tid, &[mv(sock.raw())]), Err(CapError::MissingPerms), "a socket is owned too");
+        let tree: Cap<File> = cap_store::grant(a.tid, CapPerms::RW_DELEGATE, crate::file_cap::TREE_RESOURCE_BASE).unwrap();
+        assert_eq!(cap_store::check_message_caps(a.tid, &[mv(tree.raw())]), Ok(()), "a directory tree names no descriptor");
         assert_eq!(cap_store::get(a.tid, file, CapPerms::READ), Ok(3), "nothing was consumed");
     }
 

@@ -1866,10 +1866,11 @@ pub fn move_caps(
 }
 
 /// Refuse a message that names a capability no message may carry, before
-/// anything moves: a `Cap<File>` names a descriptor owned by the task that
-/// opened it, and a message transfer does not re-stamp the owner, so the
-/// receiver would hold a handle every operation refuses while the sender lost
-/// its descriptor. The spawn and shell handoffs move descriptors with the
+/// anything moves: a `Cap<File>` descriptor or a `Cap<Socket>` is owned by the
+/// task that opened it, and a message transfer does not re-stamp the owner, so
+/// the receiver would hold a handle every operation refuses while the sender
+/// lost its descriptor. A directory-tree `Cap<File>` names no descriptor and
+/// is not covered. The spawn and shell handoffs move descriptors with the
 /// owner stamped, through [`move_caps`] directly.
 ///
 /// Canary `file-message-transfer-canary`: nothing is refused.
@@ -1878,8 +1879,11 @@ pub fn check_message_caps(from_tid: u32, xs: &[CapXfer]) -> Result<(), CapError>
         return Ok(());
     }
     with_table(from_tid, |t| {
-        match xs.iter().any(|x| t.peek_raw(x.handle).is_some_and(|(kind, _, _)| kind == crate::cap::ty::FILE)) {
-            true => Err(CapError::WrongKind),
+        let owned = |kind, resource| {
+            (kind == crate::cap::ty::FILE && !crate::file_cap::is_tree_resource(resource)) || kind == crate::cap::ty::SOCKET
+        };
+        match xs.iter().any(|x| t.peek_raw(x.handle).is_some_and(|(kind, _, r)| owned(kind, r))) {
+            true => Err(CapError::MissingPerms),
             false => Ok(()),
         }
     })

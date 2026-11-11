@@ -29,6 +29,9 @@ pub mod cap;
 #[path = "../../../../crates/core/ipc/src/cap_store.rs"]
 pub mod cap_store;
 
+#[path = "../../../../crates/core/ipc/src/file_cap.rs"]
+pub mod file_cap;
+
 // Kconfig INSPECT: the minter of the introspection regions, which grants a
 // packed `Cap<Shm>` and reads the table for the admin warrant.
 pub use cap::objref;
