@@ -51,6 +51,7 @@ revoke-chain-canary = []
 # `cap_store.rs` `SweptSet`'s canaries (MemObj revoke, tests/host/ipc-tests): the
 # pulled sweep carries the sites, only the ipc suite enables them.
 memobj-sweep-no-hook-canary = []
+file-message-transfer-canary = []
 forward-full-silent-canary = []
 cap-refusal-consumes-always-canary = []
 memobj-sweep-no-retain-canary = []

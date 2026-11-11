@@ -545,6 +545,26 @@ mod cap_store_tests {
         assert_eq!(cap_store::get(a.tid, c1, CapPerms::READ), Ok(21));
     }
 
+    /// A `Cap<File>` is refused before a message moves anything: the
+    /// descriptor's owner is not re-stamped by a message transfer, so the
+    /// receiver would hold an unusable handle and the sender would lose its
+    /// descriptor. Other kinds pass.
+    ///
+    /// **Canary** `file-message-transfer-canary`: the check passes everything.
+    #[test]
+    fn a_message_may_not_carry_a_file_descriptor_capability() {
+        use crate::cap::targets::File;
+        let _g = guard();
+        let a = fresh_task();
+        let file: Cap<File> = cap_store::grant(a.tid, CapPerms::RW_DELEGATE, 3).unwrap();
+        let port: Cap<Port> = cap_store::grant(a.tid, CapPerms::RW_DELEGATE, 80).unwrap();
+        let mv = |h: CapHandle| CapXfer::new(h, false);
+        assert_eq!(cap_store::check_message_caps(a.tid, &[mv(port.raw())]), Ok(()));
+        assert_eq!(cap_store::check_message_caps(a.tid, &[mv(port.raw()), mv(file.raw())]), Err(CapError::WrongKind));
+        assert_eq!(cap_store::check_message_caps(a.tid, &[CapXfer::new(file.raw(), true)]), Err(CapError::WrongKind));
+        assert_eq!(cap_store::get(a.tid, file, CapPerms::READ), Ok(3), "nothing was consumed");
+    }
+
     static SWEPT: Mutex<Vec<(u32, u32)>> = Mutex::new(Vec::new());
     fn record_swept(resource: u32, owner: u32) {
         SWEPT.lock().unwrap_or_else(|e| e.into_inner()).push((resource, owner));

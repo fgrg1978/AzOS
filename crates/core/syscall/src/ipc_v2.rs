@@ -100,6 +100,9 @@ fn xfers(d: &MsgDesc, now_ns: u64, sender_tid: u32, xs: &mut [CapXfer; V2_CAPS])
         let rights = (c.rights != 0).then(|| CapPerms::from_bits_truncate(c.rights as u8));
         *x = CapXfer { rights, expiry_ns: c.expiry_ns, ..CapXfer::new(CapHandle(c.handle), dup) };
     }
+    if n > 0 {
+        cap_store::check_message_caps(sender_tid, &xs[..n]).map_err(crate::invoke::errno_cap)?;
+    }
     Ok(n)
 }
 

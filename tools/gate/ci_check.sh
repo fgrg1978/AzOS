@@ -13772,6 +13772,9 @@ host_job host_canary_row "cap: receiver refusal consumes canary" cap-tests cap-r
 # A delete under a full re-parent row table records why the copies went.
 host_job host_canary_row "cap: forward-full cascade silent canary" cap-tests forward-full-silent-canary \
     a_delete_with_no_spare_row_revokes_the_copies_and_records_why
+# A message cannot carry a Cap<File> (the descriptor owner is not re-stamped).
+host_job host_canary_row "cap: file message transfer canary" cap-tests file-message-transfer-canary \
+    a_message_may_not_carry_a_file_descriptor_capability
 host_job host_canary_row "memobj: delete revokes canary" ipc-tests delete-revokes-canary \
     a_sharers_exit_leaves_the_share_and_its_mapping
 host_job host_canary_row "memobj: delete revokes canary (syscall)" syscall-tests delete-revokes-canary \
