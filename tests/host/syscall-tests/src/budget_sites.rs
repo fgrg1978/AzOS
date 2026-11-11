@@ -222,3 +222,52 @@ fn a_walk_over_mmap_and_munmap_keeps_the_count_equal_to_the_pages_held() {
     azos_sched::shim_forget_space(pt);
     azos_sched::set_current_user_pt(0);
 }
+
+/// **A block call's bounce buffer is kernel heap billed to its Domain.** The
+/// disk calls make one per call (`len` of the ring's data window, at most 2048
+/// bytes) and a queued request holds it until it is collected. It is charged to
+/// the `Bounce` class of the calling task's Domain: refused (the call answers
+/// `ENOMEM`) when the ledger is full, nothing left charged by a refusal, and
+/// given back when the buffer drops, however it ends.
+/// **Canary** `block-bounce-unbilled-canary`: the buffer is not billed.
+#[test]
+fn a_bounce_buffer_is_billed_to_the_callers_kmem_ledger_while_it_lives() {
+    use std::sync::Mutex;
+    static LEDGER: Mutex<(u64, u64)> = Mutex::new((0, 0)); // (bytes held, limit)
+    fn charge(_key: u32, class: u8, bytes: u64) -> bool {
+        assert_eq!(class, azos_ipc::cap_store::KMEM_BOUNCE);
+        let mut l = LEDGER.lock().unwrap();
+        if l.1 != 0 && l.0 + bytes > l.1 {
+            return false;
+        }
+        l.0 += bytes;
+        true
+    }
+    fn discharge(_key: u32, class: u8, bytes: u64) {
+        assert_eq!(class, azos_ipc::cap_store::KMEM_BOUNCE);
+        let mut l = LEDGER.lock().unwrap();
+        l.0 = l.0.saturating_sub(bytes);
+    }
+    let _g = serial();
+    let pt = space();
+    ipc_task_pool::shim_bind(1, 59);
+    azos_ipc::cap_store::set_kmem_hooks(charge, discharge);
+    *LEDGER.lock().unwrap() = (0, 3000);
+    let a = crate::block_host::BilledBounce::new(1, 2048).expect("fits");
+    assert_eq!((a.len(), LEDGER.lock().unwrap().0), (2048, 2048), "the bytes of the buffer are billed");
+    assert!(crate::block_host::BilledBounce::new(1, 2048).is_none(), "a second 2048 is past 3000");
+    assert_eq!(LEDGER.lock().unwrap().0, 2048, "a refusal bills nothing");
+    let b = crate::block_host::BilledBounce::new(1, 512).expect("512 more fits");
+    assert_eq!(LEDGER.lock().unwrap().0, 2560);
+    drop(a);
+    assert_eq!(LEDGER.lock().unwrap().0, 512, "dropping gives the bytes back");
+    let mut pending = crate::block_host::BilledBounce::EMPTY;
+    core::mem::swap(&mut pending, &mut { b });
+    assert_eq!(LEDGER.lock().unwrap().0, 512, "a buffer moved into a queue slot is still billed");
+    drop(core::mem::take(&mut pending));
+    assert_eq!(LEDGER.lock().unwrap().0, 0, "collecting the request gives it back");
+    *LEDGER.lock().unwrap() = (0, 0);
+    // The hooks are process-wide: leave them charging nothing.
+    azos_ipc::cap_store::set_kmem_hooks(|_, _, _| true, |_, _, _| {});
+    azos_sched::shim_forget_space(pt);
+}

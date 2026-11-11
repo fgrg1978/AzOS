@@ -750,14 +750,14 @@ fn create_core(owner_task: usize) -> Option<(u32, usize)> {
     // the creator is the calling process; freeing it gives the charge back
     // (`uncharge_owner`).
     let charged = azos_sched::current_proc_tid() as usize == owner_task;
-    if charged && !azos_sched::mm_charge(1) {
+    if charged && !charge_ring(owner_task) {
         return None;
     }
     // Allocate a physical page for the shared ring
     let page = match azos_mm::pmm::alloc_page_zone(azos_mm::zone::Zone::Ring) {
         Ok(p) => p,
         Err(_) => {
-            if charged { azos_sched::mm_discharge(1); }
+            if charged { give_back_ring(owner_task); }
             return None;
         }
     };
@@ -852,7 +852,7 @@ fn create_core(owner_task: usize) -> Option<(u32, usize)> {
     }
     // Quota reached, no free slot, or refused during a sweep: the page goes back.
     let _ = azos_mm::pmm::free_page(page);
-    if charged { azos_sched::mm_discharge(1); }
+    if charged { give_back_ring(owner_task); }
     None
 }
 
@@ -882,7 +882,39 @@ pub fn io_ring_charged_pages(key: u32) -> u32 {
 fn uncharge_owner(state: &IoRingState) {
     if state.charged {
         azos_sched::mm_discharge_tid(state.owner_task as u32, 1);
+        crate::cap_store::kmem_discharge(
+            crate::cap_store::domain_key_of(state.owner_task as u32),
+            crate::cap_store::KMEM_IO_RING,
+            RING_KMEM_BYTES,
+        );
     }
+}
+
+/// Kernel memory a ring keeps for its creator's Domain: its table entry.
+const RING_KMEM_BYTES: u64 = core::mem::size_of::<IoRingState>() as u64;
+
+/// Charge a new ring to the calling process's Domain: its page to the frame
+/// budget and its entry to the kernel-memory ledger, all or nothing.
+fn charge_ring(owner_task: usize) -> bool {
+    if !azos_sched::mm_charge(1) {
+        return false;
+    }
+    let key = crate::cap_store::domain_key_of(owner_task as u32);
+    if !crate::cap_store::kmem_charge(key, crate::cap_store::KMEM_IO_RING, RING_KMEM_BYTES) {
+        azos_sched::mm_discharge(1);
+        return false;
+    }
+    true
+}
+
+/// What [`charge_ring`] took, for a ring that was never published.
+fn give_back_ring(owner_task: usize) {
+    azos_sched::mm_discharge(1);
+    crate::cap_store::kmem_discharge(
+        crate::cap_store::domain_key_of(owner_task as u32),
+        crate::cap_store::KMEM_IO_RING,
+        RING_KMEM_BYTES,
+    );
 }
 
 /// Table slot of a ring id that has passed `ring_id < MAX_IO_RINGS`, masked
@@ -1454,6 +1486,12 @@ pub fn io_ring_release_all(tid: u32) {
                 None
             } else {
                 let phys = state.phys_addr;
+                // The creator's Domain gets the page and the entry back: it can
+                // outlive the owner task (a thread's exec takes the process over).
+                // Canary `io-ring-exit-keeps-charge-canary`: the exit keeps them.
+                if !cfg!(feature = "io-ring-exit-keeps-charge-canary") {
+                    uncharge_owner(state);
+                }
                 // SAFETY: active, not in flight, under the table lock.
                 let drain = unsafe { vacate_resources(i) };
                 *state = IoRingState::empty();
@@ -3738,6 +3776,36 @@ mod tests {
 
     fn sqe(opcode: u16, param0: u32, param1: u32, param2: u32, addr: u16, reg: u16) -> SqEntry {
         SqEntry { opcode, flags: 0, param0, param1, param2, addr, reg, user_data: 0 }
+    }
+
+    /// **A ring is kernel memory kept for its creator's Domain, and its page a
+    /// frame of the budget.** Both are charged at create to the calling process
+    /// and refused together (nothing stays charged when either refuses), and both
+    /// go back with the ring.
+    /// **Canary** (by hand): drop the kmem discharge in `uncharge_owner`: the
+    /// `used == 0` row goes red.
+    #[test]
+    fn a_ring_is_charged_a_frame_and_its_entry_and_both_are_given_back() {
+        use crate::cap_store::{kmem_fake, KMEM_IO_RING};
+        let _g = setup();
+        kmem_fake::install();
+        let key = crate::cap_store::domain_key_of(OWNER);
+        kmem_fake::forget(key);
+        kmem_fake::set_limit(key, RING_KMEM_BYTES);
+        let before = azos_sched::shim_charged(OWNER);
+        let (id, _phys) = io_ring_create(OWNER as usize).unwrap();
+        assert_eq!(azos_sched::shim_charged(OWNER), before + 1, "the page, a frame");
+        assert_eq!(kmem_fake::used(key, KMEM_IO_RING), RING_KMEM_BYTES, "the entry, kernel memory");
+        assert!(io_ring_create(OWNER as usize).is_none(), "the ledger is full");
+        assert_eq!(azos_sched::shim_charged(OWNER), before + 1, "a refusal left no frame charged");
+        assert_eq!(kmem_fake::used(key, KMEM_IO_RING), RING_KMEM_BYTES);
+        assert!(io_ring_destroy(id));
+        assert_eq!(azos_sched::shim_charged(OWNER), before);
+        assert_eq!(kmem_fake::used(key, KMEM_IO_RING), 0, "destroy gave the entry back");
+        let (_id2, _p2) = io_ring_create(OWNER as usize).unwrap();
+        io_ring_release_all(OWNER);
+        assert_eq!(kmem_fake::used(key, KMEM_IO_RING), 0, "the owner's exit gave it back");
+        kmem_fake::forget(key);
     }
 
     #[test]

@@ -91,7 +91,7 @@ mod audit_2026_09_19 {
         let body = &blk[at..];
         let end = body.find("\n}\n").unwrap_or(body.len());
         assert!(
-            body[..end].contains("bounce(len)"),
+            body[..end].contains("BilledBounce::new("),
             "block_io does not take its own bounce buffer"
         );
     }

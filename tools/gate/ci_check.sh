@@ -13936,6 +13936,18 @@ host_job host_feature_row "budget: a promised table passes the kmem limit (sched
 host_job host_group_row "budget: a promised kmem charge (model)" mm-tests budget_stress::promised_kmem::
 host_job host_canary_row "budget: a promised table refused by kmem canary" sched-wake-tests kmem-promised-refused-canary \
     a_promised_page_table_is_charged_to_the_kmem_ledger_past_its_limit
+# io_rings, ports and block bounce buffers are kernel memory charged to the
+# Domain (KmemClass IoRing, Port, Bounce): charged at create or call, given back
+# by every way they end. io-ring-exit-keeps-charge-canary: the owner's exit keeps
+# the ring's page and entry on the Domain; block-bounce-unbilled-canary: the
+# buffer is not billed.
+host_job host_feature_row "kmem: a port is charged and given back (ipc)" ipc-tests "" a_port_is_charged_to_its_creators_kmem_ledger_and_given_back
+host_job host_feature_row "kmem: a ring is charged and given back (ipc)" ipc-tests "" a_ring_is_charged_a_frame_and_its_entry_and_both_are_given_back
+host_job host_feature_row "kmem: a bounce buffer is billed (syscall)" syscall-tests "" a_bounce_buffer_is_billed_to_the_callers_kmem_ledger_while_it_lives
+host_job host_canary_row "kmem: a ring's exit keeps the charge canary" ipc-tests io-ring-exit-keeps-charge-canary \
+    a_ring_is_charged_a_frame_and_its_entry_and_both_are_given_back
+host_job host_canary_row "kmem: a bounce buffer unbilled canary" syscall-tests block-bounce-unbilled-canary \
+    a_bounce_buffer_is_billed_to_the_callers_kmem_ledger_while_it_lives
 # The same holes through the frozen syscalls (syscall-tests): mprotect in the shm
 # window past the map's rights; a MOVE through the capability transfer.
 host_job host_canary_row "memobj: protect past the map canary (syscall)" syscall-tests memobj-protect-max-canary \

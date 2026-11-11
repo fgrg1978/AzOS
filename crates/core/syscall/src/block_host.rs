@@ -74,6 +74,61 @@ pub(crate) fn bounce(len: usize) -> Option<alloc::vec::Vec<u8>> {
     Some(v)
 }
 
+/// A bounce buffer billed to a Domain's kernel-memory ledger (class `Bounce`)
+/// for as long as it lives: `len` bytes of kernel heap held for a call that a
+/// ring-3 caller chose the size of, now bounded by its row's `kmem_kib` like the
+/// other classes. Dereferences to the bytes; the bill goes back when it drops
+/// (a queued request holds it until the request is collected).
+#[derive(Default)]
+pub(crate) struct BilledBounce {
+    buf: alloc::vec::Vec<u8>,
+    key: u32,
+}
+
+impl BilledBounce {
+    /// No buffer, nothing billed: a free pending slot's.
+    pub(crate) const EMPTY: BilledBounce = BilledBounce { buf: alloc::vec::Vec::new(), key: 0 };
+
+    /// `len` zeroed bytes charged to the Domain of task `tid`; `None` when the
+    /// ledger refuses them (the caller answers `ENOMEM`) or the heap cannot give them.
+    /// Canary `block-bounce-unbilled-canary`: the bytes are not billed.
+    pub(crate) fn new(tid: u32, len: usize) -> Option<BilledBounce> {
+        let key = if cfg!(feature = "block-bounce-unbilled-canary") { 0 } else { crate::block_host::domain_key(tid) };
+        if !azos_ipc::cap_store::kmem_charge(key, azos_ipc::cap_store::KMEM_BOUNCE, len as u64) {
+            return None;
+        }
+        match bounce(len) {
+            Some(buf) => Some(BilledBounce { buf, key }),
+            None => {
+                azos_ipc::cap_store::kmem_discharge(key, azos_ipc::cap_store::KMEM_BOUNCE, len as u64);
+                None
+            }
+        }
+    }
+}
+
+impl core::ops::Deref for BilledBounce {
+    type Target = alloc::vec::Vec<u8>;
+    fn deref(&self) -> &Self::Target { &self.buf }
+}
+
+impl core::ops::DerefMut for BilledBounce {
+    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.buf }
+}
+
+impl Drop for BilledBounce {
+    fn drop(&mut self) {
+        if self.key != 0 && !self.buf.is_empty() {
+            azos_ipc::cap_store::kmem_discharge(self.key, azos_ipc::cap_store::KMEM_BOUNCE, self.buf.len() as u64);
+        }
+    }
+}
+
+/// The Domain task `tid` runs in; `0` (nothing billed) for none.
+fn domain_key(tid: u32) -> u32 {
+    azos_ipc::cap_store::domain_key_of(tid)
+}
+
 /// The scope of one block entry, shared by the inline ([`block_io`]) and the
 /// queued ([`crate::ioring_ops`]) paths: partition `badge - 1`, `len` bytes
 /// (whole sectors) from the partition-relative `sector`, resolved to the
@@ -125,7 +180,7 @@ pub(crate) fn scope(badge: u32, write: bool, sector: u64, len: usize) -> Result<
 /// sees it.
 pub fn block_io(badge: u32, write: bool, sector: u64, buf: *mut u8, len: usize) -> OpResult {
     let (lba, count) = scope(badge, write, sector, len)?;
-    let Some(mut kbuf) = bounce(len) else {
+    let Some(mut kbuf) = BilledBounce::new(azos_sched::current_task_tid(), len) else {
         return Err(Errno::ENOMEM.to_syscall_ret() as i32);
     };
     azos_drv_block::blkdev::rt_io_check();

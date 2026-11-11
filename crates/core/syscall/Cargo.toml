@@ -212,6 +212,8 @@ ipc-admit-canary = []
 # `a_run_outside_the_partition_is_refused_and_an_unqueueable_one_falls_back`
 # (queued entry) must go red.
 block-scope-canary = []
+# Canary (host row, syscall-tests): a block call's bounce buffer is not billed to its Domain.
+block-bounce-unbilled-canary = []
 # Gate canary, never in a real build: `Sensor::bind_vdso` binds a robot sensor
 # on an image built without the Robot domain, so the timer interrupt publishes a
 # zero slot. The host test `a_vdso_bind_of_a_robot_sensor_follows_the_robot_domain`,

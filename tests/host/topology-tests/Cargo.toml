@@ -36,6 +36,7 @@ dt-bare-token-canary = ["azos_hwbus/dt-bare-token-canary"]
 dt-fallback-canary = ["azos_hwbus/dt-fallback-canary"]
 # Declared for the pulled endpoint.rs's `calls_set_link` canary (syscall-tests runs it).
 calls-any-binder-canary = []
+io-ring-exit-keeps-charge-canary = []
 # Pulled-in source declares it (cap_store.rs `grant_like`); only cap-tests uses it.
 fork-revoke-canary = []
 # Pulled-in source declares it (cap_store.rs cell source); only the kernel uses it.

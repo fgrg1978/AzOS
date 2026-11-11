@@ -687,6 +687,7 @@ version = "0.1.0"
 dependencies = [
  "azos_abi",
  "azos_arch_api",
+ "azos_common",
  "azos_crypto",
  "azos_decision",
  "azos_devif",

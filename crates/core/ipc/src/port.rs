@@ -286,6 +286,15 @@ fn clear_port_locked(t: &mut PortTable, i: usize) {
         let kind = t[i].sources[s].kind;
         count_bell_locked(&mut t[i], kind, false);
     }
+    // A live port gives its record back to the Domain it was charged to (atomic
+    // subtractions, safe under the table lock).
+    if t[i].active && t[i].owner_task != usize::MAX {
+        crate::cap_store::kmem_discharge(
+            crate::cap_store::domain_key_of(t[i].owner_task as u32),
+            crate::cap_store::KMEM_PORT,
+            PORT_KMEM_BYTES,
+        );
+    }
     t[i] = Port::empty();
 }
 
@@ -549,6 +558,24 @@ pub fn port_create_ref(owner_task: usize) -> Option<u32> {
 /// See `objref`'s module doc for the full protocol and the accepted
 /// O(`MAX_TASKS`) cost of that walk.
 fn create_core(owner_task: usize) -> Option<(u32, u32)> {
+    // The port's record is kernel memory kept for the creator's Domain: charged
+    // before the table lock (a refusal writes a decision record) and given back
+    // when the slot is cleared, or here if no slot is taken.
+    let key = crate::cap_store::domain_key_of(owner_task as u32);
+    if !crate::cap_store::kmem_charge(key, crate::cap_store::KMEM_PORT, PORT_KMEM_BYTES) {
+        return None;
+    }
+    let made = create_slot(owner_task);
+    if made.is_none() {
+        crate::cap_store::kmem_discharge(key, crate::cap_store::KMEM_PORT, PORT_KMEM_BYTES);
+    }
+    made
+}
+
+/// Kernel memory a port keeps for its creator's Domain.
+const PORT_KMEM_BYTES: u64 = core::mem::size_of::<Port>() as u64;
+
+fn create_slot(owner_task: usize) -> Option<(u32, u32)> {
     // Two passes at most: the second runs only after this call's own
     // per-slot wrap sweep finishes.
     for _ in 0..2 {
@@ -1842,6 +1869,37 @@ mod tests {
         __port_reset_for_tests();
         azos_sched::shim_reset_port_wakes();
         g
+    }
+
+    /// **A port is kernel memory kept for its creator's Domain.** Charged at
+    /// create (`KmemClass::Port`), refused with nothing charged when the Domain's
+    /// ledger is full, and given back by every way a port goes: destroy, and the
+    /// owner's exit release.
+    /// **Canary** (by hand): drop the discharge in `clear_port_locked`: the
+    /// `used == 0` rows go red.
+    #[test]
+    fn a_port_is_charged_to_its_creators_kmem_ledger_and_given_back() {
+        use crate::cap_store::{kmem_fake, KMEM_PORT};
+        let _g = setup();
+        kmem_fake::install();
+        let key = crate::cap_store::domain_key_of(1);
+        kmem_fake::forget(key);
+        kmem_fake::set_limit(key, 2 * PORT_KMEM_BYTES);
+        let a = port_create(1).unwrap();
+        let b = port_create(1).unwrap();
+        assert_eq!(kmem_fake::used(key, KMEM_PORT), 2 * PORT_KMEM_BYTES);
+        assert!(port_create(1).is_none(), "the third is past the Domain's ledger");
+        assert_eq!(kmem_fake::used(key, KMEM_PORT), 2 * PORT_KMEM_BYTES, "a refusal charges nothing");
+        port_destroy(a);
+        assert_eq!(kmem_fake::used(key, KMEM_PORT), PORT_KMEM_BYTES, "destroy gives the record back");
+        port_destroy(a);
+        assert_eq!(kmem_fake::used(key, KMEM_PORT), PORT_KMEM_BYTES, "a second destroy of a gone port gives nothing back");
+        let _ = b;
+        port_release_all(1);
+        assert_eq!(kmem_fake::used(key, KMEM_PORT), 0, "the owner's exit gives the rest back");
+        assert!(port_create(1).is_some(), "and the room is there again");
+        port_release_all(1);
+        kmem_fake::forget(key);
     }
 
     #[test]

@@ -320,6 +320,12 @@ pub const KMEM_CAP_TABLE: u8 = 0;
 pub const KMEM_EP_QUEUE: u8 = 1;
 /// [`kmem_charge`] class: one MemObj region's metadata.
 pub const KMEM_MEMOBJ_META: u8 = 2;
+/// [`kmem_charge`] class: one io_ring's table entry.
+pub const KMEM_IO_RING: u8 = 4;
+/// [`kmem_charge`] class: one event port.
+pub const KMEM_PORT: u8 = 5;
+/// [`kmem_charge`] class: a block call's bounce buffer.
+pub const KMEM_BOUNCE: u8 = 6;
 
 /// Charge `bytes` of `class` to the Domain `key` names, all or nothing:
 /// `false` when its kernel-memory limit would be passed. A key that names no

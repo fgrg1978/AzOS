@@ -262,6 +262,8 @@ ipc-admit-canary = []
 # Mirrors azos_syscall's partition scope canary in the pulled-in
 # block_host.rs: the end of the partition is not checked. Off: the real behaviour.
 block-scope-canary = []
+# Canary (host row, syscall-tests): a block call's bounce buffer is not billed to its Domain.
+block-bounce-unbilled-canary = []
 # Mirrors azos_syscall's vdso-bind-canary in the pulled-in sensor_host.rs: a robot
 # sensor binds without the Robot domain. Off: the real behaviour.
 vdso-bind-canary = []

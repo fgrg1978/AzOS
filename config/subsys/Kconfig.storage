@@ -295,9 +295,10 @@ config IORING_ASYNC
       ring page.
 
       Cost: a bounce buffer on the heap per queued request (its length, at
-      most RING_DATA_BUF_SIZE bytes) and 64 B of .data per request the block
+      most RING_DATA_BUF_SIZE bytes, billed to the submitter's Domain as kernel memory
+      for as long as the request holds it) and 72 B of .data per request the block
       layer can hold (NR_CPUS x BLK_QUEUE_DEPTH, at most
-      MAX_IO_RINGS x IORING_MAX_PARKED: 8 KiB at the defaults); a wake-up and
+      MAX_IO_RINGS x IORING_MAX_PARKED: 9 KiB at the defaults); a wake-up and
       a context switch of the worker per batch. A real-time submitter's block
       entry allocates its bounce buffer and takes the hart queue's spinlock
       (a read also the write-back cache's) in its own submit; it never sleeps.

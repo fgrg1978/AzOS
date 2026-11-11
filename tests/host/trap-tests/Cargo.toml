@@ -15,6 +15,8 @@ azos_limits = { path = "../../../crates/core/limits" }
 # `domain.rs` (pulled by path) writes its refusal receipts through the ring.
 azos_decision = { path = "../../../crates/core/decision", features = ["on"] }
 azos_chaos = { path = "../../../crates/core/chaos" }
+# `domain.rs`'s read-only-after-boot hook (`ro_hook!`).
+azos_common = { path = "../../../crates/core/common" }
 # `domain.rs` names `azos_mm::budget` and `azos_sync::spinlock`; the real crates
 # cannot compile for the host (see the shims' docs).
 azos_mm = { path = "shims/mm", package = "trap_test_mm" }

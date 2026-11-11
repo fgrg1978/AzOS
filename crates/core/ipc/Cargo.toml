@@ -92,6 +92,8 @@ call-link-drop-canary = []
 # `endpoint.rs` `calls_set_link`'s canary: any holder of a READ capability binds
 # an endpoint's calls (syscall-tests' only_the_server_binds_an_endpoints_calls).
 calls-any-binder-canary = []
+# Canary (host row, ipc-tests): the owner's exit leaves an io_ring's page and kernel-memory charge on its Domain.
+io-ring-exit-keeps-charge-canary = []
 # `port.rs`'s doorbell canary: no futex wake reaches a doorbell source, so
 # `a_doorbell_reaches_the_ports_bound_to_its_word` goes red. Host suite only.
 port-doorbell-canary = []

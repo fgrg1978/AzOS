@@ -739,15 +739,33 @@ pub enum KmemClass {
     /// bounds memory the Domain can map, this one bounds what the kernel keeps
     /// for it).
     PageTable = 3,
+    /// One io_ring's table entry (`IoRingState`), charged to the Domain of the task
+    /// that creates the ring while the ring lives. The ring's page is a frame of
+    /// the frame budget.
+    IoRing = 4,
+    /// One event port (`Port`: its sources, event queue and waiter records),
+    /// charged to the Domain of the task that creates it.
+    Port = 5,
+    /// A block call's bounce buffer, while the call (or a queued request) holds it:
+    /// kernel heap sized by the call's `len`.
+    Bounce = 6,
 }
 
 /// Number of [`KmemClass`] values.
-pub const KMEM_CLASSES: usize = 4;
+pub const KMEM_CLASSES: usize = 7;
 
 impl KmemClass {
     /// Every class, by index.
     pub const ALL: [KmemClass; KMEM_CLASSES] =
-        [KmemClass::CapTable, KmemClass::EpQueue, KmemClass::MemObjMeta, KmemClass::PageTable];
+        [
+        KmemClass::CapTable,
+        KmemClass::EpQueue,
+        KmemClass::MemObjMeta,
+        KmemClass::PageTable,
+        KmemClass::IoRing,
+        KmemClass::Port,
+        KmemClass::Bounce,
+    ];
 
     /// The class with index `i`.
     #[must_use]
@@ -757,6 +775,9 @@ impl KmemClass {
             1 => Some(KmemClass::EpQueue),
             2 => Some(KmemClass::MemObjMeta),
             3 => Some(KmemClass::PageTable),
+            4 => Some(KmemClass::IoRing),
+            5 => Some(KmemClass::Port),
+            6 => Some(KmemClass::Bounce),
             _ => None,
         }
     }

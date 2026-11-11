@@ -30,8 +30,8 @@ fn snap(b: &PageBudget) -> Snap {
     (b.used(), b.peak(), b.limit(), b.grown(), b.ceiling(), b.base())
 }
 
-fn ksnap(b: &KmemBudget) -> (u64, u64, [u64; 4]) {
-    (b.used(), b.limit(), [0, 1, 2, 3].map(|i| b.used_of(KmemClass::from_index(i).unwrap())))
+fn ksnap(b: &KmemBudget) -> (u64, u64, [u64; 7]) {
+    (b.used(), b.limit(), KmemClass::ALL.map(|c| b.used_of(c)))
 }
 
 /// A small deterministic generator (xorshift64*): the sequences are the same on
@@ -251,9 +251,9 @@ mod saturating {
                 let b = KmemBudget::new();
                 b.set_limit_kib(limit_kib);
                 let limit = u64::from(limit_kib) * 1024;
-                let mut held = [0u64; 4];
+                let mut held = [0u64; 7];
                 for step in 0..4000 {
-                    let class = KmemClass::from_index(rng.below(4) as u8).unwrap();
+                    let class = KmemClass::from_index(rng.below(7) as u8).unwrap();
                     let bytes = match rng.below(5) {
                         0 => 0,
                         1 => rng.below(64),
@@ -273,7 +273,7 @@ mod saturating {
                             } else if fits {
                                 // Unlimited and huge: the saturation tests own this corner.
                                 b.reset();
-                                held = [0; 4];
+                                held = [0; 7];
                             }
                         }
                         2 | 3 => {
@@ -524,11 +524,11 @@ mod harts {
                     let (b, start, over) = (b.clone(), start.clone(), over.clone());
                     std::thread::spawn(move || {
                         let mut rng = Rng(0x5EED_0000 + (t as u64) * 6151 + round);
-                        let mut held = [0u64; 4];
+                        let mut held = [0u64; 7];
                         start.wait();
                         for _ in 0..1500 {
                             // Half the threads share a class, half have one each.
-                            let class = KmemClass::from_index(if t < 4 { 0 } else { (t - 3) as u8 % 4 }).unwrap();
+                            let class = KmemClass::from_index(if t < 4 { 0 } else { (t - 3) as u8 % 7 }).unwrap();
                             let n = 1 + rng.below(96);
                             if rng.below(3) != 0 {
                                 if b.charge(class, n).is_ok() {
@@ -547,10 +547,10 @@ mod harts {
                     })
                 })
                 .collect();
-            let mut held = [0u64; 4];
+            let mut held = [0u64; 7];
             for t in ts {
                 let h = t.join().unwrap();
-                for i in 0..4 {
+                for i in 0..7 {
                     held[i] += h[i];
                 }
             }

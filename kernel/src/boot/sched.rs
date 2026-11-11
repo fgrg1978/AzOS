@@ -3661,11 +3661,14 @@ mod kmutex_ktests {
 
 // The classes `azos_ipc::cap_store` charges are bytes, numbered as the ledger's.
 const _: () = {
-    use azos_ipc::cap_store::{KMEM_CAP_TABLE, KMEM_EP_QUEUE, KMEM_MEMOBJ_META};
+    use azos_ipc::cap_store::{KMEM_BOUNCE, KMEM_CAP_TABLE, KMEM_EP_QUEUE, KMEM_IO_RING, KMEM_MEMOBJ_META, KMEM_PORT};
     use azos_sched::domain::KmemClass;
     assert!(KMEM_CAP_TABLE == KmemClass::CapTable as u8);
     assert!(KMEM_EP_QUEUE == KmemClass::EpQueue as u8);
     assert!(KMEM_MEMOBJ_META == KmemClass::MemObjMeta as u8);
+    assert!(KMEM_IO_RING == KmemClass::IoRing as u8);
+    assert!(KMEM_PORT == KmemClass::Port as u8);
+    assert!(KMEM_BOUNCE == KmemClass::Bounce as u8);
 };
 
 /// `azos_ipc::cap_store::set_kmem_hooks`: charge a Domain's ledger. A class

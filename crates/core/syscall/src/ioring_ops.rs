@@ -620,7 +620,7 @@ struct Pending {
     result: i32,
     ticket: Option<RawTicket>,
     /// The request layer's buffer: a write's source, a read's destination.
-    kbuf: Vec<u8>,
+    kbuf: crate::block_host::BilledBounce,
 }
 
 impl Pending {
@@ -634,7 +634,7 @@ impl Pending {
         count: 0,
         result: 0,
         ticket: None,
-        kbuf: Vec::new(),
+        kbuf: crate::block_host::BilledBounce::EMPTY,
     };
 }
 
@@ -677,7 +677,7 @@ fn block_start(owner_tid: u32, badge: u32, write: bool, sector: u64, buf: *const
         // whose `block_io` writes it back (`note_external_read`) and reads.
         return BlockStart::Dirty;
     }
-    let Some(mut kbuf) = crate::block_host::bounce(len) else {
+    let Some(mut kbuf) = crate::block_host::BilledBounce::new(owner_tid, len) else {
         return BlockStart::Refused(errno(Errno::ENOMEM));
     };
     if write {
@@ -847,7 +847,7 @@ mod size_tests {
     #[test]
     fn a_pending_slot_is_the_size_the_kconfig_help_quotes() {
         if usize::BITS == 64 {
-            assert_eq!(core::mem::size_of::<Pending>(), 64, "update the Kconfig help");
+            assert_eq!(core::mem::size_of::<Pending>(), 72, "update the Kconfig help");
         }
     }
 }
