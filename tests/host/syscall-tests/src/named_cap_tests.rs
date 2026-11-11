@@ -3,7 +3,7 @@
 // `SYS_CAP_INFO` `CAP_INFO_ENDPOINT` (`crates/core/syscall/src/named_cap.rs`,
 // pulled in with `#[path]`): a task's right found by the endpoint it names,
 // over the real capability tables, endpoint registry and topology slot
-// (`HOGATE.ELF` in `subtree_policy`'s topology grants call rights with the
+// (`HOGATE` in `subtree_policy`'s topology grants call rights with the
 // same rights on `endpoint.ho_login` and `endpoint.ho_term`).
 
 use super::harness::serial;
@@ -63,7 +63,7 @@ fn done(hs: &[CapHandle]) {
 fn a_right_is_found_by_its_endpoint_whatever_the_order_or_the_rights() {
     let _g = serial();
     bind();
-    let gate = row(b"HOGATE.ELF");
+    let gate = row(b"HOGATE");
     for order in [[&b"ho_login"[..], b"ho_term"], [b"ho_term", b"ho_login"]] {
         let hs = grant(&order);
         let want = |n: &[u8]| hs[order.iter().position(|o| *o == n).unwrap()];
@@ -85,7 +85,7 @@ fn a_right_is_found_by_its_endpoint_whatever_the_order_or_the_rights() {
 fn a_granted_right_not_held_is_told_from_one_not_granted() {
     let _g = serial();
     bind();
-    let (gate, plain) = (row(b"HOGATE.ELF"), row(b"PLAIN.ELF"));
+    let (gate, plain) = (row(b"HOGATE"), row(b"PLAIN.ELF"));
     assert!(gate.is_some() && plain.is_some());
     assert_eq!(lookup(GATE, gate, b"ho_login", CapPerms::WRITE, CapPerms::READ), Err(Errno::ECAPSTALE));
     assert_eq!(lookup(GATE, plain, b"ho_login", CapPerms::WRITE, CapPerms::READ), Err(Errno::ENOENT));
@@ -133,5 +133,5 @@ fn a_right_on_an_endpoint_past_index_15_is_found() {
     let r = resource(GATE, hs[0]);
     made.0.push(r);
     assert!(azos_ipc::cap::objref::idx(ty::ENDPOINT, r) > 15, "the login endpoint is not past index 15 (index {})", azos_ipc::cap::objref::idx(ty::ENDPOINT, r));
-    assert_eq!(lookup(GATE, row(b"HOGATE.ELF"), b"ho_login", CapPerms::WRITE, CapPerms::READ), Ok(hs[0]));
+    assert_eq!(lookup(GATE, row(b"HOGATE"), b"ho_login", CapPerms::WRITE, CapPerms::READ), Ok(hs[0]));
 }

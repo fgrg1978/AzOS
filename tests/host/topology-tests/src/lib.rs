@@ -6099,6 +6099,7 @@ mod neverallow_tests {
         assert_eq!(refusal(&one_row(b"SVC.ELF", &[served, also_calls]), &SERVER), None, "a server's own calling right");
         let plain = cap(CapKind::Endpoint, CapPerms::WRITE, b"endpoint.svc");
         assert_eq!(refusal(&one_row(b"CLIENT.ELF", &[plain]), &SERVER), None, "not handed on");
+        assert_eq!(refusal(&one_row(b"kernel_task", &[lent]), &SERVER), None, "a kernel task derives nothing through the syscall");
         let mut hosted = cap(CapKind::Endpoint, CapPerms::WRITE, b"net");
         hosted.transfer = true;
         assert_eq!(refusal(&one_row(b"CLIENT.ELF", &[hosted]), &SERVER), None, "the kernel serves it");
