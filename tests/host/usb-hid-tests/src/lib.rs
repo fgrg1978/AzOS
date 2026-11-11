@@ -17,6 +17,7 @@
 //! |---|---|---|
 //! | `canary-rollover` | a key array full of ErrorRollOver is taken for keys | `a_rollover_report_changes_nothing` |
 //! | `canary-report-id` | the report ID byte is not skipped | `a_report_with_an_id_is_read_after_the_id` |
+//! | `canary-counter-wrap` | the dropped-report counter aborts at its maximum | `a_saturated_drop_counter_does_not_abort` |
 //! | `canary-sign` | a relative axis is not sign-extended | `relative_axes_are_signed` |
 //! | `canary-modifier-order` | modifiers after the keys of the same report | `modifiers_come_before_the_keys_of_their_report` |
 //! | `canary-tier` | the hub tier is not compared | `a_device_behind_too_many_hubs_is_refused` |

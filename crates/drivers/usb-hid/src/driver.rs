@@ -324,7 +324,7 @@ impl<'q> HidClass<'q> {
                             let off = DESC_MAX + (c.tag as usize % IN_DEPTH) * SLICE;
                             usb.controller().mem().from_device(buf.cpu().wrapping_add(off), n);
                             buf.read_bytes(off, &mut data[..n]);
-                            *reports += 1;
+                            *reports = reports.saturating_add(1);
                             dec.report(layout, &data[..n], |ty, code, value| {
                                 rep.observe(ty, code, value, now_ms, azos_limits::USB_HID_REPEAT_DELAY_MS as u64);
                                 sink.event(dev, ty, code, value);

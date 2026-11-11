@@ -53,6 +53,8 @@ mod abort;
 #[cfg(test)]
 mod admission;
 #[cfg(test)]
+mod counters;
+#[cfg(test)]
 mod dwc2;
 
 #[cfg(test)]

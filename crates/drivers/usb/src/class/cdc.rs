@@ -1560,14 +1560,14 @@ impl<'q, M: Memory, C: Clock> CdcNet<'q, M, C> {
         let Some(region) = self.region else { return };
         let actual = actual.min(self.stride);
         self.mem.from_device(region.cpu().wrapping_add(self.rx_off(i)), actual);
-        self.stats.rx_transfers += 1;
+        self.stats.rx_transfers = self.stats.rx_transfers.saturating_add(1);
         let cursor = match self.kind {
             Some(Kind::Ncm) => {
                 let view = View { buf: &region, off: self.rx_off(i), len: actual };
                 match Rx16::open(&view, actual) {
                     Ok(r) => Cursor::Ncm(r),
                     Err(_) => {
-                        self.stats.ntb_malformed += 1;
+                        self.stats.ntb_malformed = self.stats.ntb_malformed.saturating_add(1);
                         return;
                     }
                 }
@@ -1581,9 +1581,9 @@ impl<'q, M: Memory, C: Clock> CdcNet<'q, M, C> {
 
     fn bad(&mut self, tx: bool) {
         if tx {
-            self.stats.tx_errors += 1;
+            self.stats.tx_errors = self.stats.tx_errors.saturating_add(1);
         } else {
-            self.stats.rx_errors += 1;
+            self.stats.rx_errors = self.stats.rx_errors.saturating_add(1);
         }
         self.bad_run += 1;
         if self.bad_run >= MAX_BAD_RUN {
@@ -1613,7 +1613,7 @@ impl<'q, M: Memory, C: Clock> CdcNet<'q, M, C> {
                     Ok(Some((off, len))) => Some((base + off, len)),
                     Ok(None) => None,
                     Err(_) => {
-                        self.stats.ntb_malformed += 1;
+                        self.stats.ntb_malformed = self.stats.ntb_malformed.saturating_add(1);
                         None
                     }
                 }
@@ -1636,11 +1636,11 @@ impl<'q, M: Memory, C: Clock> CdcNet<'q, M, C> {
             match self.next_frame(i) {
                 Some((off, len)) => {
                     if len < FRAME_MIN || len > out.len() {
-                        self.stats.rx_dropped += 1;
+                        self.stats.rx_dropped = self.stats.rx_dropped.saturating_add(1);
                         continue;
                     }
                     region.read_bytes(off, &mut out[..len]);
-                    self.stats.rx_frames += 1;
+                    self.stats.rx_frames = self.stats.rx_frames.saturating_add(1);
                     return len;
                 }
                 None => {
@@ -1669,7 +1669,7 @@ impl<'q, M: Memory, C: Clock> CdcNet<'q, M, C> {
                 Status::Disconnected => {}
                 Status::Stall => {
                     self.halts.clear_out = true;
-                    self.stats.tx_errors += 1;
+                    self.stats.tx_errors = self.stats.tx_errors.saturating_add(1);
                 }
                 _ => self.bad(true),
             }
@@ -1694,7 +1694,7 @@ impl<'q, M: Memory, C: Clock> CdcNet<'q, M, C> {
             Some(Kind::Ncm) => self.send_ncm(frame)?,
             _ => self.send_ecm(frame)?,
         }
-        self.stats.tx_frames += 1;
+        self.stats.tx_frames = self.stats.tx_frames.saturating_add(1);
         Ok(())
     }
 
@@ -1726,7 +1726,7 @@ impl<'q, M: Memory, C: Clock> CdcNet<'q, M, C> {
             return Err(SendError::QueueFull);
         }
         self.tx_busy[i] = true;
-        self.stats.tx_transfers += 1;
+        self.stats.tx_transfers = self.stats.tx_transfers.saturating_add(1);
         self.submitted = true;
         Ok(())
     }
@@ -2214,9 +2214,9 @@ impl<'q, M: Memory, C: Clock> CdcAcm<'q, M, C> {
 
     fn bad(&mut self, tx: bool) {
         if tx {
-            self.stats.tx_errors += 1;
+            self.stats.tx_errors = self.stats.tx_errors.saturating_add(1);
         } else {
-            self.stats.rx_errors += 1;
+            self.stats.rx_errors = self.stats.rx_errors.saturating_add(1);
         }
         self.bad_run += 1;
         if self.bad_run >= MAX_BAD_RUN {
@@ -2255,7 +2255,7 @@ impl<'q, M: Memory, C: Clock> CdcAcm<'q, M, C> {
                         if rx.push(&Chunk::new(&d[..take], flags)) {
                             self.gap = false;
                         } else {
-                            self.stats.rx_lost += 1;
+                            self.stats.rx_lost = self.stats.rx_lost.saturating_add(1);
                             self.gap = true;
                         }
                         off += take;
@@ -2291,10 +2291,10 @@ impl<'q, M: Memory, C: Clock> CdcAcm<'q, M, C> {
                 Status::Disconnected => {}
                 Status::Stall => {
                     self.halts.clear_out = true;
-                    self.stats.tx_lost += 1;
+                    self.stats.tx_lost = self.stats.tx_lost.saturating_add(1);
                 }
                 _ => {
-                    self.stats.tx_lost += 1;
+                    self.stats.tx_lost = self.stats.tx_lost.saturating_add(1);
                     self.bad(true)
                 }
             }
@@ -2315,7 +2315,7 @@ impl<'q, M: Memory, C: Clock> CdcAcm<'q, M, C> {
                 self.tx_busy[i] = true;
                 self.submitted = true;
             } else {
-                self.stats.tx_lost += 1;
+                self.stats.tx_lost = self.stats.tx_lost.saturating_add(1);
             }
         }
         moved

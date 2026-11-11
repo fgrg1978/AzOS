@@ -327,3 +327,11 @@ fn a_key_array_the_usages_can_hold_still_decodes() {
     let mut d = Decoder::new();
     assert_eq!(run(&mut d, &l, &0u32.to_le_bytes()), vec![key(KEY_A, 1)]);
 }
+
+#[test]
+fn a_saturated_drop_counter_does_not_abort() {
+    let (mut d, l) = kbd();
+    d.dropped = u32::MAX;
+    assert_eq!(run(&mut d, &l, &[]), vec![]);
+    assert_eq!(d.dropped, u32::MAX);
+}

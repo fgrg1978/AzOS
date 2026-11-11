@@ -93,16 +93,24 @@ impl Decoder {
         Decoder { down: [CodeSet::EMPTY; MAX_IDS], last: [i32::MIN; MAX_CONTROLS], dropped: 0 }
     }
 
+    fn drop_one(&mut self) {
+        if cfg!(feature = "canary-counter-wrap") {
+            self.dropped += 1;
+        } else {
+            self.dropped = self.dropped.saturating_add(1);
+        }
+    }
+
     /// One report from the device. `emit(type, code, value)` is called once per
     /// event.
     pub fn report(&mut self, l: &Layout, buf: &[u8], mut emit: impl FnMut(u16, u16, u32)) {
         let (idx, payload) = if l.has_ids {
             let Some((&id, rest)) = buf.split_first() else {
-                self.dropped += 1;
+                self.drop_one();
                 return;
             };
             let Some(i) = l.index_of(id) else {
-                self.dropped += 1;
+                self.drop_one();
                 return;
             };
             (i, if cfg!(feature = "canary-report-id") { buf } else { rest })
@@ -110,7 +118,7 @@ impl Decoder {
             (0, buf)
         };
         if payload.is_empty() {
-            self.dropped += 1;
+            self.drop_one();
             return;
         }
         let mut now = CodeSet::EMPTY;
@@ -147,7 +155,7 @@ impl Decoder {
                             // report changes nothing.
                             #[cfg(not(feature = "canary-rollover"))]
                             {
-                                self.dropped += 1;
+                                self.drop_one();
                                 return;
                             }
                         }

@@ -658,9 +658,9 @@ impl<'q, M: Memory, C: Clock> Smsc95xx<'q, M, C> {
 
     fn bad(&mut self, tx: bool) {
         if tx {
-            self.stats.tx_errors += 1;
+            self.stats.tx_errors = self.stats.tx_errors.saturating_add(1);
         } else {
-            self.stats.rx_errors += 1;
+            self.stats.rx_errors = self.stats.rx_errors.saturating_add(1);
         }
         self.bad_run += 1;
         if self.bad_run >= MAX_BAD_RUN {
@@ -712,7 +712,7 @@ impl<'q, M: Memory, C: Clock> Smsc95xx<'q, M, C> {
     fn hold(&mut self, i: usize, actual: usize) {
         let Some(region) = self.region else { return };
         self.mem.from_device(region.cpu().wrapping_add(RX_OFF + i * RX_BYTES), actual);
-        self.stats.rx_transfers += 1;
+        self.stats.rx_transfers = self.stats.rx_transfers.saturating_add(1);
         self.rx[i] = RxSlot::Held { len: actual as u32, next: 0 };
         self.fifo[(self.fifo_head + self.fifo_len) % BUFS] = i as u8;
         self.fifo_len += 1;
@@ -731,7 +731,7 @@ impl<'q, M: Memory, C: Clock> Smsc95xx<'q, M, C> {
         let mut head = [0u8; 4];
         region.read_bytes(base + at, &mut head);
         let Some((data, flen, flagged, after)) = frame_at(u32::from_le_bytes(head), at, len) else {
-            self.stats.ntb_malformed += 1;
+            self.stats.ntb_malformed = self.stats.ntb_malformed.saturating_add(1);
             return None;
         };
         self.rx[i] = RxSlot::Held { len: len as u32, next: after as u32 };
@@ -749,15 +749,15 @@ impl<'q, M: Memory, C: Clock> Smsc95xx<'q, M, C> {
             match self.next_frame(i) {
                 Some((off, len, flagged)) => {
                     if flagged {
-                        self.stats.rx_errors += 1;
+                        self.stats.rx_errors = self.stats.rx_errors.saturating_add(1);
                         continue;
                     }
                     if len < FRAME_MIN || len > out.len() {
-                        self.stats.rx_dropped += 1;
+                        self.stats.rx_dropped = self.stats.rx_dropped.saturating_add(1);
                         continue;
                     }
                     region.read_bytes(off, &mut out[..len]);
-                    self.stats.rx_frames += 1;
+                    self.stats.rx_frames = self.stats.rx_frames.saturating_add(1);
                     return len;
                 }
                 None => {
@@ -785,7 +785,7 @@ impl<'q, M: Memory, C: Clock> Smsc95xx<'q, M, C> {
                 Status::Disconnected => {}
                 Status::Stall => {
                     self.clear_out = true;
-                    self.stats.tx_errors += 1;
+                    self.stats.tx_errors = self.stats.tx_errors.saturating_add(1);
                 }
                 _ => self.bad(true),
             }
@@ -819,8 +819,8 @@ impl<'q, M: Memory, C: Clock> Smsc95xx<'q, M, C> {
             return Err(SendError::QueueFull);
         }
         self.tx_busy[i] = true;
-        self.stats.tx_transfers += 1;
-        self.stats.tx_frames += 1;
+        self.stats.tx_transfers = self.stats.tx_transfers.saturating_add(1);
+        self.stats.tx_frames = self.stats.tx_frames.saturating_add(1);
         self.submitted = true;
         Ok(())
     }

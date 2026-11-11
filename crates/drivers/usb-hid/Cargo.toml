@@ -31,6 +31,8 @@ azos_decision    = { workspace = true }
 # A key array holding the rollover error code (a phantom state) is taken for
 # keys: the keys of the previous report are reported released.
 canary-rollover = []
+# The dropped-report counter wraps with an overflow check.
+canary-counter-wrap = []
 # A key array's device-supplied limits are used as they come.
 canary-hid-array-range = []
 # A report ID is not skipped: the fields of a report with IDs are read one byte early.

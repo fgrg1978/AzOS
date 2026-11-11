@@ -22,6 +22,7 @@ azos_decision = { path = "../../../crates/core/decision", features = ["on"] }
 
 [features]
 canary-rollover = ["azos_usb_hid/canary-rollover"]
+canary-counter-wrap = ["azos_usb_hid/canary-counter-wrap"]
 canary-hid-array-range = ["azos_usb_hid/canary-hid-array-range"]
 canary-report-id = ["azos_usb_hid/canary-report-id"]
 canary-sign = ["azos_usb_hid/canary-sign"]

@@ -1118,7 +1118,7 @@ impl<'q, M: Memory, C: Clock, S: FrameSink> Uvc<'q, M, C, S> {
 
     /// A stall in the stream: stop and start again, a few times.
     fn restart(&mut self, now: u64) {
-        self.stats.restarts += 1;
+        self.stats.restarts = self.stats.restarts.saturating_add(1);
         self.restarts_in_a_row += 1;
         self.last_progress_us = now;
         if self.restarts_in_a_row > MAX_RESTARTS {
@@ -1167,7 +1167,7 @@ impl<'q, M: Memory, C: Clock, S: FrameSink> Uvc<'q, M, C, S> {
                 // A bus error loses that interval; a camera that was reset
                 // under us completes its stopped transfers this way.
                 Status::Transaction | Status::Babble | Status::Other(_) => {
-                    self.stats.lost += 1;
+                    self.stats.lost = self.stats.lost.saturating_add(1);
                     self.lose_data();
                     self.submit_buf(i);
                 }
@@ -1193,14 +1193,14 @@ impl<'q, M: Memory, C: Clock, S: FrameSink> Uvc<'q, M, C, S> {
         let n = actual.min(HEADER_MAX);
         buf.read_bytes(at, &mut head[..n]);
         let Some(h) = parse_header(&head[..n]) else {
-            self.stats.bad_headers += 1;
+            self.stats.bad_headers = self.stats.bad_headers.saturating_add(1);
             self.lose_data();
             return;
         };
         if h.still {
             return;
         }
-        self.stats.payloads += 1;
+        self.stats.payloads = self.stats.payloads.saturating_add(1);
         self.assemble(&h, &buf, at + h.len, actual - h.len);
     }
 
@@ -1249,11 +1249,11 @@ impl<'q, M: Memory, C: Clock, S: FrameSink> Uvc<'q, M, C, S> {
                 if toggled {
                     // The start of a frame; what came before was the end of
                     // one, which is dropped.
-                    self.stats.dropped += 1;
+                    self.stats.dropped = self.stats.dropped.saturating_add(1);
                     self.begin_frame();
                 } else {
                     if h.eof {
-                        self.stats.dropped += 1;
+                        self.stats.dropped = self.stats.dropped.saturating_add(1);
                         self.phase = Phase::Between;
                     }
                     return;
@@ -1287,7 +1287,7 @@ impl<'q, M: Memory, C: Clock, S: FrameSink> Uvc<'q, M, C, S> {
         self.frame = match sink.claim() {
             Some(slot) => Frame { slot: Some(slot), len: 0, bad },
             None => {
-                self.stats.refused += 1;
+                self.stats.refused = self.stats.refused.saturating_add(1);
                 Frame { slot: None, len: 0, bad }
             }
         };
@@ -1306,7 +1306,7 @@ impl<'q, M: Memory, C: Clock, S: FrameSink> Uvc<'q, M, C, S> {
         };
         if f.len + len > cap {
             f.bad = true;
-            self.stats.oversize += 1;
+            self.stats.oversize = self.stats.oversize.saturating_add(1);
             return;
         }
         buf.read_bytes(data, &mut slot[f.len..f.len + len]);
@@ -1326,12 +1326,12 @@ impl<'q, M: Memory, C: Clock, S: FrameSink> Uvc<'q, M, C, S> {
                     Pixels::Yuyv => FrameInfo::yuyv(c.width, c.height),
                 };
                 self.sink.commit(len, (self.stamp)(), info);
-                self.stats.frames += 1;
+                self.stats.frames = self.stats.frames.saturating_add(1);
                 self.restarts_in_a_row = 0;
             }
             _ => {
                 self.sink.abort();
-                self.stats.dropped += 1;
+                self.stats.dropped = self.stats.dropped.saturating_add(1);
             }
         }
     }
@@ -1412,7 +1412,7 @@ impl<M: Memory, C: Clock, S: FrameSink> UsbClass for Uvc<'_, M, C, S> {
             return Out::new(UNSUPPORTED, 0);
         }
         if self.state != State::Idle || self.gone {
-            self.stats.declined += 1;
+            self.stats.declined = self.stats.declined.saturating_add(1);
             return Out::new(BUSY, 0);
         }
         let c = Claim(claim);
