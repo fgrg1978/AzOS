@@ -599,9 +599,9 @@ pub fn accept_badge(handle: u64, holder: u32) -> Option<u32> {
 }
 
 /// Move the reply warrant of `handle` from `holder` to `to`; a `to` that is
-/// not a live task has the call completed with `-EPEERDIED` instead.
+/// not a live task (one mid-exit is not) has the call completed with `-EPEERDIED` instead.
 pub fn delegate(handle: u64, holder: u32, to: u32) -> Delegated {
-    ep_queue::delegate(handle, holder, to, |t| azos_sched::idx_for_tid(t).is_some(), complete_one)
+    ep_queue::delegate(handle, holder, to, |t| azos_sched::live_idx_for_tid(t).is_some(), complete_one)
 }
 
 /// Answer `handle` as the holder of its reply warrant; a second answer is

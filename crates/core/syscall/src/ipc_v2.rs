@@ -580,6 +580,7 @@ pub fn sys_ipc_reply_delegate(handle: u64, to: u64) -> i64 {
     let Ok(to) = u32::try_from(to) else { return Errno::EPERM.to_syscall_ret() };
     if to == 0
         || azos_sched::idx_for_tid(to).is_none()
+        || azos_sched::tid_is_exiting(to)
         || azos_sched::group::proc_tid(to) != azos_sched::group::proc_tid(tid)
     {
         return Errno::EPERM.to_syscall_ret();

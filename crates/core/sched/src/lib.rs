@@ -68,7 +68,7 @@ pub use scheduler::{
     try_task_create_init,
     task_yield, task_preempt_deferred, task_exit, set_task_exit_hook, set_task_exec_hook, set_task_exit_late_hook, set_task_identity_hook, set_task_fork_hook,
     set_task_view_hook, tid_holds_address_space, task_row, task_row_at, task_switches_at, TaskRow,
-    idx_for_tid, tid_for_idx, tid_is_exiting,
+    idx_for_tid, live_idx_for_tid, tid_for_idx, tid_is_exiting,
     mm_charge, mm_charge_request, mm_discharge, mm_reset_charge, set_current_user_page_limit,
     mm_discharge_tid, mm_charge_if_current, install_mm_hooks, take_current_pt_build,
     current_mem_policy, current_mem_locked, current_mem_report, mm_install_frames,

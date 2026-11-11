@@ -1603,9 +1603,9 @@ pub enum Delegated {
 /// Who `to` may be (a thread of the server's own domain, or the transport
 /// proxy) is the syscall's rule, not this one's.
 ///
-/// `to_alive` is asked under the record's lock: a thread that exited since the
-/// caller looked has already had its [`release_holder`] sweep, which would not
-/// find this record, so the call is completed here ([`Delegated::Gone`], `done`
+/// `to_alive` is asked under the record's lock: a thread that began to exit
+/// since the caller looked (its exiting mark is set before the exit hook's
+/// [`release_holder`] sweep) would not be found by that sweep for this record, so the call is completed here ([`Delegated::Gone`], `done`
 /// gets it) rather than left with a holder that cannot answer.
 /// Canary `ipc-delegate-dead-canary`: the liveness is not asked.
 pub fn delegate(
@@ -1878,7 +1878,7 @@ pub fn release_holder(tid: u32, mut done: impl FnMut(Completed)) -> usize {
     let mut n = 0;
     for (i, r) in RECORDS.iter().enumerate() {
         let t = r.tag.load(Ordering::Acquire);
-        if tag_state(t) != S_ACCEPTED || r.server.load(Ordering::Relaxed) != tid {
+        if tag_state(t) != S_ACCEPTED {
             continue;
         }
         let Some((ep, t, q)) = lock_rec(i) else { continue };
@@ -2464,6 +2464,39 @@ mod tests {
         assert_eq!(done, vec![h], "the caller is woken");
         assert_eq!(collect(h, tid), Collected::Done(PEER_DIED, NO_DONEE));
         assert_eq!(DELEGATED.load(Ordering::Relaxed), 0);
+    }
+
+    /// The exit's order: the thread is marked exiting while still indexed, its
+    /// warrant sweep runs, and only then does a delegate name it. The target
+    /// is indexed but not live, so the call is completed rather than parked
+    /// with a holder nobody will sweep again.
+    ///
+    /// **Canary** `ipc-delegate-dead-canary`: the liveness is not asked.
+    #[test]
+    fn a_delegate_to_an_exiting_but_still_indexed_thread_completes_the_call() {
+        let _e = env();
+        let (idx, tid) = client(0);
+        let h = call(idx, tid, EP, GEN, SERVER, SERVER_IDX, REQ, 0, NO_DONEE).unwrap();
+        let _ = accept(SERVER_IDX, SERVER).unwrap();
+        let (indexed, exiting) = (|_: u32| true, |t: u32| t == WORKER);
+        assert_eq!(release_holder(WORKER, |_| {}), 0, "the sweep finds nothing yet");
+        let alive = |t: u32| indexed(t) && !exiting(t);
+        assert_eq!(delegate(h, SERVER, WORKER, alive, |_| {}), Delegated::Gone);
+        assert_eq!(collect(h, tid), Collected::Done(PEER_DIED, NO_DONEE));
+    }
+
+    /// A record whose holder store lands after an unlocked scan is still swept:
+    /// the sweep tests the holder under the record's lock.
+    #[test]
+    fn the_exit_sweep_reads_the_holder_under_the_record_lock() {
+        let _e = env();
+        let (idx, tid) = client(0);
+        let h = call(idx, tid, EP, GEN, SERVER, SERVER_IDX, REQ, 0, NO_DONEE).unwrap();
+        let _ = accept(SERVER_IDX, SERVER).unwrap();
+        assert_eq!(delegate(h, SERVER, WORKER, |_| true, |_| {}), Delegated::Moved);
+        let mut got = 0;
+        assert_eq!(release_holder(WORKER, |_| got += 1), 1);
+        assert_eq!(got, 1);
     }
 
     #[test]
