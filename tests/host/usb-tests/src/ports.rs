@@ -110,3 +110,26 @@ fn a_hub_with_another_endpoint_listed_first_still_reports_all_its_ports() {
     rig.settle();
     assert_eq!(rig.usb.devices().count(), 2, "port 10 of the hub is seen");
 }
+
+/// GET_STATUS to a hub port.
+const PORT_STATUS: (u8, u8) = (0xa3, 0);
+
+#[test]
+fn a_hub_that_never_answers_for_its_ports_is_dropped() {
+    let mut rig = Rig::new();
+    let h = hub_device(false, 4, 3, false);
+    rig.hw.attach_root(1, h.clone());
+    rig.settle();
+    assert_eq!(rig.usb.devices().count(), 1);
+    h.borrow_mut().nak_requests.push(PORT_STATUS);
+    for _ in 0..8 {
+        rig.hw.hub_attach(&h, 1, keyboard());
+        rig.run(1_500);
+        rig.hw.hub_detach(&h, 1);
+        rig.run(50);
+    }
+    assert_eq!(rig.usb.devices().count(), 0, "the hub is gone after its budget");
+    let asked = h.borrow().requests.iter().filter(|(s, _)| (s[0], s[1]) == PORT_STATUS).count();
+    assert!(asked <= 4, "{asked} port-status requests");
+    assert!(rig.hw.fault().is_none(), "{:?}", rig.hw.fault());
+}

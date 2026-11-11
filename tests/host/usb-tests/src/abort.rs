@@ -80,12 +80,12 @@ fn a_core_control_that_times_out_is_taken_off_endpoint_0() {
     let h = hub_device(false, 4, 3, false);
     rig.hw.attach_root(1, h.clone());
     rig.settle();
+    let slot = rig.hw.slot_of(&h).unwrap() as u8;
     h.borrow_mut().nak_requests.push(PORT_STATUS);
     rig.hw.hub_attach(&h, 1, keyboard());
     rig.run(1_500);
     assert!(rig.hw.commands().contains(&STOP_ENDPOINT), "nothing stopped the request");
     assert!(rig.hw.commands().contains(&SET_TR_DEQUEUE));
-    let slot = rig.hw.slot_of(&h).unwrap() as u8;
     let before = rig.hw.xfer_events().iter().filter(|e| (e.0, e.1, e.2) == (slot, 1, 1)).count();
     // Late: nothing is left on the ring for the answer to land from.
     h.borrow_mut().nak_requests.clear();

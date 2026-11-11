@@ -396,12 +396,14 @@ impl<'q, R: Regs, M: Memory, C: Clock> Usb<'q, R, M, C> {
 
     /// A port failed to bring its device up: back off, and after the budget
     /// leave it alone and say so in a decision record.
-    pub(crate) fn port_failed(&mut self, root_port: u8, route: u32) {
+    pub(crate) fn port_failed(&mut self, root_port: u8, route: u32) -> budget::Failed {
         self.stats.failed = self.stats.failed.saturating_add(1);
         let now = self.hc.clock().now_us();
-        if self.budget.failed(budget::key(root_port, route), now) == budget::Failed::Ignored {
+        let r = self.budget.failed(budget::key(root_port, route), now);
+        if r == budget::Failed::Ignored {
             admit::record(root_port, 0, route, admit::Reason::PortIgnored);
         }
+        r
     }
 
     /// The rows that decide which interfaces may bind a class driver; until
@@ -467,7 +469,7 @@ impl<'q, R: Regs, M: Memory, C: Clock> Usb<'q, R, M, C> {
         if self.held_events.iter().any(|e| e.is_some()) || !matches!(self.events.push(ev), azos_rings::Push::Pushed) {
             match self.held_events.iter_mut().find(|e| e.is_none()) {
                 Some(h) => *h = Some(ev),
-                None => self.stats.events_lost += 1,
+                None => self.stats.events_lost = self.stats.events_lost.saturating_add(1),
             }
         }
     }
@@ -880,7 +882,7 @@ impl<'q, R: Regs, M: Memory, C: Clock> Usb<'q, R, M, C> {
         if let Some(end) = p.end.as_mut() {
             let c = Completion { tag: d.tag, status, actual: d.actual };
             if !matches!(end.cq.push(c), azos_rings::Push::Pushed) {
-                self.stats.completions_lost += 1;
+                self.stats.completions_lost = self.stats.completions_lost.saturating_add(1);
             }
         }
     }
@@ -916,7 +918,7 @@ impl<'q, R: Regs, M: Memory, C: Clock> Usb<'q, R, M, C> {
                         if let Some(end) = self.pipes[ix].end.as_mut() {
                             let c = Completion { tag: t.tag, status, actual: 0 };
                             if !matches!(end.cq.push(c), azos_rings::Push::Pushed) {
-                                self.stats.completions_lost += 1;
+                                self.stats.completions_lost = self.stats.completions_lost.saturating_add(1);
                             }
                         }
                     }

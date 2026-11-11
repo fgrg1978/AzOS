@@ -268,7 +268,14 @@ impl<'q, R: Regs, M: Memory, C: Clock> Usb<'q, R, M, C> {
             return;
         }
         let Ok((status, change)) = self.hub_port_status(hub, port) else {
-            self.stats.failed += 1;
+            // A hub that does not answer for its ports costs the port, and when
+            // the hub itself has used its budget the hub is dropped.
+            self.port_failed(hd.root_port, route);
+            if !cfg!(feature = "canary-hub-status-no-budget")
+                && self.port_failed(hd.root_port, hd.route) == budget::Failed::Ignored
+            {
+                self.remove_device(reg, hub);
+            }
             return;
         };
         self.hub_ack_changes(hub, port, ss, change);
@@ -315,7 +322,9 @@ impl<'q, R: Regs, M: Memory, C: Clock> Usb<'q, R, M, C> {
                     h.children[port as usize - 1] = slot;
                 }
             }
-            Err(_) => self.port_failed(hd.root_port, route),
+            Err(_) => {
+                self.port_failed(hd.root_port, route);
+            }
         }
     }
 

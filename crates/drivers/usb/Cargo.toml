@@ -159,5 +159,7 @@ canary-admit-all = []
 canary-hub-mps = []
 # A port that keeps failing to enumerate is tried at every connection.
 canary-port-no-budget = []
+# A hub that never answers a port-status request is asked again at every event.
+canary-hub-status-no-budget = []
 # An endpoint numbered 0 in a configuration descriptor is a data endpoint (xHCI DCI 1).
 canary-ep0-data-endpoint = []

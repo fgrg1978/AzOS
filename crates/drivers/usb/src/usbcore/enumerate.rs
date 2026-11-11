@@ -83,7 +83,9 @@ impl<'q, R: Regs, M: Memory, C: Clock> Usb<'q, R, M, C> {
                 self.root_dev[port as usize - 1] = slot;
                 self.budget.succeeded(key);
             }
-            Err(_) => self.port_failed(port, 0),
+            Err(_) => {
+                self.port_failed(port, 0);
+            }
         }
     }
 
@@ -201,7 +203,7 @@ impl<'q, R: Regs, M: Memory, C: Clock> Usb<'q, R, M, C> {
                         return Err(e);
                     }
                 }
-                self.stats.enumerated += 1;
+                self.stats.enumerated = self.stats.enumerated.saturating_add(1);
                 let d = self.devices[slot as usize - 1].expect("just stored");
                 self.emit(EventKind::Attached, &d);
                 self.bind_classes(reg, slot);
@@ -371,7 +373,7 @@ impl<'q, R: Regs, M: Memory, C: Clock> Usb<'q, R, M, C> {
                 }
             }
         }
-        self.stats.detached += 1;
+        self.stats.detached = self.stats.detached.saturating_add(1);
         self.emit(EventKind::Detached, &d);
     }
 }

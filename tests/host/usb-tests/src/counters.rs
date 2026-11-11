@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
 // SPDX-FileCopyrightText: 2026 Fernando Rodriguez
-//! Statistics the class drivers bump once per transfer, interval or frame
+//! Statistics the class drivers and the core bump once per transfer, interval or frame
 //! must not abort a kernel built with overflow checks after days of traffic:
 //! none of them uses a plain `+= 1`.
 
@@ -8,9 +8,10 @@ use std::path::Path;
 
 #[test]
 fn per_transfer_counters_saturate() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../crates/drivers/usb/src/class");
     let mut bad = Vec::new();
-    for entry in std::fs::read_dir(&root).expect("class directory") {
+    for dir in ["class", "usbcore"] {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../crates/drivers/usb/src").join(dir);
+    for entry in std::fs::read_dir(&root).expect("source directory") {
         let path = entry.unwrap().path();
         if path.extension().is_none_or(|e| e != "rs") {
             continue;
@@ -22,6 +23,7 @@ fn per_transfer_counters_saturate() {
                 bad.push(format!("{}:{}: {}", path.file_name().unwrap().to_string_lossy(), n + 1, l));
             }
         }
+    }
     }
     assert!(bad.is_empty(), "plain += on a statistics field:\n{}", bad.join("\n"));
 }
