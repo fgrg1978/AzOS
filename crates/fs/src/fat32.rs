@@ -4113,9 +4113,8 @@ const SWAP_ZERO_CHUNK: usize = 4096;
 /// the chain, then the entry's size, then the tail given back only once both
 /// are durable (held until then, or freed after a barrier), so a cut leaves a
 /// leaked tail (the mount check reclaims it), never a live entry over free
-/// clusters. This is the swap file's shrink; an ordinary truncate to a length
-/// that is not zero still rewrites the file (`Fat32Fs::truncate`). The
-/// mutation claim is held, and `e` was read under it.
+/// clusters. This is the shrink of `Fat32Fs::truncate` and of the swap file.
+/// The mutation claim is held, and `e` was read under it.
 fn fat32_trim_file(v: &'static Vol, f: &FName, e: RootEntry, new_size: u32) -> Result<(), crate::vfs::FsErr> {
     use crate::vfs::FsErr;
     debug_assert!(mutation_held(v));
@@ -5277,8 +5276,8 @@ pub fn fat32_unlink_path_on(v: &'static Vol, name: &[u8]) -> Result<(), ()> {
 /// Every public way to change a file's bytes or name, and what settles the
 /// cache (rows: `coherence_*` in `tests/host/fs-tests/src/l11b.rs`):
 /// * `fat32_write_file`, `fat32_write_file_queued`, `Fat32Fs::write_all`,
-///   `Fat32Fs::create`, `Fat32Fs::truncate` to a non-zero length: all reach
-///   `write_file_journaled`, which forgets before and after.
+///   `Fat32Fs::create`: all reach `write_file_journaled`, which forgets before
+///   and after.
 /// * `fat32_unlink_root`, `fat32_unlink_path`, `Fat32Fs::unlink`,
 ///   `Fat32Fs::rmdir`: forget before and after the dirent goes (the chain is
 ///   freed after, with no entry naming it).
@@ -5287,8 +5286,8 @@ pub fn fat32_unlink_path_on(v: &'static Vol, name: &[u8]) -> Result<(), ()> {
 ///   `TRUNCATE` forgets; a read or write flushes before it touches the bytes,
 ///   and a write forgets after (`OpenFileEntry::cache_name`). `Fat32Fs::read_at`/`write_at` are the
 ///   cache's backing and use the raw variants.
-/// * `Fat32Fs::truncate` to zero (the in-place entry reset) and `fat32_mkdir`:
-///   no forget of their own. A truncate is reached through `vfs_truncate` and
+/// * `Fat32Fs::truncate` (the in-place entry reset, a chain cut, zeros written
+///   from the end) and `fat32_mkdir`: no forget of their own. A truncate is reached through `vfs_truncate` and
 ///   `vfs_open(O_TRUNC)`, which flush or drop around it; `fat32_mkdir` of a
 ///   name a cached file holds fails (`Exists`), and a directory is never
 ///   cached.
@@ -7271,6 +7270,33 @@ impl Fat32Fs {
     pub const fn of(v: &'static Vol) -> Fat32Fs {
         Fat32Fs { vol: v }
     }
+
+    /// Grow the file from `from` to `to` bytes with zeros written from its
+    /// end, `SWAP_ZERO_CHUNK` at a time through the ordinary write path: the
+    /// clusters the chain gains hold no other file's bytes, nothing is a hole,
+    /// and no buffer of the length is taken. A grow that fails part-way is cut
+    /// back to `from`.
+    fn grow_with_zeros(&self, key: &crate::vfs::InodeKey, from: u32, to: u32) -> Result<(), crate::vfs::FsErr> {
+        use crate::vfs::{FileSystem as _, FsErr};
+        let zeros = [0u8; SWAP_ZERO_CHUNK];
+        // Canary: the whole-file buffer a grow used to take.
+        #[cfg(feature = "fat-truncate-heap-canary")]
+        let _whole = alloc::vec![0u8; (to - from) as usize];
+        let mut at = from;
+        let r = loop {
+            if at >= to { break Ok(()); }
+            let n = ((to - at) as usize).min(zeros.len());
+            match self.write_at(key, at as u64, &zeros[..n]) {
+                Ok(w) if w == n => at += n as u32,
+                Ok(_) => break Err(FsErr::NoSpace),
+                Err(()) => break Err(FsErr::Io),
+            }
+        };
+        if r.is_err() {
+            let _ = self.truncate(key, from as u64);
+        }
+        r
+    }
 }
 
 /// The longest 8.3 name as text (`NAME.EXT`) is twelve bytes; the generic key
@@ -7558,15 +7584,12 @@ impl crate::vfs::FileSystem for Fat32Fs {
         write_file_queued_at_in(v, &f, &[], true).map_err(|()| crate::vfs::FsErr::Io)
     }
 
-    /// Every length through the journaled whole-file write, the path every
-    /// FAT32 proxy close already takes: the first `min(len, size)` bytes are
-    /// read, the rest zero-filled, and the result replaces the file in one
-    /// journaled step, so a cut leaves the old file or the new one. The
-    /// current length is a no-op. A directory is `Invalid`; a length a FAT32
-    /// file cannot have (4 GiB or more) is `NoSpace`, and so is a buffer the
-    /// heap cannot give — refused, never a panic. (No in-place chain trim:
-    /// that is a second journaled path to keep correct, and a FAT32 file is
-    /// already held whole in memory by the proxy that opens it.)
+    /// To zero the entry is reset in place; a shrink cuts the chain in place
+    /// ([`fat32_trim_file`]); a grow writes zeros from the end of the file in
+    /// bounded chunks, and a grow that fails (a full volume) is cut back to
+    /// the length the file had. No buffer of the file's size is ever taken.
+    /// The current length is a no-op. A directory is `Invalid`; a length a
+    /// FAT32 file cannot have (4 GiB or more) is `NoSpace`.
     fn truncate(&self, key: &crate::vfs::InodeKey, len: u64) -> Result<(), crate::vfs::FsErr> {
         let v = self.vol;
         let t0 = crate::census::now();
@@ -7576,7 +7599,10 @@ impl crate::vfs::FileSystem for Fat32Fs {
             let e = lookup_entry(v, f.dir, &f.name).map_err(|()| FsErr::NotFound)?;
             if e.attr & ATTR_DIRECTORY != 0 { return Err(FsErr::Invalid); }
             if len == e.size as u64 { return Ok(()); }
-            if len == 0 && !cfg!(feature = "fat-proxy-writes-canary") {
+            if len == 0 && cfg!(feature = "fat-proxy-writes-canary") {
+                return write_file_queued_at(v, &f, &[]).map_err(|()| FsErr::Io);
+            }
+            if len == 0 {
                 // The `O_TRUNC` of an in-place write: the entry first
                 // (no chain, size 0), then the old chain freed, never in the
                 // same epoch. Write-back holds it (`defer_free`) until the
@@ -7616,15 +7642,14 @@ impl crate::vfs::FileSystem for Fat32Fs {
                 }
                 return Ok(());
             }
-            let len = u32::try_from(len).map_err(|_| FsErr::NoSpace)? as usize;
-            let mut buf = alloc::vec::Vec::new();
-            buf.try_reserve_exact(len).map_err(|_| FsErr::NoSpace)?;
-            buf.resize(len, 0u8);
-            let keep = len.min(e.size as usize);
-            if keep > 0 && fat32_read_chain_on(v, e.cluster, &mut buf[..keep]) != keep {
-                return Err(FsErr::Io);
+            let want = u32::try_from(len).map_err(|_| FsErr::NoSpace)?;
+            if want > e.size {
+                self.grow_with_zeros(key, e.size, want)
+            } else {
+                let _m = mutation_claim(v);
+                let e = lookup_entry(v, f.dir, &f.name).map_err(|()| FsErr::NotFound)?;
+                if want < e.size { fat32_trim_file(v, &f, e, want) } else { Ok(()) }
             }
-            write_file_queued_at(v, &f, &buf).map_err(|()| FsErr::Io)
         })();
         crate::census::add(crate::census::TRUNC, t0, crate::census::now());
         r
@@ -7673,18 +7698,7 @@ impl crate::vfs::FileSystem for Fat32Fs {
         if e.attr & ATTR_DIRECTORY != 0 { return Err(FsErr::Invalid); }
         let want = u32::try_from(len).map_err(|_| FsErr::NoSpace)?;
         if want > e.size {
-            // Zeros from the end of the file: the blocks the chain gains hold
-            // no other file's bytes, and nothing is a hole.
-            let zeros = [0u8; SWAP_ZERO_CHUNK];
-            let mut at = e.size;
-            while at < want {
-                let n = ((want - at) as usize).min(zeros.len());
-                match self.write_at(key, at as u64, &zeros[..n]) {
-                    Ok(w) if w == n => at += n as u32,
-                    Ok(_) => return Err(FsErr::NoSpace),
-                    Err(()) => return Err(FsErr::Io),
-                }
-            }
+            self.grow_with_zeros(key, e.size, want)?;
         } else if want == 0 && e.size != 0 {
             self.truncate(key, 0)?;
         } else if want < e.size {

@@ -197,6 +197,9 @@ fat-hole-unbounded-canary = []
 # Host canary: a name's bytes are not validated, so a first byte 0xE5 makes an
 # entry that is deleted at birth (fs-tests `name_bytes`).
 fat-name-bytes-canary = []
+# Host canary: a grow by `truncate` holds a buffer of the grown length
+# (fs-tests `truncate_grow`).
+fat-truncate-heap-canary = []
 
 # Power-loss safety (S3) canaries, each must turn a fs-tests `s3` test red.
 #   fat-dirty-bit-canary:       the mount never sets the volume dirty flag

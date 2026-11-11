@@ -496,8 +496,7 @@ told "written" only once the device confirmed it, or answered `Unsupported`
 (only an empty-file create reaches that point on such a device; every other
 path crossed a `journal_barrier`). `fat32_fsync` and `fat32_sync_checked` are
 the calls that claim durability: `Ok` only after a confirmed flush.
-The VFS backend's whole-file writes (`write_all`, `create`, a `truncate`
-that rewrites the file) use `fat32_write_file_queued`, which under write-back skips that final flush:
+The VFS backend's whole-file writes (`write_all`, `create`) use `fat32_write_file_queued`, which under write-back skips that final flush:
 the steps are ordered by epochs, and which of the old and new file a cut
 leaves is settled only by the next `fsync`, `sync` or `fs-wb` pass.
 

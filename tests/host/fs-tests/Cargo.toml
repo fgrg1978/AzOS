@@ -141,6 +141,8 @@ fat-dir-unserialised-canary = []
 fat-hole-unbounded-canary = []
 # A name's bytes are not validated (`name_bytes`).
 fat-name-bytes-canary = []
+# A grow by `truncate` holds a buffer of the grown length (`truncate_grow`).
+fat-truncate-heap-canary = []
 # A retired mount's inodes left on its backend (see crates/fs).
 usb-volume-stale-fd-canary = []
 # FX12: declared so the cfg is known; the kernel's `ktest` feature turns it
