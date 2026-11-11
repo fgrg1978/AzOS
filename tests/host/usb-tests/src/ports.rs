@@ -133,3 +133,44 @@ fn a_hub_that_never_answers_for_its_ports_is_dropped() {
     assert!(asked <= 4, "{asked} port-status requests");
     assert!(rig.hw.fault().is_none(), "{:?}", rig.hw.fault());
 }
+
+#[test]
+fn a_full_failure_table_keeps_the_ports_being_ignored() {
+    use azos_usb::usbcore::budget::{key, Failed, PortBudget};
+    let mut b = PortBudget::new();
+    // Port 1 is ignored for a long while.
+    for _ in 0..3 {
+        b.failed(key(1, 0), 0);
+    }
+    assert!(!b.allowed(key(1, 0), 1_000));
+    // Hubs' ports fill the table and overflow it, each failing once.
+    for n in 1..=40u32 {
+        assert_eq!(b.failed(key(2, n), 10 + n as u64), Failed::Retry);
+    }
+    assert!(!b.allowed(key(1, 0), 1_000), "the ignored port was forgotten");
+}
+
+#[test]
+fn a_replugged_hub_starts_its_ports_with_a_clean_budget() {
+    let mut rig = Rig::new();
+    let h = hub_device(false, 4, 3, false);
+    rig.hw.attach_root(1, h.clone());
+    rig.settle();
+    for _ in 0..4 {
+        let deaf = keyboard();
+        deaf.borrow_mut().nak_requests.push(DEVICE_GET);
+        rig.hw.hub_attach(&h, 1, deaf);
+        rig.run(1_400);
+        rig.hw.hub_detach(&h, 1);
+        rig.run(50);
+    }
+    // Port 1 of the hub is being ignored. Unplug the hub, plug another one.
+    rig.hw.detach_root(1);
+    rig.run(200);
+    let h2 = hub_device(false, 4, 3, false);
+    rig.hw.attach_root(1, h2.clone());
+    rig.settle();
+    rig.hw.hub_attach(&h2, 1, keyboard());
+    rig.settle();
+    assert_eq!(rig.usb.devices().count(), 2, "a keyboard on port 1 of the new hub comes up at once");
+}

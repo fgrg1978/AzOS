@@ -340,6 +340,7 @@ impl<'q, R: Regs, M: Memory, C: Clock> Usb<'q, R, M, C> {
         #[cfg(feature = "canary-unplug")]
         let Some(d) = self.devices[ix] else { return };
         if let Some(h) = d.hub {
+            self.budget.clear_below(d.root_port, d.route, d.tier);
             for c in h.children {
                 if c != 0 {
                     self.remove_device(reg, c);

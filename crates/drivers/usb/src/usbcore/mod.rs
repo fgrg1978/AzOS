@@ -43,7 +43,7 @@
 //! device go away and come back with a new generation.
 
 pub mod desc;
-mod budget;
+pub mod budget;
 mod enumerate;
 pub mod hc;
 mod hub;

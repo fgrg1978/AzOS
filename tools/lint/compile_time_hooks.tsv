@@ -356,3 +356,4 @@ hyp-secondary-text-probe	pending
 hyp-secondary-guard-probe	pending	
 hyp-cpu-on-leak-canary	const	kernel/src/entry/aarch64/ext/hyp_monitor.rs: which separately built monitor image is `.incbin`'d (a link-time choice, no runtime site)
 hyp-cpu-on-probe	pending	
+usb-deny-test	pending

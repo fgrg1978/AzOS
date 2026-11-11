@@ -13175,6 +13175,16 @@ host_job host_canary_row "usb: hub status length canary" usb-tests canary-hub-mp
     a_hub_with_another_endpoint_listed_first_still_reports_all_its_ports
 host_job host_canary_row "usb-hid: drop counter canary" usb-hid-tests canary-counter-wrap \
     a_saturated_drop_counter_does_not_abort
+host_job host_canary_row "usb: hub status budget canary" usb-tests canary-hub-status-no-budget \
+    a_hub_that_never_answers_for_its_ports_is_dropped
+host_job host_canary_row "usb: failure table eviction canary" usb-tests canary-budget-round-robin \
+    a_full_failure_table_keeps_the_ports_being_ignored
+host_job host_canary_row "usb: removed hub budget canary" usb-tests canary-budget-keeps-children \
+    a_replugged_hub_starts_its_ports_with_a_clean_budget
+host_job host_canary_row "topology: usb port selector canary" topology-tests usb-port-ignored-canary \
+    a_usb_row_can_name_the_root_port_of_an_on_board_device
+host_job host_canary_row "topology: usb default rows canary" topology-tests usb-default-rows-canary \
+    the_default_topology_admits_the_on_board_usb_ethernet_and_a_dev_build_everything
 # SUBTREE-POLICY: `creation_gate` allows every creation, so the endpoint, port
 # and MemObj handlers ignore the limits of the Domain and of its ancestors.
 host_job host_canary_row "subtree: creation gate canary" syscall-tests subtree-gate-canary \

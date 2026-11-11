@@ -18,6 +18,8 @@
 //! | `canary-port-no-budget` | a port that keeps failing to enumerate is tried at every connection | `ports::a_port_that_keeps_failing_is_left_alone_for_a_while` |
 //! | `canary-hub-mps` | a hub's status-change length follows its first endpoint, not the interrupt one | `ports::a_hub_with_another_endpoint_listed_first_still_reports_all_its_ports` |
 //! | `canary-hub-status-no-budget` | a hub that never answers a port-status request is asked again at every event | `ports::a_hub_that_never_answers_for_its_ports_is_dropped` |
+//! | `canary-budget-round-robin` | a full failure table forgets an ignored port for a newer one | `ports::a_full_failure_table_keeps_the_ports_being_ignored` |
+//! | `canary-budget-keeps-children` | a removed hub's ports keep their failure records | `ports::a_replugged_hub_starts_its_ports_with_a_clean_budget` |
 //! | `canary-ac64` | DMA above 4 GiB on a 32-bit controller | `controller_without_ac64_gets_low_memory` |
 //! | `canary-csz` | 32-byte contexts on a 64-byte controller | `controller_with_64_byte_contexts_enumerates` |
 //! | `canary-scratchpad` | scratchpad count read from the low field | `scratchpad_count_is_the_split_field` |
