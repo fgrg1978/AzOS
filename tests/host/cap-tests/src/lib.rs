@@ -545,6 +545,48 @@ mod cap_store_tests {
         assert_eq!(cap_store::get(a.tid, c1, CapPerms::READ), Ok(21));
     }
 
+    static SWEPT: Mutex<Vec<(u32, u32)>> = Mutex::new(Vec::new());
+    fn record_swept(resource: u32, owner: u32) {
+        SWEPT.lock().unwrap_or_else(|e| e.into_inner()).push((resource, owner));
+    }
+
+    /// A refusal the receiver causes (its table is full) leaves the sender's
+    /// MOVE entries where they were, with or without `keep`; a refusal the
+    /// sender causes (a handle without `TRANSFER`) still consumes them, and a
+    /// consumed `Cap<Shm>` reaches the swept hook so its mapping goes too.
+    ///
+    /// **Canary** `cap-refusal-consumes-always-canary`: the receiver's refusal
+    /// consumes as well.
+    #[test]
+    fn a_refusal_the_receiver_causes_leaves_the_senders_move_entries() {
+        use crate::cap::targets::Shm;
+        let _g = guard();
+        let a = fresh_task();
+        let b = fresh_task();
+        cap_store::set_swept_hook(record_swept);
+        SWEPT.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        let port: Cap<Port> = cap_store::grant(a.tid, CapPerms::RW_DELEGATE, 70).unwrap();
+        let shm: Cap<Shm> = cap_store::grant(a.tid, CapPerms::RW_DELEGATE, 71).unwrap();
+        let free = cap_store::with_table(b.tid, |t| t.free_slots()).unwrap();
+        for i in 0..free {
+            let _: Cap<Port> = cap_store::grant(b.tid, CapPerms::RW, 2000 + i as u32).unwrap();
+        }
+        let xs = [CapXfer::new(port.raw(), false), CapXfer::new(shm.raw(), false)];
+        let mut out = [CapHandle(0); 2];
+        assert_eq!(cap_store::move_caps(a.tid, b.tid, &xs, false, &mut out), Err(CapError::NoSpace));
+        assert_eq!(cap_store::get(a.tid, port, CapPerms::READ), Ok(70), "the receiver's full table costs the sender nothing");
+        assert_eq!(cap_store::get(a.tid, shm, CapPerms::READ), Ok(71));
+        assert!(SWEPT.lock().unwrap_or_else(|e| e.into_inner()).is_empty(), "no mapping released: the capability is still held");
+        // The sender's own fault consumes, and the Shm entry takes its mapping along.
+        let nodup: Cap<Port> = cap_store::grant(a.tid, CapPerms::RW, 72).unwrap();
+        let xs = [CapXfer::new(shm.raw(), false), CapXfer::new(nodup.raw(), false)];
+        assert_eq!(cap_store::move_caps(a.tid, b.tid, &xs, false, &mut out), Err(CapError::MissingPerms));
+        assert_eq!(cap_store::get(a.tid, shm, CapPerms::READ), Err(CapError::Stale), "consumed");
+        let owner = cap_store::domain_key_of(a.tid);
+        assert_eq!(*SWEPT.lock().unwrap_or_else(|e| e.into_inner()), vec![(71, owner)], "memobj is told");
+        cap_store::__clear_swept_hook_for_tests();
+    }
+
     #[test]
     fn undoing_a_message_destroys_the_dup_copies_and_moves_the_rest_back() {
         let _g = guard();

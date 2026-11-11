@@ -1559,12 +1559,16 @@ pub fn delete_moved(tid: u32, handle: CapHandle) -> bool {
     let held = table.peek_stored(handle);
     let parent = table.warrant_of(handle).map_or(0, |w| w.parent);
     let cleared = table.delete_raw(handle);
+    let mut swept = SweptSet::new();
     if let (true, Some((kind, perms, resource))) = (cleared, held) {
         cap_event(CapEvent::Revoked { slot: idx, kind, perms, resource });
         azos_decision::record(Rule::CapRevoke, Verdict::Deny, owner, [wref(owner, handle), parent, 0]);
+        swept.push(kind, resource);
+        swept.retain_unheld(&table);
     }
     drop(table);
     notices();
+    swept.run(owner);
     cleared
 }
 
@@ -1771,10 +1775,13 @@ impl CapXfer {
 /// entry lands. The badge travels with each capability (its extension word);
 /// the parent link does not (it is table-local).
 ///
-/// On a refusal nothing is installed in the receiver. Without `keep` the
-/// MOVE entries that were live are consumed (revoked from the sender), so a
+/// On a refusal nothing is installed in the receiver. A refusal the receiver
+/// causes (its table or caveat blocks full, a transfer beside an MSI slot)
+/// never touches the sender's table. Any other refusal, without `keep`,
+/// consumes the MOVE entries that were live (revoked from the sender), so a
 /// failed send cannot leave the sender holding authority it meant to give
-/// away; with `keep` the sender's table is untouched. A sender and receiver
+/// away; with `keep` the sender's table is untouched. A consumed `Cap<Shm>`
+/// reaches the [`SweptHook`], which takes its mapping and reference with it. A sender and receiver
 /// that are the same task, or more than [`MSG_MAX_CAPS`] entries, are refused
 /// (`MissingPerms`) with nothing consumed.
 pub fn move_caps(
@@ -1804,19 +1811,37 @@ pub fn move_caps(
         }
         let (sender, receiver) = if from_idx == lo { (&*lo_tab, &*hi_tab) } else { (&*hi_tab, &*lo_tab) };
         let mut moved = MovedSet::new();
-        let r = move_caps_locked(sender, receiver, (from_idx, from_owner), (to_idx, to_owner), to_tid, xs, out, true, &mut moved);
-        if r.is_err() && !keep {
+        let mut receiver_fault = false;
+        let r = move_caps_locked(
+            sender,
+            receiver,
+            (from_idx, from_owner),
+            (to_idx, to_owner),
+            to_tid,
+            xs,
+            out,
+            true,
+            &mut moved,
+            &mut receiver_fault,
+        );
+        let mut swept = SweptSet::new();
+        // Canary `cap-refusal-consumes-always-canary`: a receiver's refusal consumes too.
+        let spare = receiver_fault && !cfg!(feature = "cap-refusal-consumes-always-canary");
+        if r.is_err() && !keep && !spare {
             for x in xs.iter().filter(|x| !x.dup) {
                 if let Some((kind, perms, resource)) = sender.peek_stored(x.handle) {
                     if sender.delete_raw(x.handle) {
                         cap_event(CapEvent::Revoked { slot: from_idx, kind, perms, resource });
+                        swept.push(kind, resource);
                     }
                 }
             }
+            swept.retain_unheld(sender);
         }
         drop(lo_tab);
         drop(hi_tab);
         notices();
+        swept.run(from_owner);
         if r.is_ok() {
             moved.run(from_tid, to_tid);
         }
@@ -1870,12 +1895,15 @@ fn move_caps_locked(
     out: &mut [CapHandle],
     need_transfer: bool,
     moved: &mut MovedSet,
+    receiver_fault: &mut bool,
 ) -> Result<usize, CapError> {
-    // Phase 1: check every entry; nothing changes.
+    // Phase 1: check every entry; nothing changes. `receiver_fault` is set
+    // when the refusal is the receiver's doing, not the sender's.
     let mut blocks = 0;
     for (i, x) in xs.iter().enumerate() {
         let plan = xfer_plan(sender, from_key, x, need_transfer)?;
         if need_transfer && arrives_beside_msi_slot(receiver, to_idx, to_tid, plan.0, plan.2) {
+            *receiver_fault = true;
             return Err(CapError::MissingPerms);
         }
         blocks += usize::from(!plan.5.caveats.is_empty());
@@ -1883,6 +1911,7 @@ fn move_caps_locked(
             return Err(CapError::MissingPerms);
         }
     }
+    *receiver_fault = true;
     if receiver.free_slots() < xs.len() {
         receiver.note_no_slot();
         return Err(CapError::NoSpace);
@@ -1890,6 +1919,7 @@ fn move_caps_locked(
     if receiver.free_caveat_blocks() < blocks {
         return Err(CapError::NoSpace);
     }
+    *receiver_fault = false;
     // Phase 2: every entry lands. Each step below was checked above under
     // the locks still held, so none can fail; a failure would mean the
     // locking changed, and is reported rather than assumed away.
@@ -1967,6 +1997,7 @@ fn move_back(from_tid: u32, to_tid: u32, xs: &[CapXfer]) -> bool {
         }
         let (sender, receiver) = if from_idx == lo { (&*lo_tab, &*hi_tab) } else { (&*hi_tab, &*lo_tab) };
         let mut moved = MovedSet::new();
+        let mut receiver_fault = false;
         let ok = move_caps_locked(
             sender,
             receiver,
@@ -1977,6 +2008,7 @@ fn move_back(from_tid: u32, to_tid: u32, xs: &[CapXfer]) -> bool {
             &mut out[..xs.len()],
             false,
             &mut moved,
+            &mut receiver_fault,
         )
         .is_ok();
         drop(lo_tab);

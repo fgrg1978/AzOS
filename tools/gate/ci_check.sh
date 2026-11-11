@@ -13766,6 +13766,9 @@ host_job host_canary_row "cap: delete revokes canary" cap-tests delete-revokes-c
     a_close_leaves_what_was_derived_and_an_explicit_revoke_still_reaches_it
 host_job host_canary_row "cap: move lifts depth canary" cap-tests move-lifts-depth-canary \
     a_move_with_copies_keeps_their_depth_and_the_limit_binds
+# A transfer the receiver refuses does not consume the sender's MOVE entries.
+host_job host_canary_row "cap: receiver refusal consumes canary" cap-tests cap-refusal-consumes-always-canary \
+    a_refusal_the_receiver_causes_leaves_the_senders_move_entries
 host_job host_canary_row "memobj: delete revokes canary" ipc-tests delete-revokes-canary \
     a_sharers_exit_leaves_the_share_and_its_mapping
 host_job host_canary_row "memobj: delete revokes canary (syscall)" syscall-tests delete-revokes-canary \
