@@ -117,7 +117,7 @@ crates/lib/control/flight-math	0	0	0	0	1	0
 crates/net/ethercat	0	0	0	0	1	-
 crates/net/stack	20	0	2	0	0	58
 crates/net/tftp	0	0	0	0	1	-
-kernel	414	15	13	53	0	61
+kernel	415	15	13	53	0	61
 micro	20	4	0	0	0	67
 tools/bench/linux_seccomp_launch	11	2	0	2	0	-
 tools/bench/linux_seccomp_launch/host-tests	0	0	0	0	1	-
@@ -175,4 +175,4 @@ userspace/services/tracectl	2	0	2	0	0	-
 userspace/services/vmmd	22	5	2	0	0	-
 userspace/services/why	1	0	0	0	0	-
 userspace/services/zenohd	0	0	0	0	1	-
-@unsafe-share	502
+@unsafe-share	501
