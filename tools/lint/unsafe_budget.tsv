@@ -105,7 +105,7 @@ crates/drivers/soc	0	0	0	0	1	0
 crates/drivers/sys	44	2	3	0	0	49
 crates/drivers/thermal	0	0	0	0	1	0
 crates/drivers/tpm	0	0	0	0	1	0
-crates/drivers/usb	19	1	1	0	0	34
+crates/drivers/usb	19	1	1	0	0	33
 crates/drivers/usb-hid	0	0	0	0	1	0
 crates/drivers/virtio	156	45	8	0	0	91
 crates/drivers/virtio-proto	0	0	0	0	1	0
