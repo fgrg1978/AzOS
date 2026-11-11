@@ -187,3 +187,28 @@ fn a_transfer_into_a_full_table_refuses_with_a_record() {
     assert_eq!(dup(&a, &b, c.raw()), Err(CapError::NoSpace));
     assert_eq!(records(Rule::CapTableFull, since).len(), 1);
 }
+
+/// `SYS_CAP_REVOKE` on a capability whose slot is at the last generation, in a
+/// table with no other free slot: the slot would park on the free and the
+/// re-grant find nothing, so the call is refused (`NoSpace`) with the
+/// capability still held.
+///
+/// **Canary** `revoke-parks-loses-cap-canary`: the free is not checked first and
+/// the caller ends with nothing.
+#[test]
+fn a_revoke_of_children_keeps_the_callers_capability_when_its_slot_would_park() {
+    let _g = wguard();
+    let t = wtask(WARRANT_SLOT0);
+    one_free_slot(&t);
+    let mut i = 0;
+    let c = loop {
+        let c = open(&t, i);
+        if c.raw().generation() as u32 == CYCLE {
+            break c;
+        }
+        close(&t, c);
+        i += 1;
+    };
+    assert_eq!(cap_store::revoke_derived(t.tid, c.raw()), Err(CapError::NoSpace));
+    assert_eq!(cap_store::get(t.tid, c, CapPerms::READ), Ok(i), "still held, same handle");
+}

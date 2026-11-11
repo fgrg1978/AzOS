@@ -1675,7 +1675,8 @@ pub fn mint_badged_issued(
 ///
 /// Refused: a stale handle (`Stale`); a capability past its deadline
 /// (`Revoked`); no slot to grant into (`NoSpace`, which cannot happen on a
-/// table that just freed one, and loses nothing the sweep did not already).
+/// table that just freed one, except when the freed slot is parked; nothing
+/// is revoked then, and the capability is kept).
 pub fn revoke_derived(tid: u32, handle: CapHandle) -> Result<CapHandle, CapError> {
     loop {
         let Some((idx, owner)) = slot_owner(tid) else { return Err(CapError::Stale) };
@@ -1690,6 +1691,17 @@ pub fn revoke_derived(tid: u32, handle: CapHandle) -> Result<CapHandle, CapError
             }
             let ext = table.ext_of(handle).ok_or(CapError::Stale)?;
             let warrant = table.warrant_of(handle).ok_or(CapError::Stale)?;
+            // A slot freed at the last generation is parked, so with no other
+            // free slot the grant below would find none and the caller, who
+            // asked to revoke its children only, would lose the capability.
+            // Canary `revoke-parks-loses-cap-canary`: not asked.
+            if handle.generation() == CapHandle::MAX_GENERATION
+                && table.free_slots() == 0
+                && !cfg!(feature = "revoke-parks-loses-cap-canary")
+            {
+                table.note_no_slot();
+                return Err(CapError::NoSpace);
+            }
             table.revoke_raw(handle);
             table.grant_warranted(kind, perms, resource, ext, warrant).ok_or(CapError::NoSpace)
         })();

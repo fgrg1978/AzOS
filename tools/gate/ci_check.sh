@@ -13775,6 +13775,9 @@ host_job host_canary_row "cap: forward-full cascade silent canary" cap-tests for
 # A message cannot carry a Cap<File> (the descriptor owner is not re-stamped).
 host_job host_canary_row "cap: file message transfer canary" cap-tests file-message-transfer-canary \
     a_message_may_not_carry_a_file_descriptor_capability
+# SYS_CAP_REVOKE keeps the caller's capability when its slot would park.
+host_job host_canary_row "cap: revoke parks canary" cap-tests revoke-parks-loses-cap-canary \
+    a_revoke_of_children_keeps_the_callers_capability_when_its_slot_would_park
 host_job host_canary_row "memobj: delete revokes canary" ipc-tests delete-revokes-canary \
     a_sharers_exit_leaves_the_share_and_its_mapping
 host_job host_canary_row "memobj: delete revokes canary (syscall)" syscall-tests delete-revokes-canary \
