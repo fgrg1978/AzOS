@@ -96,10 +96,6 @@ fn dispatch(regs: *mut u64, _trapped_smc: bool) {
     match id {
         PSCI_CPU_ON_64 => cpu_on(regs),
         PSCI_CPU_SUSPEND_64 | PSCI_SYSTEM_SUSPEND_64 => {
-            // A power-down loses the core's state and brings it back through the entry: it pins again.
-            if id == PSCI_SYSTEM_SUSPEND_64 || reg(regs, 1) & POWER_DOWN != 0 {
-                super::pin::unpin_this_pe();
-            }
             suspend(regs, id == PSCI_SYSTEM_SUSPEND_64)
         }
         PSCI_CPU_OFF => {
@@ -129,7 +125,7 @@ fn cpu_on(regs: *mut u64) {
         set(regs, 0, DENIED as u64);
         return;
     }
-    let Some(slot) = HYP_PE_SLOTS.record(affinity(target), ctx) else {
+    let Some((slot, fresh)) = HYP_PE_SLOTS.record(affinity(target), ctx) else {
         crate::record(Kind::CallRefused, this_pe(), PSCI_CPU_ON_64, target, 0);
         set(regs, 0, DENIED as u64);
         return;
@@ -139,6 +135,10 @@ fn cpu_on(regs: *mut u64) {
     set(regs, 2, secondary_entry_pa());
     set(regs, 3, slot as u64);
     forward(regs);
+    // A target firmware refused never entered: its slot is free again.
+    if fresh && reg(regs, 0) != 0 && !cfg!(feature = "hyp-cpu-on-leak-canary") {
+        HYP_PE_SLOTS.release(slot, affinity(target));
+    }
 }
 
 /// `CPU_SUSPEND(state, entry, ctx)` / `SYSTEM_SUSPEND(entry, ctx)`: a
@@ -156,12 +156,17 @@ fn suspend(regs: *mut u64, system: bool) {
             set(regs, 0, DENIED as u64);
             return;
         }
-        let Some(slot) = HYP_PE_SLOTS.record(affinity(mpidr()), reg(regs, ci)) else {
+        let Some((slot, _)) = HYP_PE_SLOTS.record(affinity(mpidr()), reg(regs, ci)) else {
             set(regs, 0, DENIED as u64);
             return;
         };
         set(regs, ei, secondary_entry_pa());
         set(regs, ci, slot as u64);
+    }
+    // A power-down loses the core's state and brings it back through the entry: it pins
+    // again. Only a call that goes on to firmware drops the pin.
+    if system || reg(regs, 1) & POWER_DOWN != 0 {
+        super::pin::unpin_this_pe();
     }
     forward(regs);
 }

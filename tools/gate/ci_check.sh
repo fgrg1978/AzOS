@@ -3852,6 +3852,7 @@ hyp_mon_blob() { # hyp_mon_blob <variant-feature|"">  -> builds the matching blo
         hyp-pt-pool-open-canary)      name=hyp-mon-pt-pool-open ;;
         hyp-pt-check-skip-canary)     name=hyp-mon-pt-check-skip ;;
         hyp-secondary-s2-canary)      name=hyp-mon-secondary-s2 ;;
+        hyp-cpu-on-leak-canary)       name=hyp-mon-cpu-on-leak ;;
     esac
     out="$AZOS_OUT/build/aarch64/$name.bin"
     AZOS_OUT="$AZOS_OUT" bash "$REPO_ROOT/tools/build/hyp_mon.sh" aarch64 "$out" "$feat" >/dev/null 2>&1
@@ -3882,6 +3883,7 @@ hyp_monitor_row() { # hyp_monitor_row <label> <select> <want: pass|canary> [mark
         *pt-pool-open*) hyp_mon_blob hyp-pt-pool-open-canary ;;
         *pt-check-skip*) hyp_mon_blob hyp-pt-check-skip-canary ;;
         *secondary-s2*) hyp_mon_blob hyp-secondary-s2-canary ;;
+        *cpu-on-leak*) hyp_mon_blob hyp-cpu-on-leak-canary ;;
         *) hyp_mon_blob "" ;;
     esac
     # A canary must build: "did not build" is its own failure (the third bucket),
@@ -4027,6 +4029,7 @@ HYP_CPU=cortex-a76 HYP_WAIT="$R9_WAIT" \
 par "hyp: R9 pinned, TVM (arm)" hyp_monitor_row "hyp: R9 pinned, TVM (arm)" "hyp-pin-probe" pass \
     "[BOOT] EL2:        pinned (tvm), 1 PE" "[HYP] pin: PE 1 pinned (tvm)" "${R9_MARKS[@]}"
 HYP_WAIT="$R9_WAIT" \
+HYP_APPEND="canary=hyp-fake-allow-degraded" \
 par "hyp: R9 pin-off canary (arm)" hyp_monitor_row "hyp: R9 pin-off canary (arm)" "hyp-pin-off-canary,hyp-pin-probe" canary \
     "[HYP] pin: TCR_EL1 write refused"
 HYP_QEMU="-icount shift=0,sleep=off" HYP_WAIT="$R9_WAIT" \
@@ -4036,6 +4039,7 @@ HYP_CPU=cortex-a76 HYP_QEMU="-icount shift=0,sleep=off" HYP_WAIT="$R9_WAIT" \
 par "hyp: R9 TTBR0 cost, TVM (arm)" hyp_monitor_row "hyp: R9 TTBR0 cost, TVM (arm)" "hyp-pin-probe" pass \
     "[HYP] cost: the TTBR0 trap is visible"
 HYP_CPU=cortex-a76 HYP_QEMU="-icount shift=0,sleep=off" HYP_WAIT="$R9_WAIT" \
+HYP_APPEND="canary=hyp-fake-allow-degraded" \
 par "hyp: R9 TTBR0 cost canary (arm)" hyp_monitor_row "hyp: R9 TTBR0 cost canary (arm)" "hyp-pin-off-canary,hyp-pin-probe" canary \
     "[HYP] cost: the TTBR0 trap is visible"
 # F11: the cost lanes (kernel feature hyp-cost-probe, judged by
@@ -4175,9 +4179,11 @@ par "hyp: R11 kernel tables owned by the monitor (arm)" hyp_monitor_row "hyp: R1
     "[HYP] pt: a map and an unmap go through the monitor" \
     "[HYP] pt: writing a table of the pool from EL1 (must fault)" "[FATAL] aarch64 kernel page fault"
 HYP_WAIT='\[FATAL\] aarch64 kernel page fault|PROBE FAILED' \
+HYP_APPEND="canary=hyp-fake-allow-degraded" \
 par "hyp: R11 pool open canary (arm)" hyp_monitor_row "hyp: R11 pool open canary (arm)" "hyp-pt-pool-open-canary,hyp-pt-probe" canary \
     "[FATAL] aarch64 kernel page fault"
 HYP_WAIT='\[FATAL\] aarch64 kernel page fault|PROBE FAILED' \
+HYP_APPEND="canary=hyp-fake-allow-degraded" \
 par "hyp: R11 pt check canary (arm)" hyp_monitor_row "hyp: R11 pt check canary (arm)" "hyp-pt-check-skip-canary,hyp-pt-probe" canary \
     "[HYP] pt: words that break a rule are refused and recorded" "![HYP] PROBE FAILED: pt_set refused"
 
@@ -6452,19 +6458,29 @@ HYP_WAIT='\[FATAL\] aarch64 kernel page fault|PROBE FAILED' \
 par "hyp: H-1 secondary PE donated-page canary (arm)" hyp_monitor_row "hyp: H-1 secondary PE donated-page canary (arm)" "hyp-secondary-s2-canary,hyp-secondary-guard-probe" canary \
     "[FATAL] aarch64 kernel page fault"
 
+# A CPU_ON firmware refuses leaves no slot behind: eight bogus targets, then
+# the real PEs still come up. Canary: the monitor keeps the slots.
+HYP_WAIT='\[SMP\] hart 3 online|PROBE FAILED|\[SMP\] FAILED' \
+par "hyp: M-2 refused CPU_ONs leave no slot behind (arm)" hyp_monitor_row "hyp: M-2 refused CPU_ONs leave no slot behind (arm)" "hyp-cpu-on-probe" pass \
+    "[HYP] cpu_on: 8 bogus targets refused" "[SMP] hart 3 online"
+HYP_WAIT='\[SMP\] hart 3 online|PROBE FAILED|\[SMP\] FAILED' \
+par "hyp: M-2 leaked slot canary (arm)" hyp_monitor_row "hyp: M-2 leaked slot canary (arm)" "hyp-cpu-on-leak-canary,hyp-cpu-on-probe" canary \
+    "[SMP] hart 3 online"
+
 # M-3, a lock the monitor refuses is not silent: the probe's mask is checked
-# against what the boot locks (hyp_api::missing_invariants). A confidential
-# image stops ("split never degrades"); any other prints the missing
-# invariants and a DEGRADED line. The runtime canary `hyp-fake-ro-refused`
-# stands for a refused `lock_ro_data` (`hyp-fake-accept`: the DMA hole check,
-# which would halt first on QEMU `virt`, is out of the way); `hyp-halt-skip`
-# is the halt's canary.
-par "hyp: M-3 confidential refuses a missing lock (arm)" hyp_halt_row "hyp: M-3 confidential refuses a missing lock (arm)" hyp-fake-confidential,hyp-fake-accept,hyp-fake-ro-refused pass \
-    "[BOOT] EL2:        refused: a lock the confidential posture needs is not in force"
-par "hyp: M-3 confidential halt canary (arm)" hyp_halt_row "hyp: M-3 confidential halt canary (arm)" hyp-fake-confidential,hyp-fake-accept,hyp-fake-ro-refused canary \
-    "[BOOT] EL2:        refused: a lock the confidential posture needs is not in force"
-HYP_APPEND="canary=hyp-fake-ro-refused" HYP_WAIT='refused: |AzOS Rust kernel booted' \
-par "hyp: M-3 a missing lock is reported (arm)" hyp_monitor_row "hyp: M-3 a missing lock is reported (arm)" "hyp-monitor-row" pass \
+# against what the boot locks (hyp_api::missing_invariants). A split image
+# stops unless Kconfig HYP_ALLOW_DEGRADED, which prints the missing
+# invariants and a DEGRADED line and tells the monitor. The runtime canary
+# `hyp-fake-ro-refused` stands for a refused `lock_ro_data`, `hyp-fake-accept`
+# keeps the DMA hole check (which would halt first on a confidential QEMU
+# `virt`) out of the way, `hyp-fake-allow-degraded` stands for the Kconfig
+# symbol, `hyp-halt-skip` is the halt's canary.
+par "hyp: M-3 a missing lock halts the boot (arm)" hyp_halt_row "hyp: M-3 a missing lock halts the boot (arm)" hyp-fake-ro-refused pass \
+    "[BOOT] EL2:        refused: a lock the split image needs is not in force"
+par "hyp: M-3 halt canary (arm)" hyp_halt_row "hyp: M-3 halt canary (arm)" hyp-fake-ro-refused canary \
+    "[BOOT] EL2:        refused: a lock the split image needs is not in force"
+HYP_APPEND="canary=hyp-fake-ro-refused,hyp-fake-allow-degraded" HYP_WAIT='refused: |AzOS Rust kernel booted' \
+par "hyp: M-3 an allowed degraded boot is reported (arm)" hyp_monitor_row "hyp: M-3 an allowed degraded boot is reported (arm)" "hyp-monitor-row" pass \
     "[BOOT] EL2:        invariant ro-data NOT in force" "[BOOT] EL2:        DEGRADED:" "AzOS Rust kernel booted! (aarch64)"
 
 # Leave $A64_IMG on an ordinary qemu build for the rows below.
@@ -12941,6 +12957,8 @@ host_job host_canary_row "hyp: M-4 key request outside RAM canary" hv-tests cana
     a_request_is_read_only_from_aligned_kernel_memory
 host_job host_canary_row "hyp: M-1 LPIs on an unprogrammed redistributor canary" hv-tests canary-rd-lpi-open \
     only_the_redistributor_the_monitor_programmed_may_have_lpis_enabled
+host_job host_canary_row "hyp: pool alignment canary" hv-tests canary-pool-unaligned \
+    every_run_of_tables_the_pool_hands_out_is_aligned_to_its_size
 host_job host_canary_row "hyp: M-3 latch after validation canary" hv-tests canary-latch-first \
     a_one_shot_call_is_latched_only_by_a_request_that_passes
 host_job host_canary_row "hyp: M-3 missing invariants canary" hv-tests canary-missing-inv \

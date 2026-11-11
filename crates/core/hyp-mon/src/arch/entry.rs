@@ -129,6 +129,7 @@ _hyp_claim_and_stack:
 // requested entry with x0 = the kernel's requested context (its hart id).
 .globl _hyp_secondary_entry
 _hyp_secondary_entry:
+    msr     SPSel, #1                    // EL2 runs on SP_EL2 whatever the entry state was
     HYP_MMU_ON
     mov     x27, x0                      // the slot the monitor passed
     bl      _hyp_claim_and_stack         // sp set, x0 = slot

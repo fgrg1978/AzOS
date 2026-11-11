@@ -14,7 +14,7 @@ pub mod stage2;
 
 use crate::state::{SpinLock, HYP};
 use azos_hyp_api::{
-    guard_error, latch_after, lock_desc_error, text_site_error, Guarded, Kind, LockDesc, TextSite, DENIED,
+    bump_tables, cause, guard_error, latch_after, lock_desc_error, text_site_error, Guarded, Kind, LockDesc, TextSite, DENIED,
     GUARD_RANGES_MAX, INVALID, INV_EL1_EXEC_TEXT_ONLY, INV_GUARDED, INV_HOST_S2, INV_IMAGE_RO, INV_RO_DATA,
     LOCK_RAM_MAX, NOT_SUPPORTED, OK, TEXT_SITES_MAX,
 };
@@ -32,7 +32,8 @@ const SPLIT_BLOCK: u64 = 2 << 20;
 /// block splits of `guard_pages` take.
 const POOL_TABLES: usize = 80;
 
-#[repr(align(4096))]
+// 8 KiB: a 40-bit IPA root is two concatenated tables and must be aligned to its size.
+#[repr(align(8192))]
 struct Pool([[u64; 512]; POOL_TABLES]);
 static mut POOL: Pool = Pool([[0; 512]; POOL_TABLES]);
 static POOL_NEXT: AtomicU64 = AtomicU64::new(0);
@@ -41,12 +42,8 @@ struct PoolMem;
 
 impl TableMem for PoolMem {
     fn alloc_tables(&mut self, tables: u64) -> Option<u64> {
-        // Contiguous, each table its own 4 KiB alignment (the pool is aligned
-        // and the tables are 4 KiB, so any run is aligned).
-        let start = POOL_NEXT.fetch_add(tables, Ordering::AcqRel);
-        if start + tables > POOL_TABLES as u64 {
-            return None;
-        }
+        // Contiguous, a run aligned to its own size (the pool is 8 KiB aligned).
+        let start = bump_tables(&POOL_NEXT, tables, POOL_TABLES as u64)?;
         Some(unsafe { core::ptr::addr_of!(POOL.0[start as usize]) as u64 })
     }
 
@@ -103,6 +100,18 @@ fn has_xnx() -> bool {
     let v: u64;
     unsafe { core::arch::asm!("mrs {}, ID_AA64MMFR1_EL1", out(reg) v) };
     (v >> 28) & 0xf != 0
+}
+
+/// Record which setup step refused and give back `INVALID`.
+fn fail(why: u64) -> i64 {
+    record_setup(why);
+    INVALID
+}
+
+fn record_setup(why: u64) {
+    let mpidr: u64;
+    unsafe { core::arch::asm!("mrs {}, MPIDR_EL1", out(reg) mpidr) };
+    crate::record(Kind::SetupFailed, (mpidr & 0xff) as u32, why, 0, 0);
 }
 
 /// This PE's stage-2 registers set to `vtcr`/`vttbr` and `HCR_EL2.VM` on, with
@@ -206,7 +215,7 @@ fn lock_locked(desc_pa: u64) -> i64 {
         let (hole, hole_end) = (HOLE[0].load(Ordering::Relaxed), HOLE[1].load(Ordering::Relaxed));
         // SAFETY: under `GUARD_LOCK`.
         let guarded = unsafe { *core::ptr::addr_of!(GUARDED) };
-        if lock_desc_error(&d, hole, hole_end, guarded.as_slice()).is_some() { return Some(INVALID); }
+        if lock_desc_error(&d, hole, hole_end, guarded.as_slice()).is_some() { record_setup(cause::LOCK_DESC); return Some(INVALID); }
         // The site table, copied into the monitor before anything is locked.
         let n = d.nsites as usize;
         // SAFETY: one PE runs (checked above); the copy is the monitor's own.
@@ -214,7 +223,7 @@ fn lock_locked(desc_pa: u64) -> i64 {
         for (i, slot) in sites.iter_mut().enumerate().take(n) {
             // SAFETY: the EL2 identity map covers RAM; the array is the kernel's, pre-lock.
             *slot = unsafe { core::ptr::read_volatile((d.sites as *const TextSite).add(i)) };
-            if text_site_error(slot, d.text).is_some() { return Some(INVALID); }
+            if text_site_error(slot, d.text).is_some() { record_setup(cause::LOCK_SITE); return Some(INVALID); }
         }
         sites[..n].sort_unstable_by_key(|s| s.pa);
         NSITES.store(n as u64, Ordering::Release);
@@ -227,19 +236,19 @@ fn lock_locked(desc_pa: u64) -> i64 {
     let (hole, hole_end) = (HOLE[0].load(Ordering::Relaxed), HOLE[1].load(Ordering::Relaxed));
     // SAFETY: under `GUARD_LOCK`.
     let guarded = unsafe { *core::ptr::addr_of!(GUARDED) };
-    let cfg = match VtcrConfig::new(40, parange()) { Ok(c) => c, Err(_) => return INVALID };
+    let cfg = match VtcrConfig::new(40, parange()) { Ok(c) => c, Err(_) => return fail(cause::LOCK_VTCR) };
     let mut mem = PoolMem;
-    let mut s2 = match Stage2::new(cfg, &mut mem) { Ok(s) => s, Err(_) => return INVALID };
+    let mut s2 = match Stage2::new(cfg, &mut mem) { Ok(s) => s, Err(_) => return fail(cause::LOCK_ROOT) };
     let top = 1u64 << cfg.ipa_bits();
     // Devices: everything below, between and above the RAM ranges.
     let mut ram = d.ram;
     ram[..d.nram as usize].sort_unstable_by_key(|r| r[0]);
     let mut at = 0u64;
     for r in ram[..d.nram as usize].iter() {
-        if r[0] > at && s2.map_run(at, at, r[0] - at, S2Attrs::MMIO).is_err() { return INVALID; }
+        if r[0] > at && s2.map_run(at, at, r[0] - at, S2Attrs::MMIO).is_err() { return fail(cause::LOCK_DEVICE_MAP); }
         at = at.max(r[1]);
     }
-    if at < top && s2.map_run(at, at, top - at, S2Attrs::MMIO).is_err() { return INVALID; }
+    if at < top && s2.map_run(at, at, top - at, S2Attrs::MMIO).is_err() { return fail(cause::LOCK_DEVICE_MAP); }
     // RAM: cut around the monitor, the guarded pages and the three locked
     // ranges. An unused slot is the empty range 0..0, which no RAM run meets.
     let mut cuts: [(u64, u64, Option<S2Attrs>); 4 + GUARD_RANGES_MAX] = [(0, 0, None); 4 + GUARD_RANGES_MAX];
@@ -251,7 +260,7 @@ fn lock_locked(desc_pa: u64) -> i64 {
         let mut p = r[0];
         for &(lo, hi, a) in cuts.iter() {
             if hi <= p || lo >= r[1] { continue; }
-            if lo > p && s2.map_run(p, p, lo - p, USER_RAM).is_err() { return INVALID; }
+            if lo > p && s2.map_run(p, p, lo - p, USER_RAM).is_err() { return fail(cause::LOCK_RAM_MAP); }
             if let Some(a) = a {
                 let ok = if a == RO_DATA_RW {
                     // Pages, so `lock_ro_data` rewrites them in place.
@@ -262,18 +271,18 @@ fn lock_locked(desc_pa: u64) -> i64 {
                 } else {
                     s2.map_run(lo, lo, hi - lo, a).is_ok()
                 };
-                if !ok { return INVALID; }
+                if !ok { return fail(cause::LOCK_RO_PAGES); }
             }
             p = hi;
         }
-        if p < r[1] && s2.map_run(p, p, r[1] - p, USER_RAM).is_err() { return INVALID; }
+        if p < r[1] && s2.map_run(p, p, r[1] - p, USER_RAM).is_err() { return fail(cause::LOCK_RAM_MAP); }
     }
     // The SMMU's registers are the monitor's alone from here.
     let (wlo, whi) = super::smmu::window();
     if !cfg!(feature = "hyp-smmu-window-canary") {
         let mut q = wlo;
         while q < whi {
-            if s2.split_to_page(q, &mut |_| ()).is_err() || s2.unmap_page(q).is_err() { return INVALID; }
+            if s2.split_to_page(q, &mut |_| ()).is_err() || s2.unmap_page(q).is_err() { return fail(cause::LOCK_SMMU_WINDOW); }
             q += stage2::S2_PAGE;
         }
     }
@@ -285,7 +294,7 @@ fn lock_locked(desc_pa: u64) -> i64 {
     if !cfg!(feature = "hyp-its-window-canary") {
         let mut q = ilo;
         while q < ihi {
-            if s2.split_to_page(q, &mut |_| ()).is_err() || s2.unmap_page(q).is_err() { return INVALID; }
+            if s2.split_to_page(q, &mut |_| ()).is_err() || s2.unmap_page(q).is_err() { return fail(cause::LOCK_ITS_WINDOW); }
             q += stage2::S2_PAGE;
         }
     }
@@ -293,12 +302,12 @@ fn lock_locked(desc_pa: u64) -> i64 {
         for cpu in 0..ncpu {
             let mut q = rd + cpu * stride;
             while q < rd + cpu * stride + 0x1_0000 {
-                if s2.split_to_page(q, &mut |_| ()).is_err() || s2.set_page_attrs(q, RD_RO).is_err() { return INVALID; }
+                if s2.split_to_page(q, &mut |_| ()).is_err() || s2.set_page_attrs(q, RD_RO).is_err() { return fail(cause::LOCK_RD_FRAMES); }
                 q += stage2::S2_PAGE;
             }
         }
     }
-    let (vtcr, vttbr) = match s2.registers(0) { Ok(r) => r, Err(_) => return INVALID };
+    let (vtcr, vttbr) = match s2.registers(0) { Ok(r) => r, Err(_) => return fail(cause::LOCK_REGISTERS) };
     LOCKED_ROOT.store(s2.root(), Ordering::Release);
     IPA_CFG.store(parange() as u64, Ordering::Relaxed);
     // SAFETY: under `GUARD_LOCK`.
@@ -517,12 +526,12 @@ pub unsafe fn build_and_enable(hole_pa: u64, hole_len: u64, ram_top: u64) {
     };
     let cfg = match VtcrConfig::new(40, parange) {
         Ok(c) => c,
-        Err(_) => return,
+        Err(_) => return record_setup(cause::BOOT_VTCR),
     };
     let mut mem = PoolMem;
     let mut s2 = match Stage2::new(cfg, &mut mem) {
         Ok(s) => s,
-        Err(_) => return,
+        Err(_) => return record_setup(cause::BOOT_ROOT),
     };
 
     // Permissive: everything RAM-attributed, read/write/execute. The hole is a
@@ -544,7 +553,7 @@ pub unsafe fn build_and_enable(hole_pa: u64, hole_len: u64, ram_top: u64) {
 
     let (vtcr, vttbr) = match s2.registers(0) {
         Ok(r) => r,
-        Err(_) => return,
+        Err(_) => return record_setup(cause::BOOT_REGISTERS),
     };
     BOOT_ROOT.store(s2.root(), Ordering::Release);
     IPA_CFG.store(parange as u64, Ordering::Relaxed);

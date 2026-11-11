@@ -379,25 +379,25 @@ const PRIMARY: u64 = 0x8000_0000;
 #[test]
 fn a_core_that_cycles_power_keeps_its_slot() {
     let t: PeSlots<8> = PeSlots::new();
-    assert_eq!(t.claim(PRIMARY), Some(0));
+    assert_eq!(t.claim(PRIMARY), Some((0, true)));
     let cpu1 = 0x8000_0001;
-    assert_eq!(t.claim(cpu1), Some(1));
+    assert_eq!(t.claim(cpu1), Some((1, true)));
     // CPU_OFF/CPU_ON and power-down resumes, far more than the table holds.
     for _ in 0..1000 {
-        assert_eq!(t.claim(cpu1), Some(1), "the same core finds its slot again");
-        assert_eq!(t.claim(PRIMARY), Some(0));
+        assert_eq!(t.claim(cpu1), Some((1, false)), "the same core finds its slot again");
+        assert_eq!(t.claim(PRIMARY), Some((0, false)));
     }
-    assert_eq!(t.claim(0x8000_0002), Some(2), "the next core takes the next slot, not a power-cycle's");
+    assert_eq!(t.claim(0x8000_0002), Some((2, true)), "the next core takes the next slot, not a power-cycle's");
 }
 
 #[test]
 fn more_cores_than_slots_are_refused_not_aliased() {
     let t: PeSlots<4> = PeSlots::new();
     for i in 0..4 {
-        assert_eq!(t.claim(0x8000_0000 + i), Some(i as usize));
+        assert_eq!(t.claim(0x8000_0000 + i), Some((i as usize, true)));
     }
     assert_eq!(t.claim(0x8000_0004), None);
-    assert_eq!(t.claim(0x8000_0003), Some(3));
+    assert_eq!(t.claim(0x8000_0003), Some((3, false)));
 }
 
 #[test]
@@ -406,9 +406,9 @@ fn a_dynamiq_core_is_told_apart_by_its_whole_affinity() {
     let t: PeSlots<8> = PeSlots::new();
     let (a, b, c) = (0x8000_0000, 0x8000_0100, 0x8000_0200);
     assert_ne!(PeSlots::<8>::key(a), PeSlots::<8>::key(b));
-    assert_eq!(t.record(a, 0xA).unwrap(), 0);
-    assert_eq!(t.record(b, 0xB).unwrap(), 1);
-    assert_eq!(t.record(c, 0xC).unwrap(), 2);
+    assert_eq!(t.record(a, 0xA).unwrap().0, 0);
+    assert_eq!(t.record(b, 0xB).unwrap().0, 1);
+    assert_eq!(t.record(c, 0xC).unwrap().0, 2);
     assert_eq!((t.ctx_of(0), t.ctx_of(1), t.ctx_of(2)), (0xA, 0xB, 0xC), "no core gets another's context");
     // Aff3 counts too, and the bits above the affinity (MT, U, the RES1 bit) do not.
     assert_ne!(PeSlots::<8>::key(0x1_0000_0000 | a), PeSlots::<8>::key(a));
@@ -419,12 +419,33 @@ fn a_dynamiq_core_is_told_apart_by_its_whole_affinity() {
 fn the_boot_core_resumes_with_the_context_it_suspended_with() {
     // The boot core is never CPU_ON'd: its slot and context come from its own suspend.
     let t: PeSlots<8> = PeSlots::new();
-    assert_eq!(t.claim(PRIMARY), Some(0));
-    let slot = t.record(PRIMARY, 0x77).expect("a slot for the suspending core");
+    assert_eq!(t.claim(PRIMARY), Some((0, true)));
+    let slot = t.record(PRIMARY, 0x77).expect("a slot for the suspending core").0;
     assert_eq!(slot, 0);
     assert_eq!(t.ctx_of(slot), 0x77);
     // A second suspend replaces the context; a slot past the table has none.
     t.record(PRIMARY, 0x78);
     assert_eq!(t.ctx_of(0), 0x78);
     assert_eq!(t.ctx_of(99), 0);
+}
+
+#[test]
+fn a_cpu_on_that_failed_gives_its_slot_back_without_aliasing_a_live_core() {
+    let t: PeSlots<4> = PeSlots::new();
+    t.claim(PRIMARY);
+    // Eight bogus targets, each released when firmware refuses: the table never fills.
+    for i in 0..8 {
+        let (slot, fresh) = t.record(0x1_0000_0000 | i << 8, 0).unwrap();
+        assert!(fresh);
+        t.release(slot, 0x1_0000_0000 | i << 8);
+    }
+    let (live, fresh) = t.record(0x8000_0001, 0x11).unwrap();
+    assert!(fresh);
+    // A hole before a live core's slot: the live core is found, not given a second slot.
+    let (hole, _) = t.record(0x8000_0002, 0).unwrap();
+    let (late, _) = t.record(0x8000_0003, 0).unwrap();
+    t.release(hole, 0x8000_0002);
+    assert_eq!(t.claim(0x8000_0003), Some((late, false)));
+    assert_eq!(t.claim(0x8000_0001), Some((live, false)));
+    assert_eq!(t.ctx_of(live), 0x11);
 }

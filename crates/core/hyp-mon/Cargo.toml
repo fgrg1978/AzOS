@@ -48,6 +48,7 @@ hyp-its-skip-mapti-canary = []
 hyp-pt-pool-open-canary = []
 hyp-pt-check-skip-canary = []
 hyp-secondary-s2-canary = []
+hyp-cpu-on-leak-canary = []
 hyp-pe-seq-canary = []
 hyp-pe-aff0-canary = []
 # Read by the shared ct.rs (azos_crypto's stack-scrub canary); never set here.

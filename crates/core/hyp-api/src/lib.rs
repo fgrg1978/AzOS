@@ -97,6 +97,11 @@ pub const CALL_PT_LOCK_POOL: u64 = CALL_BASE + 16;
 /// word found when it does not; [`DENIED`] when the word breaks a rule.
 pub const CALL_PT_SET: u64 = CALL_BASE + 17;
 
+/// `note_degraded(missing)`: the kernel booted on with the invariants in
+/// `missing` not in force (Kconfig HYP_ALLOW_DEGRADED). The monitor reports
+/// [`INV_DEGRADED`] from then on and records it in the ring.
+pub const CALL_NOTE_DEGRADED: u64 = CALL_BASE + 18;
+
 /// Pool pages the monitor keeps a level for (a bound, not a detected count).
 pub const PT_POOL_PAGES_MAX: u64 = 1024;
 
@@ -170,6 +175,9 @@ pub const INV_ITS: u64 = 1 << 10;
 /// I3: the kernel half's tables are the monitor's pool, read-only for the host,
 /// and every word written there passed `pt_set`'s checks.
 pub const INV_KERNEL_TABLES: u64 = 1 << 11;
+/// Not an invariant: the boot went on without some (see [`CALL_NOTE_DEGRADED`]).
+/// Never in [`INVARIANT_NAMES`].
+pub const INV_DEGRADED: u64 = 1 << 12;
 
 pub const INVARIANT_NAMES: [(u64, &str); 12] = [
     (INV_EL2_MMU, "el2-mmu"),
@@ -208,6 +216,9 @@ pub enum Kind {
     /// A write the host made to a protected device register, refused: `addr`
     /// is the register's address, `aux` the value.
     MmioRefused = 7,
+    /// A boot-time setup step the monitor could not finish (host stage 2 build
+    /// or the lock): `syndrome` is the [`cause`] code of the step.
+    SetupFailed = 8,
 }
 
 impl Kind {
@@ -220,9 +231,29 @@ impl Kind {
             5 => Kind::SysregRefused,
             6 => Kind::DmaFault,
             7 => Kind::MmioRefused,
+            8 => Kind::SetupFailed,
             _ => return None,
         })
     }
+}
+
+/// Codes of [`Kind::SetupFailed`]: one per step that can refuse.
+pub mod cause {
+    pub const BOOT_VTCR: u64 = 1;
+    pub const BOOT_ROOT: u64 = 2;
+    pub const BOOT_REGISTERS: u64 = 3;
+    pub const LOCK_DESC: u64 = 10;
+    pub const LOCK_SITE: u64 = 11;
+    pub const LOCK_VTCR: u64 = 12;
+    pub const LOCK_ROOT: u64 = 13;
+    pub const LOCK_DEVICE_MAP: u64 = 14;
+    pub const LOCK_RAM_MAP: u64 = 15;
+    pub const LOCK_RO_PAGES: u64 = 16;
+    pub const LOCK_SMMU_WINDOW: u64 = 17;
+    pub const LOCK_ITS_WINDOW: u64 = 18;
+    pub const LOCK_RD_FRAMES: u64 = 19;
+    pub const LOCK_REGISTERS: u64 = 20;
+    pub const KERNEL_DEGRADED: u64 = 30;
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -446,6 +477,21 @@ pub const INV_BOOT_LOCKED: u64 = INV_IMAGE_RO | INV_EL1_EXEC_TEXT_ONLY | INV_RO_
 pub fn missing_invariants(reported: u64) -> u64 {
     if cfg!(feature = "canary-missing-inv") { return 0; }
     INV_BOOT_LOCKED & !reported
+}
+
+/// Take `tables` contiguous tables from a bump allocator over `cap` tables,
+/// the run aligned to its own size in tables (a concatenated stage-2 root
+/// must be aligned to its size). Returns the index of the first table.
+/// Nothing is taken when it does not fit. Canary `canary-pool-unaligned`: the
+/// 4 KiB bump the monitor had.
+pub fn bump_tables(next: &AtomicU64, tables: u64, cap: u64) -> Option<u64> {
+    let align = tables.max(1).next_power_of_two();
+    loop {
+        let cur = next.load(Ordering::Acquire);
+        let start = if cfg!(feature = "canary-pool-unaligned") { cur } else { cur.next_multiple_of(align) };
+        if start + tables > cap { return None; }
+        if next.compare_exchange(cur, start + tables, Ordering::AcqRel, Ordering::Acquire).is_ok() { return Some(start); }
+    }
 }
 
 /// A one-shot call's latch, taken only once `validate` has passed: a call

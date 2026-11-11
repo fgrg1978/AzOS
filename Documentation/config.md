@@ -657,6 +657,7 @@ The index lists every declared option: 1324.
 | `HWCLASS_SBC` | `config/axes/Kconfig.hwclass` | Single-board computer (VF2, K1, Raspberry Pi 5, RK3588) |
 | `HWCLASS_SERVER` | `config/axes/Kconfig.hwclass` | Server / gateway machine |
 | `HYP_ACCEPT_DMA_HOLE` | `config/axes/Kconfig.virt` | Boot a split image on a board with DMA masters outside any IOMMU |
+| `HYP_ALLOW_DEGRADED` | `config/axes/Kconfig.virt` | Boot a split image whose monitor locks were refused (development only) |
 | `HYP_MONITOR` | `config/axes/Kconfig.virt` | (no prompt — internal/derived) |
 | `I2C_DESIGNWARE` | `config/subsys/Kconfig.drivers` | I2C: Synopsys DesignWare controllers (VisionFive 2, Raspberry Pi 5 RP1, Intel LPSS) |
 | `I2C_DW_RX_FIFO_DEPTH` | `config/subsys/Kconfig.drivers` | I2C: DesignWare controller RX FIFO depth (entries) |

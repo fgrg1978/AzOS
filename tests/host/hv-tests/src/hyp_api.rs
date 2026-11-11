@@ -194,7 +194,8 @@ fn every_invariant_has_its_own_bit_and_a_name() {
     assert_eq!(Kind::from_u32(5), Some(Kind::SysregRefused));
     assert_eq!(Kind::from_u32(6), Some(Kind::DmaFault));
     assert_eq!(Kind::from_u32(7), Some(Kind::MmioRefused));
-    assert_eq!(Kind::from_u32(8), None);
+    assert_eq!(Kind::from_u32(8), Some(Kind::SetupFailed));
+    assert_eq!(Kind::from_u32(9), None);
 }
 
 #[test]
@@ -327,4 +328,34 @@ fn a_confidential_boot_needs_every_lock_in_force() {
         assert_eq!(missing_invariants(INV_BOOT_LOCKED & !bit), bit, "one lock absent is reported by name");
     }
     assert_eq!(missing_invariants(0), INV_BOOT_LOCKED);
+}
+
+#[test]
+fn every_run_of_tables_the_pool_hands_out_is_aligned_to_its_size() {
+    use core::sync::atomic::{AtomicU64, Ordering};
+    // The pool's base is aligned to 8 KiB; a 40-bit IPA root is two tables and must be too.
+    for first in [1u64, 2, 3] {
+        let next = AtomicU64::new(first - 1);
+        let mut got = Vec::new();
+        for n in [1u64, 2, 1, 2, 1, 1, 2, 4, 1] {
+            let i = bump_tables(&next, n, 80).expect("room");
+            assert_eq!(i % n.next_power_of_two(), 0, "a run of {n} starts at table {i}");
+            got.push((i, n));
+        }
+        for w in got.windows(2) {
+            assert!(w[0].0 + w[0].1 <= w[1].0, "runs do not overlap");
+        }
+    }
+    let next = AtomicU64::new(0);
+    assert_eq!(bump_tables(&next, 2, 80), Some(0));
+    assert_eq!(bump_tables(&next, 1, 80), Some(2));
+    assert_eq!(bump_tables(&next, 2, 80), Some(4), "the table at 3 is skipped, not misaligned");
+    assert_eq!(bump_tables(&next, 90, 80), None);
+    assert_eq!(next.load(Ordering::Relaxed), 6, "a refusal takes nothing");
+}
+
+#[test]
+fn a_setup_failure_has_its_own_record_kind() {
+    assert_eq!(Kind::from_u32(8), Some(Kind::SetupFailed));
+    assert_eq!(Kind::from_u32(9), None);
 }

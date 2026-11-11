@@ -141,6 +141,18 @@ config HYP_ACCEPT_DMA_HOLE
       controllers the supported boards carry; a master it does not name is a
       hole this walk cannot see.
 
+config HYP_ALLOW_DEGRADED
+    bool "Boot a split image whose monitor locks were refused (development only)"
+    depends on HYP_MONITOR
+    default n
+    help
+      The boot locks the kernel image, its read-only data and its page tables
+      at stage 2 and pins every PE. n: a missing lock, or a PE that cannot be
+      pinned, halts the boot. y: the boot names what is missing, tells the
+      monitor (`probe` then reports it, the ring holds a record) and goes on
+      without those invariants. For bring-up on a core or a board the monitor
+      cannot lock yet; never for a deployed image.
+
 config PT_POOL_PAGES
     int "Most pages of kernel-half page tables the pool can hold" if HYP_MONITOR || PT_PROTECTION
     range 64 1024

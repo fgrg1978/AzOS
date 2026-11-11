@@ -1141,6 +1141,8 @@ hyp-cost-probe = []
 hyp-pt-pool-open-canary = ["hyp-monitor-row"]
 hyp-pt-check-skip-canary = ["hyp-monitor-row"]
 hyp-secondary-s2-canary = ["hyp-monitor-row"]
+hyp-cpu-on-leak-canary = ["hyp-monitor-row"]
+hyp-cpu-on-probe = ["hyp-monitor-row"]
 hyp-secondary-text-probe = ["hyp-monitor-row"]
 hyp-secondary-guard-probe = ["hyp-monitor-row"]
 # Kconfig INSPECT: the introspection tree (crates/core/inspect), published

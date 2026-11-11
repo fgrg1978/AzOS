@@ -57,6 +57,7 @@ canary-derive-no-ram = ["azos_hyp_api/canary-derive-no-ram"]
 canary-latch-first = ["azos_hyp_api/canary-latch-first"]
 canary-missing-inv = ["azos_hyp_api/canary-missing-inv"]
 canary-rd-lpi-open = ["azos_hyp_api/canary-rd-lpi-open"]
+canary-pool-unaligned = ["azos_hyp_api/canary-pool-unaligned"]
 
 [profile.release]
 overflow-checks = true

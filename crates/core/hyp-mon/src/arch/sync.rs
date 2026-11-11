@@ -173,6 +173,11 @@ fn hvc(regs: *mut u64) {
             set(regs, 0, r as u64);
             set(regs, 1, seen);
         }
+        azos_hyp_api::CALL_NOTE_DEGRADED => {
+            HYP.set_invariant(azos_hyp_api::INV_DEGRADED);
+            crate::record(Kind::SetupFailed, this_pe(), azos_hyp_api::cause::KERNEL_DEGRADED, 0, reg(regs, 1));
+            set(regs, 0, OK as u64);
+        }
         azos_hyp_api::CALL_GUARD_PAGES => {
             let r = super::s2::guard_pages(reg(regs, 1), reg(regs, 2));
             if r != OK { crate::record(Kind::CallRefused, this_pe(), azos_hyp_api::CALL_GUARD_PAGES, reg(regs, 1), reg(regs, 2)); }

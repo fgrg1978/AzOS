@@ -311,11 +311,19 @@ impl<const N: usize> PeSlots<N> {
     }
 
     /// Remember `ctx` for the core `aff` (the kernel's x0 when it resumes) and
-    /// give back its slot, the value the monitor passes through firmware.
-    pub fn record(&self, aff: u64, ctx: u64) -> Option<usize> {
-        let slot = self.claim(aff)?;
+    /// give back its slot, the value the monitor passes through firmware, and
+    /// whether the slot was taken by this call.
+    pub fn record(&self, aff: u64, ctx: u64) -> Option<(usize, bool)> {
+        let (slot, fresh) = self.claim(aff)?;
         self.ctx[slot].store(ctx, Ordering::Release);
-        Some(slot)
+        Some((slot, fresh))
+    }
+
+    /// Give back a slot `record` just took for a core that did not start.
+    pub fn release(&self, slot: usize, aff: u64) {
+        if let Some(k) = self.keys.get(slot) {
+            let _ = k.compare_exchange(Self::key(aff), 0, Ordering::AcqRel, Ordering::Acquire);
+        }
     }
 
     /// The context stored for `slot`; 0 for a slot out of range.
@@ -330,24 +338,18 @@ impl<const N: usize> PeSlots<N> {
         (aff & if cfg!(feature = "hyp-pe-aff0-canary") { 0xff } else { AFF_MASK }) | 1 << 63
     }
 
-    /// The slot of `aff`, taking the first free one if it has none. Slots fill
-    /// in order and are never given back, so a core is found before any free
-    /// slot is reached. `None` when every slot belongs to another core: cores,
-    /// not power cycles, are what `N` bounds.
-    pub fn claim(&self, aff: u64) -> Option<usize> {
+    /// The slot of `aff` and whether this call took it: the slot it has, else
+    /// the first free one. `None` when every slot belongs to another core:
+    /// cores, not power cycles, are what `N` bounds. A slot given back can
+    /// leave a hole, so a core is looked for before any free slot is taken.
+    pub fn claim(&self, aff: u64) -> Option<(usize, bool)> {
         let key = Self::key(aff);
         // Canary `hyp-pe-seq-canary` (host suite only): every call takes a fresh slot, as the old counter did.
         if cfg!(feature = "hyp-pe-seq-canary") {
-            return self.keys.iter().position(|s| s.compare_exchange(0, key, Ordering::AcqRel, Ordering::Acquire).is_ok());
+            return self.keys.iter().position(|s| s.compare_exchange(0, key, Ordering::AcqRel, Ordering::Acquire).is_ok()).map(|i| (i, true));
         }
-        for (i, s) in self.keys.iter().enumerate() {
-            match s.compare_exchange(0, key, Ordering::AcqRel, Ordering::Acquire) {
-                Ok(_) => return Some(i),
-                Err(cur) if cur == key => return Some(i),
-                Err(_) => {}
-            }
-        }
-        None
+        if let Some(i) = self.keys.iter().position(|s| s.load(Ordering::Acquire) == key) { return Some((i, false)); }
+        self.keys.iter().position(|s| s.compare_exchange(0, key, Ordering::AcqRel, Ordering::Acquire).is_ok()).map(|i| (i, true))
     }
 }
 

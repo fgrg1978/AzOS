@@ -51,7 +51,8 @@ macro_rules! hyp_blob {
     feature = "hyp-its-skip-mapti-canary",
     feature = "hyp-pt-pool-open-canary",
     feature = "hyp-pt-check-skip-canary",
-    feature = "hyp-secondary-s2-canary"
+    feature = "hyp-secondary-s2-canary",
+    feature = "hyp-cpu-on-leak-canary"
 )))]
 hyp_blob!("/build/aarch64/hyp-mon.bin");
 #[cfg(feature = "hyp-mmu-off-canary")]
@@ -86,6 +87,8 @@ hyp_blob!("/build/aarch64/hyp-mon-pt-pool-open.bin");
 hyp_blob!("/build/aarch64/hyp-mon-pt-check-skip.bin");
 #[cfg(feature = "hyp-secondary-s2-canary")]
 hyp_blob!("/build/aarch64/hyp-mon-secondary-s2.bin");
+#[cfg(feature = "hyp-cpu-on-leak-canary")]
+hyp_blob!("/build/aarch64/hyp-mon-cpu-on-leak.bin");
 
 /// Issue a monitor call (SMCCC: id in x0, args in x1..x4, results back in
 /// x0..x4). An HVC, which the monitor traps at EL2.
@@ -148,26 +151,45 @@ pub(crate) fn report() {
 }
 
 /// After every boot lock: the invariants the boot locks should have put in
-/// force against what the monitor reports. A confidential image stops on a
-/// missing one; any other names them and says the boot is degraded.
+/// force against what the monitor reports. A missing one is named with the
+/// setup step the monitor recorded. The boot stops unless Kconfig
+/// HYP_ALLOW_DEGRADED, in which case the monitor is told (`probe` reports it).
 fn check_locks() {
     let missing = azos_hyp_api::missing_invariants(monitor_call(CALL_PROBE, 0)[2]);
-    if missing != 0 {
-        for (bit, name) in INVARIANT_NAMES {
-            if missing & bit != 0 {
-                kprintln!("[BOOT] EL2:        invariant {} NOT in force (a lock was refused)", name);
-            }
-        }
-        if confidential() && !canary!("hyp-halt-skip") {
-            crate::boot::isa::refuse_text(
-                "[BOOT] EL2:        refused: a lock the confidential posture needs is not in force (split never degrades)",
-            )
-        }
-        kprintln!("[BOOT] EL2:        DEGRADED: the invariants above are not in force on this boot");
+    if missing == 0 {
+        return;
     }
+    for (bit, name) in INVARIANT_NAMES {
+        if missing & bit != 0 {
+            kprintln!("[BOOT] EL2:        invariant {} NOT in force (a lock was refused)", name);
+        }
+    }
+    let mut cursor = 0;
+    loop {
+        let w = monitor_call(azos_hyp_api::CALL_VIOLATION_READ, cursor);
+        if w[0] as i64 != OK {
+            break;
+        }
+        cursor = w[1];
+        if azos_hyp_api::Violation::from_words(w[2], 0, 0, 0).kind == azos_hyp_api::Kind::SetupFailed as u32 {
+            kprintln!("[BOOT] EL2:        setup step {} refused", w[3]);
+        }
+    }
+    degraded_or_halt("a lock the boot needs is not in force", missing);
 }
 
-/// The confidential posture, which a split image that lost a lock does not boot in.
+/// Policy for a boot lock the monitor refused.
+fn degraded_or_halt(why: &str, missing: u64) {
+    let _ = monitor_call2(azos_hyp_api::CALL_NOTE_DEGRADED, missing, 0);
+    if !(azos_limits::HYP_ALLOW_DEGRADED || canary!("hyp-fake-allow-degraded")) && !canary!("hyp-halt-skip") {
+        crate::boot::isa::refuse_text(
+            "[BOOT] EL2:        refused: a lock the split image needs is not in force (HYP_ALLOW_DEGRADED=y boots it anyway)",
+        )
+    }
+    kprintln!("[BOOT] EL2:        DEGRADED: {} (HYP_ALLOW_DEGRADED)", why);
+}
+
+/// The confidential posture, which a split image that cannot confine DMA does not boot in.
 fn confidential() -> bool {
     azos_limits::SECURITY_CONFIDENTIAL || canary!("hyp-fake-confidential")
 }
@@ -292,9 +314,7 @@ pub(crate) fn pin_secondary(cpu: usize) {
         Some(_) => {}
         None => {
             kprintln!("[BOOT] EL2:        PE {} could not be pinned", cpu);
-            if confidential() && !canary!("hyp-halt-skip") {
-                crate::boot::isa::refuse_text("[BOOT] EL2:        refused: a PE that cannot be pinned in a confidential image (split never degrades)")
-            }
+            degraded_or_halt("a PE could not be pinned", azos_hyp_api::INV_PINNED);
         }
     }
     #[cfg(feature = "hyp-secondary-text-probe")]
@@ -500,6 +520,8 @@ pub(crate) fn lock_ro_data() {
     guard_probe();
     #[cfg(feature = "hyp-secondary-guard-probe")]
     secondary_guard_donate();
+    #[cfg(feature = "hyp-cpu-on-probe")]
+    cpu_on_probe();
     #[cfg(feature = "hyp-pin-probe")]
     pin_probe();
     #[cfg(feature = "hyp-key-root-probe")]
@@ -913,4 +935,15 @@ fn secondary_guard_probe(cpu: usize) {
     // SAFETY: the probe's purpose is this read; it must not return.
     let b = unsafe { core::ptr::read_volatile(core::ptr::addr_of!(PROBE_PAGE) as *const u8) };
     kprintln!("[HYP] PROBE FAILED: PE 1 read the donated page ({:#x})", b);
+}
+
+/// Feature `hyp-cpu-on-probe`: eight `CPU_ON`s for PEs that do not exist, from
+/// the boot PE before the real ones are started. Firmware refuses each; the
+/// monitor must give the slot it set aside back, or the real PEs find none.
+#[cfg(feature = "hyp-cpu-on-probe")]
+fn cpu_on_probe() {
+    const PSCI_CPU_ON_64: u64 = 0xC400_0003;
+    let entry = pa_of(_aarch64_secondary_entry as *const () as usize);
+    let refused = (0..8u64).filter(|i| (monitor_call_n(PSCI_CPU_ON_64, 0x1_0000_0000 | i << 8, entry, 0, 0)[0] as i64) < 0).count();
+    kprintln!("[HYP] cpu_on: {} bogus targets refused", refused);
 }
