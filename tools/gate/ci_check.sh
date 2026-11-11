@@ -12472,6 +12472,7 @@ host_job host_canary_row "frame: reference leaks canary" cam-ring-tests canary-r
 host_job host_canary_row "frame: detach keeps canary" cam-ring-tests canary-detach-keeps a_detached_reader_holds_nothing_back
 # The Frame interface the kernel hosts (syscall-tests, frame_guards).
 host_job host_canary_row "frame: copy skip canary" syscall-tests frame-copy-skip-canary the_frame_a_producer_committed_is_the_frame_a_task_reads
+host_job host_canary_row "frame: one lend per boot canary" syscall-tests frame-lend-once-canary a_failed_buffer_lend_is_tried_again_by_the_next_attach_within_a_bound
 host_job host_canary_row "frame: late check canary" syscall-tests frame-check-late-canary a_buffer_that_cannot_take_the_frame_takes_no_frame
 host_job host_canary_row "frame: slot per call canary" syscall-tests frame-slot-per-call-canary a_reader_slot_is_a_tasks_and_a_full_table_is_busy
 host_job host_canary_row "frame: exit keeps canary" syscall-tests frame-exit-keeps-canary a_task_that_exits_reads_no_more

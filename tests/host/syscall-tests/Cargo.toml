@@ -83,6 +83,8 @@ frame-effect-ignored-canary = []
 frame-unrecorded-canary = []
 frame-first-read-always-canary = []
 frame-check-late-canary = []
+# ... the pool's buffer lend is tried once, so one failure ends the camera for the boot.
+frame-lend-once-canary = []
 frame-slot-per-call-canary = []
 frame-exit-keeps-canary = []
 frame-reader-writes-canary = ["azos_cam_ring/canary-reader-writes"]

@@ -40,6 +40,7 @@ use azos_topology::EffectKind;
 use azos_devif::frame::{self, Meta};
 use azos_devif::{outcome, Cap, Out};
 use azos_sync::SpinLock;
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use crate::khost::Caller;
 
@@ -92,14 +93,60 @@ pub fn set_producer_wake(wake: fn(bool)) {
     PRODUCER_WAKE.set(wake);
 }
 
+/// Lends that may leave the pool without buffers before the boot stops
+/// trying: a shortage of memory at one attach is not the camera's end.
+pub const LEND_TRIES: u32 = if cfg!(feature = "frame-lend-once-canary") { 1 } else { 8 };
+
+/// Retries of a pool's buffer lend: each attach or read that finds the pool
+/// empty tries again, one at a time, until [`LEND_TRIES`] lends have failed.
+pub struct Lender {
+    failures: AtomicU32,
+    busy: AtomicBool,
+}
+
+impl Lender {
+    pub const fn new() -> Self {
+        Lender { failures: AtomicU32::new(0), busy: AtomicBool::new(false) }
+    }
+
+    /// Whether the pool is ready, running `lend` first when it is not, no
+    /// other lend is under way and fewer than [`LEND_TRIES`] have failed.
+    pub fn ensure(&self, ready: impl Fn() -> bool, lend: impl FnOnce()) -> bool {
+        if ready() {
+            return true;
+        }
+        if self.failures.load(Ordering::Acquire) >= LEND_TRIES || self.busy.swap(true, Ordering::AcqRel) {
+            return ready();
+        }
+        lend();
+        self.busy.store(false, Ordering::Release);
+        let ok = ready();
+        if !ok {
+            self.failures.fetch_add(1, Ordering::AcqRel);
+        }
+        ok
+    }
+
+    /// Lends that left the pool without buffers.
+    pub fn failures(&self) -> u32 {
+        self.failures.load(Ordering::Acquire)
+    }
+}
+
+static LENDER: Lender = Lender::new();
+
+/// How many lends of the pool's buffers failed.
+pub fn lend_failures() -> u32 {
+    LENDER.failures()
+}
+
 /// Whether the pool has its buffers, lending them first if it has none.
 fn lent() -> bool {
-    if !POOL.ready() {
+    LENDER.ensure(|| POOL.ready(), || {
         if let Some(lend) = LEND.get() {
             lend();
         }
-    }
-    POOL.ready()
+    })
 }
 
 /// Attach reader `c` and wake the producers if it is the first. `false`: the
@@ -226,9 +273,6 @@ impl azos_devif::Frame for Server {
             record(Verdict::Refuse, tid, 0, frame::reason::NO_EFFECT);
             return Out::err(outcome::REFUSED);
         }
-        if !lent() {
-            return Out::err(outcome::NOT_READY);
-        }
         #[cfg(not(feature = "frame-check-late-canary"))]
         let held = match self.0.pin_buffer(buf.raw(), BYTES, BYTES) {
             Ok(h) => Some(h),
@@ -236,6 +280,10 @@ impl azos_devif::Frame for Server {
         };
         #[cfg(feature = "frame-check-late-canary")]
         let held = None;
+        // After the buffer: a caller whose buffer is refused does not make the pool.
+        if !lent() {
+            return Out::err(outcome::NOT_READY);
+        }
         let Some(c) = cursor_of(tid) else {
             record(Verdict::Refuse, tid, 0, frame::reason::NO_SLOT);
             return Out::err(outcome::BUSY);

@@ -25,7 +25,9 @@ use azos_syscall::frame_host::LINK;
 use azos_drv_sensor::csi::{self, JPEG_MAX_SIZE};
 use azos_drv_sys::timebase::vdso_ns;
 use azos_ipc::memobj::{memobj_create_kernel, MemPerms, MemSpec, MAX_MEMOBJ_PAGES};
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+#[cfg(feature = "ktest")]
+use core::sync::atomic::AtomicBool;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 /// What a frame buffer holds: the JPEG, and with a USB camera also a raw YUY2
 /// frame of the JPEG path's capture size.
@@ -41,16 +43,13 @@ const PER_OBJECT: usize = MAX_MEMOBJ_PAGES / BUFFER_PAGES;
 /// being the kernel's own regions and the tasks' objects.
 const OBJECT_BUDGET: usize = if azos_mm::memobj::MAX_MEMOBJS >= 4 { azos_mm::memobj::MAX_MEMOBJS / 4 } else { 1 };
 
-/// Lend the pool its buffers, once, when the first reader attaches
-/// (`frames::set_lend`): kernel-owned contiguous memory objects, as many
+/// Lend the pool its buffers when a reader attaches and finds it without
+/// (`frames::set_lend`; a failed lend is tried again by a later attach, up to
+/// `frames::LEND_TRIES`): kernel-owned contiguous memory objects, as many
 /// buffers in each as fit, at most [`OBJECT_BUDGET`] objects. A pool that gets
 /// fewer buffers than its readers need is refused: the objects made are given
 /// back, a `cam-capture` record says so, and the camera has no readers.
 fn lend_buffers() {
-    static TRIED: AtomicBool = AtomicBool::new(false);
-    if TRIED.swap(true, Ordering::AcqRel) {
-        return;
-    }
     let mut bases = [0usize; frames::SLOTS];
     let mut objects = [0u32; OBJECT_BUDGET];
     let (mut n, mut made) = (0, 0);
@@ -77,7 +76,7 @@ fn lend_buffers() {
                 let _ = azos_ipc::memobj::memobj_release_ref(azos_ipc::memobj::MEMOBJ_KERNEL_OWNER, *obj);
             }
             azos_syscall::frame_host::refuse_pool(n);
-            azos_drv_sys::kerr!("[CAM] no memory for the frame pool ({} of {} buffers): refused, the camera has no readers", n, frames::SLOTS);
+            azos_drv_sys::kerr!("[CAM] no memory for the frame pool ({} of {} buffers): refused, failed lends so far {}", n, frames::SLOTS, frames::lend_failures() + 1);
         }
     }
 }

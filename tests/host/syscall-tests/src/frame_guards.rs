@@ -16,7 +16,7 @@ use azos_decision::{Rule, Verdict};
 use azos_devif::{outcome, Cap as WireCap, Frame, Out};
 use azos_topology::EffectKind;
 use azos_ipc::memobj::{memobj_create_cap, memobj_with_span_ref, MemPerms, MemSpec};
-use crate::frame_host::{Server, BYTES, LINK, POOL, RING3_READERS};
+use crate::frame_host::{Lender, Server, BYTES, LEND_TRIES, LINK, POOL, RING3_READERS};
 use crate::khost::Caller;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Once;
@@ -418,4 +418,35 @@ fn the_grant_the_first_frame_and_the_refusals_are_recorded() {
     assert_eq!(records(late.tid), vec![(REFUSE, 0, frame::reason::NO_SLOT as u64)]);
     crate::frame_host::refuse_pool(2);
     assert_eq!(records(0).last(), Some(&(REFUSE, 2, frame::reason::POOL as u64)));
+}
+
+/// **One failed lend of the pool's buffers does not end the camera:** the next
+/// attach tries again, a lend that succeeds is not repeated, and the retries
+/// are bounded and counted.
+///
+/// **Canary.** `frame-lend-once-canary`: one try per boot.
+#[test]
+fn a_failed_buffer_lend_is_tried_again_by_the_next_attach_within_a_bound() {
+    use std::cell::Cell;
+    let ready = Cell::new(false);
+    let lends = Cell::new(0u32);
+    let lender = Lender::new();
+    let try_once = |works: bool| {
+        lender.ensure(|| ready.get(), || {
+            lends.set(lends.get() + 1);
+            ready.set(works);
+        })
+    };
+    assert!(!try_once(false));
+    assert!(try_once(true), "the next attach lends again and the pool has its buffers");
+    assert_eq!((lends.get(), lender.failures()), (2, 1));
+    assert!(try_once(false), "a pool that has its buffers is not lent again");
+    assert_eq!(lends.get(), 2);
+
+    let ready = Cell::new(false);
+    let lender = Lender::new();
+    for _ in 0..LEND_TRIES + 5 {
+        lender.ensure(|| ready.get(), || lends.set(lends.get() + 1));
+    }
+    assert_eq!(lender.failures(), LEND_TRIES, "the retries stop at the bound");
 }

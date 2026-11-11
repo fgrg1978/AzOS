@@ -79,6 +79,8 @@ frame-exit-keeps-canary = []
 frame-slot-per-call-canary = []
 # ... the buffer is checked after the frame is taken, so a bad one costs a frame.
 frame-check-late-canary = []
+# ... the pool's buffer lend is tried once, so one failure ends the camera for the boot.
+frame-lend-once-canary = []
 # ... a read copies nothing.
 frame-copy-skip-canary = []
 # ... the frame is copied with the region table locked.

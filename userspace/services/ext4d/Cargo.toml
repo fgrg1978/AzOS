@@ -25,6 +25,8 @@ short-read-canary = []
 # entry is taken for a stray (`stale-completion-canary`).
 badge-slot-canary = []
 stale-completion-canary = []
+# Host canary only: every listed entry is resolved by path, a directory scan each.
+seen-resolve-canary = []
 
 [profile.release]
 opt-level = "s"
