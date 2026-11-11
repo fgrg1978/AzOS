@@ -17,6 +17,7 @@ config USB_ADMIT_WITHOUT_ROWS
     bool "USB: devices bind class drivers when the topology has no [usb.*] row"
     default y if BUILD_TYPE_DEV
     default n
+    depends on USB_HOST
     help
       crates/drivers/usb/src/admit.rs. Every class driver (HID, mass
       storage, CDC serial and network, UVC, SMSC95xx) binds an interface

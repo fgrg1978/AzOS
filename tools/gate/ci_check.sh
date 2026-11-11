@@ -13159,6 +13159,22 @@ host_job host_canary_row "usb-uvc: probe block length canary" usb-uvc-tests cana
     a_camera_is_negotiated_and_left_idle_until_somebody_reads
 host_job host_canary_row "usb-uvc: setting choice canary" usb-uvc-tests canary-uvc-alt \
     a_reader_starts_the_stream_with_commit_and_the_smallest_setting_that_carries_it
+host_job host_canary_row "usb-uvc: bulk payload overflow canary" usb-uvc-tests canary-uvc-payload-overflow \
+    a_bulk_camera_naming_an_absurd_payload_size_is_refused_not_a_kernel_abort
+# USB admission (azos_usb::admit), the per-port failure budget and the descriptor
+# guards: each canary puts the bug back and its test must go red.
+host_job host_canary_row "usb: admission rows canary" usb-tests canary-admit-all \
+    a_row_admits_the_interfaces_it_names_and_only_those
+host_job host_canary_row "usb-hid: admission rows canary" usb-hid-tests canary-admit-all \
+    a_keyboard_no_topology_row_admits_never_reaches_the_driver_and_leaves_a_record
+host_job host_canary_row "usb: endpoint 0 as data canary" usb-tests canary-ep0-data-endpoint \
+    an_endpoint_numbered_0_is_not_a_data_endpoint
+host_job host_canary_row "usb: port failure budget canary" usb-tests canary-port-no-budget \
+    a_port_that_keeps_failing_is_left_alone_for_a_while
+host_job host_canary_row "usb: hub status length canary" usb-tests canary-hub-mps \
+    a_hub_with_another_endpoint_listed_first_still_reports_all_its_ports
+host_job host_canary_row "usb-hid: drop counter canary" usb-hid-tests canary-counter-wrap \
+    a_saturated_drop_counter_does_not_abort
 # SUBTREE-POLICY: `creation_gate` allows every creation, so the endpoint, port
 # and MemObj handlers ignore the limits of the Domain and of its ancestors.
 host_job host_canary_row "subtree: creation gate canary" syscall-tests subtree-gate-canary \
