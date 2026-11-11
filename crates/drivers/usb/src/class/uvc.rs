@@ -144,6 +144,17 @@ pub const IDLE_STOP_US: u64 = 500_000;
 const BUFS: usize = PIPE_DEPTH;
 /// Most bytes of one bulk transfer.
 const BULK_XFER_MAX: u32 = 60 * 1024;
+/// A camera asking for more per interval than this is refused rather than clamped.
+const PAYLOAD_SANE_MAX: u32 = 1 << 24;
+
+/// The bulk transfer length for a payload size the camera named: whole packets,
+/// never past [`BULK_XFER_MAX`], whatever the camera said.
+fn bulk_len(max_payload: u32, mps: u16) -> u32 {
+    if cfg!(feature = "canary-uvc-payload-overflow") {
+        return max_payload.next_multiple_of(mps.max(1) as u32).clamp(mps as u32, BULK_XFER_MAX);
+    }
+    max_payload.min(BULK_XFER_MAX).next_multiple_of(mps.max(1) as u32).clamp(mps as u32, BULK_XFER_MAX)
+}
 /// Streaming endpoints of alternate settings kept by [`survey`].
 pub const MAX_ALTS: usize = 16;
 
@@ -958,7 +969,11 @@ impl<'q, M: Memory, C: Clock, S: FrameSink> Uvc<'q, M, C, S> {
         let mut block = [0u8; BLOCK_MAX];
         buf.read_bytes(IN_OFF, &mut block[..n]);
         let Some(neg) = parse_block(&block[..n]) else { return self.fail(Fail::Negotiation) };
-        if neg.format_index != choice.format_index || neg.frame_index != choice.frame_index || neg.max_payload == 0 {
+        if neg.format_index != choice.format_index
+            || neg.frame_index != choice.frame_index
+            || neg.max_payload == 0
+            || (neg.max_payload > PAYLOAD_SANE_MAX && !cfg!(feature = "canary-uvc-payload-overflow"))
+        {
             return self.fail(Fail::Negotiation);
         }
         // The camera's interval is the one it will stream at.
@@ -972,7 +987,7 @@ impl<'q, M: Memory, C: Clock, S: FrameSink> Uvc<'q, M, C, S> {
         };
         let len = match mode {
             Mode::Isoch { bytes, .. } => bytes,
-            Mode::Bulk { mps, .. } => neg.max_payload.next_multiple_of(mps.max(1) as u32).clamp(mps as u32, BULK_XFER_MAX),
+            Mode::Bulk { mps, .. } => bulk_len(neg.max_payload, mps),
         };
         if let Err(f) = self.alloc_stream(len) {
             return self.fail(f);

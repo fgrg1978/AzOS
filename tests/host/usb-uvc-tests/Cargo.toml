@@ -26,6 +26,7 @@ canary-uvc-sync = ["azos_usb/canary-uvc-sync"]
 canary-uvc-fid = ["azos_usb/canary-uvc-fid"]
 canary-uvc-probe-len = ["azos_usb/canary-uvc-probe-len"]
 canary-uvc-alt = ["azos_usb/canary-uvc-alt"]
+canary-uvc-payload-overflow = ["azos_usb/canary-uvc-payload-overflow"]
 
 [profile.release]
 overflow-checks = true

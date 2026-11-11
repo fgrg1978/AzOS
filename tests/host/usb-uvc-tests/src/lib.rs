@@ -23,6 +23,7 @@
 //! | `canary-uvc-fid` | a toggle of FID does not end a frame | `a_camera_that_never_sets_eof_ends_its_frames_at_the_toggle` |
 //! | `canary-uvc-probe-len` | every camera is sent the 26-byte PROBE block | `a_camera_is_negotiated_and_left_idle_until_somebody_reads` |
 //! | `canary-uvc-alt` | the first isochronous setting is selected whatever it carries | `a_reader_starts_the_stream_with_commit_and_the_smallest_setting_that_carries_it` |
+//! | `canary-uvc-payload-overflow` | the bulk transfer length is rounded up before it is clamped, and absurd payload sizes are not refused | `a_bulk_camera_naming_an_absurd_payload_size_is_refused_not_a_kernel_abort` |
 
 pub mod fixtures;
 

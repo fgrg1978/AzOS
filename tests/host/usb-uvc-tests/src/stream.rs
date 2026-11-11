@@ -567,6 +567,23 @@ fn a_bulk_camera_streams_over_the_bulk_endpoint_with_no_setting_to_select() {
 }
 
 #[test]
+fn a_bulk_camera_naming_an_absurd_payload_size_is_refused_not_a_kernel_abort() {
+    for payload in [u32::MAX, u32::MAX - 100, 0x8000_0000] {
+        let mut b: Bench<8192> = Bench::answered(Cam::bulk(), 3, payload);
+        b.negotiate();
+        assert_eq!(b.state(), State::Failed(Fail::Negotiation), "payload {payload:#x}");
+    }
+}
+
+#[test]
+fn a_bulk_camera_asking_for_more_than_a_transfer_carries_is_clamped() {
+    let mut b: Bench<8192> = Bench::answered(Cam::bulk(), 3, 200_000);
+    b.negotiate();
+    assert_eq!(b.state(), State::Ready);
+    assert_eq!(b.uvc.borrow().mode(), Some(Mode::Bulk { endpoint: 0x82, mps: 512 }));
+}
+
+#[test]
 fn a_stalled_bulk_stream_is_cleared_on_the_device_and_goes_on() {
     let mut b: Bench<8192> = Bench::answered(Cam::bulk(), 3, 3000);
     b.negotiate();

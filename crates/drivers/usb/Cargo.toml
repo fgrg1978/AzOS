@@ -149,3 +149,5 @@ canary-uvc-probe-len = ["uvc"]
 # The first isochronous setting is selected whatever bandwidth the camera asked
 # for.
 canary-uvc-alt = ["uvc"]
+# The bulk transfer length is rounded up before it is clamped.
+canary-uvc-payload-overflow = ["uvc"]
