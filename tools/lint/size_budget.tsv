@@ -6,18 +6,18 @@
 # 512 B): a commit that grows the image updates this file with a reason,
 # make size-update REASON=".." (one that shrinks it, to lock the gain in).
 # label	group	bytes   |   label	reason	text
-aarch64-microvm	.text	2958016
-aarch64-microvm	.rodata	367024
-aarch64-microvm	.data	497864
+aarch64-microvm	.text	2961424
+aarch64-microvm	.rodata	367104
+aarch64-microvm	.data	500424
 aarch64-microvm	.bss	1078824
-aarch64-microvm	reason	capabilities audit fixes over b122 (message cap checks, revoke records)
-riscv64-qemu	.text	2941608
-riscv64-qemu	.rodata	499208
-riscv64-qemu	.data	522608
+aarch64-microvm	reason	rebase over main: f/week2-budget-stress
+riscv64-qemu	.text	2944756
+riscv64-qemu	.rodata	499232
+riscv64-qemu	.data	525168
 riscv64-qemu	.bss	2277096
-riscv64-qemu	reason	capabilities audit fixes over b122 (message cap checks, revoke records)
-x86_64-microvm	.text	2808425
+riscv64-qemu	reason	rebase over main: f/week2-budget-stress
+x86_64-microvm	.text	2812521
 x86_64-microvm	.rodata	180200
-x86_64-microvm	.data	660864
+x86_64-microvm	.data	663552
 x86_64-microvm	.bss	1060944
-x86_64-microvm	reason	capabilities audit fixes over b122 (message cap checks, revoke records)
+x86_64-microvm	reason	rebase over main: f/week2-budget-stress
