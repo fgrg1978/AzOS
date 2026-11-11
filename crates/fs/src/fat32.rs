@@ -2502,6 +2502,20 @@ pub fn fat32_mount() -> Result<(), ()> {
 /// ([`fat32_mount_report`] says what was found), and the volume is marked
 /// dirty until [`fat32_unmount`] clears it.
 pub fn fat32_mount_on(v: &'static Vol) -> Result<(), ()> {
+    let was_mounted = v.fat32.lock().mounted;
+    let r = mount_attempt(v);
+    // A mount that failed after it published the geometry (journal recovery,
+    // a flush) is not a mounted volume: the next medium must read its own.
+    // A refused volume stays refused until an unmount, as its arm says.
+    if r.is_err() && !was_mounted && !cfg!(feature = "fat-mount-leak-canary") {
+        v.fat32.lock().mounted = false;
+        fat32_cache_reset(v);
+    }
+    r
+}
+
+/// The mount proper: [`fat32_mount_on`] resets what it leaves behind on `Err`.
+fn mount_attempt(v: &'static Vol) -> Result<(), ()> {
     // already mounted — nothing to do. `fat32_mount_volume_on()` is a
     // thin wrapper over this function, and its callers — the logger's
     // `open()` on every log rotation, `secure_boot.rs`'s

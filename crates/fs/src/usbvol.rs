@@ -216,6 +216,9 @@ pub fn mount(disk: &'static dyn Disk, at: &[u8]) -> Result<Mounted, Why> {
             }
         }
         Err(_) => {
+            // Whatever the attempt published (geometry, a refusal) goes with
+            // it: the next stick mounts afresh.
+            let _ = fat32::fat32_unmount_on(&USB, fat32::Volume::assume_mounted());
             GONE.store(true, Ordering::Release);
             *TABLE.lock() = None;
             STATE.store(IDLE, Ordering::Release);

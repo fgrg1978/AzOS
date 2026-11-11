@@ -13943,6 +13943,8 @@ host_job host_canary_row "fs: a name with a slash listed canary" fs-tests fat-lo
     a_name_with_a_slash_or_a_nul_is_not_listed
 host_job host_canary_row "fs: a limited check serves read-write canary" fs-tests fat-low-hardening-canary \
     the_check_verdict_follows_the_policy
+host_job host_canary_row "fs: a failed mount stays mounted canary" fs-tests fat-mount-leak-canary \
+    a_mount_that_fails_in_recovery_leaves_nothing_for_the_next_medium
 host_job host_canary_row "call task: no deadline to the server canary (devif)" devif-tests call-deadline-canary \
     a_call_through_the_task_carries_the_clients_deadline_to_the_server
 host_job host_canary_row "ring-3: dt inherited coherence canary" hwbus-tests dt-inherited-coherent-canary \

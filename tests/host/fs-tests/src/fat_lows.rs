@@ -119,3 +119,29 @@ fn a_name_with_a_slash_or_a_nul_is_not_listed() {
     fat32::fat32_ls_root(|n, _, _| root_ls.push(n.to_vec()));
     assert_eq!(root_ls, vec![b"OK.TXT".to_vec()]);
 }
+
+/// **A mount that fails after it published its geometry is not a mount.**
+/// Journal recovery of the first medium fails (its journal sector cannot be
+/// read) after the mount has set `mounted`; the next medium, with another
+/// geometry and put in without an unmount (a stick swapped after a failed
+/// attach), must be read afresh, not through the first one's geometry and
+/// cached sectors.
+#[test]
+fn a_mount_that_fails_in_recovery_leaves_nothing_for_the_next_medium() {
+    let _g = serial();
+    let first = Geom { spc: 2, rsvd: 40, total_sectors: 512, ..Geom::default() };
+    let mut a = build(&first);
+    set_fat(&mut a, &first, 2, EOC);
+    super::swap_medium(a);
+    fs_test_drivers::disk_bad_sector(fat32::JOURNAL_SECTOR as u64);
+    assert_eq!(fat32::fat32_mount(), Err(()), "recovery cannot read the journal");
+
+    let g = Geom::default();
+    let mut b = build(&g);
+    set_fat(&mut b, &g, 2, EOC);
+    set_fat(&mut b, &g, 3, EOC);
+    raw_dirent(&mut b, cluster_sector(&g, 2), 0, b"C       TXT", 0x20, 3, 5);
+    fs_test_drivers::disk_load(b);
+    assert_eq!(fat32::fat32_mount(), Ok(()));
+    assert_eq!(fat32::fat32_lookup_root(b"C       TXT"), Ok((3, 5)), "the second medium was read with the first one's geometry");
+}

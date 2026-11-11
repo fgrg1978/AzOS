@@ -209,6 +209,9 @@ overlay-raw-compare-canary = []
 # that stopped at its own limit is served read-write (fs-tests `fat_lows`,
 # `the_check_verdict_follows_the_policy`).
 fat-low-hardening-canary = []
+# Host canary: a mount that fails after publishing its geometry stays mounted
+# (fs-tests `fat_lows`).
+fat-mount-leak-canary = []
 
 # Power-loss safety (S3) canaries, each must turn a fs-tests `s3` test red.
 #   fat-dirty-bit-canary:       the mount never sets the volume dirty flag
