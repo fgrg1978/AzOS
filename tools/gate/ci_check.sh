@@ -13906,6 +13906,8 @@ host_job host_canary_row "ring-3: dt generic fallback canary" hwbus-tests dt-fal
     a_generic_fallback_after_an_unknown_specific_compatible_is_not_decisive
 host_job host_canary_row "ring-3: dt lossy compatible canary" hwbus-tests dt-lossy-compatible-canary \
     a_truncated_or_non_utf8_compatible_is_never_a_listed_peripheral
+host_job host_canary_row "ring-3: window overlap canary" hwbus-tests window-overlap-canary \
+    a_window_over_ram_the_kernel_or_a_core_block_is_refused
 host_job host_canary_row "ring-3: dt inherited coherence canary" hwbus-tests dt-inherited-coherent-canary \
     a_dma_coherent_inherited_from_a_bus_makes_no_master
 host_job host_canary_row "ring-3: line grant record silent canary (ipc)" ipc-tests line-grant-silent-canary \

@@ -25,7 +25,7 @@
 //! decisions. Both are traits so the host tests run the same code against
 //! recorders.
 
-use crate::device::{Device, Name};
+use crate::device::{BusKind, Device, Name};
 use crate::pattern::Pattern;
 use crate::policy::{decide, Choice, Policy, Row, Verdict};
 use crate::record::Held;
@@ -227,8 +227,44 @@ pub enum AddError {
     Full,
 }
 
+/// What a register window that ring 3 may not map overlaps (or is).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum WindowRefusal {
+    Ram,
+    KernelImage,
+    InterruptController,
+    Iommu,
+}
+
+/// Ranges the kernel marks with [`Bus::protect`].
+pub const PROTECTED_RANGES: usize = 8;
+
+/// The block a `compatible` string names, when it is an interrupt controller
+/// or an IOMMU: a window that is one, or overlaps one, is not ring 3's.
+fn block_of(c: &str) -> Option<WindowRefusal> {
+    let mut found = None;
+    for t in c.split(|ch| ch == ',' || ch == '-') {
+        if ["gic", "plic", "aplic", "imsic", "clint"].iter().any(|p| t.starts_with(p)) {
+            return Some(WindowRefusal::InterruptController);
+        }
+        if ["iommu", "smmu"].iter().any(|p| t.starts_with(p)) {
+            found = Some(WindowRefusal::Iommu);
+        }
+    }
+    found
+}
+
+fn block_role(d: &Device) -> Option<WindowRefusal> {
+    d.compatible().find_map(block_of)
+}
+
+fn overlaps(a: u64, asz: u64, b: u64, bsz: u64) -> bool {
+    asz != 0 && bsz != 0 && a < b.saturating_add(bsz) && b < a.saturating_add(asz)
+}
+
 pub struct Bus {
     slots: [Slot; MAX_DEVICES],
+    protected: [Option<(u64, u64, WindowRefusal)>; PROTECTED_RANGES],
     /// Devices refused because every slot was taken.
     refused: u32,
     /// The next bind's [`Slot::seq`].
@@ -247,7 +283,7 @@ const FREE: Slot = Slot {
 
 impl Bus {
     pub const fn new() -> Self {
-        Bus { slots: [FREE; MAX_DEVICES], refused: 0, next_seq: 0 }
+        Bus { slots: [FREE; MAX_DEVICES], protected: [None; PROTECTED_RANGES], refused: 0, next_seq: 0 }
     }
 
     pub fn refused(&self) -> u32 {
@@ -302,10 +338,44 @@ impl Bus {
     /// registers are the kernel's).
     pub fn user_window(&self, h: Handle) -> Option<(u64, u64)> {
         let s = self.get(h)?;
-        if !s.user_settled() || s.dev.size == 0 {
+        if !s.user_settled() || s.dev.size == 0 || self.window_refusal(h).is_some() {
             return None;
         }
         Some((s.dev.base, s.dev.size))
+    }
+
+    /// Mark `base..base+size` as memory or a block no register window of a
+    /// device may overlap (RAM, the kernel image). `false` when the table is full.
+    pub fn protect(&mut self, base: u64, size: u64, why: WindowRefusal) -> bool {
+        match self.protected.iter_mut().find(|r| r.is_none()) {
+            Some(r) => {
+                *r = Some((base, size, why));
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Why the window of `h` is not ring 3's regardless of its life: it is, or
+    /// overlaps, a protected range, an interrupt controller or an IOMMU.
+    pub fn window_refusal(&self, h: Handle) -> Option<WindowRefusal> {
+        let s = self.get(h)?;
+        let (base, size) = (s.dev.base, s.dev.size);
+        if s.dev.kind != BusKind::Dt || size == 0 {
+            return None;
+        }
+        if let Some(r) = block_role(&s.dev) {
+            return Some(r);
+        }
+        if cfg!(feature = "window-overlap-canary") {
+            return None;
+        }
+        if let Some(&(_, _, why)) = self.protected.iter().flatten().find(|&&(b, z, _)| overlaps(base, size, b, z)) {
+            return Some(why);
+        }
+        self.iter().filter(|&(o, _)| o != h).find_map(|(_, o)| {
+            block_role(&o.dev).filter(|_| overlaps(base, size, o.dev.base, o.dev.size))
+        })
     }
 
     /// [`user_window`](Self::user_window), and book a mapping of it: from now

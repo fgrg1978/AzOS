@@ -742,6 +742,41 @@ fn a_device_waiting_for_its_stage_or_whose_probe_failed_is_not_mappable() {
     assert_eq!(bus.user_window(hs[5]), Some((0x1000_0000, 0x1000)));
 }
 
+/// **A register window over RAM, the kernel image, an interrupt controller or
+/// an IOMMU is never ring 3's:** the window comes from the device tree, so
+/// a node can claim any address.
+///
+/// **Canary.** `window-overlap-canary`: the overlap is not checked.
+#[test]
+fn a_window_over_ram_the_kernel_or_a_core_block_is_refused() {
+    let mut bus = Bus::new();
+    let mut rec = Recorder::default();
+    assert!(bus.protect(0x8000_0000, 0x1000_0000, WindowRefusal::Ram));
+    assert!(bus.protect(0x8020_0000, 0x10_0000, WindowRefusal::KernelImage));
+    let mut add = |name: &str, compat: &[u8], base: u64, size: u64| {
+        bus.add(Device::dt(name, compat, base, size, 1), &mut rec).unwrap()
+    };
+    let ok = add("ok@1", b"vendor,thing\0", 0x1000_0000, 0x1000);
+    let ram = add("ram@1", b"vendor,thing\0", 0x8000_1000, 0x1000);
+    let tail = add("tail@1", b"vendor,thing\0", 0x8fff_f000, 0x2000);
+    let intc = add("gic@1", b"arm,gic-400\0", 0x0800_0000, 0x1_0000);
+    let over_intc = add("o@1", b"vendor,thing\0", 0x0800_8000, 0x1000);
+    let mmu = add("mmu@1", b"arm,smmu-v3\0", 0x0900_0000, 0x1_0000);
+    let over_mmu = add("o@2", b"vendor,thing\0", 0x0900_0000, 0x10);
+    bus.bind_all(&rules(&[], Policy::Auto), &mut Fake::with(&[]), &mut rec);
+    assert_eq!(bus.user_window(ok), Some((0x1000_0000, 0x1000)));
+    assert_eq!(bus.window_refusal(ram), Some(WindowRefusal::Ram));
+    assert_eq!(bus.window_refusal(tail), Some(WindowRefusal::Ram), "a window that starts below the end of RAM");
+    assert_eq!(bus.window_refusal(intc), Some(WindowRefusal::InterruptController));
+    assert_eq!(bus.window_refusal(over_intc), Some(WindowRefusal::InterruptController));
+    assert_eq!(bus.window_refusal(mmu), Some(WindowRefusal::Iommu));
+    assert_eq!(bus.window_refusal(over_mmu), Some(WindowRefusal::Iommu));
+    for h in [ram, tail, intc, over_intc, mmu, over_mmu] {
+        assert_eq!(bus.user_window(h), None);
+        assert_eq!(bus.claim_user_window(h), None);
+    }
+}
+
 #[test]
 fn a_device_a_task_mapped_is_never_given_to_a_kernel_driver() {
     let mut bus = Bus::new();

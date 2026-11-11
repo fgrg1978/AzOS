@@ -739,6 +739,38 @@ pub(crate) fn note_firmware_virtio(dtb_ptr: usize) {
     }
 }
 
+/// Mark the RAM and the kernel image as ranges no device window may overlap.
+fn protect_memory_windows() {
+    use azos_drv_bus::hwbus::WindowRefusal;
+    // SAFETY: linker symbols; only their addresses are taken.
+    let (start, end) = unsafe {
+        (azos_mm::addr::virt_to_phys(&crate::_text_start as *const u8 as usize),
+         azos_mm::addr::virt_to_phys(&crate::_kernel_end as *const u8 as usize))
+    };
+    let (ram, ram_len) = azos_mm::pmm::managed_range();
+    let ok = hwbus::with(|b| {
+        b.protect(start as u64, end.saturating_sub(start) as u64, WindowRefusal::KernelImage)
+            & b.protect(ram as u64, ram_len as u64, WindowRefusal::Ram)
+    });
+    if !ok {
+        azos_drv_sys::kwarn!("[HWBUS] the protected-range table is full: a device window is not checked against RAM");
+    }
+}
+
+/// Say which device windows ring 3 is refused, and why.
+fn report_refused_windows() {
+    let mut n = 0;
+    while let Some((name, base, size, why)) = hwbus::with(|b| {
+        b.iter()
+            .filter_map(|(h, s)| b.window_refusal(h).map(|w| (s.dev.name, s.dev.base, s.dev.size, w)))
+            .nth(n)
+    }) {
+        azos_drv_sys::kwarn!(
+            "[HWBUS] {} window {:#x}+{:#x} is refused to ring 3: it is or overlaps {:?}", name.as_str(), base, size, why);
+        n += 1;
+    }
+}
+
 /// Enumerate what the firmware describes: the device tree's nodes (riscv64,
 /// aarch64) and the populated virtio-mmio windows, then bind the kernel's own
 /// hardware among them. Call after the late MMIO windows are mapped.
@@ -754,6 +786,7 @@ pub(crate) fn enumerate_firmware(dtb_ptr: usize) {
     #[cfg(not(any(feature = "vf2", feature = "k1")))]
     #[allow(unused_mut)]
     let mut virtio_coherent_n = 0usize;
+    protect_memory_windows();
     #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
     if dtb_ptr != 0 {
         let blob = azos_mm::addr::phys_to_virt(dtb_ptr) as *const u8;
@@ -788,6 +821,7 @@ pub(crate) fn enumerate_firmware(dtb_ptr: usize) {
     }
     #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64")))]
     let _ = dtb_ptr;
+    report_refused_windows();
 
     #[cfg(not(any(feature = "vf2", feature = "k1")))]
     {

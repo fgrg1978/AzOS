@@ -44,8 +44,8 @@ pub mod record;
 pub mod tables;
 
 pub use bus::{
-    Access, AddError, Binding, Bus, Drivers, Event, Handle, ProbeError, Rules, Sink, Slot, State, UnbindError,
-    MAX_DEVICES,
+    Access, AddError, Binding, Bus, Drivers, Event, Handle, ProbeError, Rules, Sink, Slot, State, UnbindError, WindowRefusal,
+    MAX_DEVICES, PROTECTED_RANGES,
 };
 pub use record::{Env, Held, Host, Op, Ops, Power, Record, Records, Unbind};
 pub use masters::{dt_role, DtRole};
