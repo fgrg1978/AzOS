@@ -43,6 +43,7 @@
 //! device go away and come back with a new generation.
 
 pub mod desc;
+mod budget;
 mod enumerate;
 pub mod hc;
 mod hub;
@@ -52,7 +53,7 @@ use azos_devif::outcome::{BAD_ARGUMENT, BUSY, DENIED, FAULT, NO_RESOURCE, OK, UN
 use azos_devif::Out;
 use azos_rings::Producer;
 
-use crate::admit::Admission;
+use crate::admit::{self, Admission};
 use crate::class::{Claim, Registry, UsbDevice, WHOLE_DEVICE};
 use crate::event::{EventKind, UsbEvent, EVENT_DEPTH};
 use crate::hw::{Clock, DmaBuf, Memory, Regs, PAGE};
@@ -73,6 +74,9 @@ pub const MAX_HUB_PORTS: usize = 15;
 
 /// What a control transfer of the core waits at most.
 const CONTROL_TIMEOUT_US: u64 = 1_000_000;
+/// Polls of a control transfer, 100 microseconds apart, before the wait becomes
+/// 1 ms sleeps.
+const CONTROL_SPIN_POLLS: u32 = 10;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UsbError {
@@ -139,6 +143,9 @@ pub struct Hub {
     pub changed: u32,
     /// A transfer is queued on the status-change endpoint.
     pub armed: bool,
+    /// Ports whose connection was held back by their failure budget and is
+    /// looked at again on the next turn (bit n: port n).
+    pub retry: u32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -251,6 +258,9 @@ pub struct Usb<'q, R: Regs, M: Memory, C: Clock> {
     /// the attempt. The change events a port reset raises must not start
     /// another one.
     root_connect: [u64; 4],
+    /// Root ports whose connection their failure budget held back: looked at
+    /// again on the next turn.
+    root_retry: [u64; 4],
     /// Slot of the device on each root port.
     root_dev: [u8; 255],
     ctl: DmaBuf,
@@ -258,6 +268,7 @@ pub struct Usb<'q, R: Regs, M: Memory, C: Clock> {
     seq: u32,
     pub(crate) stats: Stats,
     admission: Admission,
+    budget: budget::PortBudget,
 }
 
 /// Bytes of `ctl` the core uses for the data stage of its control transfers.
@@ -367,16 +378,28 @@ impl<'q, R: Regs, M: Memory, C: Clock> Usb<'q, R, M, C> {
             core::ptr::addr_of_mut!((*p).held_events).write([NO_EVENT; 8]);
             core::ptr::addr_of_mut!((*p).root_pending).write([0; 4]);
             core::ptr::addr_of_mut!((*p).root_connect).write([0; 4]);
+            core::ptr::addr_of_mut!((*p).root_retry).write([0; 4]);
             core::ptr::addr_of_mut!((*p).root_dev).write([0; 255]);
             core::ptr::addr_of_mut!((*p).ctl).write(ctl);
             core::ptr::addr_of_mut!((*p).hubbuf).write(hubbuf);
             core::ptr::addr_of_mut!((*p).seq).write(0);
             core::ptr::addr_of_mut!((*p).stats).write(Stats::default());
             core::ptr::addr_of_mut!((*p).admission).write(Admission::build());
+            core::ptr::addr_of_mut!((*p).budget).write(budget::PortBudget::new());
             &mut *p
         };
         u.look_at_connected_ports();
         Ok(u)
+    }
+
+    /// A port failed to bring its device up: back off, and after the budget
+    /// leave it alone and say so in a decision record.
+    pub(crate) fn port_failed(&mut self, root_port: u8, route: u32) {
+        self.stats.failed = self.stats.failed.saturating_add(1);
+        let now = self.hc.clock().now_us();
+        if self.budget.failed(budget::key(root_port, route), now) == budget::Failed::Ignored {
+            admit::record(root_port, 0, route, admit::Reason::PortIgnored);
+        }
     }
 
     /// The rows that decide which interfaces may bind a class driver; until
@@ -464,6 +487,9 @@ impl<'q, R: Regs, M: Memory, C: Clock> Usb<'q, R, M, C> {
         self.hc.poll();
         self.drain();
         self.after_reset(reg);
+        for w in 0..4 {
+            self.root_pending[w] |= core::mem::take(&mut self.root_retry[w]);
+        }
         self.root_ports(reg);
         self.hub_ports(reg);
         // A reset the enumeration's commands made, before anything is queued.
@@ -503,6 +529,7 @@ impl<'q, R: Regs, M: Memory, C: Clock> Usb<'q, R, M, C> {
         self.hc.ack_reset();
         self.root_pending = [0; 4];
         self.root_connect = [0; 4];
+        self.root_retry = [0; 4];
         self.look_at_connected_ports();
     }
 
@@ -582,6 +609,7 @@ impl<'q, R: Regs, M: Memory, C: Clock> Usb<'q, R, M, C> {
             },
         )?;
         let deadline = self.hc.clock().now_us() + CONTROL_TIMEOUT_US;
+        let mut polls = 0u32;
         let done = loop {
             self.hc.poll();
             let mut found = None;
@@ -611,7 +639,10 @@ impl<'q, R: Regs, M: Memory, C: Clock> Usb<'q, R, M, C> {
                 }
                 return Err(UsbError::Timeout);
             }
-            self.hc.clock().delay_us(100);
+            // A device that answers does so within a millisecond or so; one that
+            // does not is waited for in sleeps, not spins.
+            polls = polls.saturating_add(1);
+            self.hc.clock().delay_us(if polls <= CONTROL_SPIN_POLLS { 100 } else { 1_000 });
         };
         match done.code {
             cc::SUCCESS | cc::SHORT_PACKET => {

@@ -29,6 +29,7 @@ azos_chaos = { path = "../../../crates/core/chaos", features = ["on"] }
 [features]
 canary-ac64 = ["azos_usb/canary-ac64"]
 canary-admit-all = ["azos_usb/canary-admit-all"]
+canary-port-no-budget = ["azos_usb/canary-port-no-budget"]
 canary-ep0-data-endpoint = ["azos_usb/canary-ep0-data-endpoint"]
 canary-csz = ["azos_usb/canary-csz"]
 canary-scratchpad = ["azos_usb/canary-scratchpad"]

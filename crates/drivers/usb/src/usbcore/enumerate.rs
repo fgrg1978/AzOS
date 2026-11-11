@@ -6,6 +6,7 @@
 
 use super::desc::{self, Setup, DT_BOS, DT_CONFIG, DT_DEVICE, DT_STRING};
 use super::{Device, Text, Usb, UsbError, MAX_TIERS};
+use super::budget;
 use crate::admit;
 use crate::class::{Claim, Registry, Scope, WHOLE_DEVICE};
 use crate::event::EventKind;
@@ -54,6 +55,13 @@ impl<'q, R: Regs, M: Memory, C: Clock> Usb<'q, R, M, C> {
         if self.root_dev[port as usize - 1] != 0 || !self.mark_connect(port, false) {
             return;
         }
+        let key = budget::key(port, 0);
+        if !self.budget.allowed(key, self.hc.clock().now_us()) {
+            let i = port as usize - 1;
+            self.root_retry[i / 64] |= 1 << (i % 64);
+            self.mark_connect(port, true);
+            return;
+        }
         // Debounce: the connection must hold before the port is reset.
         self.hc.clock().delay_us(DEBOUNCE_US);
         let st2 = self.hc.port_status(port);
@@ -66,13 +74,16 @@ impl<'q, R: Regs, M: Memory, C: Clock> Usb<'q, R, M, C> {
         let speed = match self.reset_root_port(port) {
             Ok(s) => s,
             Err(_) => {
-                self.stats.failed += 1;
+                self.port_failed(port, 0);
                 return;
             }
         };
         match self.enumerate(reg, None, port, speed) {
-            Ok(slot) => self.root_dev[port as usize - 1] = slot,
-            Err(_) => self.stats.failed += 1,
+            Ok(slot) => {
+                self.root_dev[port as usize - 1] = slot;
+                self.budget.succeeded(key);
+            }
+            Err(_) => self.port_failed(port, 0),
         }
     }
 

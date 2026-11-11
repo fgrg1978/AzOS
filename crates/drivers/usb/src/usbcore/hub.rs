@@ -15,6 +15,7 @@
 //! Hubs are driven only by the core. Class requests addressed to a hub or to
 //! one of its ports are not something a class driver's claim can send.
 
+use super::budget;
 use super::desc::{
     self, Setup, DT_HUB, DT_SS_HUB, REQ_CLEAR_FEATURE, REQ_GET_DESCRIPTOR, REQ_GET_STATUS, REQ_SET_FEATURE,
     REQ_SET_HUB_DEPTH, RT_RECIP_DEVICE, RT_RECIP_OTHER, RT_TYPE_CLASS, XFER_INTERRUPT,
@@ -116,7 +117,7 @@ impl<'q, R: Regs, M: Memory, C: Clock> Usb<'q, R, M, C> {
             }],
         )?;
         self.set_hub_pipe(pid, slot, dci);
-        let hub = Hub { ports, desc: hd, pipe: pid, children: [0; MAX_HUB_PORTS], changed: 0, armed: false };
+        let hub = Hub { ports, desc: hd, pipe: pid, children: [0; MAX_HUB_PORTS], changed: 0, armed: false, retry: 0 };
         if let Some(dev) = self.devices[slot as usize - 1].as_mut() {
             dev.hub = Some(hub);
         }
@@ -194,7 +195,14 @@ impl<'q, R: Regs, M: Memory, C: Clock> Usb<'q, R, M, C> {
                 // Bit 0 is the hub itself (local power, over-current): the
                 // core has nothing to do about either.
                 if b != 0 {
-                    self.hub_port_event(reg, slot, b as u8);
+                    self.hub_port_event(reg, slot, b as u8, false);
+                }
+            }
+            // Ports held back by their budget last turn.
+            let retry = self.devices[slot as usize - 1].as_mut().and_then(|d| d.hub.as_mut()).map_or(0, |h| core::mem::take(&mut h.retry));
+            for b in 1..=MAX_HUB_PORTS as u32 {
+                if retry & 1 << b != 0 {
+                    self.hub_port_event(reg, slot, b as u8, true);
                 }
             }
         }
@@ -242,9 +250,19 @@ impl<'q, R: Regs, M: Memory, C: Clock> Usb<'q, R, M, C> {
     }
 
     /// One port of a hub changed.
-    fn hub_port_event(&mut self, reg: &mut Registry<'_>, hub: u8, port: u8) {
+    fn hub_port_event(&mut self, reg: &mut Registry<'_>, hub: u8, port: u8, forced: bool) {
         let Some(hd) = self.device(hub).copied() else { return };
         let ss = hd.speed.is_super();
+        let route = hd.route | (port.min(15) as u32) << (4 * hd.tier as u32);
+        let key = budget::key(hd.root_port, route);
+        // A port held back last turn costs a register read to look at again,
+        // not a control transfer, until its budget lets it through.
+        if forced && !self.budget.allowed(key, self.hc.clock().now_us()) {
+            if let Some(h) = self.devices[hub as usize - 1].as_mut().and_then(|d| d.hub.as_mut()) {
+                h.retry |= 1 << port;
+            }
+            return;
+        }
         let Ok((status, change)) = self.hub_port_status(hub, port) else {
             self.stats.failed += 1;
             return;
@@ -252,35 +270,48 @@ impl<'q, R: Regs, M: Memory, C: Clock> Usb<'q, R, M, C> {
         self.hub_ack_changes(hub, port, ss, change);
         let child = hd.hub.map_or(0, |h| h.children.get(port as usize - 1).copied().unwrap_or(0));
         let connected = status & ST_CONNECTION != 0;
-        if change & CH_CONNECTION == 0 && (connected || child == 0) {
+        if !forced && change & CH_CONNECTION == 0 && (connected || child == 0) {
             return;
         }
         if child != 0 {
+            if forced {
+                return;
+            }
             self.remove_device(reg, child);
         }
         if !connected {
             return;
         }
         // Debounce, reset, enumerate.
+        if !self.budget.allowed(key, self.hc.clock().now_us()) {
+            if let Some(h) = self.devices[hub as usize - 1].as_mut().and_then(|d| d.hub.as_mut()) {
+                h.retry |= 1 << port;
+            }
+            return;
+        }
         self.hc.clock().delay_us(DEBOUNCE_US);
-        let Ok((status, _)) = self.hub_port_status(hub, port) else { return };
+        let Ok((status, _)) = self.hub_port_status(hub, port) else {
+            self.port_failed(hd.root_port, route);
+            return;
+        };
         if status & ST_CONNECTION == 0 {
             return;
         }
         let speed = match self.hub_reset_port(hub, port, ss) {
             Ok(s) => s,
             Err(_) => {
-                self.stats.failed += 1;
+                self.port_failed(hd.root_port, route);
                 return;
             }
         };
         match self.enumerate(reg, Some((hub, port)), hd.root_port, speed) {
             Ok(slot) => {
+                self.budget.succeeded(key);
                 if let Some(h) = self.devices[hub as usize - 1].as_mut().and_then(|d| d.hub.as_mut()) {
                     h.children[port as usize - 1] = slot;
                 }
             }
-            Err(_) => self.stats.failed += 1,
+            Err(_) => self.port_failed(hd.root_port, route),
         }
     }
 

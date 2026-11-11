@@ -15,6 +15,7 @@
 //! |---|---|---|
 //! | `canary-admit-all` | every interface is offered to the class drivers whatever the admission rows say | `admission::` (all) |
 //! | `canary-ep0-data-endpoint` | an endpoint numbered 0 in a configuration descriptor is kept as a data endpoint | `an_endpoint_numbered_0_is_not_a_data_endpoint` |
+//! | `canary-port-no-budget` | a port that keeps failing to enumerate is tried at every connection | `ports::a_port_that_keeps_failing_is_left_alone_for_a_while` |
 //! | `canary-ac64` | DMA above 4 GiB on a 32-bit controller | `controller_without_ac64_gets_low_memory` |
 //! | `canary-csz` | 32-byte contexts on a 64-byte controller | `controller_with_64_byte_contexts_enumerates` |
 //! | `canary-scratchpad` | scratchpad count read from the low field | `scratchpad_count_is_the_split_field` |
@@ -59,6 +60,8 @@ mod dwc2;
 
 #[cfg(test)]
 mod msc;
+#[cfg(test)]
+mod ports;
 #[cfg(test)]
 mod reset;
 #[cfg(test)]

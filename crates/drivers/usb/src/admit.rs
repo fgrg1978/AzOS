@@ -48,6 +48,9 @@ pub enum Reason {
     NoRows = 7,
     /// There are no rows and the build admits without them.
     OpenWithoutRows = 8,
+    /// The port failed to bring a device up too often and is left alone for a
+    /// while (the record's class triple is the route string).
+    PortIgnored = 9,
 }
 
 impl Reason {
