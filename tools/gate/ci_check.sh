@@ -13891,6 +13891,10 @@ host_job host_canary_row "mm: restore loses its slot to a store canary" mm-tests
     a_store_does_not_take_the_slot_a_restore_made_room_in
 host_job host_canary_row "mm: budget racy charge canary" mm-tests budget-racy-charge-canary \
     concurrent_charges_never_pass_the_limit_or_lose_an_update
+# A frame's last holder is told it is the last (cow_table::page_decref): with the
+# second-to-last told so, a frame is freed while another task still maps it.
+host_job host_canary_row "mm: refcount second-to-last frees canary" mm-tests refcount-canary \
+    a_fork_shaped_walk_counts_every_page
 # The budget ledgers under stress (tests/host/mm-tests/src/budget_stress.rs,
 # tests/host/syscall-tests/src/budget_sites.rs, sched-wake-tests domain_tests):
 # a refusal changes nothing, the integer limits saturate, several harts end at

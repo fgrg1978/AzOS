@@ -195,6 +195,12 @@ Charge rules for the Domain that pays (`PageBudget`, and `KmemBudget` class
   break is not supported, so its charge stays until the address space is
   discarded. A ring's buffer page is charged to its creator's Domain and given
   back to it on teardown.
+- **Exec** forgets the old address space's charge and keeps the frames the
+  Domain's objects hold: the MemObj frames (`memobj_charged_pages`, the pages a
+  release would give back) and the io_ring pages stay in the count, because
+  their references outlive the image and their release lands later
+  (`domain::RETAINED_HOOK`, registered by `azos_ipc`). Resetting to zero would let a
+  later release discharge from the new image's count.
 - **Arithmetic:** every charge is a compare-and-swap loop that saturates, a
   refusal changes no counter, a discharge floors at zero, and a Domain's death
   returns the growth it took from the growth pool. The host rows are in
