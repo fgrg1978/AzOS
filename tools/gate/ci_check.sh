@@ -13935,6 +13935,14 @@ host_job host_canary_row "fs: a truncate grow holds a whole-file buffer canary" 
     a_grow_takes_no_buffer_of_the_length
 host_job host_canary_row "fs: an overlay compares raw bytes canary" fs-tests overlay-raw-compare-canary \
     an_alias_of_a_set_name_reads_the_sets_file
+host_job host_canary_row "fs: a dot directory skipped by the check canary" fs-tests fat-low-hardening-canary \
+    the_mount_check_walks_a_directory_whose_name_starts_with_a_dot
+host_job host_canary_row "fs: a misaligned journal offset replayed canary" fs-tests fat-low-hardening-canary \
+    an_overwrite_record_with_a_misaligned_offset_is_discarded
+host_job host_canary_row "fs: a name with a slash listed canary" fs-tests fat-low-hardening-canary \
+    a_name_with_a_slash_or_a_nul_is_not_listed
+host_job host_canary_row "fs: a limited check serves read-write canary" fs-tests fat-low-hardening-canary \
+    the_check_verdict_follows_the_policy
 host_job host_canary_row "call task: no deadline to the server canary (devif)" devif-tests call-deadline-canary \
     a_call_through_the_task_carries_the_clients_deadline_to_the_server
 host_job host_canary_row "ring-3: dt inherited coherence canary" hwbus-tests dt-inherited-coherent-canary \

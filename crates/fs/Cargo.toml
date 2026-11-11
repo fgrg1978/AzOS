@@ -203,6 +203,12 @@ fat-truncate-heap-canary = []
 # Host canary: the signed-set overlay compares raw bytes, not 8.3 keys
 # (fs-tests `root_overlay`).
 overlay-raw-compare-canary = []
+# Host canary: the low-severity hardening of the FAT32 mount and listing is off:
+# the check skips any directory starting with a dot, journal replay accepts a
+# misaligned entry offset, listings carry names with `/` or NUL, and a scan
+# that stopped at its own limit is served read-write (fs-tests `fat_lows`,
+# `the_check_verdict_follows_the_policy`).
+fat-low-hardening-canary = []
 
 # Power-loss safety (S3) canaries, each must turn a fs-tests `s3` test red.
 #   fat-dirty-bit-canary:       the mount never sets the volume dirty flag

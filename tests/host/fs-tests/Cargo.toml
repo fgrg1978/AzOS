@@ -145,6 +145,9 @@ fat-name-bytes-canary = []
 fat-truncate-heap-canary = []
 # The root overlay compares raw bytes, not 8.3 keys (`root_overlay`).
 overlay-raw-compare-canary = []
+# The low-severity hardening is off (`fat_lows`,
+# `the_check_verdict_follows_the_policy`).
+fat-low-hardening-canary = []
 # A retired mount's inodes left on its backend (see crates/fs).
 usb-volume-stale-fd-canary = []
 # FX12: declared so the cfg is known; the kernel's `ktest` feature turns it

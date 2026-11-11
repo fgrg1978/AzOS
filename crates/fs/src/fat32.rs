@@ -500,6 +500,7 @@ fn fat32_journal_recover(v: &'static Vol) -> Result<(), ()> {
             let dirent_matches = entry.dir_sector >= data_start
                 && entry.dir_sector < data_end
                 && (entry.dir_offset as usize) + DIRENT_SIZE <= SECTOR_SIZE
+                && (entry.dir_offset as usize % DIRENT_SIZE == 0 || cfg!(feature = "fat-low-hardening-canary"))
                 && {
                     let mut sec_buf = [0u8; SECTOR_SIZE];
                     read_sector(v, entry.dir_sector, &mut sec_buf).is_ok() && {
@@ -2773,7 +2774,8 @@ pub struct MountReport {
     pub hard_error: bool,
     /// The scan stopped at a limit of its own (a reachability map past
     /// `CHECK_BITMAP_MAX_BYTES` or the heap, a full directory stack), not at
-    /// damage: an incomplete scan that is not a failure.
+    /// damage: an incomplete scan that is not a failure, and a volume the
+    /// mount serves read-only (`check_verdict`).
     pub limited: bool,
     /// The check failed and the volume is served read-only.
     pub read_only: bool,
@@ -2817,6 +2819,11 @@ pub enum CheckVerdict {
 /// `FS_CHECK_FAILED_REFUSE`). Pure, so a test decides it under either member.
 pub fn check_verdict(rep: &MountReport, refuse: bool) -> CheckVerdict {
     match (rep.failed(), refuse) {
+        // A scan that stopped at a limit of its own vouches for nothing: the
+        // volume is read, not written, until a check on another machine (or a
+        // larger heap) has seen all of it.
+        (false, _) if rep.checked && rep.limited && !rep.complete
+            && !cfg!(feature = "fat-low-hardening-canary") => CheckVerdict::ReadOnly,
         (false, _) => CheckVerdict::Serve,
         (true, false) => CheckVerdict::ReadOnly,
         (true, true) => CheckVerdict::Refuse,
@@ -3048,8 +3055,15 @@ fn check_scan_dir(
                 let attr = buf[off + DIRENT_OFF_ATTR];
                 if attr == ATTR_LFN || attr & ATTR_VOLUME_ID != 0 { continue; }
                 let is_dir = attr & ATTR_DIRECTORY != 0;
-                // "." and "..": names, not children.
-                if is_dir && lead == b'.' { continue; }
+                // "." and "..": names, not children. Any other name starting
+                // with a dot is a child like the rest.
+                let dot = |n: &[u8]| buf[off..off + 11] == *n;
+                if is_dir
+                    && (dot(b".          ") || dot(b"..         ")
+                        || (cfg!(feature = "fat-low-hardening-canary") && lead == b'.'))
+                {
+                    continue;
+                }
                 let hi = u16::from_le_bytes([buf[off + DIRENT_OFF_FST_CLUS_HI], buf[off + DIRENT_OFF_FST_CLUS_HI + 1]]);
                 let lo = u16::from_le_bytes([buf[off + DIRENT_OFF_FST_CLUS_LO], buf[off + DIRENT_OFF_FST_CLUS_LO + 1]]);
                 let c = ((hi as u32) << 16) | lo as u32;
@@ -5575,6 +5589,12 @@ fn format_83_name(raw: &[u8; 11]) -> ([u8; 13], usize) {
     (buf, len)
 }
 
+/// A listing can carry the name: a short name read off a medium may hold a `/`
+/// or a NUL, which a caller would read as two components or a shorter name.
+fn name_listable(name83: &[u8; 11]) -> bool {
+    cfg!(feature = "fat-low-hardening-canary") || !name83.iter().any(|&b| b == b'/' || b == 0)
+}
+
 /// [`fat32_ls_root_on`] on the boot volume ([`BOOT`]).
 #[inline]
 pub fn fat32_ls_root(cb: impl FnMut(&[u8], u32, bool)) {
@@ -5628,6 +5648,7 @@ pub fn fat32_ls_root_on(v: &'static Vol, mut cb: impl FnMut(&[u8], u32, bool)) {
                 let mut name83 = [0u8; 11];
                 name83[..8].copy_from_slice(&entry.name);
                 name83[8..].copy_from_slice(&entry.ext);
+                if !name_listable(&name83) { continue; }
                 let (name_buf, name_len) = format_83_name(&name83);
                 cb(&name_buf[..name_len], entry.file_size, is_dir);
             }
@@ -7107,6 +7128,7 @@ impl Fat32DirIter {
                     let mut name83 = [0u8; 11];
                     name83[..8].copy_from_slice(&buf[off + DIRENT_OFF_NAME..off + DIRENT_OFF_NAME + 8]);
                     name83[8..11].copy_from_slice(&buf[off + DIRENT_OFF_EXT..off + DIRENT_OFF_EXT + 3]);
+                    if !name_listable(&name83) { continue; }
                     let (name_buf, name_len) = format_83_name(&name83);
                     let hi = u16::from_le_bytes([
                         buf[off + DIRENT_OFF_FST_CLUS_HI],

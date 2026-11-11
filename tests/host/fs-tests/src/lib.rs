@@ -218,6 +218,9 @@ mod name_bytes;
 mod alloc_peak;
 #[cfg(test)]
 mod truncate_grow;
+// Low-severity hardening of the mount check, journal replay and listings: `fat_lows.rs`.
+#[cfg(test)]
+mod fat_lows;
 #[cfg(test)]
 mod envelope_delete;
 // Every mounted volume made durable (orderly power-off, `Power::sync`): `sync_all.rs`.
@@ -4449,7 +4452,9 @@ mod power_cut {
         assert!(leaky.lost_clusters == 3 && !leaky.failed(), "{leaky:?}");
         assert_eq!(check_verdict(&leaky, true), CheckVerdict::Serve);
         let limited = fat32::MountReport { complete: false, limited: true, ..leaky };
-        assert_eq!(check_verdict(&limited, true), CheckVerdict::Serve, "a limit of the check is not damage");
+        assert_eq!(check_verdict(&limited, true), CheckVerdict::ReadOnly,
+            "a limit of the check is not damage, but the volume was not vouched for: read-only, never refused");
+        assert_eq!(check_verdict(&limited, false), CheckVerdict::ReadOnly);
         let stopped = fat32::MountReport { complete: false, limited: false, ..leaky };
         assert_eq!(check_verdict(&stopped, true), CheckVerdict::Refuse, "a scan stopped by a read error is");
         let unchecked = fat32::MountReport { checked: false, ..broken };
