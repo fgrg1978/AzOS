@@ -244,10 +244,12 @@ pub const PROTECTED_RANGES: usize = 8;
 fn block_of(c: &str) -> Option<WindowRefusal> {
     let mut found = None;
     for t in c.split(|ch| ch == ',' || ch == '-') {
-        if ["gic", "plic", "aplic", "imsic", "clint"].iter().any(|p| t.starts_with(p)) {
+        // A whole token, with a trailing revision number (`plic0`, `gic400`).
+        let t = t.trim_end_matches(|ch: char| ch.is_ascii_digit());
+        if ["gic", "plic", "aplic", "imsic", "imsics", "clint"].contains(&t) {
             return Some(WindowRefusal::InterruptController);
         }
-        if ["iommu", "smmu"].iter().any(|p| t.starts_with(p)) {
+        if ["iommu", "smmu"].contains(&t) {
             found = Some(WindowRefusal::Iommu);
         }
     }

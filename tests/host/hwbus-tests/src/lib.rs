@@ -757,6 +757,7 @@ fn a_window_over_ram_the_kernel_or_a_core_block_is_refused() {
         bus.add(Device::dt(name, compat, base, size, 1), &mut rec).unwrap()
     };
     let ok = add("ok@1", b"vendor,thing\0", 0x1000_0000, 0x1000);
+    let lookalike = add("ok@2", b"vendor,iommudev\0", 0x1100_0000, 0x1000);
     let ram = add("ram@1", b"vendor,thing\0", 0x8000_1000, 0x1000);
     let tail = add("tail@1", b"vendor,thing\0", 0x8fff_f000, 0x2000);
     let intc = add("gic@1", b"arm,gic-400\0", 0x0800_0000, 0x1_0000);
@@ -765,6 +766,7 @@ fn a_window_over_ram_the_kernel_or_a_core_block_is_refused() {
     let over_mmu = add("o@2", b"vendor,thing\0", 0x0900_0000, 0x10);
     bus.bind_all(&rules(&[], Policy::Auto), &mut Fake::with(&[]), &mut rec);
     assert_eq!(bus.user_window(ok), Some((0x1000_0000, 0x1000)));
+    assert_eq!(bus.window_refusal(lookalike), None, "a name that merely starts like an IOMMU's is not one");
     assert_eq!(bus.window_refusal(ram), Some(WindowRefusal::Ram));
     assert_eq!(bus.window_refusal(tail), Some(WindowRefusal::Ram), "a window that starts below the end of RAM");
     assert_eq!(bus.window_refusal(intc), Some(WindowRefusal::InterruptController));
