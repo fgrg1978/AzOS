@@ -123,6 +123,7 @@ neverallow-canary = ["azos_topology/neverallow-canary"]
 msi-slot-shared-canary = ["azos_topology/msi-slot-shared-canary"]
 # Canaries: an msi grant may carry TRANSFER or DUP; the always-on rules find nothing.
 msi-transfer-canary = ["azos_topology/msi-transfer-canary"]
+endpoint-transfer-canary = ["azos_topology/endpoint-transfer-canary"]
 admission-always-skip-canary = ["azos_topology/admission-always-skip-canary"]
 msi-slots-unbounded-canary = ["azos_topology/msi-slots-unbounded-canary"]
 admission-flag-canary = ["azos_topology/admission-flag-canary"]

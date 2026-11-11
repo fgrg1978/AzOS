@@ -13890,6 +13890,8 @@ host_job host_canary_row "ring-3: neverallow always canary" topology-tests never
     an_msi_slot_cannot_be_handed_on_and_its_rules_hold_with_the_option_off
 host_job host_canary_row "ring-3: msi register scope canary" topology-tests msi-register-scope-canary \
     a_device_register_grant_is_not_transferable_while_any_row_holds_a_slot
+host_job host_canary_row "ring-3: endpoint transfer canary" topology-tests endpoint-transfer-canary \
+    only_the_server_of_an_endpoint_holds_it_with_delegate
 host_job host_canary_row "ring-3: admission option-off arm canary" topology-tests admission-always-skip-canary \
     admission_with_the_option_off_applies_the_always_rules_only
 host_job host_canary_row "ring-3: msi vector reissue canary" ipc-tests msi-reissue-canary \

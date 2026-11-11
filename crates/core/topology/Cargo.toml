@@ -152,6 +152,8 @@ msi-slot-shared-canary = []
 # Canaries: an msi grant may carry TRANSFER or DUP; the always-on rules find nothing.
 msi-transfer-canary = []
 neverallow-always-canary = []
+# Canary: any row may hold DELEGATE on an endpoint it does not serve.
+endpoint-transfer-canary = []
 # Canary: admission with `TOPOLOGY_NEVERALLOW` off checks no rule at all.
 admission-always-skip-canary = []
 # Canary: a topology may name any number of msi slots.

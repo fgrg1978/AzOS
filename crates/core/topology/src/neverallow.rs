@@ -33,6 +33,7 @@
 //! | `actuation-grant-not-transferable` | a motor, PWM, GPIO or buzzer grant that carries `TRANSFER` (`transfer = true` or the `t` letter of `perm`) |
 //! | `proxy-endpoint-not-realtime` | a row with a real-time reservation or class holding any grant on a proxy endpoint (`endpoint.rpc-*`) |
 //! | `proxy-endpoint-served-by-rpcsrv-only` | a row other than `RPCSRV.ELF` serving a proxy endpoint |
+//! | `endpoint-grant-transfer-server-only` | a row that does not serve a task-hosted endpoint holding a grant on it with `DELEGATE`: whoever holds `DUP` on an unbadged endpoint capability can mint any badge, so only the server may hold the unbadged right |
 //!
 //! # Exceptions
 //!
@@ -240,9 +241,25 @@ fn msi_slot_one_device(_: &Env, t: &Topology<'_>, row: &TaskSpec<'_>, c: &CapSpe
         && !cfg!(feature = "msi-slot-shared-canary")
 }
 
+/// Any `DUP` holder of an unbadged endpoint capability can mint a copy with
+/// any badge (`endpoint::mint_badged_issued`), and the badge is what a server
+/// tells its clients apart by. A grant on a task-hosted endpoint that can be
+/// duplicated and handed on therefore belongs to the row that serves it (holds
+/// `READ` on the same endpoint); every other row is given the badged call
+/// right, or none that can be handed on.
+fn endpoint_grant_transfer_server_only(_: &Env, t: &Topology<'_>, row: &TaskSpec<'_>, c: &CapSpec<'_>) -> bool {
+    c.kind == CapKind::Endpoint
+        && crate::types::endpoint_target(c).is_some()
+        && c.grant_perms().contains(CapPerms::DELEGATE)
+        && !t.caps_of(row).iter().any(|s| {
+            s.kind == CapKind::Endpoint && s.target.as_str() == c.target.as_str() && s.perms.contains(CapPerms::READ)
+        })
+        && !cfg!(feature = "endpoint-transfer-canary")
+}
+
 /// The rules, in the order they are checked. The index is what a decision
 /// record names.
-pub const RULES: [Rule; 8] = [
+pub const RULES: [Rule; 9] = [
     Rule {
         id: "actuation-outside-actuation-row",
         text: "no ring-3 row holds a motor, a PWM or GPIO write grant, or the buzzer, unless the row is an actuation row",
@@ -332,6 +349,49 @@ pub const RULES: [Rule; 8] = [
         always: true,
         exceptions: &[],
         breaks: msi_grant_not_transferable,
+    },
+    Rule {
+        id: "endpoint-grant-transfer-server-only",
+        text: "no row holds DELEGATE (transfer = true) on a task-hosted endpoint it does not serve",
+        always: false,
+        // Each of these rows derives a badged or attenuated call right for
+        // its own clients from an unbadged source it holds, which is the
+        // mechanism the rule is about: until the server mints such copies
+        // itself, the row is the weakest link of its endpoint and is listed
+        // so that a new one is a reviewed change.
+        exceptions: &[
+            Exception {
+                row: "NAMESD.ELF",
+                permits: &[
+                    Permit { kind: CapKind::Endpoint, target: "endpoint.term" },
+                    Permit { kind: CapKind::Endpoint, target: "endpoint.vmctl" },
+                ],
+                reason: "the name server lends the terminal's and the monitor's call rights, each derived \
+                         with the borrower's badge",
+            },
+            Exception {
+                row: "RPCSRV.ELF",
+                permits: &[Permit { kind: CapKind::Endpoint, target: "endpoint.decisions" }],
+                reason: "the RPC server derives each peer session's attenuated, expiring warrant on the \
+                         decision server's endpoint",
+            },
+            Exception {
+                row: "ZENOHD.ELF",
+                permits: &[Permit { kind: CapKind::Endpoint, target: "endpoint.decisions" }],
+                reason: "the Zenoh gateway derives the per-query warrants of the decision server's ops",
+            },
+            Exception {
+                row: "MCPD.ELF",
+                permits: &[Permit { kind: CapKind::Endpoint, target: "endpoint.decisions" }],
+                reason: "the MCP bridge derives the warrants of the decision queries it forwards",
+            },
+            Exception {
+                row: "TOOLBOX.ELF",
+                permits: &[Permit { kind: CapKind::Endpoint, target: "endpoint.audio" }],
+                reason: "the tool derives the badged copy the audio server tells its streams apart by",
+            },
+        ],
+        breaks: endpoint_grant_transfer_server_only,
     },
 ];
 

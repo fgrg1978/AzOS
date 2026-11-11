@@ -5565,7 +5565,7 @@ mod imports_tests {
 
     const SCHED: &[u8] = b"[class.best_effort]\ncpu_budget_min_pct = 5\npolicy = \"fair\"\n";
 
-    /// A name server row (serves `names`, holds `term` and `log` lendable
+    /// A name server row (serves `names`, holds `term` and `vmctl` lendable
     /// to others) and a client that imports from it.
     fn file(format: u8, client_imports: &str) -> &'static str {
         Box::leak(format!(
@@ -5573,7 +5573,7 @@ mod imports_tests {
 [task.NAMESD.ELF]\ncaps = [\n\
   {{ kind = \"endpoint\", target = \"endpoint.names\", perm = \"r\" }},\n\
   {{ kind = \"endpoint\", target = \"endpoint.term\", perm = \"w\", transfer = true }},\n\
-  {{ kind = \"endpoint\", target = \"endpoint.log\", perm = \"w\", transfer = true }},\n\
+  {{ kind = \"endpoint\", target = \"endpoint.vmctl\", perm = \"w\", transfer = true }},\n\
   {{ kind = \"endpoint\", target = \"endpoint.kept\", perm = \"w\" }},\n\
 ]\n\
 [task.SH.ELF]\n{client_imports}caps = []\n"
@@ -5596,13 +5596,13 @@ mod imports_tests {
     /// format 5: the `FieldNeedsFormat` assertion goes red.
     #[test]
     fn imports_parse_in_format_5_per_row() {
-        let text = file(5, "imports = [\"term\", \"log\"]\n");
+        let text = file(5, "imports = [\"term\", \"vmctl\"]\n");
         let (t, r) = parse(&text);
         assert_eq!(r, Ok(()));
         assert_eq!(t.admission_check(), Ok(()));
         let sh = &t.tasks()[1];
         let names: Vec<&[u8]> = t.imports_of(sh).iter().map(|n| n.as_bytes()).collect();
-        assert_eq!(names, [&b"term"[..], &b"log"[..]]);
+        assert_eq!(names, [&b"term"[..], &b"vmctl"[..]]);
         // The server row, declared first, imports nothing.
         assert!(t.imports_of(&t.tasks()[0]).is_empty());
         assert_eq!(t.names_server_row(), Some(0));
@@ -5682,11 +5682,11 @@ mod imports_tests {
     fn the_emitter_round_trips_imports() {
         use azos_topology::emit::{emit_caps, emit_sched, first_difference};
         use azos_topology::Binding;
-        let (t, r) = parse(&file(5, "imports = [\"term\", \"log\"]\n"));
+        let (t, r) = parse(&file(5, "imports = [\"term\", \"vmctl\"]\n"));
         assert_eq!(r, Ok(()));
         let mut caps = String::new();
         emit_caps(&t, &Binding::default(), &mut caps).unwrap();
-        assert!(caps.contains("imports = [\"term\", \"log\"]"), "{caps}");
+        assert!(caps.contains("imports = [\"term\", \"vmctl\"]"), "{caps}");
         let mut sched = String::new();
         emit_sched(&t, &mut sched).unwrap();
         let mut back = Topology::empty();
@@ -6074,6 +6074,34 @@ mod neverallow_tests {
                 "{perms:?}"
             );
         }
+    }
+
+    /// `endpoint-grant-transfer-server-only`: a row that does not serve a
+    /// task-hosted endpoint may not hold `DELEGATE` on it (a `DUP` holder of an
+    /// unbadged endpoint capability mints any badge); the serving row, a grant
+    /// that cannot be handed on, and a kernel-hosted interface are not it.
+    ///
+    /// **Canary** `endpoint-transfer-canary`: the rule finds nothing.
+    #[test]
+    fn only_the_server_of_an_endpoint_holds_it_with_delegate() {
+        let r = rule("endpoint-grant-transfer-server-only");
+        let mut lent = cap(CapKind::Endpoint, CapPerms::WRITE, b"endpoint.svc");
+        lent.transfer = true;
+        assert_eq!(
+            refusal(&one_row(b"CLIENT.ELF", &[lent]), &SERVER),
+            Some(NeverallowRefusal { rule: r, row: 0, kind: CapKind::Endpoint.denial_code(), grant: 0 }),
+        );
+        let mut served = cap(CapKind::Endpoint, CapPerms::READ, b"endpoint.svc");
+        served.transfer = true;
+        assert_eq!(refusal(&one_row(b"SVC.ELF", &[served]), &SERVER), None, "the server");
+        let mut also_calls = cap(CapKind::Endpoint, CapPerms::WRITE, b"endpoint.svc");
+        also_calls.transfer = true;
+        assert_eq!(refusal(&one_row(b"SVC.ELF", &[served, also_calls]), &SERVER), None, "a server's own calling right");
+        let plain = cap(CapKind::Endpoint, CapPerms::WRITE, b"endpoint.svc");
+        assert_eq!(refusal(&one_row(b"CLIENT.ELF", &[plain]), &SERVER), None, "not handed on");
+        let mut hosted = cap(CapKind::Endpoint, CapPerms::WRITE, b"net");
+        hosted.transfer = true;
+        assert_eq!(refusal(&one_row(b"CLIENT.ELF", &[hosted]), &SERVER), None, "the kernel serves it");
     }
 
     /// Rule 1 depends on the environment, and on nothing but the motor.
