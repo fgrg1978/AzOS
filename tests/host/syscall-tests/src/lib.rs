@@ -479,6 +479,12 @@ mod handlers {
     }
 
     #[cfg(test)]
+    mod budget_sites {
+        use super::*;
+        include!("budget_sites.rs");
+    }
+
+    #[cfg(test)]
     mod brk_heap {
         use super::*;
         include!("brk_heap.rs");

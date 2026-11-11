@@ -3977,7 +3977,11 @@ pub fn sys_munmap(addr: u64, length: u64) -> i64 {
     let freed: u32 = azos_mm::vmm::unmap_user_range_and_free(user_pt, start, end)
         .saturating_add(reserved);
     crate::file_map::unmap_finish(&files[..nfiles]);
-    azos_sched::mm_discharge(freed);
+    // Canary `budget-munmap-keeps-charge-canary`: the pages are freed and the
+    // charge is kept, which ratchets a long-lived task to its limit.
+    if !cfg!(feature = "budget-munmap-keeps-charge-canary") {
+        azos_sched::mm_discharge(freed);
+    }
     mmap_unmapped(start, end);
     0
 }

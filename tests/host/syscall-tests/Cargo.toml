@@ -62,6 +62,8 @@ exec-floor-canary = []
 # Mirrors azos_syscall's gate canary: `cfg!(feature =
 # "mmap-prot-canary")` in the pulled-in handlers.rs. Off: the real behaviour.
 mmap-prot-canary = []
+# Canary (host row, syscall-tests budget_sites): `sys_munmap` frees the pages and keeps their charge.
+budget-munmap-keeps-charge-canary = []
 # `azos_devif::gpio::badge`'s canary: a badge is stamped without its controller
 # (`a_capability_on_controller_1_never_reaches_controller_0` goes red).
 gpio-badge-canary = ["azos_devif/badge-without-controller-canary"]

@@ -164,6 +164,8 @@ native-fork-copy-canary = []
 # Canary: native and Linux `mmap` map read-write whatever
 # `prot` says, and `mprotect` changes nothing (the `mprot:` rows go red).
 mmap-prot-canary = []
+# Canary (host row, syscall-tests budget_sites): `sys_munmap` frees the pages and keeps their charge.
+budget-munmap-keeps-charge-canary = []
 # Host canaries of `handlers::fork_regions_to_child` (syscall-tests fork_clone.rs).
 fork-chunks-within-base-canary = []
 clone-invariant-silent-canary = []
