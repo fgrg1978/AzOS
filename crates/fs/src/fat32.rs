@@ -5095,17 +5095,31 @@ fn write_file_journaled(v: &'static Vol, f: &FName, data: &[u8], only_new: bool)
     // The cached pages are the old file's; again after, for a page a writer
     // dirtied while the new file was being made.
     cache_forget(v, &f.key);
+    // An overwrite builds its new chain before the claim: the data is the long
+    // part, and nothing names the chain until the record under the claim does.
+    // The entry is looked up again under the claim, and a chain built for an
+    // entry that has gone is given back.
+    let bpc = v.fat32.lock().bytes_per_clus as usize;
+    let prebuilt = if !only_new && !data.is_empty() && bpc != 0
+        && !cfg!(feature = "fat-write-claim-wide-canary")
+        && lookup_entry(v, f.dir, &f.name).is_ok()
+    {
+        Some(fat32_alloc_and_write_chain(v, data, bpc)?)
+    } else {
+        None
+    };
     let r = {
         let _m = mutation_claim(v);
         if only_new && lookup_entry(v, f.dir, &f.name).is_ok() { return Ok(()); }
-        write_file_journaled_inner(v, f, data)
+        write_file_journaled_inner(v, f, data, prebuilt)
     };
     cache_forget(v, &f.key);
     r
 }
 
-/// The body of [`write_file_journaled`], the mutation claim held.
-fn write_file_journaled_inner(v: &'static Vol, f: &FName, data: &[u8]) -> Result<(), ()> {
+/// The body of [`write_file_journaled`], the mutation claim held. `prebuilt`
+/// is the new chain of an overwrite, already written.
+fn write_file_journaled_inner(v: &'static Vol, f: &FName, data: &[u8], prebuilt: Option<u32>) -> Result<(), ()> {
     debug_assert!(mutation_held(v));
 
     // Read-only: is this an overwrite, and if so, where does the old dirent
@@ -5118,20 +5132,26 @@ fn write_file_journaled_inner(v: &'static Vol, f: &FName, data: &[u8]) -> Result
             // concurrent-looking, mid-directory-walk mismatch) — fail
             // closed rather than silently falling back to a second dirent
             // for the same name.
-            Err(_) => return Err(()),
+            Err(_) => {
+                if let Some(c) = prebuilt { fat32_free_chain_on(v, c); }
+                return Err(());
+            }
         },
         Err(_) => None,
     };
+    if overwrite.is_none() {
+        if let Some(c) = prebuilt { fat32_free_chain_on(v, c); }
+    }
 
     let bytes_per_clus = v.fat32.lock().bytes_per_clus as usize;
     if bytes_per_clus == 0 { return Err(()); }
 
     if let Some((old_cluster, old_size, dir_sector, dir_offset)) = overwrite {
         // ── Overwrite path ──────────────────────────────────────────────
-        let new_cluster = if data.is_empty() {
-            0u32
-        } else {
-            fat32_alloc_and_write_chain(v, data, bytes_per_clus)?
+        let new_cluster = match prebuilt {
+            _ if data.is_empty() => 0u32,
+            Some(c) => c,
+            None => fat32_alloc_and_write_chain(v, data, bytes_per_clus)?,
         };
 
         // Barrier 0: the new chain (data + FAT) on the medium BEFORE the

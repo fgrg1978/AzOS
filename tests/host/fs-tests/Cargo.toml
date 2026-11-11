@@ -154,6 +154,8 @@ fat-mount-leak-canary = []
 fat-stale-size-cut-canary = []
 # A removed or replaced entry leaves its handles open (`fat_lows`).
 fat-stale-handle-canary = []
+# A whole-file overwrite writes its data under the mutation claim (`dir_claim`).
+fat-write-claim-wide-canary = []
 # A retired mount's inodes left on its backend (see crates/fs).
 usb-volume-stale-fd-canary = []
 # FX12: declared so the cfg is known; the kernel's `ktest` feature turns it

@@ -13949,6 +13949,8 @@ host_job host_canary_row "fs: a failed write cuts by a stale size canary" fs-tes
     a_failed_write_does_not_free_the_clusters_another_handle_added
 host_job host_canary_row "fs: a handle outlives a removed entry canary" fs-tests fat-stale-handle-canary \
     a_handle_of_a_removed_entry_is_closed_even_when_the_name_comes_back
+host_job host_canary_row "fs: an overwrite holds the claim over its data canary" fs-tests fat-write-claim-wide-canary \
+    an_overwrite_writes_its_data_before_it_takes_the_volume_claim
 host_job host_canary_row "call task: no deadline to the server canary (devif)" devif-tests call-deadline-canary \
     a_call_through_the_task_carries_the_clients_deadline_to_the_server
 host_job host_canary_row "ring-3: dt inherited coherence canary" hwbus-tests dt-inherited-coherent-canary \

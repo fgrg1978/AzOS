@@ -218,6 +218,9 @@ fat-stale-size-cut-canary = []
 # Host canary: a removed or replaced directory entry leaves the handles that
 # named it open (fs-tests `fat_lows`).
 fat-stale-handle-canary = []
+# Host canary: a whole-file overwrite writes its data under the mutation claim
+# (fs-tests `dir_claim`).
+fat-write-claim-wide-canary = []
 
 # Power-loss safety (S3) canaries, each must turn a fs-tests `s3` test red.
 #   fat-dirty-bit-canary:       the mount never sets the volume dirty flag

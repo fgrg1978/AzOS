@@ -24,6 +24,9 @@ const EOC: u32 = 0x0FFF_FFFF;
 const JOURNAL_STATE_PENDING: u8 = 1;
 
 static PARK_ON_PENDING: AtomicBool = AtomicBool::new(false);
+/// Park at A's n-th write instead (0: off).
+static PARK_AT_WRITE: AtomicU32 = AtomicU32::new(0);
+static TIMED_OUT: AtomicBool = AtomicBool::new(false);
 static ARMED: AtomicBool = AtomicBool::new(false);
 static PARKED: AtomicBool = AtomicBool::new(false);
 static B_DONE: AtomicBool = AtomicBool::new(false);
@@ -44,14 +47,16 @@ fn journal_pending() -> bool {
 /// pending on the medium.
 fn hook() {
     if IS_A.with(|a| a.get()) {
-        A_WRITES.fetch_add(1, SeqCst);
-        let ready = !PARK_ON_PENDING.load(SeqCst) || journal_pending();
+        let n = A_WRITES.fetch_add(1, SeqCst) + 1;
+        let at = PARK_AT_WRITE.load(SeqCst);
+        let ready = if at != 0 { n == at } else { !PARK_ON_PENDING.load(SeqCst) || journal_pending() };
         if ready && ARMED.swap(false, SeqCst) {
             PARKED.store(true, SeqCst);
             let t0 = Instant::now();
             while !B_DONE.load(SeqCst) && t0.elapsed() < Duration::from_millis(300) {
                 std::thread::sleep(Duration::from_millis(1));
             }
+            TIMED_OUT.store(!B_DONE.load(SeqCst), SeqCst);
         }
     } else if IS_B.with(|b| b.get()) && !B_SEEN.swap(true, SeqCst) {
         B_FOUND_PENDING.store(journal_pending(), SeqCst);
@@ -69,6 +74,7 @@ fn race<RA: Send + 'static, RB: Send + 'static>(
     B_SEEN.store(false, SeqCst);
     B_FOUND_PENDING.store(false, SeqCst);
     A_WRITES.store(0, SeqCst);
+    TIMED_OUT.store(false, SeqCst);
     ARMED.store(true, SeqCst);
     fs_test_drivers::disk_before_write(Some(hook));
     let ta = std::thread::spawn(move || { IS_A.with(|x| x.set(true)); a() });
@@ -195,4 +201,25 @@ fn a_handle_of_an_unlinked_file_does_not_update_the_entry_that_reused_its_slot()
     assert_eq!(fat32::fat32_close(g), Ok(()));
     assert!(fat32::fat32_close(f).is_err(), "the entry the handle named is gone");
     assert_eq!(fat32::fat32_lookup_root(&n83("G.TXT")), Ok((0, 0)), "G keeps its own cluster and size");
+}
+
+/// **An overwrite's data is not written under the claim.** A rewrites an
+/// existing file and is parked after its new chain's first data write, before
+/// its journal record; B creates another file in the same directory. B must
+/// finish while A is parked, not wait for A to release the volume claim.
+#[test]
+fn an_overwrite_writes_its_data_before_it_takes_the_volume_claim() {
+    let _g = serial();
+    let _wt = crate::write_through();
+    mount_volume();
+    assert_eq!(fat32::fat32_write_file(&n83("OLD.TXT"), b"old"), Ok(()));
+    PARK_AT_WRITE.store(3, SeqCst); // two FAT copies of the allocation, then the data
+    let (a, b) = race(
+        false,
+        || fat32::fat32_write_file(&n83("OLD.TXT"), b"new contents"),
+        || fat32::fat32_write_file(&n83("OTHER.TXT"), b"other"),
+    );
+    PARK_AT_WRITE.store(0, SeqCst);
+    assert_eq!((a, b), (Ok(()), Ok(())));
+    assert!(!TIMED_OUT.load(SeqCst), "B waited for A's claim while A wrote its data");
 }
