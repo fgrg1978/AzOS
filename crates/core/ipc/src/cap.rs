@@ -1483,7 +1483,8 @@ pub(crate) fn forward_commit_domain(key: u32) {
 }
 
 /// The delete (or move) of slot `from` of domain `key` found no row to spare:
-/// the record that its children are revoked.
+/// the record that its children are revoked (for a table wipe, `to` is how many
+/// slots were).
 /// Canary `forward-full-silent-canary`: no record.
 pub(crate) fn forward_full_record(key: u32, from: u64, to: u64) {
     if !cfg!(feature = "forward-full-silent-canary") {
@@ -1967,17 +1968,27 @@ impl CapTable {
     /// row table (or the `delete-revokes-canary`).
     #[inline(always)]
     fn hand_on(&self, i: usize, w: u64) -> bool {
+        match self.try_hand_on(i, w) {
+            Err(Some((from, parent))) => {
+                forward_full_record(self.owner.load(core::sync::atomic::Ordering::Relaxed), from, parent);
+                false
+            }
+            Err(None) => false,
+            Ok(()) => true,
+        }
+    }
+
+    /// [`hand_on`](Self::hand_on) without the record: `Err(Some((slot ref,
+    /// parent)))` when the row table was full, `Err(None)` for the other
+    /// reasons nothing is recorded.
+    fn try_hand_on(&self, i: usize, w: u64) -> Result<(), Option<(u64, u64)>> {
         let wc = &self.warrant[i];
         if wc.meta.load(core::sync::atomic::Ordering::Relaxed) & META_KIDS == 0 || cfg!(feature = "delete-revokes-canary") {
-            return false;
+            return Err(None);
         }
-        let Some(from) = self.slot_ref(i, w) else { return false };
+        let Some(from) = self.slot_ref(i, w) else { return Err(None) };
         let parent = wc.parent.load(core::sync::atomic::Ordering::Relaxed);
-        let pushed = forward_push(from, parent);
-        if !pushed {
-            forward_full_record(self.owner.load(core::sync::atomic::Ordering::Relaxed), from, parent);
-        }
-        pushed
+        if forward_push(from, parent) { Ok(()) } else { Err(Some((from, parent))) }
     }
 
     /// Slot `i`, whose hot word was `w`, was just freed: its warrant goes (a
@@ -2074,19 +2085,34 @@ impl CapTable {
         // its children are revoked.
         let key = self.owner.load(core::sync::atomic::Ordering::Relaxed);
         let (mut handed, mut refused) = (false, false);
+        let (mut first_full, mut full_rows) = (None, 0u64);
         if self.kids.load(core::sync::atomic::Ordering::Relaxed) != 0 {
             for (i, cell) in self.live().iter().enumerate() {
                 let w = cell.word();
                 if CapSlotCell::w_occupied(w)
                     && self.warrant[i].meta.load(core::sync::atomic::Ordering::Relaxed) & META_KIDS != 0
                 {
-                    if self.hand_on(i, w) {
-                        handed = true;
-                    } else {
-                        refused = true;
+                    match self.try_hand_on(i, w) {
+                        Ok(()) => handed = true,
+                        Err(full) => {
+                            refused = true;
+                            if let Some((from, _)) = full {
+                                first_full.get_or_insert(from);
+                                // Canary `forward-full-per-slot-canary`: one record a slot.
+                                if cfg!(feature = "forward-full-per-slot-canary") {
+                                    forward_full_record(key, from, 0);
+                                }
+                                full_rows += 1;
+                            }
+                        }
                     }
                 }
             }
+        }
+        // One record for the whole wipe, not one per slot: the slot refs of
+        // the first, and in the parent word how many were revoked.
+        if let Some(from) = first_full {
+            forward_full_record(key, from, full_rows);
         }
         self.kids.store(0, core::sync::atomic::Ordering::Relaxed);
         self.derived.store(0, core::sync::atomic::Ordering::Release);

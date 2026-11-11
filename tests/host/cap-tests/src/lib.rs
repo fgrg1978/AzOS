@@ -1029,6 +1029,35 @@ mod cap_store_tests {
         assert!(!crate::cap::forwards_standing(), "the filler rows retired");
     }
 
+    /// An exit under a full row table writes one record for the whole wipe,
+    /// counting the slots whose copies were revoked. **Canary**
+    /// `forward-full-per-slot-canary`: a record per slot.
+    #[test]
+    fn a_wipe_under_a_full_row_table_writes_one_record() {
+        let _g = wguard();
+        let (a, b) = (wtask(44), wtask(45));
+        let roots: Vec<_> = (0..3).map(|i| root(&a, CapPerms::RW_DELEGATE, 5 + i)).collect();
+        let copies: Vec<_> = roots.iter().map(|r| dup(&a, &b, *r).unwrap()).collect();
+        let filler: Vec<u64> = (1..).map(|i| (7u64 << 32) | i).take_while(|&f| crate::cap::forward_push(f, 0)).collect();
+        for &f in &filler {
+            crate::cap::forward_commit(f);
+        }
+        let before = azos_decision::total();
+        cap_store::reset(a.tid);
+        let recs: Vec<_> = (before + 1..=azos_decision::total())
+            .filter_map(azos_decision::get)
+            .filter(|x| x.rule == azos_decision::Rule::CapRevoke as u8 && x.n[2] == crate::cap::REVOKE_FORWARD_FULL)
+            .collect();
+        sweep_now();
+        assert!(copies.iter().all(|c| !live(&b, *c)), "fails closed");
+        assert_eq!(recs.len(), 1, "one record for the wipe");
+        assert_eq!(recs[0].n[1], 3, "naming how many slots");
+        for _ in 0..4 {
+            sweep_now();
+        }
+        assert!(!crate::cap::forwards_standing());
+    }
+
     /// A close of a root makes its copies roots: nothing is left to revoke
     /// them by, and they keep their own limits. **Canary.** Skip the
     /// `derived` decrement in `sweep_dead`'s root case: the third assertion
