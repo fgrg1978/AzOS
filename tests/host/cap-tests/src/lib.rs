@@ -969,6 +969,39 @@ mod cap_store_tests {
         assert!(!live(&c, c1), "an explicit revoke of the ancestor reaches the copy");
     }
 
+    /// A delete under a full row table still fails closed (the copies go),
+    /// and says so: a `Rule::CapRevoke` record names the slot and carries
+    /// `REVOKE_FORWARD_FULL`, so the holder of the copy can tell the cascade
+    /// from a revoke it asked for. **Canary** `forward-full-silent-canary`:
+    /// the record is not written.
+    #[test]
+    fn a_delete_with_no_spare_row_revokes_the_copies_and_records_why() {
+        let _g = wguard();
+        let (a, b) = (wtask(44), wtask(45));
+        let r = root(&a, CapPerms::RW_DELEGATE, 5);
+        let b1 = dup(&a, &b, r).unwrap();
+        let filler: Vec<u64> = (1..).map(|i| (7u64 << 32) | i).take_while(|&f| crate::cap::forward_push(f, 0)).collect();
+        for &f in &filler {
+            crate::cap::forward_commit(f);
+        }
+        let before = azos_decision::total();
+        close(&a, r);
+        let from = rref(&a, r);
+        let recs: Vec<_> = (before + 1..=azos_decision::total())
+            .filter_map(azos_decision::get)
+            .filter(|x| x.rule == azos_decision::Rule::CapRevoke as u8 && x.n[2] == crate::cap::REVOKE_FORWARD_FULL)
+            .collect();
+        sweep_now();
+        assert!(!live(&b, b1), "fails closed: the copy went with its parent's delete");
+        assert_eq!(recs.len(), 1, "and the cascade is on record");
+        assert_eq!((recs[0].verdict, recs[0].subject, recs[0].n[0]), (azos_decision::Verdict::Deny as u8, key(&a), from));
+        // Leave the row table as found.
+        for _ in 0..4 {
+            sweep_now();
+        }
+        assert!(!crate::cap::forwards_standing(), "the filler rows retired");
+    }
+
     /// A close of a root makes its copies roots: nothing is left to revoke
     /// them by, and they keep their own limits. **Canary.** Skip the
     /// `derived` decrement in `sweep_dead`'s root case: the third assertion

@@ -13769,6 +13769,9 @@ host_job host_canary_row "cap: move lifts depth canary" cap-tests move-lifts-dep
 # A transfer the receiver refuses does not consume the sender's MOVE entries.
 host_job host_canary_row "cap: receiver refusal consumes canary" cap-tests cap-refusal-consumes-always-canary \
     a_refusal_the_receiver_causes_leaves_the_senders_move_entries
+# A delete under a full re-parent row table records why the copies went.
+host_job host_canary_row "cap: forward-full cascade silent canary" cap-tests forward-full-silent-canary \
+    a_delete_with_no_spare_row_revokes_the_copies_and_records_why
 host_job host_canary_row "memobj: delete revokes canary" ipc-tests delete-revokes-canary \
     a_sharers_exit_leaves_the_share_and_its_mapping
 host_job host_canary_row "memobj: delete revokes canary (syscall)" syscall-tests delete-revokes-canary \

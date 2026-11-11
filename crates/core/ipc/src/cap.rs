@@ -1385,11 +1385,19 @@ pub(crate) mod between_loads {
 // mistakes a deleted link for a revoked one. A row is pushed under the freed
 // slot's table lock (a leaf lock: nothing is taken under it) and removed by
 // the sweep; the table is bounded, and a delete that finds it full falls back
-// to the revoke (fails closed: the children go, never survive unchecked).
+// to the revoke (fails closed: the children go, never survive unchecked) and
+// writes a `Rule::CapRevoke` record naming the slot ([`REVOKE_FORWARD_FULL`]).
+// A delete cannot be refused instead: the exit wipe, an exec's drop and a
+// kernel undo have no one to answer.
 
 /// Rows of the re-parent table: one table wipe at an exit pushes a row per slot
 /// that has children, and the sweep that follows empties them.
 const FORWARD_ROWS: usize = 2 * MAX_CAPS_PER_TASK;
+
+/// Third word of the `Rule::CapRevoke` record of a delete whose children were
+/// revoked because the row table was full: the holder can tell this cascade
+/// from a revoke it asked for.
+pub const REVOKE_FORWARD_FULL: u64 = 2;
 
 /// One re-parent row: the slot `from` (a warrant reference) was deleted and
 /// what was derived from it now hangs under `to` (0: a root).
@@ -1472,6 +1480,15 @@ pub(crate) fn forward_commit_domain(key: u32) {
         }
     }
     SWEEP_PENDING.store(true, Release);
+}
+
+/// The delete (or move) of slot `from` of domain `key` found no row to spare:
+/// the record that its children are revoked.
+/// Canary `forward-full-silent-canary`: no record.
+pub(crate) fn forward_full_record(key: u32, from: u64, to: u64) {
+    if !cfg!(feature = "forward-full-silent-canary") {
+        azos_decision::record(azos_decision::Rule::CapRevoke, azos_decision::Verdict::Deny, key, [from, to, REVOKE_FORWARD_FULL]);
+    }
 }
 
 /// A delete found no row to spare: its children are revoked instead, as an
@@ -1954,10 +1971,13 @@ impl CapTable {
         if wc.meta.load(core::sync::atomic::Ordering::Relaxed) & META_KIDS == 0 || cfg!(feature = "delete-revokes-canary") {
             return false;
         }
-        match self.slot_ref(i, w) {
-            Some(from) => forward_push(from, wc.parent.load(core::sync::atomic::Ordering::Relaxed)),
-            None => false,
+        let Some(from) = self.slot_ref(i, w) else { return false };
+        let parent = wc.parent.load(core::sync::atomic::Ordering::Relaxed);
+        let pushed = forward_push(from, parent);
+        if !pushed {
+            forward_full_record(self.owner.load(core::sync::atomic::Ordering::Relaxed), from, parent);
         }
+        pushed
     }
 
     /// Slot `i`, whose hot word was `w`, was just freed: its warrant goes (a

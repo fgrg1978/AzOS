@@ -1525,7 +1525,11 @@ fn take_out(
     let from = wref(from_key, handle);
     let handed = kids && {
         receiver.note_child(moved);
-        crate::cap::forward_push(from, wref(to_key, moved))
+        let pushed = crate::cap::forward_push(from, wref(to_key, moved));
+        if !pushed {
+            crate::cap::forward_full_record(from_key, from, wref(to_key, moved));
+        }
+        pushed
     };
     let taken = sender.take_out_raw(handle);
     if kids {
