@@ -12588,6 +12588,9 @@ host_job net_batch_bound_row "net queue: batch bound fits every ring"
 # back and the named test, alone, must go red.
 host_job host_canary_row "port: call link canary" ipc-fast-tests port-calls-canary a_call_on_an_empty_queue_hands_back_its_call_link
 host_job host_canary_row "port: call link drop canary" ipc-fast-tests call-link-drop-canary a_successor_binds_its_calls_before_the_rebind_and_keeps_them
+# A reply delegate to a thread that exited completes the call -EPEERDIED.
+host_job host_canary_row "ipc: delegate to a dead thread canary" ipc-fast-tests ipc-delegate-dead-canary \
+    a_delegate_to_a_thread_that_is_gone_completes_the_call_peer_died
 host_job host_canary_row "port: doorbell canary" ipc-tests port-doorbell-canary a_doorbell_reaches_the_ports_bound_to_its_word
 host_job host_canary_row "port: doorbell leak canary" ipc-tests port-bell-leak-canary a_freed_doorbell_leaves_the_filter_with_nothing_to_look_up
 host_job host_canary_row "port: shared doorbells canary" ipc-tests port-bells-shared-canary a_full_port_does_not_take_another_tasks_doorbell

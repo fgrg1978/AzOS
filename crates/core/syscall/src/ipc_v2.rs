@@ -588,5 +588,6 @@ pub fn sys_ipc_reply_delegate(handle: u64, to: u64) -> i64 {
         Delegated::Moved => 0,
         Delegated::Stale => E_OVER,
         Delegated::Refused => E_NOT_HOLDER,
+        Delegated::Gone => Errno::EPEERDIED.to_syscall_ret(),
     }
 }

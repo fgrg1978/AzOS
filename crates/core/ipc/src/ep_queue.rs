@@ -1588,6 +1588,9 @@ pub enum Delegated {
     Stale,
     /// Not a call `holder` accepted and still holds.
     Refused,
+    /// `to` is gone: nobody could answer, so the call was completed with
+    /// `-EPEERDIED` (and the caller woken) instead of moved.
+    Gone,
 }
 
 /// Move the reply warrant of the call `handle` names from `holder` (the
@@ -1599,9 +1602,21 @@ pub enum Delegated {
 ///
 /// Who `to` may be (a thread of the server's own domain, or the transport
 /// proxy) is the syscall's rule, not this one's.
-pub fn delegate(handle: u64, holder: u32, to: u32) -> Delegated {
+///
+/// `to_alive` is asked under the record's lock: a thread that exited since the
+/// caller looked has already had its [`release_holder`] sweep, which would not
+/// find this record, so the call is completed here ([`Delegated::Gone`], `done`
+/// gets it) rather than left with a holder that cannot answer.
+/// Canary `ipc-delegate-dead-canary`: the liveness is not asked.
+pub fn delegate(
+    handle: u64,
+    holder: u32,
+    to: u32,
+    to_alive: impl Fn(u32) -> bool,
+    mut done: impl FnMut(Completed),
+) -> Delegated {
     let Some(i) = handle_rec(handle) else { return Delegated::Refused };
-    let Some((_, t, q)) = lock_rec(i) else { return Delegated::Refused };
+    let Some((ep, t, q)) = lock_rec(i) else { return Delegated::Refused };
     let r = rec(i);
     if tag_state(t) != S_ACCEPTED || r.server.load(Ordering::Relaxed) != holder {
         return Delegated::Refused;
@@ -1610,6 +1625,15 @@ pub fn delegate(handle: u64, holder: u32, to: u32) -> Delegated {
         return Delegated::Stale;
     }
     let owner = q.serving();
+    if !to_alive(to) && !cfg!(feature = "ipc-delegate-dead-canary") {
+        if holder != owner {
+            DELEGATED.fetch_sub(1, Ordering::Relaxed);
+        }
+        let c = complete_locked(i, ep, PEER_DIED, holder, false);
+        drop(q);
+        done(c);
+        return Delegated::Gone;
+    }
     r.server.store(to, Ordering::Relaxed);
     // Counted while some record's holder is not its endpoint's server.
     match (holder == owner, to == owner) {
@@ -2360,8 +2384,8 @@ mod tests {
         let (idx, tid) = client(0);
         let h = call(idx, tid, EP, GEN, SERVER, SERVER_IDX, REQ, 0, SERVER).unwrap();
         let _ = accept(SERVER_IDX, SERVER).unwrap();
-        assert_eq!(delegate(h, WORKER, WORKER), Delegated::Refused, "only the holder moves it");
-        assert_eq!(delegate(h, SERVER, WORKER), Delegated::Moved);
+        assert_eq!(delegate(h, WORKER, WORKER, |_| true, |_| {}), Delegated::Refused, "only the holder moves it");
+        assert_eq!(delegate(h, SERVER, WORKER, |_| true, |_| {}), Delegated::Moved);
         assert_eq!(reply_warrant(h, SERVER, RSP), Reply::Refused, "the server gave it away");
         assert_eq!(reply_warrant(h, WORKER, RSP), Reply::Woke { caller: tid, rec: idx, donee: SERVER },
             "the worker answers; the donation lent to the server is owed back");
@@ -2384,14 +2408,14 @@ mod tests {
         let (idx, tid) = client(0);
         let h = call(idx, tid, EP, GEN, SERVER, SERVER_IDX, REQ, 0, SERVER).unwrap();
         let _ = accept(SERVER_IDX, SERVER).unwrap();
-        assert_eq!(delegate(h, SERVER, WORKER), Delegated::Moved);
-        assert_eq!(delegate(h, SERVER, OTHER), Delegated::Refused, "a second delegate by the old holder");
+        assert_eq!(delegate(h, SERVER, WORKER, |_| true, |_| {}), Delegated::Moved);
+        assert_eq!(delegate(h, SERVER, OTHER, |_| true, |_| {}), Delegated::Refused, "a second delegate by the old holder");
         assert_eq!(reply_warrant(h, SERVER, [7; WORDS]), Reply::Refused, "the old holder cannot answer");
         assert_eq!(wait_state(h, tid), 1, "the caller still waits: nobody answered");
-        assert_eq!(delegate(h, WORKER, OTHER), Delegated::Moved, "the new holder may pass it on");
+        assert_eq!(delegate(h, WORKER, OTHER, |_| true, |_| {}), Delegated::Moved, "the new holder may pass it on");
         assert_eq!(reply_warrant(h, WORKER, RSP), Reply::Refused, "and then it no longer answers");
         assert!(matches!(reply_warrant(h, OTHER, RSP), Reply::Woke { .. }));
-        assert_eq!(delegate(h, OTHER, WORKER), Delegated::Refused, "an answered call takes no delegate");
+        assert_eq!(delegate(h, OTHER, WORKER, |_| true, |_| {}), Delegated::Refused, "an answered call takes no delegate");
         assert_eq!(DELEGATED.load(Ordering::Relaxed), 0);
         assert_eq!(collect(h, tid), Collected::Reply(RSP, NO_DONEE));
     }
@@ -2414,13 +2438,32 @@ mod tests {
         let (idx, tid) = client(0);
         let h = call(idx, tid, EP, GEN, SERVER, SERVER_IDX, REQ, 0, NO_DONEE).unwrap();
         let _ = accept(SERVER_IDX, SERVER).unwrap();
-        assert_eq!(delegate(h, SERVER, WORKER), Delegated::Moved);
+        assert_eq!(delegate(h, SERVER, WORKER, |_| true, |_| {}), Delegated::Moved);
         assert_eq!(release_holder(SERVER, |_| {}), 0, "the server holds nothing now");
         let mut got = Vec::new();
         assert_eq!(release_holder(WORKER, |c| got.push(c.handle)), 1);
         assert_eq!(got, vec![h]);
         assert_eq!(collect(h, tid), Collected::Done(PEER_DIED, NO_DONEE));
         assert_eq!(release_holder(WORKER, |_| {}), 0, "one load once nothing is delegated");
+    }
+
+    /// A delegate to a thread that exited since the syscall looked completes
+    /// the call `-EPEERDIED` and wakes its caller; the dead thread's exit sweep
+    /// has run and would not find the record.
+    ///
+    /// **Canary** `ipc-delegate-dead-canary`: the liveness is not asked, the
+    /// warrant moves to the dead thread and the caller waits.
+    #[test]
+    fn a_delegate_to_a_thread_that_is_gone_completes_the_call_peer_died() {
+        let _e = env();
+        let (idx, tid) = client(0);
+        let h = call(idx, tid, EP, GEN, SERVER, SERVER_IDX, REQ, 0, NO_DONEE).unwrap();
+        let _ = accept(SERVER_IDX, SERVER).unwrap();
+        let mut done = Vec::new();
+        assert_eq!(delegate(h, SERVER, WORKER, |_| false, |c| done.push(c.handle)), Delegated::Gone);
+        assert_eq!(done, vec![h], "the caller is woken");
+        assert_eq!(collect(h, tid), Collected::Done(PEER_DIED, NO_DONEE));
+        assert_eq!(DELEGATED.load(Ordering::Relaxed), 0);
     }
 
     #[test]

@@ -63,6 +63,7 @@ port-recheck-canary = []
 port-revoke-canary = []
 # And for its call-source and doorbell canaries.
 port-calls-canary = []
+ipc-delegate-dead-canary = []
 call-link-drop-canary = []
 calls-any-binder-canary = []
 port-doorbell-canary = []

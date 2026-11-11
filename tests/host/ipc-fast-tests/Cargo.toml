@@ -19,6 +19,7 @@ description = "Host-side tests for the per-endpoint fast-call queues in crates/c
 # that finds its queue empty hands back no port link, so
 # `a_call_on_an_empty_queue_hands_back_its_call_link` goes red.
 port-calls-canary = []
+ipc-delegate-dead-canary = []
 # `ep_queue.rs` `keep_link_for`'s canary: a change of owner always drops the
 # call link (a live update's successor loses it; a same-owner grant unbinds).
 call-link-drop-canary = []
