@@ -155,6 +155,8 @@ canary-uvc-alt = ["uvc"]
 canary-uvc-payload-overflow = ["uvc"]
 # Every interface is offered to the class drivers whatever the admission rows say.
 canary-admit-all = []
+# The hub's status-change length follows the interface's first endpoint, not the interrupt one.
+canary-hub-mps = []
 # A port that keeps failing to enumerate is tried at every connection.
 canary-port-no-budget = []
 # An endpoint numbered 0 in a configuration descriptor is a data endpoint (xHCI DCI 1).

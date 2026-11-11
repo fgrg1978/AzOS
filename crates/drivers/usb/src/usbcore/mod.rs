@@ -141,6 +141,8 @@ pub struct Hub {
     pub children: [u8; MAX_HUB_PORTS],
     /// Status-change bitmap not yet handled (bit 0: the hub, bit n: port n).
     pub changed: u32,
+    /// Packet size of the status-change endpoint.
+    pub mps: u16,
     /// A transfer is queued on the status-change endpoint.
     pub armed: bool,
     /// Ports whose connection was held back by their failure budget and is

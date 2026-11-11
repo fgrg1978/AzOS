@@ -98,3 +98,15 @@ fn a_hub_port_that_keeps_failing_is_left_alone_too() {
     rig.settle();
     assert_eq!(rig.usb.devices().count(), 2, "another port of the hub is not held back");
 }
+
+#[test]
+fn a_hub_with_another_endpoint_listed_first_still_reports_all_its_ports() {
+    let mut rig = Rig::new();
+    // A bulk endpoint with packet size 0 before the interrupt one.
+    let h = hub_device_with(false, 12, 3, false, vec![ep(0x02, 2, 0, 0), ep(0x81, 3, 2, 12)]);
+    rig.hw.attach_root(1, h.clone());
+    rig.settle();
+    rig.hw.hub_attach(&h, 10, keyboard());
+    rig.settle();
+    assert_eq!(rig.usb.devices().count(), 2, "port 10 of the hub is seen");
+}

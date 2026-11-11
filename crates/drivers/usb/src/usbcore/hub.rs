@@ -117,7 +117,7 @@ impl<'q, R: Regs, M: Memory, C: Clock> Usb<'q, R, M, C> {
             }],
         )?;
         self.set_hub_pipe(pid, slot, dci);
-        let hub = Hub { ports, desc: hd, pipe: pid, children: [0; MAX_HUB_PORTS], changed: 0, armed: false, retry: 0 };
+        let hub = Hub { ports, desc: hd, pipe: pid, children: [0; MAX_HUB_PORTS], changed: 0, mps: ep.mps, armed: false, retry: 0 };
         if let Some(dev) = self.devices[slot as usize - 1].as_mut() {
             dev.hub = Some(hub);
         }
@@ -139,9 +139,13 @@ impl<'q, R: Regs, M: Memory, C: Clock> Usb<'q, R, M, C> {
     /// Queue the next transfer on a hub's status-change endpoint.
     fn hub_arm(&mut self, slot: u8) -> Result<(), UsbError> {
         let Some(h) = self.device(slot).and_then(|d| d.hub) else { return Err(UsbError::NoDevice) };
-        let mps = self.device(slot).map_or(1, |d| {
-            d.config.interfaces().first().and_then(|i| i.endpoints().first()).map_or(1, |e| e.mps)
-        });
+        let mps = if cfg!(feature = "canary-hub-mps") {
+            self.device(slot).map_or(1, |d| {
+                d.config.interfaces().first().and_then(|i| i.endpoints().first()).map_or(1, |e| e.mps)
+            })
+        } else {
+            h.mps
+        };
         let len = ((h.ports as usize + 1).div_ceil(8) as u32).min(mps as u32).max(1);
         let buf = self.hub_buf().bus_at(16 * (slot as usize - 1));
         self.hc.queue_td(

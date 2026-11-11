@@ -344,6 +344,11 @@ pub fn hub(ss: bool, n: usize) -> HubModel {
 /// A USB 2 hub device (high speed): class 9, one interface, one interrupt IN
 /// endpoint 1.
 pub fn hub_device(ss: bool, ports: usize, speed_psiv: u32, multi_tt: bool) -> DevRef {
+    hub_device_with(ss, ports, speed_psiv, multi_tt, vec![ep(0x81, 3, 2, if ss { 8 } else { 12 })])
+}
+
+/// [`hub_device`] with the interface's endpoints as given.
+pub fn hub_device_with(ss: bool, ports: usize, speed_psiv: u32, multi_tt: bool, eps: Vec<Ep>) -> DevRef {
     let proto = if multi_tt { 2 } else { 1 };
     let bcd = if ss { 0x0300 } else { 0x0200 };
     let mps0 = if ss { 9 } else { 64 };
@@ -352,7 +357,7 @@ pub fn hub_device(ss: bool, ports: usize, speed_psiv: u32, multi_tt: bool) -> De
     if multi_tt {
         dd[6] = 2;
     }
-    let cfg = config_desc(1, &[iface(0, 9, 0, 0, vec![ep(0x81, 3, 2, if ss { 8 } else { 12 })])]);
+    let cfg = config_desc(1, &[iface(0, 9, 0, 0, eps)]);
     let mut d = MockDev::new(speed_psiv, dd, cfg);
     d.hub = Some(hub(ss, ports));
     d.into_ref()
