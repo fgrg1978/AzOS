@@ -23,6 +23,8 @@ envelope-delete-canary = []
 # Mirrors crates/fs's: the `*_beneath` defaults of `FileSystem` drop the floor
 # (`beneath_defaults` goes red).
 beneath-default-open-canary = []
+# Mirrors crates/fs's: a directory listing never resumes (`a_listing_resumes_where_the_last_call_stopped` goes red).
+dir-cursor-canary = []
 # Mirrors crates/fs's: the ops that change the tree drop the caller's floor
 # (`a_change_beneath_a_directory_is_refused_before_the_server_is_asked` and
 # `a_change_by_name_through_a_backend_that_follows_links_is_refused_beneath_a_floor` go red).

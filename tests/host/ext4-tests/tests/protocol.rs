@@ -444,3 +444,26 @@ fn a_link_in_the_granted_directorys_path_is_refused() {
     assert_eq!(outcome::served(dir().statfs(n, 1, Extent { off: OUT, len: STATFS_BYTES as u32 })), Err(outcome::DENIED));
     assert!(outcome::served(dir().readdir(n, 0, 0, Extent { off: OUT, len: READDIR_NAME_BYTES as u32 })).unwrap().present);
 }
+
+/// **Listing a directory is linear:** one entry per call, each answered from
+/// the cursor and its own inode, not by another scan of the directory.
+///
+/// **Canary.** `seen-resolve-canary`: every entry is resolved by path.
+#[test]
+fn listing_a_directory_costs_steps_linear_in_its_entries() {
+    let s = service();
+    let mut dir = DirClient::new(Loop(&s, DIR_BADGE));
+    let out = Extent { off: OUT, len: READDIR_NAME_BYTES as u32 };
+    let before = s.borrow().vol.work();
+    let mut count = 0u64;
+    for i in 0.. {
+        let n = name(&s, "many");
+        if !outcome::served(dir.readdir(n, 0, i, out)).unwrap().present {
+            break;
+        }
+        count += 1;
+    }
+    assert_eq!(count, 300);
+    let steps = s.borrow().vol.work() - before;
+    assert!(steps <= 20 * (count + 1), "{steps} directory steps for {count} entries");
+}

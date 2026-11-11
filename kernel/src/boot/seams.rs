@@ -763,17 +763,31 @@ pub(crate) fn install_ring3_seams() {
             }
             fn readdir_beneath(&self, root: &[u8], path: &[u8], index: u32) -> Result<Option<([u8; azos_abi::syscall_nr::READDIR_NAME_BYTES], u32, bool)>, i64> {
                 // The cookie is opaque, so the `index`-th entry is reached by
-                // walking from the start.
+                // walking from the last stop of this directory, else the start.
+                static CURSOR: azos_sync::SpinLock<azos_fs::dir_cursor::DirCursor> =
+                    azos_sync::SpinLock::new(azos_fs::dir_cursor::DirCursor::new());
+                let key = azos_fs::dir_cursor::DirCursor::key(root, path);
+                let (mut at, mut cookie) = CURSOR.lock().resume(key, index);
                 let mut ent = azos_fs::DirEnt::new();
-                let mut cookie = 0u64;
-                for _ in 0..index {
-                    cookie = match azos_fs::vfs::vfs_readdir_beneath(root, path, cookie, &mut ent).map_err(fs_errno)? {
-                        Some(next) => next,
-                        None => return Ok(None),
-                    };
+                let step = |cookie: u64, ent: &mut azos_fs::DirEnt| {
+                    azos_fs::vfs::vfs_readdir_beneath(root, path, cookie, ent).map_err(fs_errno)
+                };
+                while at < index {
+                    match step(cookie, &mut ent) {
+                        Ok(Some(next)) => cookie = next,
+                        other => {
+                            CURSOR.lock().clear();
+                            return other.map(|_| None);
+                        }
+                    }
+                    at += 1;
                 }
-                if azos_fs::vfs::vfs_readdir_beneath(root, path, cookie, &mut ent).map_err(fs_errno)?.is_none() {
-                    return Ok(None);
+                match step(cookie, &mut ent) {
+                    Ok(Some(next)) => CURSOR.lock().note(key, index + 1, next),
+                    other => {
+                        CURSOR.lock().clear();
+                        return other.map(|_| None);
+                    }
                 }
                 // A name that does not fit fills the whole buffer with no NUL: the
                 // caller can tell it was cut.

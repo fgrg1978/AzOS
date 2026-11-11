@@ -50,14 +50,24 @@ fn plain_name(n: &[u8]) -> Result<(), Error> {
     Ok(())
 }
 
+/// What one block of a directory holds.
+enum Block {
+    /// Entries within this many bytes of the block.
+    Entries(usize),
+    /// None, here or for this many blocks on.
+    Skip(u32),
+}
+
 impl<S: BlockSource> Volume<S> {
     /// Load directory `dir`'s logical block `lblk` into the block buffer and
-    /// check it: the span its entries may use, or `None` for a block that
-    /// holds no entries (a hole, an htree index block).
-    fn dir_block(&mut self, dir: &Inode, lblk: u32) -> Result<Option<usize>, Error> {
+    /// check it: the span its entries may use, or how many blocks from `lblk`
+    /// hold no entries (a hole as long as the map says, an htree index block).
+    fn dir_block(&mut self, dir: &Inode, lblk: u32) -> Result<Block, Error> {
         let bs = self.sb.block_size as usize;
         let run = self.map(dir, lblk)?;
-        let Some(p) = run.start else { return Ok(None) };
+        let Some(p) = run.start else {
+            return Ok(Block::Skip(if cfg!(feature = "hole-walk-canary") { 1 } else { run.len.max(1) }));
+        };
         self.load_block(p)?;
         let b = &self.blk[..bs];
         // An htree root (block 0 of an indexed directory) holds `.`, `..`
@@ -66,10 +76,10 @@ impl<S: BlockSource> Volume<S> {
         let first_ino = le32(b, 0)?;
         let first_rec = le16(b, 4)? as usize;
         if (dir.flags & FL_INDEX != 0 && lblk == 0) || (first_ino == 0 && first_rec == bs) {
-            return Ok(None);
+            return Ok(Block::Skip(1));
         }
         if !self.sb.features.metadata_csum() {
-            return Ok(Some(bs));
+            return Ok(Block::Entries(bs));
         }
         let t = bs - TAIL;
         if le32(b, t)? != 0 || le16(b, t + 4)? as usize != TAIL || b[t + 6] != 0 || b[t + 7] != TAIL_FT {
@@ -78,7 +88,7 @@ impl<S: BlockSource> Volume<S> {
         if csum(dir.csum_seed, &b[..t]) != le32(b, t + 8)? {
             return Err(Corrupt::Checksum.into());
         }
-        Ok(Some(t))
+        Ok(Block::Entries(t))
     }
 
     /// The entry at byte `at` of the loaded block, within `span`: the entry
@@ -128,9 +138,13 @@ impl<S: BlockSource> Volume<S> {
         while pos < dir.size {
             let lblk = u32::try_from(pos / bs).map_err(|_| Corrupt::Size)?;
             let base = lblk as u64 * bs;
-            let Some(span) = self.dir_block(dir, lblk)? else {
-                pos = base + bs;
-                continue;
+            self.step()?;
+            let span = match self.dir_block(dir, lblk)? {
+                Block::Entries(span) => span,
+                Block::Skip(blocks) => {
+                    pos = base + blocks as u64 * bs;
+                    continue;
+                }
             };
             // A position inside a block that is not an entry's start (a
             // stale cookie) restarts at the block's first entry it passes.

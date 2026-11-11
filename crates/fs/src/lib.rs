@@ -6,6 +6,7 @@ extern crate alloc;
 
 pub mod bcache;
 pub mod census;
+pub mod dir_cursor;
 pub mod vfs;
 pub mod fat32;
 /// What `fat32::BOOT` (the boot volume, `/fat`) sits on and its knobs:

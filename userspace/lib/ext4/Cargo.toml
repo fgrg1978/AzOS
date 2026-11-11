@@ -18,6 +18,8 @@ dirent-name-canary = []
 #   escape-canary: a path resolved beneath a directory may leave it (`..` past
 #     it, an absolute symlink target)
 escape-canary = []
+#   hole-walk-canary: a hole in a directory is walked one block at a time
+hole-walk-canary = []
 
 [dependencies]
 azos_common = { path = "../../../crates/core/common" }

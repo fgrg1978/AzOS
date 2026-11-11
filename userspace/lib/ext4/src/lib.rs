@@ -157,6 +157,8 @@ pub enum Error {
     /// A `..` or an absolute symlink target that leaves the directory a path is
     /// resolved beneath.
     Escape,
+    /// The work one call may do ([`Volume::begin_call`]) is spent.
+    Busy,
     Corrupt(Corrupt),
     Unread(Unread),
 }
@@ -220,17 +222,41 @@ pub struct Volume<S: BlockSource> {
     sb: Super,
     /// One block: a directory block, an extent node, an indirect block.
     blk: [u8; MAX_BLOCK],
+    /// Directory steps taken so far: one per block walked or hole skipped.
+    work: u64,
+    /// `work` at which the current call's allowance ends; none when unmetered.
+    limit: Option<u64>,
 }
 
 impl<S: BlockSource> Volume<S> {
     /// Read and check the superblock and the group descriptors.
     pub fn mount(mut src: S) -> Result<Self, MountError> {
         let sb = Super::read(&mut src)?;
-        let mut v = Volume { src, sb, blk: [0; MAX_BLOCK] };
+        let mut v = Volume { src, sb, blk: [0; MAX_BLOCK], work: 0, limit: None };
         v.check_groups()?;
         match v.inode(ROOT_INO) {
             Ok(root) if root.is_dir() => Ok(v),
             _ => Err(MountError::Root),
+        }
+    }
+
+    /// Allow the directory walks that follow `steps` steps before they refuse
+    /// with [`Error::Busy`]: a server calls it at the start of each request so
+    /// one crafted directory cannot hold it. Never called, the volume is unmetered.
+    pub fn begin_call(&mut self, steps: u32) {
+        self.limit = Some(self.work + steps as u64);
+    }
+
+    /// Directory steps taken since the mount.
+    pub fn work(&self) -> u64 {
+        self.work
+    }
+
+    pub(crate) fn step(&mut self) -> Result<(), Error> {
+        self.work += 1;
+        match self.limit {
+            Some(l) if self.work > l => Err(Error::Busy),
+            _ => Ok(()),
         }
     }
 

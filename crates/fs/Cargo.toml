@@ -30,6 +30,8 @@ endpoint-floor-canary = []
 # Host canary (fs-tests `beneath_defaults`): the `*_beneath` defaults of
 # `FileSystem` drop the floor for a backend that follows links.
 beneath-default-open-canary = []
+# Gate canary: a directory listing never resumes from where the last call stopped.
+dir-cursor-canary = []
 # Host canary (fs-tests `endpoint_fs`, `beneath_defaults`): the ops that change
 # the tree stat through a key rooted at the mount, before the read-only refusal,
 # and reach a backend that follows links by name from beneath a floor.

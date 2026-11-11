@@ -193,6 +193,12 @@ mod capdir;
 // The `*_beneath` defaults of `FileSystem` for a backend that has not taken the floor.
 #[cfg(test)]
 mod beneath_defaults;
+// Where a directory listing resumes: `dir_cursor.rs`.
+#[allow(dead_code)]
+#[path = "../../../../crates/fs/src/dir_cursor.rs"]
+mod dir_cursor_impl;
+#[cfg(test)]
+mod dir_cursor;
 #[cfg(test)]
 mod crash_dump;
 // FAT32 files below the root, through the VFS: `subdirs.rs`.

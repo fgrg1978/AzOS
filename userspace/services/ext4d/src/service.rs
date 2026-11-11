@@ -44,6 +44,10 @@ pub const NODES: usize = 32;
 const SLOT_BITS: u32 = 5;
 const _: () = assert!(NODES == 1 << SLOT_BITS);
 /// The `statfs` type of an ext4 volume (`azos_abi::syscall_nr::STATFS_BYTES`).
+/// Directory steps (blocks walked, holes skipped) one request may spend before
+/// it answers busy: one request cannot hold the single-threaded server.
+pub const CALL_STEPS: u32 = 1 << 16;
+
 pub const STATFS_TYPE_EXT4: u32 = 6;
 /// What an opener is lent: the call right on the endpoint (`CapPerms::WRITE`).
 pub const NODE_RIGHTS: u16 = azos_abi::cap::CapPerms::WRITE.bits() as u16;
@@ -131,6 +135,7 @@ pub fn code(e: Error) -> u32 {
         Error::NotFile => IS_DIR,
         Error::Loop | Error::BadName => outcome::BAD_ARGUMENT,
         Error::Escape => outcome::DENIED,
+        Error::Busy => outcome::BUSY,
         Error::Unread(_) => outcome::UNSUPPORTED,
         Error::Io | Error::Corrupt(_) => outcome::FAULT,
     }
@@ -220,6 +225,7 @@ impl<S: BlockSource, H: Host> Service<S, H> {
     /// The inode `name` names, rooted at the directory its first `floor`
     /// components make (the volume's root for 0).
     fn resolve_path(&mut self, name: &[u8], floor: u32, follow_last: bool) -> Result<Inode, Error> {
+        self.vol.begin_call(CALL_STEPS);
         if floor == 0 {
             return self.vol.resolve(name, follow_last);
         }
@@ -289,6 +295,10 @@ impl<S: BlockSource, H: Host> Service<S, H> {
     /// What a client sees of entry `e` of the directory `dir` names: the
     /// file a symlink names, or the link itself when it names nothing.
     fn seen(&mut self, dir: &[u8], floor: u32, e: &DirEntry) -> Result<Inode, Error> {
+        let own = self.vol.inode(e.ino)?;
+        if !own.is_symlink() && !cfg!(feature = "seen-resolve-canary") {
+            return Ok(own);
+        }
         let mut p = [0u8; PATH_MAX];
         let n = dir.len() + 1 + e.name().len();
         if n <= PATH_MAX {
@@ -299,7 +309,7 @@ impl<S: BlockSource, H: Host> Service<S, H> {
                 return Ok(i);
             }
         }
-        self.vol.inode(e.ino)
+        Ok(own)
     }
 }
 

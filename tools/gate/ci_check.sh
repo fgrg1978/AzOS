@@ -13908,6 +13908,12 @@ host_job host_canary_row "ring-3: dt lossy compatible canary" hwbus-tests dt-los
     a_truncated_or_non_utf8_compatible_is_never_a_listed_peripheral
 host_job host_canary_row "ring-3: window overlap canary" hwbus-tests window-overlap-canary \
     a_window_over_ram_the_kernel_or_a_core_block_is_refused
+host_job host_canary_row "ext4: a hole in a directory is walked per block canary" ext4-tests hole-walk-canary \
+    a_directory_that_claims_the_partition_but_maps_little_ends_in_a_few_steps
+host_job host_canary_row "ext4: a listed entry is resolved by path canary" ext4-tests seen-resolve-canary \
+    listing_a_directory_costs_steps_linear_in_its_entries
+host_job host_canary_row "fs: a directory listing never resumes canary" fs-tests dir-cursor-canary \
+    a_listing_resumes_where_the_last_call_stopped
 host_job host_canary_row "ring-3: dt inherited coherence canary" hwbus-tests dt-inherited-coherent-canary \
     a_dma_coherent_inherited_from_a_bus_makes_no_master
 host_job host_canary_row "ring-3: line grant record silent canary (ipc)" ipc-tests line-grant-silent-canary \
