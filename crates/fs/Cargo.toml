@@ -200,6 +200,9 @@ fat-name-bytes-canary = []
 # Host canary: a grow by `truncate` holds a buffer of the grown length
 # (fs-tests `truncate_grow`).
 fat-truncate-heap-canary = []
+# Host canary: the signed-set overlay compares raw bytes, not 8.3 keys
+# (fs-tests `root_overlay`).
+overlay-raw-compare-canary = []
 
 # Power-loss safety (S3) canaries, each must turn a fs-tests `s3` test red.
 #   fat-dirty-bit-canary:       the mount never sets the volume dirty flag

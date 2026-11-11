@@ -5901,7 +5901,7 @@ fn short_name_byte_ok(b: u8) -> bool {
 /// `0x20` or `0xE5` (end marker, the kanji escape, padding, deleted marker), a
 /// control or forbidden byte, a second dot, and a base or extension that ends
 /// in a space (it would read back as the name without it).
-fn component_to_83(name: &[u8]) -> Option<[u8; 11]> {
+pub(crate) fn component_to_83(name: &[u8]) -> Option<[u8; 11]> {
     if name.is_empty() || name == b"." || name == b".." { return None; }
     let (base, ext) = match name.iter().position(|&b| b == b'.') {
         Some(i) => (&name[..i], &name[i + 1..]),

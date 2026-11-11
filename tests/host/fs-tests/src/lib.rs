@@ -9521,6 +9521,29 @@ mod root_overlay {
         assert_eq!(vfs::vfs_stat(b"/fat/SH.ELF").map(|s| s.size), Some(9));
     }
 
+    /// **Two spellings of one FAT name are one file.** The set carries `CONFIG`
+    /// (no extension); `/fat/CONFIG.` is the same 8.3 entry, and so is a path
+    /// with a doubled slash. Both must read the set's file, not the root copy
+    /// the set replaces.
+    #[test]
+    fn an_alias_of_a_set_name_reads_the_sets_file() {
+        let _g = serial();
+        fresh_volume();
+        tmp_once();
+        clear_tmpfs();
+        let mut t = vfs::ScratchFds::new();
+        put(&mut t, b"/fat/CONFIG", b"old config");
+        tmpfs_h::write(b"CONFIG", b"new config").unwrap();
+        let names: [&[u8]; 1] = [b"CONFIG"];
+        assert!(vfs::vfs_set_root_overlay(b"/tmp", names.into_iter()));
+        assert_eq!(get(&mut t, b"/fat/CONFIG").as_deref(), Some(&b"new config"[..]));
+        assert_eq!(get(&mut t, b"/fat/CONFIG.").as_deref(), Some(&b"new config"[..]), "a trailing dot is the same name");
+        assert_eq!(get(&mut t, b"/fat/config.").as_deref(), Some(&b"new config"[..]));
+        assert_eq!(get(&mut t, b"/fat//CONFIG").as_deref(), Some(&b"new config"[..]), "a doubled slash too");
+        assert_eq!(vfs::vfs_stat(b"/fat/CONFIG.").map(|s| s.size), Some(10));
+        assert!(vfs::vfs_set_root_overlay(b"", core::iter::empty()));
+    }
+
     /// What does not fit is refused whole, and the overlay stays as it was.
     #[test]
     fn what_does_not_fit_changes_nothing() {

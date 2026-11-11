@@ -13933,6 +13933,8 @@ host_job host_canary_row "fs: a name born deleted leaks chains canary" fs-tests 
     a_name_born_deleted_costs_no_cluster
 host_job host_canary_row "fs: a truncate grow holds a whole-file buffer canary" fs-tests fat-truncate-heap-canary \
     a_grow_takes_no_buffer_of_the_length
+host_job host_canary_row "fs: an overlay compares raw bytes canary" fs-tests overlay-raw-compare-canary \
+    an_alias_of_a_set_name_reads_the_sets_file
 host_job host_canary_row "call task: no deadline to the server canary (devif)" devif-tests call-deadline-canary \
     a_call_through_the_task_carries_the_clients_deadline_to_the_server
 host_job host_canary_row "ring-3: dt inherited coherence canary" hwbus-tests dt-inherited-coherent-canary \

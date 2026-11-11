@@ -1284,8 +1284,8 @@ static OVERLAY_ON: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBo
 /// shell starts, the topology the boot reads and the configuration it loads are
 /// the set's, and the files of the previous system, still at the root, are not
 /// seen; an open that may write is not redirected, so a write to a root name can
-/// never rewrite a file the set signed. Names are compared without regard to
-/// case, as FAT does.
+/// never rewrite a file the set signed. Names are compared as FAT does: by
+/// 8.3 key, so case and a trailing dot do not tell two names apart.
 ///
 /// Called once, by the boot, after the volume is mounted and before any file of
 /// the set is read; no names switches the overlay off. Returns `false`, and
@@ -1325,21 +1325,33 @@ fn overlaid<'a>(path: &'a [u8], buf: &'a mut [u8; OVERLAY_PATH_MAX]) -> &'a [u8]
     }
     let trimmed = trim_nul(path);
     let Some(name) = trimmed.strip_prefix(OVERLAY_ROOT) else { return path };
+    // Doubled slashes name the same root file.
+    let name = &name[name.iter().position(|&b| b != b'/').unwrap_or(name.len())..];
     if name.is_empty() || name.contains(&b'/') {
         return path;
     }
+    // FAT names a file by its 8.3 key, so two spellings of one key (a trailing
+    // dot, another case) are one file: the set's own spelling is the target.
+    let key = crate::fat32::component_to_83(name);
     let o = OVERLAY.lock();
-    let carried = o.names[..o.count].iter().any(|n| {
+    let carried = o.names[..o.count].iter().find_map(|n| {
         let len = n.iter().position(|&b| b == 0).unwrap_or(OVERLAY_NAME_MAX);
-        n[..len].eq_ignore_ascii_case(name)
+        let n = &n[..len];
+        let same = if cfg!(feature = "overlay-raw-compare-canary") {
+            n.eq_ignore_ascii_case(name)
+        } else {
+            n.eq_ignore_ascii_case(name) || key.is_some() && crate::fat32::component_to_83(n) == key
+        };
+        same.then_some(n)
     });
-    if !carried || o.dir_len + 1 + name.len() > OVERLAY_PATH_MAX {
+    let Some(set_name) = carried else { return path };
+    if o.dir_len + 1 + set_name.len() > OVERLAY_PATH_MAX {
         return path;
     }
     buf[..o.dir_len].copy_from_slice(&o.dir[..o.dir_len]);
     buf[o.dir_len] = b'/';
-    buf[o.dir_len + 1..o.dir_len + 1 + name.len()].copy_from_slice(name);
-    &buf[..o.dir_len + 1 + name.len()]
+    buf[o.dir_len + 1..o.dir_len + 1 + set_name.len()].copy_from_slice(set_name);
+    &buf[..o.dir_len + 1 + set_name.len()]
 }
 
 /// Find the mounted backend serving `path`, and the backend's own name for the
