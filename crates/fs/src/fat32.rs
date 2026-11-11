@@ -6342,11 +6342,17 @@ fn chain_nth_or_extend(v: &'static Vol, first_cluster: u32, n: u32) -> Result<u3
     Ok(cur)
 }
 
+/// Largest hole one write zero-fills (Kconfig `FS_MAX_HOLE_KB`).
+const MAX_HOLE_BYTES: u64 = azos_limits::FS_MAX_HOLE_KB as u64 * 1024;
+
 /// Zero-fill file bytes in `[start, end)`.
 ///
 /// Used when a write creates a "hole" — a `seek` past the current size
 /// followed by a `write` — so the hole reads back as zero instead of
 /// whatever is physically sitting on the clusters that cover it.
+/// The hole is bounded ([`MAX_HOLE_BYTES`], checked by the caller before any
+/// cluster is taken): FAT32 has no sparse files, so every byte of it is device
+/// work done in the writer's call.
 /// `fat32_alloc_cluster` never zeroes a cluster's data, `fat32_free_chain`
 /// never wipes it, and `chain_nth_or_extend` only links clusters into the
 /// chain — none of them touch content. Without this, reading a hole returns
@@ -6364,10 +6370,18 @@ fn zero_fill_range(
     data_start: u32,
 ) -> Result<(), FsError> {
     let mut pos = start;
+    // The last (index, cluster) reached, as in `write_loop`: the next sector
+    // is in that cluster or one FAT step on, not a walk from the first cluster.
+    let mut cursor: Option<(u32, u32)> = None;
     while pos < end {
         let cluster_index = pos / bytes_per_clus;
         let offset_in_cluster = (pos % bytes_per_clus) as usize;
-        let cluster = chain_nth_or_extend(v, first_cluster, cluster_index)?;
+        let cluster = match cursor {
+            Some((i, c)) if i == cluster_index => c,
+            Some((i, c)) if i + 1 == cluster_index => chain_nth_or_extend(v, c, 1)?,
+            _ => chain_nth_or_extend(v, first_cluster, cluster_index)?,
+        };
+        cursor = Some((cluster_index, cluster));
         let first_sector = cluster_first_sector(data_start, cluster, spc)
             .ok_or(FsError::Io)?;
 
@@ -6714,6 +6728,15 @@ fn fat32_write_raw(v: &'static Vol, file: Fat32File, buf: &[u8]) -> Result<usize
     };
     if bytes_per_clus == 0 { return Err(FsError::NotMounted); }
 
+    // A hole is zero-filled by this call, so its size is the device work it
+    // asks for: past the bound the write is refused before anything is taken.
+    if e.pos > e.size
+        && u64::from(e.pos - e.size) > MAX_HOLE_BYTES
+        && !cfg!(feature = "fat-hole-unbounded-canary")
+    {
+        return Err(FsError::NoSpace);
+    }
+
     // Ensure we have at least one cluster allocated (for empty files).
     let before = e;
     let mut fresh_first = None;
@@ -6744,6 +6767,10 @@ fn fat32_write_raw(v: &'static Vol, file: Fat32File, buf: &[u8]) -> Result<usize
         if let Some(fresh) = fresh_first {
             fat32_free_chain_on(v, fresh);
             e = before;
+        } else if !cfg!(feature = "fat-hole-unbounded-canary") {
+            // A hole that stopped part-way (a full volume) linked clusters the
+            // file's size does not reach: give them back.
+            cut_chain_beyond(v, e.first_cluster, e.size, bytes_per_clus);
         }
     }
     // Persist updated size/position/dirty/first_cluster back into the slot —
@@ -6759,6 +6786,21 @@ fn fat32_write_raw(v: &'static Vol, file: Fat32File, buf: &[u8]) -> Result<usize
         Ok(()) => Ok(written),
         Err(_) if written > 0 => Ok(written),
         Err(err) => Err(err),
+    }
+}
+
+/// Free the clusters of the chain at `first` past those that cover `size`
+/// bytes (at least one): a failed write's links. The new end of the chain is
+/// written before the tail is freed. Best effort; what it cannot cut stays
+/// linked and the mount check's size comparison reports it.
+fn cut_chain_beyond(v: &'static Vol, first: u32, size: u32, bytes_per_clus: u32) {
+    if first < FAT32_FIRST_DATA_CLUSTER || bytes_per_clus == 0 { return; }
+    let keep = size.div_ceil(bytes_per_clus).max(1);
+    let Ok(last) = chain_nth(v, first, keep - 1) else { return };
+    let Ok(tail) = fat32_next_cluster(v, last) else { return };
+    if tail < FAT32_FIRST_DATA_CLUSTER || tail >= FAT32_EOC { return; }
+    if fat32_write_fat_entry(v, last, FAT32_END_OF_CHAIN).is_ok() {
+        fat32_free_chain_on(v, tail);
     }
 }
 

@@ -143,6 +143,22 @@ config FS_DISCARD_RUNS
 
       Cost: FS_DISCARD_RUNS * 16 B of stack on the freeing path.
 
+config FS_MAX_HOLE_KB
+    int "Largest hole a FAT32 write zero-fills (KiB; 0 = none)"
+    range 0 4194304
+    default 1024
+    help
+      crates/fs/src/fat32.rs, zero_fill_range: a write that starts past the
+      end of the file (a seek beyond it, then a write) makes the file's
+      hole read as zeros, and FAT32 has no sparse files, so the kernel
+      allocates and writes every cluster of the hole before it returns. A
+      write whose hole is larger than this is refused (NoSpace) and writes
+      nothing. A larger file is made by truncating to the length, which
+      grows in bounded chunks, or by writing it.
+
+      Cost: none in RAM. The bound is the device work one write can ask
+      of the kernel: 1024 KiB is 2048 sector writes.
+
 choice FS_CHECK_FAILED
     prompt "A volume that fails its mount-time check"
     default FS_CHECK_FAILED_READ_ONLY

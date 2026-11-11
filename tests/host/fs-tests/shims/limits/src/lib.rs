@@ -58,6 +58,9 @@ pub const BLK_DISCARD_ONLINE: bool = false;
 pub const BLK_DISCARD_BATCHED: bool = true;
 pub const BLK_FUA: bool = true;
 pub const FS_DISCARD_RUNS: usize = 16;
+/// Kconfig `FS_MAX_HOLE_KB` (the largest hole a write zero-fills): the shipped
+/// default.
+pub const FS_MAX_HOLE_KB: usize = 1024;
 /// Kconfig `FS_CHECK_FAILED` (a volume that fails its mount-time check):
 /// the shipped default, read-only. The refuse member is decided by the pure
 /// verdicts (`fat32::check_verdict`, `azvol_mount::CheckPolicy`), which the

@@ -13923,6 +13923,10 @@ host_job host_canary_row "fs: journal slot shared by two ops canary" fs-tests fa
     a_second_journaled_op_never_starts_over_a_pending_record
 host_job host_canary_row "fs: a stale handle rewrites another entry canary" fs-tests fat-dir-unserialised-canary \
     a_handle_of_an_unlinked_file_does_not_update_the_entry_that_reused_its_slot
+host_job host_canary_row "fs: an unbounded write hole canary" fs-tests fat-hole-unbounded-canary \
+    a_hole_past_the_bound_is_refused_before_anything_is_written
+host_job host_canary_row "fs: a failed hole keeps its clusters canary" fs-tests fat-hole-unbounded-canary \
+    a_hole_that_runs_out_of_space_gives_its_clusters_back
 host_job host_canary_row "call task: no deadline to the server canary (devif)" devif-tests call-deadline-canary \
     a_call_through_the_task_carries_the_clients_deadline_to_the_server
 host_job host_canary_row "ring-3: dt inherited coherence canary" hwbus-tests dt-inherited-coherent-canary \

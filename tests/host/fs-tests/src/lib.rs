@@ -207,6 +207,9 @@ mod subdirs;
 // Directory-changing operations of one volume are serialised: `dir_claim.rs`.
 #[cfg(test)]
 mod dir_claim;
+// A write's hole is bounded and cleaned up on failure: `hole_write.rs`.
+#[cfg(test)]
+mod hole_write;
 #[cfg(test)]
 mod envelope_delete;
 // Every mounted volume made durable (orderly power-off, `Power::sync`): `sync_all.rs`.
