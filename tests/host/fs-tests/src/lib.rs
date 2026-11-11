@@ -4443,22 +4443,25 @@ mod power_cut {
         remount(dirty_volume_with_a_broken_chain());
         let broken = mount_report();
         assert_eq!(fat32::fat32_unmount(fat32::Volume::assume_mounted()), Ok(()));
-        assert_eq!(check_verdict(&broken, false), CheckVerdict::ReadOnly);
-        assert_eq!(check_verdict(&broken, true), CheckVerdict::Refuse);
+        assert_eq!(check_verdict(&broken, false, false), CheckVerdict::ReadOnly);
+        assert_eq!(check_verdict(&broken, true, false), CheckVerdict::Refuse);
         let (img, _, _) = dirty_volume_with_leaks();
         remount(img);
         let leaky = mount_report();
         assert_eq!(fat32::fat32_unmount(fat32::Volume::assume_mounted()), Ok(()));
         assert!(leaky.lost_clusters == 3 && !leaky.failed(), "{leaky:?}");
-        assert_eq!(check_verdict(&leaky, true), CheckVerdict::Serve);
+        assert_eq!(check_verdict(&leaky, true, false), CheckVerdict::Serve);
         let limited = fat32::MountReport { complete: false, limited: true, ..leaky };
-        assert_eq!(check_verdict(&limited, true), CheckVerdict::ReadOnly,
-            "a limit of the check is not damage, but the volume was not vouched for: read-only, never refused");
-        assert_eq!(check_verdict(&limited, false), CheckVerdict::ReadOnly);
+        assert_eq!(check_verdict(&limited, true, false), CheckVerdict::Serve,
+            "the internal volume is served after a limited scan: a writer must not be able to make it read-only");
+        assert_eq!(check_verdict(&limited, false, false), CheckVerdict::Serve);
+        assert_eq!(check_verdict(&limited, true, true), CheckVerdict::ReadOnly,
+            "a removable volume that was not vouched for is read-only, never refused");
+        assert_eq!(check_verdict(&limited, false, true), CheckVerdict::ReadOnly);
         let stopped = fat32::MountReport { complete: false, limited: false, ..leaky };
-        assert_eq!(check_verdict(&stopped, true), CheckVerdict::Refuse, "a scan stopped by a read error is");
+        assert_eq!(check_verdict(&stopped, true, false), CheckVerdict::Refuse, "a scan stopped by a read error is");
         let unchecked = fat32::MountReport { checked: false, ..broken };
-        assert_eq!(check_verdict(&unchecked, true), CheckVerdict::Serve);
+        assert_eq!(check_verdict(&unchecked, true, false), CheckVerdict::Serve);
     }
 
     /// **The check by hand counts and writes nothing** (the toolbox `fsck`,

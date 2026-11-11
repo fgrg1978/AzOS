@@ -2688,7 +2688,10 @@ fn mount_attempt(v: &'static Vol) -> Result<(), ()> {
     // A check that found damage: served read-only or not at all (Kconfig
     // `FS_CHECK_FAILED`). Either way the volume is not marked dirty here, so
     // it stays unclean and the next mount checks it again.
-    match check_verdict(&rep, CHECK_FAILED_REFUSE) {
+    if rep.checked && rep.limited && !rep.complete {
+        azos_drv_sys::kprintln!("[FAT32] check: stopped at a limit; lost clusters not reclaimed");
+    }
+    match check_verdict(&rep, CHECK_FAILED_REFUSE, matches!(v.sector_cache, VolCache::Removable(_))) {
         CheckVerdict::Serve => {}
         CheckVerdict::ReadOnly => {
             rep.read_only = true;
@@ -2754,8 +2757,6 @@ const FAT_STATE_ENTRY_OFF: usize = 4;
 /// A volume past it, or a heap that cannot give it, is checked for FAT copy
 /// agreement only and nothing is reclaimed.
 const CHECK_BITMAP_MAX_BYTES: usize = 1 << 20;
-/// Most subdirectories the check holds waiting to be scanned.
-const CHECK_DIR_STACK_MAX: usize = 4096;
 /// FAT sectors the check reads per device request when the heap allows it.
 const CHECK_RUN_SECTORS: u32 = 16;
 
@@ -2831,12 +2832,15 @@ pub enum CheckVerdict {
 
 /// The verdict for `rep` under the policy (`refuse`: Kconfig
 /// `FS_CHECK_FAILED_REFUSE`). Pure, so a test decides it under either member.
-pub fn check_verdict(rep: &MountReport, refuse: bool) -> CheckVerdict {
+///
+/// A scan that stopped at a limit of its own vouches for nothing. A removable
+/// volume (`removable`) is then read, not written, until a check elsewhere has
+/// seen all of it; the internal volume is served (the limit is logged and in
+/// the report): the system's own files live there, and a volume that cannot be
+/// written would be a denial of service a writer on it could provoke.
+pub fn check_verdict(rep: &MountReport, refuse: bool, removable: bool) -> CheckVerdict {
     match (rep.failed(), refuse) {
-        // A scan that stopped at a limit of its own vouches for nothing: the
-        // volume is read, not written, until a check on another machine (or a
-        // larger heap) has seen all of it.
-        (false, _) if rep.checked && rep.limited && !rep.complete
+        (false, _) if removable && rep.checked && rep.limited && !rep.complete
             && !cfg!(feature = "fat-low-hardening-canary") => CheckVerdict::ReadOnly,
         (false, _) => CheckVerdict::Serve,
         (true, false) => CheckVerdict::ReadOnly,
@@ -3091,7 +3095,7 @@ fn check_scan_dir(
                 };
                 if is_dir {
                     if !fresh { return Err(()); }
-                    if stack.len() >= CHECK_DIR_STACK_MAX || stack.try_reserve(1).is_err() {
+                    if stack.try_reserve(1).is_err() {
                         rep.limited = true;
                         return Err(());
                     }
