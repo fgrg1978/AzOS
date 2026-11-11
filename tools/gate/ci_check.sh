@@ -4122,7 +4122,7 @@ par "hyp: split boot regression (arm)" hyp_monitor_row "hyp: split boot regressi
 hyp_halt_row() { # hyp_halt_row <label> <fake> <want: pass|canary> <marker>
     local label="$1" fake="$2" want="$3" marker="$4" app="canary=$2"
     [ "$want" = canary ] && app="canary=$2,hyp-halt-skip"
-    HYP_APPEND="$app" HYP_WAIT='refused: |AzOS Rust kernel booted' \
+    HYP_APPEND="$app" HYP_WAIT="${HYP_WAIT:-refused: |AzOS Rust kernel booted}" \
         hyp_monitor_row "$label" "hyp-monitor-row" "$want" "$marker"
 }
 par "hyp: F3 spin-table halts (arm)" hyp_halt_row "hyp: F3 spin-table halts (arm)" hyp-fake-spin-table pass \
@@ -6475,11 +6475,13 @@ par "hyp: M-2 leaked slot canary (arm)" hyp_monitor_row "hyp: M-2 leaked slot ca
 # keeps the DMA hole check (which would halt first on a confidential QEMU
 # `virt`) out of the way, `hyp-fake-allow-degraded` stands for the Kconfig
 # symbol, `hyp-halt-skip` is the halt's canary.
+HYP_WAIT='refused: |DEGRADED|\[SMP\] hart 3 online' \
 par "hyp: M-3 a missing lock halts the boot (arm)" hyp_halt_row "hyp: M-3 a missing lock halts the boot (arm)" hyp-fake-ro-refused pass \
     "[BOOT] EL2:        refused: a lock the split image needs is not in force"
+HYP_WAIT='refused: |DEGRADED|\[SMP\] hart 3 online' \
 par "hyp: M-3 halt canary (arm)" hyp_halt_row "hyp: M-3 halt canary (arm)" hyp-fake-ro-refused canary \
     "[BOOT] EL2:        refused: a lock the split image needs is not in force"
-HYP_APPEND="canary=hyp-fake-ro-refused,hyp-fake-allow-degraded" HYP_WAIT='refused: |AzOS Rust kernel booted' \
+HYP_APPEND="canary=hyp-fake-ro-refused,hyp-fake-allow-degraded" HYP_WAIT='refused: |DEGRADED' \
 par "hyp: M-3 an allowed degraded boot is reported (arm)" hyp_monitor_row "hyp: M-3 an allowed degraded boot is reported (arm)" "hyp-monitor-row" pass \
     "[BOOT] EL2:        invariant ro-data NOT in force" "[BOOT] EL2:        DEGRADED:" "AzOS Rust kernel booted! (aarch64)"
 
