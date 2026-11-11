@@ -3198,7 +3198,8 @@ pub fn set_task_user_info(idx: usize, task_satp: u64, aspace: Option<azos_mm::as
             // What the new address space already holds (image,
             // stack and tables for spawn; the child's own tables for fork) is
             // charged by the caller through `set_task_mem`, right after this.
-            crate::domain::reset_budget(TASKS[idx].domain());
+            // A new task's Domain holds no object yet: a plain reset.
+            crate::domain::reset_budget_fresh(TASKS[idx].domain());
         }
     }
 }

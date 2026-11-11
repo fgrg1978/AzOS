@@ -682,31 +682,80 @@ pub fn charge_restore(key: Key) {
     }
 }
 
+/// What the retained hook is given to report into: it calls this with the pages
+/// the Domain holds in objects, while it holds whatever lock orders those
+/// objects' own charges and releases, so the count and what is done with it are
+/// one step.
+pub type RetainedSink<'a> = &'a mut dyn FnMut(u32);
+
 azos_common::ro_hook! {
     /// Pages the Domain `key` holds in objects that outlive its address space
-    /// (MemObj frames, io_ring pages): what [`reset_budget`] keeps. Set once at
-    /// boot by `azos_ipc`, which owns those tables; unset, nothing is kept.
-    pub static RETAINED_HOOK: fn(Key) -> u32;
+    /// (MemObj frames, io_ring pages), reported to the sink under the objects'
+    /// lock: what an exec's [`reset_budget`] keeps. Set once at boot by
+    /// `azos_ipc`, which owns those tables; unset, nothing is kept.
+    pub static RETAINED_HOOK: for<'a> fn(Key, RetainedSink<'a>);
 }
 
 /// Register the [`RETAINED_HOOK`]. Call once, during boot.
-pub fn set_retained_hook(f: fn(Key) -> u32) {
+pub fn set_retained_hook(f: for<'a> fn(Key, RetainedSink<'a>)) {
     RETAINED_HOOK.set(f);
 }
 
-/// Forget the address space's part of the used count and the peak: the address
-/// space they described is gone. What objects of the Domain hold (the
-/// [`RETAINED_HOOK`]) and the limit stay.
+/// Pages the Domain `key` holds in objects that outlive an exec, as the hook
+/// counts them now (for an admission check; a count, not a reservation).
+pub fn retained_pages(key: Key) -> u32 {
+    let mut n = 0;
+    if let Some(f) = RETAINED_HOOK.get() {
+        f(key, &mut |p| n = p);
+    }
+    n
+}
+
+/// Does an exec's image of `frames` pages fit the limit `limit` beside what the
+/// Domain's objects keep in the count (`0`: no limit)? The exec's reset keeps
+/// those pages, so the image is admitted against `retained + frames`, never
+/// `frames` alone: an image that fits alone and not with them would be refused
+/// by the charge after the exec was certain, and run uncharged.
+/// Canary `exec-admit-ignores-objects-canary`: only the image is counted.
+pub fn exec_fits(key: Key, limit: u32, frames: u32) -> bool {
+    if limit == 0 {
+        return true;
+    }
+    let held = if cfg!(feature = "exec-admit-ignores-objects-canary") { 0 } else { retained_pages(key) };
+    held.saturating_add(frames) <= limit
+}
+
+/// An exec forgets the address space's part of the used count and the peak and
+/// keeps what objects of the Domain hold ([`RETAINED_HOOK`]); the count and the
+/// store are made under the objects' lock, so a charge or a release of theirs
+/// from another hart is never lost between them. The limit stays.
 pub fn reset_budget(key: Key) {
     if let Some(d) = get(key) {
         // What outlives the address space is charged to the Domain and is given
         // back by its own release, not by this reset: the MemObj frames and the
         // io_ring pages the Domain holds stay in the count.
-        let keep = RETAINED_HOOK.get().map_or(0, |f| f(key));
-        d.budget.reset_keeping(keep);
+        match RETAINED_HOOK.get() {
+            Some(f) => f(key, &mut |keep| d.budget.reset_keeping(keep)),
+            None => d.budget.reset_keeping(0),
+        }
         // The page tables grown by the old address space went with it. The
         // rest of the kernel-memory ledger (capability table, endpoints,
         // MemObjs) belongs to the Domain and survives an exec.
+        d.kmem.discharge_all(KmemClass::PageTable);
+    }
+}
+
+/// [`reset_budget`] for a task that starts with an address space of its own (a
+/// fork's or a spawn's child, in a Domain of its own): nothing outlives it, so no
+/// hook walk and a plain reset.
+pub fn reset_budget_fresh(key: Key) {
+    // Canary `fresh-reset-walks-hook-canary`: a fresh task's reset walks the
+    // object tables like an exec's (a hook walk on every fork).
+    if cfg!(feature = "fresh-reset-walks-hook-canary") {
+        return reset_budget(key);
+    }
+    if let Some(d) = get(key) {
+        d.budget.reset();
         d.kmem.discharge_all(KmemClass::PageTable);
     }
 }

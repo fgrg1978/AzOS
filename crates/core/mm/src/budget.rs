@@ -677,9 +677,11 @@ impl PageBudget {
     /// outlives it: `keep` pages, the frames of the MemObjs and the io_ring pages
     /// the Domain still holds (an exec drops the old image and keeps those
     /// references; they are given back later, by their release). Peak restarts
-    /// from `keep`. Like [`reset`](Self::reset), not for a Domain being charged
-    /// from other harts: a release that lands between the caller's count and the
-    /// store leaves the count high (the safe side) until the next declaration.
+    /// from `keep`. The caller makes the count and this store in one step under
+    /// the object table's lock (`domain::reset_budget`, the retained hook), so a
+    /// restore, a MOVE-in, a release or a purge from another hart cannot fall
+    /// between them. Like [`reset`](Self::reset), not for a Domain whose
+    /// frames are charged from elsewhere outside that lock.
     /// Canary `budget-exec-zeroes-canary`: nothing is kept, so a later release
     /// discharges from the new image's count.
     pub fn reset_keeping(&self, keep: u32) {

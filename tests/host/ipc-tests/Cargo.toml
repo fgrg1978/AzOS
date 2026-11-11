@@ -103,6 +103,8 @@ port-bells-shared-canary = []
 memobj-move-keeps-map-canary = []
 memobj-share-no-narrow-canary = []
 memobj-charge-stays-canary = []
+# Canary (host row): a page in transit is counted as resident by the exec's keep.
+exec-count-transit-canary = []
 memobj-protect-max-canary = []
 memobj-cow-no-break-canary = []
 memobj-no-kernel-map-canary = []

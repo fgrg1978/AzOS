@@ -2637,20 +2637,38 @@ pub fn memobj_exec(tid: u32) {
 }
 
 /// Frames the objects charged to the Domain `key` hold now: the pages of each
-/// active region it is charged for, less the pages that are out (they gave their
-/// charge back when they left). What an exec keeps in the budget, because the
-/// objects' references outlive the image (`memobj_exec`).
+/// active region it is charged for, less the pages that are out or in transit
+/// (a page leaves the count when the storm takes it, before it is out). What an
+/// exec keeps in the budget, because the objects' references outlive the image
+/// (`memobj_exec`).
 pub fn memobj_charged_pages(key: u32) -> u32 {
-    if key == 0 {
-        return 0;
-    }
+    let mut n = 0;
+    memobj_with_charged_pages(key, &mut |p| n = p);
+    n
+}
+
+/// [`memobj_charged_pages`], handed to `f` with the object table still locked:
+/// every charge a MOVE-in or a restore makes, and every discharge a release or a
+/// purge makes, is made under that lock, so what `f` does with the count (the
+/// exec's budget store) cannot lose one of them between the count and the store.
+/// `f` takes no lock of the table's order and does not call back into it.
+pub fn memobj_with_charged_pages(key: u32, f: &mut dyn FnMut(u32)) {
     let regions = MEMOBJS.lock();
-    regions
-        .regions
-        .iter()
-        .filter(|r| r.active && r.charge_key == key)
-        .map(|r| (r.page_count as u32).saturating_sub(r.out.count_ones()))
-        .fold(0u32, u32::saturating_add)
+    let n = if key == 0 {
+        0
+    } else {
+        regions
+            .regions
+            .iter()
+            .filter(|r| r.active && r.charge_key == key)
+            .map(|r| {
+                // Canary `exec-count-transit-canary`: a page in transit is counted as resident.
+                let away = if cfg!(feature = "exec-count-transit-canary") { r.out } else { r.out | r.transit };
+                (r.page_count as u32).saturating_sub(away.count_ones())
+            })
+            .fold(0u32, u32::saturating_add)
+    };
+    f(n);
 }
 
 /// Get info about a shared memory region: (page_count, references saturated at `u32::MAX`, perms).
@@ -6390,6 +6408,21 @@ mod tests {
         assert_eq!(memobj_charged_pages(ka), azos_sched::shim_charged(A));
         assert_eq!(memobj_charged_pages(kb), 0);
         assert_eq!(memobj_charged_pages(0), 0, "no Domain, nothing");
+        {
+            // A page the storm took is discharged before it is out: it is in
+            // transit, and it is not in the count either.
+            let mut t = MEMOBJS.lock();
+            let i = t.regions.iter().position(|r| r.active && r.page_count == 4).unwrap();
+            t.regions[i].transit = 0b10;
+            t.regions[i].out = 0b01;
+        }
+        assert_eq!(memobj_charged_pages(ka), 5, "4 - (1 out + 1 transit) + 3");
+        {
+            let mut t = MEMOBJS.lock();
+            let i = t.regions.iter().position(|r| r.active && r.page_count == 4).unwrap();
+            t.regions[i].transit = 0;
+            t.regions[i].out = 0;
+        }
         let cap_b = transfer(A, B, cap_a, false, None).expect("the capability moves");
         assert_eq!((memobj_charged_pages(ka), memobj_charged_pages(kb)), (3, 4), "the charge follows the holder");
         release(B, cap_b).expect("released");

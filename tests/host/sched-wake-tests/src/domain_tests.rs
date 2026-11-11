@@ -692,11 +692,8 @@ fn a_domains_death_gives_its_growth_back_to_the_pool() {
 /// **Canary** `budget-exec-zeroes-canary`: the reset keeps nothing.
 #[test]
 fn an_exec_keeps_the_object_pages_and_the_release_then_leaves_the_new_image() {
-    use std::sync::atomic::{AtomicU32, Ordering};
-    static OBJECTS: AtomicU32 = AtomicU32::new(0);
-    fn retained(_: Key) -> u32 { OBJECTS.load(Ordering::SeqCst) }
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| domain::set_retained_hook(retained));
+    use std::sync::atomic::Ordering;
+    retained_hook_once();
     let _s = serial();
     let k = domain::create().expect("a free domain");
     domain::set_limit(k, 12);
@@ -740,5 +737,65 @@ fn a_promised_page_table_is_charged_to_the_kmem_ledger_past_its_limit() {
     assert!(!kmem_charge_atomic(k, KmemClass::PageTable, 4096), "still over the limit by one table");
     kmem_discharge(k, KmemClass::PageTable, 4096);
     assert!(kmem_charge_atomic(k, KmemClass::PageTable, 4096), "back under it, a table fits");
+    free_all(k);
+}
+
+/// **An exec is admitted beside what the Domain's objects keep.** The reset keeps
+/// the objects' pages in the count, so an image that fits the limit alone but
+/// not with them (limit 12, objects 8, image 6) is refused at admission, before
+/// the exec is certain, and never installed uncharged after it. One that fits
+/// beside them (4) is admitted, and installing it takes the count to the limit
+/// without a refusal.
+/// **Canary** `exec-admit-ignores-objects-canary`: only the image is counted.
+#[test]
+fn an_image_that_does_not_fit_beside_the_objects_is_refused_at_admission() {
+    use std::sync::atomic::Ordering;
+    retained_hook_once();
+    let _s = serial();
+    OBJECTS.store(8, Ordering::SeqCst);
+    let k = domain::create().expect("a free domain");
+    domain::set_limit(k, 12);
+    assert_eq!(domain::retained_pages(k), 8);
+    assert!(!domain::exec_fits(k, 12, 6), "6 + 8 held is past 12: refused, not run uncharged");
+    assert!(domain::exec_fits(k, 12, 4), "4 + 8 is exactly the limit");
+    assert!(domain::exec_fits(k, 0, 1_000_000), "no limit: anything");
+    domain::reset_budget(k);
+    assert_eq!(domain::charge_unrefused(k, 4), Some(12), "the admitted image is installed in full");
+    assert_eq!(domain::used_limit(k).0, 12);
+    OBJECTS.store(0, Ordering::SeqCst);
+    free_all(k);
+}
+
+static OBJECTS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+fn retained(_: Key, sink: &mut dyn FnMut(u32)) {
+    sink(OBJECTS.load(std::sync::atomic::Ordering::SeqCst))
+}
+
+/// The one stand-in for what the Domain's objects hold, installed once.
+fn retained_hook_once() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| domain::set_retained_hook(retained));
+}
+
+/// **A fresh task's reset does not walk the objects.** A fork's or spawn's
+/// child starts in a Domain of its own that holds no object: its reset is the
+/// plain one, with no hook call (an exec's keeps what the hook counts). With 8
+/// pages "held" the exec's reset keeps them and the fresh one does not.
+/// **Canary** `fresh-reset-walks-hook-canary`.
+#[test]
+fn a_fresh_tasks_reset_is_the_plain_one_and_an_execs_keeps_the_objects() {
+    retained_hook_once();
+    let _s = serial();
+    OBJECTS.store(8, std::sync::atomic::Ordering::SeqCst);
+    let k = domain::create().expect("a free domain");
+    domain::set_limit(k, 20);
+    assert!(domain::charge(k, 10).is_some());
+    domain::reset_budget_fresh(k);
+    assert_eq!(domain::used_limit(k).0, 0, "no hook walk: the plain reset");
+    assert!(domain::charge(k, 10).is_some());
+    domain::reset_budget(k);
+    assert_eq!(domain::used_limit(k).0, 8, "an exec keeps what the objects hold");
+    OBJECTS.store(0, std::sync::atomic::Ordering::SeqCst);
     free_all(k);
 }

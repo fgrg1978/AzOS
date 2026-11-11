@@ -569,18 +569,28 @@ pub fn mm_install_frames(limit: u32, ceiling: u32, locked: bool, frames: u32) {
     let idx = my_idx();
     {
         if idx >= MAX_TASKS { return; }
-        install_domain_mem(TASKS[idx].domain(), limit, ceiling, locked, frames);
+        install_domain_mem(TASKS[idx].domain(), limit, ceiling, locked, frames, true);
     }
 }
 
 /// Give the domain `d` the budget `limit`, the growth ceiling `ceiling` (its
 /// row's `mem_pages_max`) and lock `locked`, and charge it `frames` (what its
 /// freshly built address space already holds).
-fn install_domain_mem(d: crate::domain::Key, limit: u32, ceiling: u32, locked: bool, frames: u32) {
+///
+/// `promised`: the frames were admitted against the limit with what the Domain's
+/// objects hold ([`mm_install_frames`], exec), so they are charged without the
+/// refusal that would drop them silently; a spawn's or fork's are charged as
+/// before.
+fn install_domain_mem(d: crate::domain::Key, limit: u32, ceiling: u32, locked: bool, frames: u32, promised: bool) {
     crate::domain::set_limit(d, limit);
     crate::domain::set_ceiling(d, ceiling);
     crate::domain::set_mem_locked(d, locked);
-    if let Some(used) = crate::domain::charge(d, frames) {
+    let used = if promised {
+        crate::domain::charge_unrefused(d, frames)
+    } else {
+        crate::domain::charge(d, frames)
+    };
+    if let Some(used) = used {
         MM_PEAK_GLOBAL.fetch_max(used, Ordering::Relaxed);
     }
 }
@@ -675,7 +685,7 @@ pub fn set_task_mem(idx: usize, limit: u32, ceiling: u32, locked: bool, frames: 
     }
     unsafe {
         if idx >= MAX_TASKS || !TASK_VALID[idx].load(Ordering::Relaxed) { return false; }
-        install_domain_mem(TASKS[idx].domain(), limit, ceiling, locked, frames);
+        install_domain_mem(TASKS[idx].domain(), limit, ceiling, locked, frames, false);
     }
     true
 }
@@ -887,7 +897,7 @@ pub fn mm_instance_refusals() -> u32 {
 pub fn mm_reset_charge() {
     let idx = my_idx();
     {
-        if idx != usize::MAX { crate::domain::reset_budget(TASKS[idx].domain()); }
+        if idx != usize::MAX { crate::domain::reset_budget_fresh(TASKS[idx].domain()); }
     }
 }
 

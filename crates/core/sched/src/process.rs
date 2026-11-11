@@ -437,10 +437,18 @@ fn exec_admit(
             }
         }
     }
-    if spec.limit != 0 && ctx.frames > spec.limit {
+    // The exec keeps what the Domain's objects hold in the count, so the image
+    // is admitted beside them: the install after the commit cannot be refused.
+    let cur_domain = crate::scheduler::current_domain();
+    let held = cur_domain.map_or(0, crate::domain::retained_pages);
+    let fits = match cur_domain {
+        Some(d) => crate::domain::exec_fits(d, spec.limit, ctx.frames),
+        None => spec.limit == 0 || ctx.frames <= spec.limit,
+    };
+    if !fits {
         azos_drv_sys::kwarn!(
-            "[MEM] exec REFUSED: the image needs {} pages, its budget is {}",
-            ctx.frames, spec.limit,
+            "[MEM] exec REFUSED: the image needs {} pages beside the {} its objects hold, its budget is {}",
+            ctx.frames, held, spec.limit,
         );
         crate::scheduler::note_mm_quota_refusal();
         azos_mm::aspace::destroy(space);

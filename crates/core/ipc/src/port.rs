@@ -218,6 +218,8 @@ pub struct Port {
     /// after a queued event was delivered, cleared after a source's was.
     pub sources_first: bool,
     pub owner_task: usize,
+    /// The Domain the port's record was charged to at create (`KmemClass::Port`).
+    pub kmem_key: u32,
     pub active: bool,
     /// Pending events (written by wake, read by port_wait).
     pub pending: [PortEvent; PORT_MAX_SOURCES],
@@ -288,12 +290,9 @@ fn clear_port_locked(t: &mut PortTable, i: usize) {
     }
     // A live port gives its record back to the Domain it was charged to (atomic
     // subtractions, safe under the table lock).
+    // From the key stored at create, not the owner's task slot (reused by then).
     if t[i].active && t[i].owner_task != usize::MAX {
-        crate::cap_store::kmem_discharge(
-            crate::cap_store::domain_key_of(t[i].owner_task as u32),
-            crate::cap_store::KMEM_PORT,
-            PORT_KMEM_BYTES,
-        );
+        crate::cap_store::kmem_discharge(t[i].kmem_key, crate::cap_store::KMEM_PORT, PORT_KMEM_BYTES);
     }
     t[i] = Port::empty();
 }
@@ -307,6 +306,7 @@ impl Port {
             cursor: 0,
             sources_first: false,
             owner_task: usize::MAX,
+            kmem_key: 0,
             active: false,
             pending: [EMPTY_EVT; PORT_MAX_SOURCES],
             pending_count: AtomicU32::new(0),
@@ -565,7 +565,7 @@ fn create_core(owner_task: usize) -> Option<(u32, u32)> {
     if !crate::cap_store::kmem_charge(key, crate::cap_store::KMEM_PORT, PORT_KMEM_BYTES) {
         return None;
     }
-    let made = create_slot(owner_task);
+    let made = create_slot(owner_task, key);
     if made.is_none() {
         crate::cap_store::kmem_discharge(key, crate::cap_store::KMEM_PORT, PORT_KMEM_BYTES);
     }
@@ -575,7 +575,7 @@ fn create_core(owner_task: usize) -> Option<(u32, u32)> {
 /// Kernel memory a port keeps for its creator's Domain.
 const PORT_KMEM_BYTES: u64 = core::mem::size_of::<Port>() as u64;
 
-fn create_slot(owner_task: usize) -> Option<(u32, u32)> {
+fn create_slot(owner_task: usize, kmem_key: u32) -> Option<(u32, u32)> {
     // Two passes at most: the second runs only after this call's own
     // per-slot wrap sweep finishes.
     for _ in 0..2 {
@@ -608,6 +608,7 @@ fn create_slot(owner_task: usize) -> Option<(u32, u32)> {
         let epoch = ports.epoch[slot];
         ports[slot] = Port::empty();
         ports[slot].owner_task = owner_task;
+        ports[slot].kmem_key = kmem_key;
         ports[slot].active = true;
         ports[slot].generation = gen;
         ports[slot].epoch = epoch;

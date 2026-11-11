@@ -43,6 +43,9 @@ azos_devif = { path = "../../../crates/core/devif" }
 [dev-dependencies]
 
 [features]
+# Canary (host row, sched-wake-tests): an exec admits its image without counting what the objects keep.
+exec-admit-ignores-objects-canary = []
+fresh-reset-walks-hook-canary = []
 # `timer_heap.rs` (pulled by path): every slot gets one rank.
 timer-rank-canary = []
 # `domain::leave` gives a dead Domain's growth back to the pool (`PageBudget::release_growth`); the canary keeps it.

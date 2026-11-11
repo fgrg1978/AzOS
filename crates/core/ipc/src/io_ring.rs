@@ -417,6 +417,10 @@ pub struct IoRingState {
     pub sqpoll_idle_ms: u32,
     /// The page was charged to `owner_task`'s budget at create.
     pub charged: bool,
+    /// The Domain the page and the entry were charged to at create (valid with
+    /// `charged`): what is given back, whatever has become of the owner's task
+    /// slot by then (a ring caught in flight is freed after the owner exited).
+    pub charge_key: u32,
     /// The event port this ring is bound to as a source (`PORT_BIND`,
     /// type 1), or `PortLink::NONE`. A pass that wrote at least one completion
     /// reads it when its claim is released and signals that port after the
@@ -446,6 +450,7 @@ impl IoRingState {
             poller_tid: 0,
             sqpoll_idle_ms: 0,
             charged: false,
+            charge_key: 0,
             link: PortLink::NONE,
             reap_again: false,
             kick_on_release: false,
@@ -750,14 +755,18 @@ fn create_core(owner_task: usize) -> Option<(u32, usize)> {
     // the creator is the calling process; freeing it gives the charge back
     // (`uncharge_owner`).
     let charged = azos_sched::current_proc_tid() as usize == owner_task;
-    if charged && !charge_ring(owner_task) {
-        return None;
+    let mut charge_key = 0;
+    if charged {
+        match charge_ring(owner_task) {
+            Some(k) => charge_key = k,
+            None => return None,
+        }
     }
     // Allocate a physical page for the shared ring
     let page = match azos_mm::pmm::alloc_page_zone(azos_mm::zone::Zone::Ring) {
         Ok(p) => p,
         Err(_) => {
-            if charged { give_back_ring(owner_task); }
+            if charged { give_back_ring(charge_key); }
             return None;
         }
     };
@@ -821,6 +830,7 @@ fn create_core(owner_task: usize) -> Option<(u32, usize)> {
                     user_va: 0,
                     poller_tid: 0,
                     charged,
+                    charge_key,
                     sqpoll_idle_ms: 0,
                     link: PortLink::NONE,
                     reap_again: false,
@@ -852,7 +862,7 @@ fn create_core(owner_task: usize) -> Option<(u32, usize)> {
     }
     // Quota reached, no free slot, or refused during a sweep: the page goes back.
     let _ = azos_mm::pmm::free_page(page);
-    if charged { give_back_ring(owner_task); }
+    if charged { give_back_ring(charge_key); }
     None
 }
 
@@ -881,12 +891,8 @@ pub fn io_ring_charged_pages(key: u32) -> u32 {
 /// creator (`mm_discharge_tid`), which folds it in at its next charge.
 fn uncharge_owner(state: &IoRingState) {
     if state.charged {
-        azos_sched::mm_discharge_tid(state.owner_task as u32, 1);
-        crate::cap_store::kmem_discharge(
-            crate::cap_store::domain_key_of(state.owner_task as u32),
-            crate::cap_store::KMEM_IO_RING,
-            RING_KMEM_BYTES,
-        );
+        azos_sched::mm_discharge_domain(state.charge_key, 1);
+        crate::cap_store::kmem_discharge(state.charge_key, crate::cap_store::KMEM_IO_RING, RING_KMEM_BYTES);
     }
 }
 
@@ -894,27 +900,24 @@ fn uncharge_owner(state: &IoRingState) {
 const RING_KMEM_BYTES: u64 = core::mem::size_of::<IoRingState>() as u64;
 
 /// Charge a new ring to the calling process's Domain: its page to the frame
-/// budget and its entry to the kernel-memory ledger, all or nothing.
-fn charge_ring(owner_task: usize) -> bool {
+/// budget and its entry to the kernel-memory ledger, all or nothing. The key of
+/// the Domain it was charged to, stored in the ring to give back to it.
+fn charge_ring(owner_task: usize) -> Option<u32> {
     if !azos_sched::mm_charge(1) {
-        return false;
+        return None;
     }
     let key = crate::cap_store::domain_key_of(owner_task as u32);
     if !crate::cap_store::kmem_charge(key, crate::cap_store::KMEM_IO_RING, RING_KMEM_BYTES) {
         azos_sched::mm_discharge(1);
-        return false;
+        return None;
     }
-    true
+    Some(key)
 }
 
 /// What [`charge_ring`] took, for a ring that was never published.
-fn give_back_ring(owner_task: usize) {
-    azos_sched::mm_discharge(1);
-    crate::cap_store::kmem_discharge(
-        crate::cap_store::domain_key_of(owner_task as u32),
-        crate::cap_store::KMEM_IO_RING,
-        RING_KMEM_BYTES,
-    );
+fn give_back_ring(key: u32) {
+    azos_sched::mm_discharge_domain(key, 1);
+    crate::cap_store::kmem_discharge(key, crate::cap_store::KMEM_IO_RING, RING_KMEM_BYTES);
 }
 
 /// Table slot of a ring id that has passed `ring_id < MAX_IO_RINGS`, masked
@@ -1483,6 +1486,14 @@ pub fn io_ring_release_all(tid: u32) {
                 // here on, so exactly one pass remains and it owns the free.
                 state.active = false;
                 state.orphaned = true;
+                // The charge goes back now, from the key stored at create: the
+                // page's free waits for the pass, the Domain's room does not
+                // (and the owner's slot may be reused before the pass ends).
+                // Canary `io-ring-exit-keeps-charge-canary`.
+                if !cfg!(feature = "io-ring-exit-keeps-charge-canary") {
+                    uncharge_owner(state);
+                    state.charged = false;
+                }
                 None
             } else {
                 let phys = state.phys_addr;
@@ -3237,6 +3248,8 @@ mod tests {
     // `io_ring_release_all` re-enters the table from exactly the window the
     // `in_flight` flag exists to protect.
 
+    /// The Domain's frame charge right after the exit hook, with the pass still running.
+    static CHARGED_DURING_PASS: AtomicU32 = AtomicU32::new(u32::MAX);
     static ORPHAN_ARMED: AtomicBool = AtomicBool::new(false);
     static ORPHAN_TID: AtomicU32 = AtomicU32::new(0);
     static ORPHAN_PHYS: AtomicUsize = AtomicUsize::new(0);
@@ -3271,6 +3284,7 @@ mod tests {
                 io_ring_owner(ORPHAN_RING.load(AOrd::SeqCst)).unwrap_or(usize::MAX),
                 AOrd::SeqCst,
             );
+            CHARGED_DURING_PASS.store(azos_sched::shim_charged(ORPHAN_TID.load(AOrd::SeqCst)), AOrd::SeqCst);
             let creator = CREATE_IN_WINDOW_FOR.swap(0, AOrd::SeqCst);
             if creator != 0 {
                 let made = io_ring_create(creator as usize)
@@ -3810,10 +3824,19 @@ mod tests {
 
     #[test]
     fn owner_death_mid_pass_defers_the_page_free_to_release_ring() {
+        use crate::cap_store::{kmem_fake, KMEM_IO_RING};
         let _g = setup();
+        kmem_fake::install();
+        let key = crate::cap_store::domain_key_of(OWNER);
+        kmem_fake::forget(key);
+        // Three pages the Domain holds for something else: a ring given back
+        // twice (or not at all) would show against them.
+        assert!(azos_sched::mm_charge(3));
+        let before = azos_sched::shim_charged(OWNER);
         io_ring_register_ops(&TEST_OPS);
 
         let (id, phys) = io_ring_create(OWNER as usize).unwrap();
+        assert_eq!(azos_sched::shim_charged(OWNER), before + 1);
         ORPHAN_ARMED.store(true, AOrd::SeqCst);
         ORPHAN_TID.store(OWNER, AOrd::SeqCst);
         ORPHAN_PHYS.store(phys, AOrd::SeqCst);
@@ -3836,6 +3859,13 @@ mod tests {
         );
         // ...but the slot is already closed to new claims.
         assert_eq!(OWNER_DURING_PASS.load(AOrd::SeqCst), usize::MAX);
+        // The Domain's page and entry went back at the exit, once, from the key
+        // stored at create: not at the pass's end, after the owner's slot may be
+        // reused. Canary `io-ring-exit-keeps-charge-canary`.
+        assert_eq!(CHARGED_DURING_PASS.load(AOrd::SeqCst), before, "the ring's page went back at the exit, with the pass still running");
+        assert_eq!(azos_sched::shim_charged(OWNER), before, "and once, not again at the pass's end");
+        assert_eq!(kmem_fake::used(key, KMEM_IO_RING), 0, "and its entry");
+        kmem_fake::forget(key);
 
         // And once the claim is released, the page is freed exactly once.
         assert_eq!(azos_mm::shim_free_count(phys), 1);

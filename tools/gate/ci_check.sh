@@ -13928,6 +13928,21 @@ host_job host_feature_row "budget: an exec keeps the object pages (sched-wake)" 
 host_job host_feature_row "budget: the pages an exec keeps are the objects' (ipc)" ipc-tests "" the_pages_an_exec_keeps_are_the_pages_the_objects_were_charged
 host_job host_canary_row "budget: an exec zeroes the ledger canary" sched-wake-tests budget-exec-zeroes-canary \
     an_exec_keeps_the_object_pages_and_the_release_then_leaves_the_new_image
+# An exec is admitted beside the objects' pages (domain::exec_fits) and the image
+# is installed without refusal; the keep is counted under the object table's lock
+# with pages in transit away; a fresh task's reset is the plain one; a ring's
+# charge goes back at the owner's exit from the key stored at create.
+host_job host_feature_row "budget: an exec admits beside the objects (sched-wake)" sched-wake-tests "" an_image_that_does_not_fit_beside_the_objects_is_refused_at_admission
+host_job host_feature_row "budget: a fresh reset is plain (sched-wake)" sched-wake-tests "" a_fresh_tasks_reset_is_the_plain_one_and_an_execs_keeps_the_objects
+host_job host_feature_row "budget: an in-flight ring is uncharged at exit (ipc)" ipc-tests "" owner_death_mid_pass_defers_the_page_free_to_release_ring
+host_job host_canary_row "budget: an exec admits without the objects canary" sched-wake-tests exec-admit-ignores-objects-canary \
+    an_image_that_does_not_fit_beside_the_objects_is_refused_at_admission
+host_job host_canary_row "budget: a fresh reset walks the hook canary" sched-wake-tests fresh-reset-walks-hook-canary \
+    a_fresh_tasks_reset_is_the_plain_one_and_an_execs_keeps_the_objects
+host_job host_canary_row "budget: an exec counts a page in transit canary" ipc-tests exec-count-transit-canary \
+    the_pages_an_exec_keeps_are_the_pages_the_objects_were_charged
+host_job host_canary_row "kmem: an in-flight ring keeps its charge canary" ipc-tests io-ring-exit-keeps-charge-canary \
+    owner_death_mid_pass_defers_the_page_free_to_release_ring
 # A same-filled page costs its header against its owner's pool quota
 # (zpool::insert_fill). zpool-fill-free-canary: it is free again.
 host_job host_feature_row "zpool: a fill is charged (model)" mm-tests "" a_same_filled_page_is_charged_to_its_owner_and_one_owner_cannot_fill_the_pool

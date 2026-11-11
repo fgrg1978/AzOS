@@ -33,6 +33,9 @@ azos_decision = { path = "../../../../../crates/core/decision" }
 azos_common = { path = "../../../../../crates/core/common" }
 
 [features]
+# Canary (host row, sched-wake-tests): an exec admits its image without counting what the objects keep.
+exec-admit-ignores-objects-canary = []
+fresh-reset-walks-hook-canary = []
 # The real futex_table.rs is pulled in by `#[path]`: its canary must be a known
 # feature here (ipc-tests runs it).
 futex-look-unlocked-canary = []

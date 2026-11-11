@@ -56,9 +56,13 @@ pub mod launch_cap;
 pub mod cap_seed;
 
 /// Pages the Domain `key` holds in objects that outlive an exec (MemObj frames,
-/// io_ring pages): what `azos_sched::domain::reset_budget` keeps.
-pub fn exec_retained_pages(key: u32) -> u32 {
-    memobj_core::memobj_charged_pages(key).saturating_add(io_ring::io_ring_charged_pages(key))
+/// io_ring pages), handed to `sink` with the MemObj table locked: what
+/// `azos_sched::domain::reset_budget` keeps. The rings are counted first, on
+/// their own lock: they are created and released by the Domain's own (single)
+/// thread at exec; the MemObj side is the one other Domains' threads charge.
+pub fn exec_retained_pages(key: u32, sink: &mut dyn FnMut(u32)) {
+    let rings = io_ring::io_ring_charged_pages(key);
+    memobj_core::memobj_with_charged_pages(key, &mut |m| sink(m.saturating_add(rings)));
 }
 
 pub use io_ring::{

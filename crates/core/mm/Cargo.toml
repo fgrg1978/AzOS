@@ -200,6 +200,7 @@ budget-ceiling-ignored-canary = []
 # brk_heap.rs `a_heap_grows_only_as_far_as_the_growth_pool` fail.
 budget-pool-ignored-canary = []
 budget-exec-zeroes-canary = []
+exec-count-transit-canary = []
 zpool-fill-free-canary = []
 kmem-promised-refused-canary = []
 # Host-suite canary: the base an exec keeps and a fork child starts from is
