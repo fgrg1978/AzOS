@@ -1056,8 +1056,8 @@ mod budget_tests {
     use super::budget::{growth_pool, set_growth_pool, Granted, PageBudget, RequestRefused};
 
     /// The growth pool is one for the whole suite: the rows that grow take turns.
-    static POOL: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    fn pool(pages: u64) -> std::sync::MutexGuard<'static, ()> {
+    pub(crate) static POOL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    pub(crate) fn pool(pages: u64) -> std::sync::MutexGuard<'static, ()> {
         let g = POOL.lock().unwrap_or_else(|e| e.into_inner());
         set_growth_pool(pages);
         g
@@ -1612,6 +1612,9 @@ mod compress_reclaim;
 // A Domain's level of memory pressure (`Rule::MemPressure`): budget.rs rows.
 #[cfg(test)]
 mod pressure;
+// The budget ledgers under stress: all-or-nothing, saturation, harts, hysteresis, locked/RT.
+#[cfg(test)]
+mod budget_stress;
 // Owner rule F1 in swap (no lock across the device wait) and the system watermark.
 #[cfg(test)]
 mod swap_f1;

@@ -577,6 +577,7 @@ pub fn leave(key: Key) -> bool {
                 // Before the Domain is marked free, so a walk never sees a
                 // child whose limits are not yet its own.
                 detach(key, d);
+                d.budget.release_growth();
             }
             d.live.fetch_sub(1, Ordering::AcqRel) == 1
         }

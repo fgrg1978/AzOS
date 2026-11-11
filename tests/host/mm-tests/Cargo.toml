@@ -62,6 +62,11 @@ budget-ceiling-ignored-canary = []
 phys-inherit-ignored-canary = []
 budget-pool-ignored-canary = []
 budget-keep-grown-canary = []
+budget-death-keeps-growth-canary = []
+kmem-class-wrap-canary = []
+kmem-racy-charge-canary = []
+pressure-flap-canary = []
+budget-restore-refused-canary = []
 # L2 (physical memory) canaries for the pulled frame.rs / buddy.rs /
 # cow_table.rs (see src/buddy_tests.rs and src/pmm_tests.rs).
 buddy-merge-canary = []

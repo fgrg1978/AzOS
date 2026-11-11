@@ -43,6 +43,8 @@ azos_devif = { path = "../../../crates/core/devif" }
 [features]
 # `timer_heap.rs` (pulled by path): every slot gets one rank.
 timer-rank-canary = []
+# `domain::leave` gives a dead Domain's growth back to the pool (`PageBudget::release_growth`); the canary keeps it.
+budget-death-keeps-growth-canary = ["azos_mm/budget-death-keeps-growth-canary"]
 # Plan item 7 canary of `wait.rs`, declared for the same reason, never enabled.
 kill-reblock-canary = []
 # ipc-deadline-budget's proxy canary of the pulled-in `rt_core.rs`, declared

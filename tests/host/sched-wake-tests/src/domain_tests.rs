@@ -656,3 +656,28 @@ fn a_growth_and_a_refusal_at_the_ceiling_leave_a_record() {
     assert_eq!(grow_records(k, before), vec![(a, [2, 10, 12]), (r, [1, 10, 12]), (r, [4, 10, 12])]);
     free_all(k);
 }
+
+/// **A Domain's death gives its growth back to the pool.** The pool is what
+/// admission left free after the admitted bases; a Domain that grew past its
+/// base and then died must not keep the frames out of it until its slot is
+/// declared again by another Domain (`create_child` does that, much later).
+/// A member leaving that is not the last gives nothing back.
+/// **Canary** `budget-death-keeps-growth-canary`: the growth stays out of the
+/// pool until the slot is reused.
+#[test]
+fn a_domains_death_gives_its_growth_back_to_the_pool() {
+    let _s = serial();
+    azos_mm::budget::set_growth_pool(10);
+    let k = domain::create().expect("a free domain");
+    domain::set_limit(k, 8);
+    domain::set_ceiling(k, 16);
+    assert!(matches!(domain::charge_request(k, 8, true), Some(Ok((azos_mm::budget::Granted::Within, 8)))));
+    assert!(matches!(domain::charge_request(k, 6, true), Some(Ok((azos_mm::budget::Granted::Grew(6), 14)))));
+    assert_eq!(azos_mm::budget::growth_pool(), 4);
+    assert!(domain::join(k));
+    assert!(!domain::leave(k), "a member that is not the last");
+    assert_eq!(azos_mm::budget::growth_pool(), 4, "the Domain still lives, and so does its growth");
+    assert!(domain::leave(k), "the last member");
+    assert_eq!(azos_mm::budget::growth_pool(), 10, "a dead Domain holds no growth");
+    assert!(domain::charge_request(k, 1, true).is_none(), "and its key names nothing");
+}

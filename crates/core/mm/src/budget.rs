@@ -115,6 +115,9 @@ impl Pressure {
 /// `Warning` until it is at or below `low` (where a storm stops).
 #[must_use]
 pub const fn pressure_after(cur: Pressure, used: u32, low: u32, high: u32, limit: u32) -> Pressure {
+    // Canary `pressure-flap-canary`: the level forgets where it was, so it
+    // follows the charge both ways and flaps at a watermark.
+    let cur = if cfg!(feature = "pressure-flap-canary") { Pressure::Normal } else { cur };
     if limit == 0 || high == 0 {
         Pressure::Normal
     } else if used >= limit {
@@ -541,6 +544,14 @@ impl PageBudget {
     /// for why the limit is not tested here.
     pub fn charge_restore(&self, pages: u32) {
         if pages == 0 { return; }
+        // Canary `budget-restore-refused-canary`: a restore past the limit is
+        // dropped, as a refused charge would be, and the page is not counted.
+        if cfg!(feature = "budget-restore-refused-canary") {
+            let limit = self.limit.load(Ordering::Relaxed);
+            if limit != 0 && self.used.load(Ordering::Relaxed).saturating_add(pages) > limit {
+                return;
+            }
+        }
         let prev = self.used.fetch_update(Ordering::AcqRel, Ordering::Relaxed, |u| Some(u.saturating_add(pages)));
         let next = prev.unwrap_or(u32::MAX).saturating_add(pages);
         self.peak.fetch_max(next, Ordering::Relaxed);
@@ -660,6 +671,18 @@ impl PageBudget {
     pub fn discharge(&self, pages: u32) {
         if pages == 0 { return; }
         let _ = self.used.fetch_update(Ordering::AcqRel, Ordering::Relaxed, |u| Some(u.saturating_sub(pages)));
+    }
+
+    /// Give the growth past the base back to the pool: the Domain's last member
+    /// has gone, and a dead Domain keeps nothing that was promised to others.
+    /// The limit is left as it is (a late discharge needs no room); the next
+    /// declaration of the limit finds nothing more to give back.
+    /// Canary `budget-death-keeps-growth-canary`: nothing is given back until
+    /// the slot is declared again.
+    pub fn release_growth(&self) {
+        if !cfg!(feature = "budget-death-keeps-growth-canary") {
+            pool_give(self.grown.swap(0, Ordering::AcqRel));
+        }
     }
 
     /// Forget the used count AND the peak — the address space either
@@ -794,12 +817,30 @@ impl KmemBudget {
         loop {
             let next = cur.saturating_add(bytes);
             let limit = self.limit.load(Ordering::Relaxed);
+            // Canary `kmem-racy-charge-canary`: the limit is tested and the sum
+            // stored in two steps, so two harts can both pass the same headroom.
+            if cfg!(feature = "kmem-racy-charge-canary") {
+                if limit != 0 && next > limit {
+                    return Err(KmemRefusal { class, bytes, used: cur, limit });
+                }
+                self.used.store(self.used.load(Ordering::Relaxed).saturating_add(bytes), Ordering::Release);
+                self.by_class[class as usize].fetch_add(bytes, Ordering::AcqRel);
+                return Ok(());
+            }
             if limit != 0 && next > limit {
                 return Err(KmemRefusal { class, bytes, used: cur, limit });
             }
             match self.used.compare_exchange_weak(cur, next, Ordering::AcqRel, Ordering::Relaxed) {
                 Ok(_) => {
-                    self.by_class[class as usize].fetch_add(bytes, Ordering::AcqRel);
+                    // Saturating, like `used`: a class word that wrapped would
+                    // break `used == sum of the classes`. Canary
+                    // `kmem-class-wrap-canary`: the plain atomic add, which wraps.
+                    if cfg!(feature = "kmem-class-wrap-canary") {
+                        self.by_class[class as usize].fetch_add(bytes, Ordering::AcqRel);
+                    } else {
+                        let _ = self.by_class[class as usize]
+                            .fetch_update(Ordering::AcqRel, Ordering::Relaxed, |u| Some(u.saturating_add(bytes)));
+                    }
                     return Ok(());
                 }
                 Err(now) => cur = now,

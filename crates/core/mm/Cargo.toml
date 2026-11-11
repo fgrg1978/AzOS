@@ -81,6 +81,13 @@ refcount-canary = []
 pmm-inflight-canary = []
 # Canary only: the frame budget's charge tests the limit and stores in two steps (host row, tests/host/mm-tests).
 budget-racy-charge-canary = []
+# Canaries only (host rows, tests/host/mm-tests, sched-wake-tests): a dead Domain keeps the growth it took from the pool;
+# a class word of the kernel-memory ledger wraps; its charge tests the limit and stores in two steps.
+budget-death-keeps-growth-canary = []
+kmem-class-wrap-canary = []
+kmem-racy-charge-canary = []
+pressure-flap-canary = []
+budget-restore-refused-canary = []
 slab-align-canary = []
 # Gate row only: `vdso_update` holds its write open longer, so an
 # interrupt inside it is all but certain were the write not masked. The
