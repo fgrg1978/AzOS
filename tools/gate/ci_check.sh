@@ -13927,6 +13927,10 @@ host_job host_canary_row "fs: an unbounded write hole canary" fs-tests fat-hole-
     a_hole_past_the_bound_is_refused_before_anything_is_written
 host_job host_canary_row "fs: a failed hole keeps its clusters canary" fs-tests fat-hole-unbounded-canary \
     a_hole_that_runs_out_of_space_gives_its_clusters_back
+host_job host_canary_row "fs: a name with unrepresentable bytes canary" fs-tests fat-name-bytes-canary \
+    a_name_that_is_not_a_short_name_is_refused_at_create
+host_job host_canary_row "fs: a name born deleted leaks chains canary" fs-tests fat-name-bytes-canary \
+    a_name_born_deleted_costs_no_cluster
 host_job host_canary_row "call task: no deadline to the server canary (devif)" devif-tests call-deadline-canary \
     a_call_through_the_task_carries_the_clients_deadline_to_the_server
 host_job host_canary_row "ring-3: dt inherited coherence canary" hwbus-tests dt-inherited-coherent-canary \

@@ -5247,20 +5247,6 @@ fn write_file_journaled_inner(v: &'static Vol, f: &FName, data: &[u8]) -> Result
     fat32_journal_clear(v)
 }
 
-/// Convert a raw filename (no slashes) to FAT32 8.3 format.
-fn path_to_83_local(name: &[u8]) -> Option<[u8; 11]> {
-    if name.is_empty() { return None; }
-    let (base, ext) = match name.iter().position(|&b| b == b'.') {
-        Some(i) => (&name[..i], &name[i + 1..]),
-        None    => (name, &[][..]),
-    };
-    if base.is_empty() || base.len() > 8 || ext.len() > 3 { return None; }
-    let mut result = [b' '; 11];
-    for (i, &b) in base.iter().enumerate() { result[i]     = b.to_ascii_uppercase(); }
-    for (i, &b) in ext.iter().enumerate()  { result[8 + i] = b.to_ascii_uppercase(); }
-    Some(result)
-}
-
 /// [`fat32_unlink_path_on`] on the boot volume ([`BOOT`]).
 #[inline]
 pub fn fat32_unlink_path(name: &[u8]) -> Result<(), ()> {
@@ -5276,7 +5262,7 @@ pub fn fat32_unlink_path(name: &[u8]) -> Result<(), ()> {
 /// allocation would cross-link them. Now the worst a cut leaves is a
 /// deleted dirent and a leaked chain.
 pub fn fat32_unlink_path_on(v: &'static Vol, name: &[u8]) -> Result<(), ()> {
-    let name83 = path_to_83_local(name).ok_or(())?;
+    let name83 = component_to_83(name).ok_or(())?;
     let cluster = unlink_at(v, &FName::root(v, &name83))?;
     if cluster >= 2 { fat32_free_chain_on(v, cluster); }
     Ok(())
@@ -5904,7 +5890,18 @@ pub fn fat32_unmount_on(v: &'static Vol, _vol: Volume) -> Result<(), FsError> {
 
 // ── Path helpers ─────────────────────────────────────────────────────────────
 
+/// Bytes a short name cannot hold: controls, and the ones FAT forbids
+/// (`.` separates base from extension and is checked on its own).
+fn short_name_byte_ok(b: u8) -> bool {
+    b >= 0x20 && b != 0x7F && !b"\"*+,/:;<=>?[\\]|".contains(&b)
+}
+
 /// Convert one raw path component (no slashes) to FAT32 8.3 uppercase form.
+///
+/// A name that is not a short name is refused: a first byte of `0x00`, `0x05`,
+/// `0x20` or `0xE5` (end marker, the kanji escape, padding, deleted marker), a
+/// control or forbidden byte, a second dot, and a base or extension that ends
+/// in a space (it would read back as the name without it).
 fn component_to_83(name: &[u8]) -> Option<[u8; 11]> {
     if name.is_empty() || name == b"." || name == b".." { return None; }
     let (base, ext) = match name.iter().position(|&b| b == b'.') {
@@ -5912,6 +5909,11 @@ fn component_to_83(name: &[u8]) -> Option<[u8; 11]> {
         None => (name, &[][..]),
     };
     if base.is_empty() || base.len() > 8 || ext.len() > 3 { return None; }
+    if !cfg!(feature = "fat-name-bytes-canary") {
+        if matches!(base[0], 0x00 | 0x05 | 0x20 | 0xE5) { return None; }
+        if !base.iter().chain(ext).all(|&b| short_name_byte_ok(b)) || ext.contains(&b'.') { return None; }
+        if base.last() == Some(&b' ') || ext.last() == Some(&b' ') { return None; }
+    }
     let mut result = [b' '; 11];
     for (i, &b) in base.iter().enumerate() { result[i] = b.to_ascii_uppercase(); }
     for (i, &b) in ext.iter().enumerate() { result[8 + i] = b.to_ascii_uppercase(); }
@@ -7956,7 +7958,7 @@ fn fat32_free_clusters_scan(v: &'static Vol) -> Result<u32, ()> {
 
 /// Rebuild a `fat32_open`-compatible path (e.g. `b"/FOO.TXT"`) from the
 /// padded 8.3 `name83` an `InodeKey` carries — the inverse of
-/// `path_to_83_local`/`component_to_83`. Trailing spaces in the 8-byte base
+/// `component_to_83`. Trailing spaces in the 8-byte base
 /// and 3-byte extension are trimmed, and a `.` is inserted only when the
 /// extension is non-empty, so a file called `README` with no extension
 /// round-trips to `/README`, not `/README.` or `/README   `.

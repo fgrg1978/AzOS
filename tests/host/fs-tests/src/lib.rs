@@ -210,6 +210,9 @@ mod dir_claim;
 // A write's hole is bounded and cleaned up on failure: `hole_write.rs`.
 #[cfg(test)]
 mod hole_write;
+// The bytes of a short name are validated: `name_bytes.rs`.
+#[cfg(test)]
+mod name_bytes;
 #[cfg(test)]
 mod envelope_delete;
 // Every mounted volume made durable (orderly power-off, `Power::sync`): `sync_all.rs`.

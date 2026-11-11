@@ -194,6 +194,9 @@ fat-dir-unserialised-canary = []
 # Host canary: a write's hole is zero-filled whatever its size and a hole that
 # fails part-way keeps the clusters it linked (fs-tests `hole_write`).
 fat-hole-unbounded-canary = []
+# Host canary: a name's bytes are not validated, so a first byte 0xE5 makes an
+# entry that is deleted at birth (fs-tests `name_bytes`).
+fat-name-bytes-canary = []
 
 # Power-loss safety (S3) canaries, each must turn a fs-tests `s3` test red.
 #   fat-dirty-bit-canary:       the mount never sets the volume dirty flag

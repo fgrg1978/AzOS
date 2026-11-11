@@ -139,6 +139,8 @@ fat-sector-claim-canary = []
 fat-dir-unserialised-canary = []
 # A write's hole has no bound and keeps what a failed fill linked (`hole_write`).
 fat-hole-unbounded-canary = []
+# A name's bytes are not validated (`name_bytes`).
+fat-name-bytes-canary = []
 # A retired mount's inodes left on its backend (see crates/fs).
 usb-volume-stale-fd-canary = []
 # FX12: declared so the cfg is known; the kernel's `ktest` feature turns it
