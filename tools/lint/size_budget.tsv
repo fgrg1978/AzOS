@@ -6,18 +6,18 @@
 # 512 B): a commit that grows the image updates this file with a reason,
 # make size-update REASON=".." (one that shrinks it, to lock the gain in).
 # label	group	bytes   |   label	reason	text
-aarch64-microvm	.text	2944400
-aarch64-microvm	.rodata	362688
-aarch64-microvm	.data	497608
+aarch64-microvm	.text	2952560
+aarch64-microvm	.rodata	362856
+aarch64-microvm	.data	497864
 aarch64-microvm	.bss	1078824
-aarch64-microvm	reason	Device-window refusal over RAM, kernel image, interrupt controllers and IOMMUs; call task carries a deadline; camera lend retry; readdir cursor
-riscv64-qemu	.text	2931408
+aarch64-microvm	reason	FAT32 audit fixes: mutation claim, name validation, hole bound and cleanup, mount reset
+riscv64-qemu	.text	2937184
 riscv64-qemu	.rodata	495112
-riscv64-qemu	.data	522096
+riscv64-qemu	.data	522608
 riscv64-qemu	.bss	2277096
-riscv64-qemu	reason	Device-window refusal over RAM, kernel image, interrupt controllers and IOMMUs; call task carries a deadline; camera lend retry; readdir cursor
-x86_64-microvm	.text	2797033
+riscv64-qemu	reason	FAT32 audit fixes: mutation claim, name validation, hole bound and cleanup, mount reset
+x86_64-microvm	.text	2802985
 x86_64-microvm	.rodata	180200
-x86_64-microvm	.data	659712
+x86_64-microvm	.data	659968
 x86_64-microvm	.bss	1060944
-x86_64-microvm	reason	Device-window refusal over RAM, kernel image, interrupt controllers and IOMMUs; call task carries a deadline; camera lend retry; readdir cursor
+x86_64-microvm	reason	FAT32 audit fixes: mutation claim, name validation, hole bound and cleanup, mount reset
