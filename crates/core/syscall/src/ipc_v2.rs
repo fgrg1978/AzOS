@@ -338,8 +338,12 @@ fn call_task_served(
     // The capabilities move BEFORE the call is published, for the reason the
     // v1 arm gives: a server woken on it may accept at once on another hart.
     let mut got = [CapHandle(0); V2_CAPS];
-    if nx > 0 && cap_store::move_caps(caller_tid, server, &xs[..nx], d.flags & MSG_KEEP != 0, &mut got[..nx]).is_err() {
-        return E_PERM;
+    if nx > 0 {
+        // Not folded into one code: `EMFILE` (the receiver's table is full) says the
+        // sender still holds what it sent, unlike a refusal of its own entries.
+        if let Err(e) = cap_store::move_caps(caller_tid, server, &xs[..nx], d.flags & MSG_KEEP != 0, &mut got[..nx]) {
+            return crate::invoke::errno_cap(e);
+        }
     }
     // A MemObj capability that moved took the caller's mapping of it along.
     if nx > 0 {
@@ -529,8 +533,12 @@ pub fn sys_ipc_reply_v2(handle: u64, msg_ptr: u64) -> i64 {
         return einval();
     }
     let mut got = [CapHandle(0); V2_CAPS];
-    if nx > 0 && cap_store::move_caps(tid, caller, &xs[..nx], d.flags & MSG_KEEP != 0, &mut got[..nx]).is_err() {
-        return E_PERM;
+    if nx > 0 {
+        // Not folded into one code: `EMFILE` (the receiver's table is full) says the
+        // sender still holds what it sent, unlike a refusal of its own entries.
+        if let Err(e) = cap_store::move_caps(tid, caller, &xs[..nx], d.flags & MSG_KEEP != 0, &mut got[..nx]) {
+            return crate::invoke::errno_cap(e);
+        }
     }
     if nx > 0 {
         crate::ipc_handlers::reap_stale_mappings();
