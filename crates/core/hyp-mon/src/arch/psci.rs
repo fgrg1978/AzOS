@@ -16,7 +16,7 @@
 
 use crate::state::HYP;
 use azos_hyp_api::{Kind, DENIED, NOT_SUPPORTED};
-use super::mmu::HYP_PE_SLOTS;
+use super::mmu::pe_slots;
 use super::ptcheck::affinity;
 
 // PSCI / SMCCC function ids (the 32- and 64-bit forms the kernel issues).
@@ -125,7 +125,7 @@ fn cpu_on(regs: *mut u64) {
         set(regs, 0, DENIED as u64);
         return;
     }
-    let Some((slot, fresh)) = HYP_PE_SLOTS.record(affinity(target), ctx) else {
+    let Some((slot, fresh)) = pe_slots().record(affinity(target), ctx) else {
         crate::record(Kind::CallRefused, this_pe(), PSCI_CPU_ON_64, target, 0);
         set(regs, 0, DENIED as u64);
         return;
@@ -137,7 +137,7 @@ fn cpu_on(regs: *mut u64) {
     forward(regs);
     // A target firmware refused never entered: its slot is free again.
     if fresh && reg(regs, 0) != 0 && !cfg!(feature = "hyp-cpu-on-leak-canary") {
-        HYP_PE_SLOTS.release(slot, affinity(target));
+        pe_slots().release(slot, affinity(target));
     }
 }
 
@@ -156,7 +156,7 @@ fn suspend(regs: *mut u64, system: bool) {
             set(regs, 0, DENIED as u64);
             return;
         }
-        let Some((slot, _)) = HYP_PE_SLOTS.record(affinity(mpidr()), reg(regs, ci)) else {
+        let Some((slot, _)) = pe_slots().record(affinity(mpidr()), reg(regs, ci)) else {
             set(regs, 0, DENIED as u64);
             return;
         };
@@ -190,10 +190,18 @@ fn forward(regs: *mut u64) {
 }
 
 fn secondary_entry_pa() -> u64 {
-    extern "C" {
-        fn _hyp_secondary_entry();
+    // PC-relative, like VBAR_EL2: the image is flat and PIC, so a function
+    // pointer taken through the GOT would be the link address, not the PA.
+    let pa: u64;
+    unsafe {
+        core::arch::asm!(
+            "adrp {t}, _hyp_secondary_entry",
+            "add {t}, {t}, :lo12:_hyp_secondary_entry",
+            t = out(reg) pa,
+            options(nomem, nostack, pure),
+        );
     }
-    _hyp_secondary_entry as *const () as usize as u64
+    pa
 }
 
 /// The kernel entry a PE that entered through the substituted `CPU_ON` or
@@ -210,5 +218,5 @@ pub extern "C" fn hyp_secondary_resume(_slot: u64) -> u64 {
 /// The context the kernel asked to find in x0 (its hart id), by slot.
 #[no_mangle]
 pub extern "C" fn hyp_secondary_ctx(slot: u64) -> u64 {
-    HYP_PE_SLOTS.ctx_of(slot as usize)
+    pe_slots().ctx_of(slot as usize)
 }

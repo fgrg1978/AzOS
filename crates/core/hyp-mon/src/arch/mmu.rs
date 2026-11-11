@@ -48,7 +48,25 @@ pub static mut HYP_STACKS: [[u8; STACK_SIZE]; MAX_PES] = [[0; STACK_SIZE]; MAX_P
 /// Which core owns which EL2 stack slot, by full affinity (`keys` first, read by
 /// the entry stub), and the context each gets back when it resumes.
 #[no_mangle]
-pub static HYP_PE_SLOTS: PeSlots<MAX_PES> = PeSlots::new();
+static HYP_PE_SLOTS: PeSlots<MAX_PES> = PeSlots::new();
+
+/// The slot table, addressed PC-relative. The symbol is global (the entry stub
+/// names it), and rustc reaches a global through the GOT, which the flat image
+/// never relocates: a plain `HYP_PE_SLOTS` in Rust would read and write the
+/// link address, not the table.
+pub fn pe_slots() -> &'static PeSlots<MAX_PES> {
+    let p: *const PeSlots<MAX_PES>;
+    // SAFETY: the address of a static of this image.
+    unsafe {
+        core::arch::asm!(
+            "adrp {t}, HYP_PE_SLOTS",
+            "add {t}, {t}, :lo12:HYP_PE_SLOTS",
+            t = out(reg) p,
+            options(nomem, nostack, pure),
+        );
+        &*p
+    }
+}
 
 /// Run after the entry stub has turned EL2 stage-1 on. Sets the vectors, HCR,
 /// the EL1 grants, builds host stage-2 on the primary (F2) or attaches it on any
