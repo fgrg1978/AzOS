@@ -9,6 +9,10 @@ description = "Host-side tests for the pure parts of arch/riscv and arch/aarch64
 # Run with:  cd tests/host/arch-tests && cargo test --release
 
 [features]
+# `crates/core/hyp-mon/src/arch/ptcheck.rs` (pulled in by path) reads them;
+# their rows run in tests/host/hv-tests: never set here.
+hyp-pe-seq-canary = []
+hyp-pe-aff0-canary = []
 # Pulled-in source declares it (arch/x86_64/src/firmware/acpi.rs); only x86-platform-tests uses it.
 x86-region-round-canary = []
 # `arch/riscv/src/tlb.rs` (pulled in below) reads it: the scan-bound
