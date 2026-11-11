@@ -215,6 +215,9 @@ fat-mount-leak-canary = []
 # Host canary: a failed write cuts the chain beyond its handle's (possibly
 # stale) size instead of freeing only what it linked (fs-tests `fat_lows`).
 fat-stale-size-cut-canary = []
+# Host canary: a removed or replaced directory entry leaves the handles that
+# named it open (fs-tests `fat_lows`).
+fat-stale-handle-canary = []
 
 # Power-loss safety (S3) canaries, each must turn a fs-tests `s3` test red.
 #   fat-dirty-bit-canary:       the mount never sets the volume dirty flag

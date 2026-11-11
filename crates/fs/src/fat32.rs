@@ -432,6 +432,8 @@ fn journal_replay_rename(v: &'static Vol, entry: &JournalEntry) {
 #[allow(clippy::too_many_arguments)]
 fn rename_apply(v: &'static Vol, dst_sector: u32, dst_off: u16, src_sector: u32, src_off: u16, src_name: &[u8; 11],
                 cluster: u32, size: u32, old_chain: u32, free_old: bool) -> Result<(), ()> {
+    invalidate_handles(v, dst_sector, dst_off);
+    invalidate_handles(v, src_sector, src_off);
     fat32_update_dirent_clus_size(v, dst_sector, dst_off, cluster, size)?;
     let mut buf = [0u8; SECTOR_SIZE];
     read_sector(v, src_sector, &mut buf)?;
@@ -4662,6 +4664,7 @@ fn unlink_inner(v: &'static Vol, dir: u32, name83: &[u8; 11]) -> Result<u32, ()>
 
                     // Step 2: Mark deleted.
                     sec_buf[off] = 0xE5;
+                    invalidate_handles(v, sector_num, off as u16);
                     write_sector(v, sector_num, &sec_buf)?;
                     journal_barrier(v)?;
 
@@ -5164,6 +5167,7 @@ fn write_file_journaled_inner(v: &'static Vol, f: &FName, data: &[u8]) -> Result
         journal_barrier(v)?;
 
         let defer = defer_frees(v);
+        invalidate_handles(v, dir_sector, dir_offset);
         fat32_update_dirent_clus_size(v, dir_sector, dir_offset, new_cluster, data.len() as u32)?;
         if !defer && old_cluster >= FAT32_FIRST_DATA_CLUSTER {
             fat32_free_chain_on(v, old_cluster);
@@ -6474,6 +6478,20 @@ fn alloc_handle(v: &'static Vol, entry: OpenFileEntry) -> Result<Fat32File, FsEr
     Err(FsError::TooManyOpen)
 }
 
+/// Close every handle that names the dirent at `(sector, offset)`: the entry is
+/// being removed, replaced or reset (the mutation claim is held), so what a
+/// handle remembers of it (name, first cluster, size) is no longer the file's,
+/// and a later update from it could land on another file that takes the slot
+/// under the same name. The handle answers `BadHandle` from then on.
+fn invalidate_handles(v: &'static Vol, sector: u32, offset: u16) {
+    if cfg!(feature = "fat-stale-handle-canary") { return; }
+    for e in v.open_files.lock().iter_mut() {
+        if e.in_use && e.dir_sector == sector && e.dir_offset == offset {
+            e.in_use = false;
+        }
+    }
+}
+
 fn with_handle<R>(
     v: &'static Vol, file: Fat32File,
     f: impl FnOnce(&mut OpenFileEntry) -> Result<R, FsError>,
@@ -6610,6 +6628,7 @@ fn open_at(v: &'static Vol, parent_cluster: u32, name83: &[u8; 11], flags: u32, 
         journal_barrier(v).map_err(|()| FsError::Io)?;
 
         let defer = defer_frees(v);
+        invalidate_handles(v, dir_sector, dir_offset);
         dir_update_meta(v, dir_sector, dir_offset, name83, 0, 0)?;
         if !defer && old_cluster >= FAT32_FIRST_DATA_CLUSTER {
             fat32_free_chain_on(v, old_cluster);
@@ -7694,6 +7713,7 @@ impl crate::vfs::FileSystem for Fat32Fs {
                 if e.attr & ATTR_DIRECTORY != 0 { return Err(FsErr::Invalid); }
                 let (sector, off) = find_dirent_location(v, f.dir, &f.name).map_err(|()| FsErr::Io)?;
                 let ahead = defer_frees(v) && !cfg!(feature = "fw-entry-per-write-canary");
+                invalidate_handles(v, sector, off);
                 dirent_clus_size_in(v, sector, off, 0, 0, ahead).map_err(|()| FsErr::Io)?;
                 if e.cluster >= FAT32_FIRST_DATA_CLUSTER {
                     if defer_frees(v) {

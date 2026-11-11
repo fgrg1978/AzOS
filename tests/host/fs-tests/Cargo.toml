@@ -152,6 +152,8 @@ fat-low-hardening-canary = []
 fat-mount-leak-canary = []
 # A failed write cuts the chain by its handle's stale size (`fat_lows`).
 fat-stale-size-cut-canary = []
+# A removed or replaced entry leaves its handles open (`fat_lows`).
+fat-stale-handle-canary = []
 # A retired mount's inodes left on its backend (see crates/fs).
 usb-volume-stale-fd-canary = []
 # FX12: declared so the cfg is known; the kernel's `ktest` feature turns it

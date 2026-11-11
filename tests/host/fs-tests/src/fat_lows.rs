@@ -178,3 +178,31 @@ fn a_failed_write_does_not_free_the_clusters_another_handle_added() {
     assert_eq!(fat_of(&after, c0), c1, "A's failure cut B's cluster out of the chain");
     assert_eq!(fat_of(&after, c1), EOC, "B's cluster was freed");
 }
+
+/// **A handle does not outlive its entry, whatever the entry's name becomes.**
+/// F is unlinked and created again: the new entry takes the old one's slot
+/// under the same name, which a name check alone cannot tell apart. The old
+/// handle is closed by the removal; its writes and close fail, and the new
+/// file keeps its own cluster and size.
+#[test]
+fn a_handle_of_a_removed_entry_is_closed_even_when_the_name_comes_back() {
+    let _g = serial();
+    let _wt = crate::write_through();
+    mount(build_empty());
+    let vol = fat32::Volume::assume_mounted();
+    let rw = fat32::open_flags::WRITE | fat32::open_flags::CREATE;
+    let old = fat32::fat32_open(vol, b"/F.TXT", rw).expect("create F");
+    assert_eq!(fat32::fat32_write(old, b"old data"), Ok(8));
+    assert_eq!(fat32::fat32_unlink_root(b"F       TXT"), Ok(()));
+    let new = fat32::fat32_open(vol, b"/F.TXT", rw).expect("create F again, in the same slot");
+    assert_eq!(fat32::fat32_close(new), Ok(()));
+    assert!(fat32::fat32_close(old).is_err(), "the removed entry's handle is closed");
+    assert_eq!(fat32::fat32_lookup_root(b"F       TXT"), Ok((0, 0)), "the new F keeps its own cluster and size");
+}
+
+fn build_empty() -> Vec<u8> {
+    let g = Geom::default();
+    let mut img = build(&g);
+    set_fat(&mut img, &g, 2, EOC);
+    img
+}

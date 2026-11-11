@@ -13947,6 +13947,8 @@ host_job host_canary_row "fs: a failed mount stays mounted canary" fs-tests fat-
     a_mount_that_fails_in_recovery_leaves_nothing_for_the_next_medium
 host_job host_canary_row "fs: a failed write cuts by a stale size canary" fs-tests fat-stale-size-cut-canary \
     a_failed_write_does_not_free_the_clusters_another_handle_added
+host_job host_canary_row "fs: a handle outlives a removed entry canary" fs-tests fat-stale-handle-canary \
+    a_handle_of_a_removed_entry_is_closed_even_when_the_name_comes_back
 host_job host_canary_row "call task: no deadline to the server canary (devif)" devif-tests call-deadline-canary \
     a_call_through_the_task_carries_the_clients_deadline_to_the_server
 host_job host_canary_row "ring-3: dt inherited coherence canary" hwbus-tests dt-inherited-coherent-canary \
