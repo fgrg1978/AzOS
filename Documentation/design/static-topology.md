@@ -308,7 +308,7 @@ rows.
 | `mem_pages` | 1 | integer (`u32`) | Frame budget in 4 KiB units. 0 means no limit of its own. |
 | `mem` | 1 | string | `"ceiling"` (default) or `"locked"`. |
 | `mem_huge_mib` | 1 | integer | MiB of a locked row mapped with 2 MiB leaves: even, 2 to 256. |
-| `instances` | 1 | integer | Live instances allowed, 1 to `MAX_TASKS`. Default 1. |
+| `instances` | 1 | integer | Live processes of the row allowed, 1 to `MAX_TASKS`. Default 1. A fork child counts, so a row that forks declares as many as it needs. |
 | `sqpoll_idle_ms` | 1 | integer (`u32`) | Idle time of an io_ring submission-queue poller the row may start. 0 means it may not start one. |
 | `start` | 1 | boolean | The kernel starts this image at boot. Default `false`: a row alone starts nothing. |
 | `restart` | 2 | string | `always`, `on-failure` (default), `no`: what the supervisor does when a supervised task of the row ends. |
@@ -848,7 +848,7 @@ real-time band's share of each CPU (`RT_BAND_CAP_PCT`), and checks memory
 admission: the frames the ring-3 rows may hold (a locked row once, a ceiling
 row twice if its image may fork, each times `instances`), plus the kernel's
 reserve, must fit in the free pages. A `mem_pages` unit is 4 KiB on every ISA
-and page size.
+and page size. A forking row's second copy per instance and a fork child's own count of `instances` both stand for the same children, so such a row is counted twice; admission is conservative there.
 
 Source: `crates/core/topology/src/deadline.rs` (`admit`, `SchedProfile`),
 `crates/core/topology/src/types.rs` (`Topology::deadline_admission`),

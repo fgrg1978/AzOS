@@ -78,3 +78,18 @@ pub fn row_live(row: u16) -> u32 {
     }
     ROW_LIVE[i - 1].load(Ordering::Relaxed)
 }
+
+/// The hart a task that has exec'd into a row is pinned to: the one its
+/// reservation names (a one-bit `cpu_mask`), else none (`-1`). A reservation
+/// that is withdrawn leaves the old pin behind, so the exec sets it again.
+///
+/// Canary `exec-pin-kept-canary`: every task is pinned to hart 0.
+pub fn exec_pin(cpu_mask: Option<u64>) -> i8 {
+    if cfg!(feature = "exec-pin-kept-canary") {
+        return 0;
+    }
+    match cpu_mask {
+        Some(m) if m.count_ones() == 1 => m.trailing_zeros() as i8,
+        _ => -1,
+    }
+}

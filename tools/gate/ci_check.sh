@@ -12483,6 +12483,7 @@ host_job host_canary_row "linux: the personality's stat and listing ask no tree 
 host_job host_canary_row "linux: stat of a huge size canary (linux-abi)" linux-abi-tests stat-size-wrap-canary a_huge_size_does_not_overflow_stat
 host_job host_canary_row "linux: sigreturn pc canary (linux-abi)" linux-abi-tests sigreturn-pc-unbounded-canary a_frame_with_a_kernel_pc_is_not_restored
 host_job host_canary_row "linux: unanswered tally canary (linux-abi)" linux-abi-tests tally-unrecorded-canary the_tally_counts_each_number
+host_job host_canary_row "linux: exec pin canary (sched)" sched-policy-tests exec-pin-kept-canary an_exec_pins_to_the_rows_hart_or_to_none
 host_job host_canary_row "linux: fork past instances canary (sched)" sched-policy-tests fork-row-instance-canary a_fork_child_is_refused_past_its_rows_instances
 host_job host_canary_row "ext4: an open's badge is its slot canary" ext4-tests badge-slot-canary a_badge_from_an_earlier_server_reaches_nothing
 host_job host_canary_row "ext4: a late block completion taken canary" ext4-tests stale-completion-canary a_late_completion_is_dropped

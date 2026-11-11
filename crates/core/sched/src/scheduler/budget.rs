@@ -1282,6 +1282,11 @@ pub fn task_cpu_affinity(tid: u32) -> Option<i8> {
     unsafe { idx_for_tid(tid).map(|i| task_ref(i).affinity()) }
 }
 
+/// Pin task `tid` to hart `cpu` (`-1` = any). `false` for no such task.
+pub fn set_task_cpu_affinity(tid: u32, cpu: i8) -> bool {
+    unsafe { idx_for_tid(tid).map(|i| task_ref(i).set_affinity(cpu)).is_some() }
+}
+
 // ---- AQ11: Syscall filter accessor ----
 
 /// What the dispatcher does with syscall `nr` from the current task, answered

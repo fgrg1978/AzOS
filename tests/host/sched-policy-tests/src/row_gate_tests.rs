@@ -57,3 +57,14 @@ fn no_row_counts_nothing() {
     assert!(row_claim(0, 1));
     assert_eq!(row_live(0), 0);
 }
+
+/// An exec re-pins: the reservation's single hart, else none.
+///
+/// **Canary.** `exec-pin-kept-canary`: hart 0 always.
+#[test]
+fn an_exec_pins_to_the_rows_hart_or_to_none() {
+    assert_eq!(exec_pin(None), -1);
+    assert_eq!(exec_pin(Some(0)), -1);
+    assert_eq!(exec_pin(Some(0b1000)), 3);
+    assert_eq!(exec_pin(Some(0b1100)), -1, "a mask of several harts pins none");
+}

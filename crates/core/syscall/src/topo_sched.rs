@@ -194,13 +194,16 @@ pub fn resolve_image(image: &'static str, fallback: Option<&'static str>) -> (To
 /// real-time reservation: admission (`azos_sched::rt::check`/`reserve`, the
 /// hart it is pinned to) is a spawn's, and an exec gives the reservation to no
 /// one.
+///
+/// Plan: broader than needed; the precise rule is `rt::check` of the row's
+/// reservation before the image is built and `rt::reserve` after the commit.
 pub fn exec_may_enter(row: &str) -> bool {
     !matches!(resolve(row.as_bytes()), TopoSched::Apply { rt: Some(_), .. })
 }
 
 /// The task `tid`, which has just exec'd into row `row`, runs as the row says
 /// and not as the row it left: the reservation it held and the hart it pinned
-/// go; its class, priority, timer slack and call budget are the row's, as a
+/// go (`exec_pin`: a row with no reservation pins nothing); its class, priority, timer slack and call budget are the row's, as a
 /// spawn of the row gives them. A row the topology does not name, or no
 /// topology, changes nothing; a class this build does not schedule leaves the
 /// default priority, as a spawn does.
@@ -227,6 +230,8 @@ pub fn apply_exec_row(tid: u32, row: &str) {
     if azos_sched::rt::task_reservation(idx).is_some() {
         azos_sched::rt::withdraw(idx, azos_sched::current_sched_params().0);
     }
+    // `withdraw` clears the reservation, not the hart it pinned the task to.
+    azos_sched::scheduler::set_task_cpu_affinity(tid, azos_sched::row_gate::exec_pin(None));
     azos_sched::set_current_sched_params(params.0, params.1);
     if let Some(sc) = azos_sched::classes::sc_of(idx) {
         sc.set_timer_slack_row(slack);

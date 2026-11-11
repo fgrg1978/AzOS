@@ -226,6 +226,8 @@ orphan-reparent-canary = []
 # (`row_gate::row_claim_for_fork`). The host row and the Linux fork row go red.
 # Never in a real build.
 fork-row-instance-canary = []
+# Canary: an exec leaves a task pinned to hart 0 (`row_gate::exec_pin`). Never in a real build.
+exec-pin-kept-canary = []
 # Canary: `DOMAIN_SUBREAPER` / `PR_SET_CHILD_SUBREAPER` never set
 # the mark. The shell's orphan rows must fail with it. Never in a real build.
 subreaper-mark-canary = []

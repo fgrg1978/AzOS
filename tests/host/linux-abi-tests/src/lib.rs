@@ -1440,6 +1440,40 @@ mod table_drift {
         assert_eq!(checked, TABLE.len());
     }
 
+    /// The inverse: every `reach(k::X)` in `linux.rs` sits in a function or arm
+    /// some row names as its handler, and X is in that row's native list.
+    ///
+    /// **Canary (by hand).** Add a `reach(k::SYS_YIELD)` to any other handler: red.
+    #[test]
+    fn every_reach_belongs_to_a_row_that_lists_it() {
+        let src = std::fs::read_to_string("../../../crates/core/syscall/src/linux.rs").expect("linux.rs");
+        let mut found = 0;
+        for (at, _) in src.match_indices("reach(k::") {
+            let head = &src[..at];
+            // Comments and the definition's own doc do not count.
+            let line_start = head.rfind('\n').map_or(0, |i| i + 1);
+            if src[line_start..at].trim_start().starts_with("//") {
+                continue;
+            }
+            let f_at = head.rfind("\nfn ").or_else(|| head.rfind("\npub fn ")).expect("inside a function");
+            let tail = &head[f_at + 1..];
+            let tail = tail.strip_prefix("pub ").unwrap_or(tail);
+            let fname: String = tail["fn ".len()..].chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+            let x: String = src[at + "reach(k::".len()..].chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+            let owner = if fname == "dispatch_slow" {
+                let arm_at = head.rfind("\n        nr::").expect("an arm");
+                let arm: String = head[arm_at + "\n        nr::".len()..].chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+                format!("arm:{arm}")
+            } else {
+                fname
+            };
+            let ok = TABLE.iter().any(|e| e.handlers.contains(&owner.as_str()) && e.native_names.contains(&x.as_str()));
+            assert!(ok, "reach(k::{x}) in `{owner}`: no row names that handler with {x} in its native list");
+            found += 1;
+        }
+        assert!(found > 20, "the scan found only {found} reach calls");
+    }
+
     /// The ring-3 runtime answers the table's numbers: each call it names is
     /// in the table, and each table call it does not name is one only the
     /// in-kernel table answers.
@@ -1449,7 +1483,10 @@ mod table_drift {
         let kernel_only = ["rt_sigsuspend", "set_robust_list"];
         for e in TABLE {
             let tok = format!("nr::{}", e.name.to_ascii_uppercase());
-            let named = rt.contains(&tok);
+            // A whole word: `nr::EXIT` is not `nr::EXIT_GROUP`.
+            let named = rt.match_indices(&tok).any(|(i, _)| {
+                !rt[i + tok.len()..].starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')
+            });
             assert_eq!(!named, kernel_only.contains(&e.name), "{}: the runtime names it = {named}", e.name);
         }
     }

@@ -288,6 +288,8 @@ orphan-reparent-canary = ["azos_sched/orphan-reparent-canary"]
 # Canary: a fork child is never refused past its row's `instances` (the Linux
 # fork-past-instances row goes red). Never in a real build.
 fork-row-instance-canary = ["azos_sched/fork-row-instance-canary"]
+# Canary: an exec leaves the task pinned to hart 0. Never in a real build.
+exec-pin-kept-canary = ["azos_sched/exec-pin-kept-canary"]
 # Canary: the subreaper mark is never set (the shell's orphan rows go
 # red). Never in a real build.
 subreaper-mark-canary = ["azos_sched/subreaper-mark-canary"]
