@@ -864,6 +864,25 @@ impl KmemBudget {
         }
     }
 
+    /// Charge `bytes` to `class` whatever the limit says: for kernel memory the
+    /// Domain was promised and cannot be refused (the page table a first touch
+    /// of a reserved page needs, as [`PageBudget::charge_restore`] is for the
+    /// frame). Saturating; the ledger may pass its limit, and the next plain
+    /// charge is refused until it is given back.
+    /// Canary `kmem-promised-refused-canary`: past the limit it is dropped.
+    pub fn charge_unrefused(&self, class: KmemClass, bytes: u64) {
+        if bytes == 0 { return; }
+        if cfg!(feature = "kmem-promised-refused-canary") {
+            let limit = self.limit.load(Ordering::Relaxed);
+            if limit != 0 && self.used.load(Ordering::Relaxed).saturating_add(bytes) > limit {
+                return;
+            }
+        }
+        let _ = self.used.fetch_update(Ordering::AcqRel, Ordering::Relaxed, |u| Some(u.saturating_add(bytes)));
+        let _ = self.by_class[class as usize]
+            .fetch_update(Ordering::AcqRel, Ordering::Relaxed, |u| Some(u.saturating_add(bytes)));
+    }
+
     /// Give `bytes` of `class` back; at most what the class holds. Returns the
     /// bytes actually given back.
     pub fn discharge(&self, class: KmemClass, bytes: u64) -> u64 {

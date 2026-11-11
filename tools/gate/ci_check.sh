@@ -13929,6 +13929,13 @@ host_job host_canary_row "budget: an exec zeroes the ledger canary" sched-wake-t
 host_job host_feature_row "zpool: a fill is charged (model)" mm-tests "" a_same_filled_page_is_charged_to_its_owner_and_one_owner_cannot_fill_the_pool
 host_job host_canary_row "zpool: a fill is free canary" mm-tests zpool-fill-free-canary \
     a_same_filled_page_is_charged_to_its_owner_and_one_owner_cannot_fill_the_pool
+# A promised page table (the first touch of a reserved page) is charged to the
+# kernel-memory ledger past its limit, as its frame is (table_hook, Promised).
+# kmem-promised-refused-canary: past the limit it is dropped.
+host_job host_feature_row "budget: a promised table passes the kmem limit (sched-wake)" sched-wake-tests "" a_promised_page_table_is_charged_to_the_kmem_ledger_past_its_limit
+host_job host_group_row "budget: a promised kmem charge (model)" mm-tests budget_stress::promised_kmem::
+host_job host_canary_row "budget: a promised table refused by kmem canary" sched-wake-tests kmem-promised-refused-canary \
+    a_promised_page_table_is_charged_to_the_kmem_ledger_past_its_limit
 # The same holes through the frozen syscalls (syscall-tests): mprotect in the shm
 # window past the map's rights; a MOVE through the capability transfer.
 host_job host_canary_row "memobj: protect past the map canary (syscall)" syscall-tests memobj-protect-max-canary \

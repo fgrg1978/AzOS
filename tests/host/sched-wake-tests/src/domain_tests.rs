@@ -715,3 +715,30 @@ fn an_exec_keeps_the_object_pages_and_the_release_then_leaves_the_new_image() {
     assert_eq!(domain::used_limit(k).0, 0, "with nothing held, a reset is the old one");
     free_all(k);
 }
+
+/// **A promised page table is never refused by the kernel-memory ledger.** The
+/// first touch of a reserved page builds a table the reservation did not count
+/// and has nowhere to report a refusal (`pager.rs`): the frame goes through
+/// `charge_unrefused`, and so must the ledger's page-table bytes. At the limit
+/// a plain page-table charge is refused; the promised one lands, passing the
+/// limit, a plain charge stays refused until it is given back, and the table
+/// going back returns the bytes (the mapping paths discharge them as they do
+/// for any table).
+/// **Canary** `kmem-promised-refused-canary`: past the limit it is dropped.
+#[test]
+fn a_promised_page_table_is_charged_to_the_kmem_ledger_past_its_limit() {
+    let _s = serial();
+    let k = domain::create().expect("a free domain");
+    set_kmem_limit_kib(k, 8);
+    assert!(kmem_charge_atomic(k, KmemClass::PageTable, 4096));
+    assert!(kmem_charge_atomic(k, KmemClass::PageTable, 4096));
+    assert!(!kmem_charge_atomic(k, KmemClass::PageTable, 4096), "a plain table is refused at the limit");
+    domain::kmem_charge_unrefused(k, KmemClass::PageTable, 4096);
+    assert_eq!(kmem_used_limit(k, KmemClass::PageTable).0, 3 * 4096, "the promised table was charged past the limit");
+    assert!(!kmem_charge_atomic(k, KmemClass::PageTable, 1), "and a plain charge stays refused");
+    kmem_discharge(k, KmemClass::PageTable, 4096);
+    assert!(!kmem_charge_atomic(k, KmemClass::PageTable, 4096), "still over the limit by one table");
+    kmem_discharge(k, KmemClass::PageTable, 4096);
+    assert!(kmem_charge_atomic(k, KmemClass::PageTable, 4096), "back under it, a table fits");
+    free_all(k);
+}

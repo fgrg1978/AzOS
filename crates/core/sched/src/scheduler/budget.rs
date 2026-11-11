@@ -463,7 +463,12 @@ fn table_hook(root: usize, what: azos_mm::vmm::TableCharge) -> bool {
                     if let Some(used) = crate::domain::charge_unrefused(d, 1) {
                         MM_PEAK_GLOBAL.fetch_max(used, Ordering::Relaxed);
                     }
-                } else if !mm_charge(1) {
+                    // The kernel-memory ledger does not refuse it either: the
+                    // touch has nowhere to report a refusal (`pager.rs`).
+                    crate::domain::kmem_charge_unrefused(d, crate::domain::KmemClass::PageTable, page);
+                    return true;
+                }
+                if !mm_charge(1) {
                     return false;
                 }
                 if !crate::domain::kmem_charge_atomic(d, crate::domain::KmemClass::PageTable, page) {

@@ -730,7 +730,7 @@ Kernel-memory classes (`KmemClass`):
 | `CapTable` | The Domain's capability table, once, when the Domain first claims it. | The Domain |
 | `EpQueue` | One endpoint's slot and call queue. | The Domain that creates (or first claims) the endpoint |
 | `MemObjMeta` | One MemObj region's metadata (frame array, holder records). | The Domain of the object's creator, for its whole life (a MOVE changes the frame charge, not this one) |
-| `PageTable` | A page-table frame grown by the Domain's own mappings after its address space was installed. Also counted in the frame budget: two ledgers, two limits. | The task whose own root the table is under |
+| `PageTable` | A page-table frame grown by the Domain's own mappings after its address space was installed. Also counted in the frame budget: two ledgers, two limits. | The task whose own root the table is under. The table a first touch of a reserved page builds is promised: its frame and these bytes are charged past the limit (`KmemBudget::charge_unrefused`), never refused |
 
 `domain::kmem_charge` records a `Rule::KmemCharge` decision on refusal.
 `kmem_charge_atomic` is for contexts that may hold a spinlock or have

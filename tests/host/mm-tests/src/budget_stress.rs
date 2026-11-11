@@ -829,3 +829,29 @@ mod locked_rt {
         assert!(b.charge(1), "under it, granted");
     }
 }
+
+mod promised_kmem {
+    use super::*;
+
+    /// The kernel-memory ledger's promised charge is saturating, never refused,
+    /// keeps `used` the sum of the classes, and leaves the next plain charge
+    /// refused until the overshoot is given back.
+    /// **Canary** `kmem-promised-refused-canary`.
+    #[test]
+    fn a_promised_kmem_charge_passes_the_limit_and_the_books_still_close() {
+        let b = KmemBudget::new();
+        b.set_limit_kib(1);
+        assert_eq!(b.charge(KmemClass::PageTable, 1024), Ok(()));
+        assert!(b.charge(KmemClass::PageTable, 1).is_err());
+        b.charge_unrefused(KmemClass::PageTable, 4096);
+        b.charge_unrefused(KmemClass::PageTable, 0);
+        assert_eq!((b.used(), b.used_of(KmemClass::PageTable)), (5120, 5120));
+        assert!(b.charge(KmemClass::CapTable, 1).is_err(), "a plain charge is refused over the limit");
+        assert_eq!(b.discharge(KmemClass::PageTable, 4096), 4096);
+        assert_eq!(b.charge(KmemClass::CapTable, 1), Err(super::super::budget::KmemRefusal {
+            class: KmemClass::CapTable, bytes: 1, used: 1024, limit: 1024
+        }));
+        b.charge_unrefused(KmemClass::EpQueue, u64::MAX);
+        assert_eq!(b.used(), u64::MAX, "saturating");
+    }
+}

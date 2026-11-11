@@ -838,6 +838,16 @@ fn charge_with(key: Key, class: KmemClass, bytes: u64, verdict: Verdict) -> bool
     }
 }
 
+/// Charge `bytes` of `class` to the domain `key` names whatever its limit says
+/// (`KmemBudget::charge_unrefused`): for kernel memory the domain was promised,
+/// the page table a first touch of a reserved page builds. Never refuses, never
+/// takes a lock; a key that names no live domain has nothing to bill.
+pub fn kmem_charge_unrefused(key: Key, class: KmemClass, bytes: u64) {
+    if let Some(d) = get(key) {
+        d.kmem.charge_unrefused(class, bytes);
+    }
+}
+
 /// Give `bytes` of `class` back to the domain `key` names, from any context
 /// and any Domain. At most what the class holds; a key that names no live
 /// domain needs nothing.

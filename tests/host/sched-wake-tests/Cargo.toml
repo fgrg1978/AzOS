@@ -46,6 +46,7 @@ azos_devif = { path = "../../../crates/core/devif" }
 # `timer_heap.rs` (pulled by path): every slot gets one rank.
 timer-rank-canary = []
 # `domain::leave` gives a dead Domain's growth back to the pool (`PageBudget::release_growth`); the canary keeps it.
+kmem-promised-refused-canary = ["azos_mm/kmem-promised-refused-canary"]
 budget-exec-zeroes-canary = ["azos_mm/budget-exec-zeroes-canary"]
 budget-death-keeps-growth-canary = ["azos_mm/budget-death-keeps-growth-canary"]
 # Plan item 7 canary of `wait.rs`, declared for the same reason, never enabled.
