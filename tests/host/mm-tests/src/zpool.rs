@@ -148,7 +148,7 @@ fn a_page_round_trips_and_is_charged_its_footprint() {
 }
 
 #[test]
-fn zero_and_same_filled_pages_are_one_entry_and_no_bytes() {
+fn zero_and_same_filled_pages_are_one_entry_and_a_header_of_quota() {
     let mut pool = Small::new(Heap::new());
     assert_eq!(store(&mut pool, OWN, 1, 0, &vec![0u8; PAGE_SIZE]), Ok(0));
     let mut filled = vec![0u8; PAGE_SIZE];
@@ -157,7 +157,7 @@ fn zero_and_same_filled_pages_are_one_entry_and_no_bytes() {
     assert_eq!(store(&mut pool, OWN, 1, 1, &filled), Ok(0));
     let s = pool.stats();
     assert_eq!((s.entries, s.blobs, s.segments, s.live_bytes), (2, 0, 0, 0), "no segment was even taken");
-    assert_eq!(pool.charged(OWN), 0);
+    assert_eq!(pool.charged(OWN), 16, "two entries, the 8-byte header each");
     assert_eq!(restore(&pool, 1, 0).unwrap(), vec![0u8; PAGE_SIZE]);
     assert_eq!(restore(&pool, 1, 1).unwrap(), filled);
     // One odd word and it is no longer same-filled.
@@ -226,7 +226,7 @@ fn storing_a_key_again_replaces_it() {
     assert_eq!(restore(&pool, 1, 5).unwrap(), page(2));
     // A blob replaced by a same-filled page gives its bytes back.
     store(&mut pool, OWN, 1, 5, &vec![0u8; PAGE_SIZE]).unwrap();
-    assert_eq!((pool.charged(OWN), pool.stats().blobs, pool.stats().live_bytes), (0, 0, 0));
+    assert_eq!((pool.charged(OWN), pool.stats().blobs, pool.stats().live_bytes), (8, 0, 0), "the header of the fill, no blob");
 }
 
 #[test]
@@ -327,8 +327,10 @@ fn a_domain_past_its_quota_is_refused_and_nothing_changes() {
     assert!(pool.gen_of(1, n).is_none());
     // Another Domain has its own.
     assert!(store(&mut pool, 1, 2, 0, &page(9)).is_ok());
-    // Same-filled pages cost nothing and are never refused.
+    // A same-filled page costs its header and is refused only by a full quota.
+    pool.set_quota(0, charged + 8);
     assert_eq!(store(&mut pool, 0, 3, 0, &vec![0u8; PAGE_SIZE]), Ok(0));
+    pool.set_quota(0, 0);
     // A quota set for the Domain replaces the default, both ways.
     pool.set_quota(0, 100);
     assert_eq!(store(&mut pool, 0, 4, 0, &page(5)), Err(Error::Quota));
@@ -567,4 +569,35 @@ fn the_kconfig_cost_lines_are_the_size_of_the_tables() {
     assert!(fixed < 128, "{fixed} bytes of fixed state");
     type Embedded = Pool<Heap, 256, 512, 16, 32, SEG, 0>;
     assert_eq!(std::mem::size_of::<Embedded>() - fixed, 88 * 256 + 16 * 16 + 8 * 32);
+}
+
+/// **Same-filled pages cost quota.** One owner storing zero pages is stopped by
+/// its own quota (the 8-byte header each), not by the pool's entries: another
+/// owner's store is not `Full`, and what the first gave back on removal is
+/// given back to the byte. A replaced key and a fork's copy are charged once.
+/// **Canary** `zpool-fill-free-canary`: a fill is free again.
+#[test]
+fn a_same_filled_page_is_charged_to_its_owner_and_one_owner_cannot_fill_the_pool() {
+    let mut pool = Small::new(Heap::new());
+    pool.set_quota(0, 8 * 5);
+    let zero = vec![0u8; PAGE_SIZE];
+    for pg in 0..5 {
+        assert_eq!(store(&mut pool, 0, 1, pg, &zero), Ok(0), "page {pg}");
+    }
+    assert_eq!(pool.charged(0), 40);
+    assert_eq!(store(&mut pool, 0, 1, 5, &zero), Err(Error::Quota), "the sixth is past the owner's quota");
+    assert_eq!(pool.stats().entries, 5, "a refusal stored nothing");
+    // The other Domain still has the pool: 11 entries are free.
+    for pg in 0..11 {
+        assert!(store(&mut pool, 1, 2, pg, &zero).is_ok(), "owner 1 page {pg}");
+    }
+    assert_eq!(store(&mut pool, 1, 2, 11, &zero), Err(Error::Full), "only the pool's own limit stops it");
+    // Replacing a key charges once; removing gives back the header.
+    pool.set_quota(0, 0);
+    assert_eq!(store(&mut pool, 0, 1, 0, &zero), Ok(0));
+    assert_eq!(pool.charged(0), 40, "a replaced key is not charged twice");
+    assert!(pool.remove(1, 0));
+    assert_eq!(pool.charged(0), 32);
+    assert_eq!(pool.remove_obj(1), 4);
+    assert_eq!(pool.charged(0), 0, "everything the owner stored is given back");
 }

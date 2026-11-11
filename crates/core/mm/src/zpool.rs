@@ -691,6 +691,8 @@ impl<
             let idx = e.data as usize;
             self.discharge_blob(idx, e.owner as usize);
             self.release_blob(idx);
+        } else if e.state == FILL && !cfg!(feature = "zpool-fill-free-canary") {
+            self.discharge(e.owner as usize, HDR as u32);
         }
         self.erase(i);
         self.n_entries -= 1;
@@ -1006,6 +1008,13 @@ impl<
     /// Store a same-filled page. Replaces what was stored under the key.
     pub fn insert_fill(&mut self, owner: usize, obj: u64, page: u64, word: u64) -> Result<(), Error> {
         self.prepare(owner, obj, page)?;
+        // A same-filled page costs the entry's header against the owner's quota,
+        // like a blob's: without it one Domain fills every entry for nothing and
+        // its restores overshoot its limit by the pool, not by its quota. Canary
+        // `zpool-fill-free-canary`: it is free again.
+        if !cfg!(feature = "zpool-fill-free-canary") {
+            self.charge(owner, HDR as u32)?;
+        }
         self.put(owner, obj, page, FILL, word);
         Ok(())
     }

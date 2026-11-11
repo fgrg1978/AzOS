@@ -503,13 +503,13 @@ fn a_same_filled_page_is_deduped_before_the_coder_sees_it() {
     page[PAGE_SIZE - 1] ^= 1;
     assert!(matches!(codec.pack(&page, &mut scratch), Ok(Packed::Blob { .. })));
 
-    // Through a storm: three zero pages cost no bytes at all.
+    // Through a storm: three zero pages cost the header each, no blob.
     let mut s = AgedSpace::new(vec![vec![0u8; PAGE_SIZE]; 3]);
     s.age();
     let b = budget(10, 1, 2, 3);
     let out = s.storm(&b);
     assert_eq!(out, vec![0, 1]);
-    assert_eq!(s.pool.charged(OWN), 0);
+    assert_eq!(s.pool.charged(OWN), 16, "two stored, the header each");
 }
 
 /// A model with no Accessed bit reports nothing as used: every page ages to

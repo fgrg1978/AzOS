@@ -13924,6 +13924,11 @@ host_job host_feature_row "budget: an exec keeps the object pages (sched-wake)" 
 host_job host_feature_row "budget: the pages an exec keeps are the objects' (ipc)" ipc-tests "" the_pages_an_exec_keeps_are_the_pages_the_objects_were_charged
 host_job host_canary_row "budget: an exec zeroes the ledger canary" sched-wake-tests budget-exec-zeroes-canary \
     an_exec_keeps_the_object_pages_and_the_release_then_leaves_the_new_image
+# A same-filled page costs its header against its owner's pool quota
+# (zpool::insert_fill). zpool-fill-free-canary: it is free again.
+host_job host_feature_row "zpool: a fill is charged (model)" mm-tests "" a_same_filled_page_is_charged_to_its_owner_and_one_owner_cannot_fill_the_pool
+host_job host_canary_row "zpool: a fill is free canary" mm-tests zpool-fill-free-canary \
+    a_same_filled_page_is_charged_to_its_owner_and_one_owner_cannot_fill_the_pool
 # The same holes through the frozen syscalls (syscall-tests): mprotect in the shm
 # window past the map's rights; a MOVE through the capability transfer.
 host_job host_canary_row "memobj: protect past the map canary (syscall)" syscall-tests memobj-protect-max-canary \
