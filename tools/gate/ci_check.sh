@@ -13917,6 +13917,13 @@ host_job host_canary_row "budget: death keeps the growth canary" sched-wake-test
     a_domains_death_gives_its_growth_back_to_the_pool
 host_job host_canary_row "budget: munmap keeps the charge canary" syscall-tests budget-munmap-keeps-charge-canary \
     every_charge_site_the_host_can_drive_has_its_discharge
+# An exec keeps the frames the Domain's MemObjs and io_rings hold in the count
+# (domain::reset_budget, RETAINED_HOOK), so their later release lands on them.
+# budget-exec-zeroes-canary: the reset keeps nothing.
+host_job host_feature_row "budget: an exec keeps the object pages (sched-wake)" sched-wake-tests "" an_exec_keeps_the_object_pages_and_the_release_then_leaves_the_new_image
+host_job host_feature_row "budget: the pages an exec keeps are the objects' (ipc)" ipc-tests "" the_pages_an_exec_keeps_are_the_pages_the_objects_were_charged
+host_job host_canary_row "budget: an exec zeroes the ledger canary" sched-wake-tests budget-exec-zeroes-canary \
+    an_exec_keeps_the_object_pages_and_the_release_then_leaves_the_new_image
 # The same holes through the frozen syscalls (syscall-tests): mprotect in the shm
 # window past the map's rights; a MOVE through the capability transfer.
 host_job host_canary_row "memobj: protect past the map canary (syscall)" syscall-tests memobj-protect-max-canary \

@@ -121,6 +121,8 @@ pub(crate) fn install_sched_hooks() {
     azos_sched::set_task_exit_hook(task_release_all_resources);
     // An exec forgets the shared-memory mapping records of the image it leaves.
     azos_sched::set_task_exec_hook(azos_ipc::memobj::memobj_exec);
+    // An exec keeps the frames the Domain's MemObjs and io_rings hold in its budget.
+    azos_sched::domain::set_retained_hook(azos_ipc::exec_retained_pages);
     // What must wait for the dying task's address space to
     // go — the driver supervisor's wake.
     azos_sched::set_task_exit_late_hook(crate::drv_supervisor::exit_after_teardown);

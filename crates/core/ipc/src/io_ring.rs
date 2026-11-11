@@ -856,6 +856,26 @@ fn create_core(owner_task: usize) -> Option<(u32, usize)> {
     None
 }
 
+/// Pages of rings charged to a task of the Domain `key`: one for each active
+/// ring whose creator paid for it. A ring outlives an exec (it is released at
+/// exit), so the exec's budget reset keeps these.
+pub fn io_ring_charged_pages(key: u32) -> u32 {
+    let mut owners = [0u32; MAX_IO_RINGS];
+    let mut n = 0;
+    {
+        let rings = IO_RINGS.lock_irqsave();
+        for st in rings.rings.iter().filter(|st| st.active && st.charged) {
+            owners[n] = st.owner_task as u32;
+            n += 1;
+        }
+    }
+    // The task table is read with the ring table unlocked.
+    owners[..n]
+        .iter()
+        .filter(|&&t| azos_sched::idx_for_tid(t).map(azos_sched::task_domain) == Some(key))
+        .count() as u32
+}
+
 /// A ring's page was freed; give the charge back to its creator
 /// if it was charged. Any task's context: the discharge is posted to the
 /// creator (`mm_discharge_tid`), which folds it in at its next charge.

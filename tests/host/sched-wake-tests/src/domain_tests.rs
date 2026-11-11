@@ -681,3 +681,37 @@ fn a_domains_death_gives_its_growth_back_to_the_pool() {
     assert_eq!(azos_mm::budget::growth_pool(), 10, "a dead Domain holds no growth");
     assert!(domain::charge_request(k, 1, true).is_none(), "and its key names nothing");
 }
+
+/// **An exec keeps what the Domain's objects hold.** The exec's budget reset
+/// forgets the old address space and keeps the frames of the objects whose
+/// references outlive the image (the retained hook answers them), so the
+/// release that comes later lands on the objects' share and not on the new
+/// image's: the Domain never holds more than its limit. 8 pages of an object
+/// and 2 of image, an exec to a 4-page image, then the object's release: 4
+/// pages (the new image), not 0 and a room of 8 past the limit.
+/// **Canary** `budget-exec-zeroes-canary`: the reset keeps nothing.
+#[test]
+fn an_exec_keeps_the_object_pages_and_the_release_then_leaves_the_new_image() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static OBJECTS: AtomicU32 = AtomicU32::new(0);
+    fn retained(_: Key) -> u32 { OBJECTS.load(Ordering::SeqCst) }
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| domain::set_retained_hook(retained));
+    let _s = serial();
+    let k = domain::create().expect("a free domain");
+    domain::set_limit(k, 12);
+    assert!(domain::charge(k, 2).is_some(), "the old image");
+    assert!(domain::charge(k, 8).is_some(), "an object of 8 pages");
+    OBJECTS.store(8, Ordering::SeqCst);
+    domain::reset_budget(k);
+    assert_eq!(domain::used_limit(k).0, 8, "the exec forgot the image and kept the object");
+    assert!(domain::charge(k, 4).is_some(), "the new image");
+    assert_eq!(domain::used_limit(k).0, 12);
+    assert!(domain::charge(k, 1).is_none(), "the Domain is at its limit, not 8 under it");
+    OBJECTS.store(0, Ordering::SeqCst);
+    domain::discharge(k, 8);
+    assert_eq!(domain::used_limit(k).0, 4, "the release leaves the new image's pages");
+    domain::reset_budget(k);
+    assert_eq!(domain::used_limit(k).0, 0, "with nothing held, a reset is the old one");
+    free_all(k);
+}

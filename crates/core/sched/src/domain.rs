@@ -682,11 +682,28 @@ pub fn charge_restore(key: Key) {
     }
 }
 
-/// Forget the used count and the peak: the address space they described is
-/// gone. The limit stays.
+azos_common::ro_hook! {
+    /// Pages the Domain `key` holds in objects that outlive its address space
+    /// (MemObj frames, io_ring pages): what [`reset_budget`] keeps. Set once at
+    /// boot by `azos_ipc`, which owns those tables; unset, nothing is kept.
+    pub static RETAINED_HOOK: fn(Key) -> u32;
+}
+
+/// Register the [`RETAINED_HOOK`]. Call once, during boot.
+pub fn set_retained_hook(f: fn(Key) -> u32) {
+    RETAINED_HOOK.set(f);
+}
+
+/// Forget the address space's part of the used count and the peak: the address
+/// space they described is gone. What objects of the Domain hold (the
+/// [`RETAINED_HOOK`]) and the limit stay.
 pub fn reset_budget(key: Key) {
     if let Some(d) = get(key) {
-        d.budget.reset();
+        // What outlives the address space is charged to the Domain and is given
+        // back by its own release, not by this reset: the MemObj frames and the
+        // io_ring pages the Domain holds stay in the count.
+        let keep = RETAINED_HOOK.get().map_or(0, |f| f(key));
+        d.budget.reset_keeping(keep);
         // The page tables grown by the old address space went with it. The
         // rest of the kernel-memory ledger (capability table, endpoints,
         // MemObjs) belongs to the Domain and survives an exec.

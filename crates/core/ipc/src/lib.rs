@@ -55,6 +55,12 @@ pub mod launch_cap;
 // `crates/core/topology` or `kernel/src/`.
 pub mod cap_seed;
 
+/// Pages the Domain `key` holds in objects that outlive an exec (MemObj frames,
+/// io_ring pages): what `azos_sched::domain::reset_budget` keeps.
+pub fn exec_retained_pages(key: u32) -> u32 {
+    memobj_core::memobj_charged_pages(key).saturating_add(io_ring::io_ring_charged_pages(key))
+}
+
 pub use io_ring::{
     IoRing, IoRingState, IoRingOps, SqEntry, CqEntry,
     io_ring_create, io_ring_destroy, io_ring_owner,

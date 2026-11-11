@@ -673,6 +673,22 @@ impl PageBudget {
         let _ = self.used.fetch_update(Ordering::AcqRel, Ordering::Relaxed, |u| Some(u.saturating_sub(pages)));
     }
 
+    /// Forget the charge of the address space that is going and keep what
+    /// outlives it: `keep` pages, the frames of the MemObjs and the io_ring pages
+    /// the Domain still holds (an exec drops the old image and keeps those
+    /// references; they are given back later, by their release). Peak restarts
+    /// from `keep`. Like [`reset`](Self::reset), not for a Domain being charged
+    /// from other harts: a release that lands between the caller's count and the
+    /// store leaves the count high (the safe side) until the next declaration.
+    /// Canary `budget-exec-zeroes-canary`: nothing is kept, so a later release
+    /// discharges from the new image's count.
+    pub fn reset_keeping(&self, keep: u32) {
+        let keep = if cfg!(feature = "budget-exec-zeroes-canary") { 0 } else { keep };
+        self.used.store(keep, Ordering::Release);
+        self.peak.store(keep, Ordering::Relaxed);
+        self.cut_short.store(false, Ordering::Relaxed);
+    }
+
     /// Give the growth past the base back to the pool: the Domain's last member
     /// has gone, and a dead Domain keeps nothing that was promised to others.
     /// The limit is left as it is (a late discharge needs no room); the next

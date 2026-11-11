@@ -34,6 +34,8 @@ azos_mm = { path = "shims/mm", package = "sched_wake_test_mm" }
 # `sc.rs` and `rt_core.rs` (pulled by path for the wake-preempt rule) re-export
 # from the ABI crate.
 azos_abi = { path = "../../../crates/core/abi" }
+# `domain.rs`'s read-only-after-boot hook (`ro_hook!`).
+azos_common = { path = "../../../crates/core/common" }
 
 # `call_park_tests.rs`: the idle reason of a kernel call task.
 azos_devif = { path = "../../../crates/core/devif" }
@@ -44,6 +46,7 @@ azos_devif = { path = "../../../crates/core/devif" }
 # `timer_heap.rs` (pulled by path): every slot gets one rank.
 timer-rank-canary = []
 # `domain::leave` gives a dead Domain's growth back to the pool (`PageBudget::release_growth`); the canary keeps it.
+budget-exec-zeroes-canary = ["azos_mm/budget-exec-zeroes-canary"]
 budget-death-keeps-growth-canary = ["azos_mm/budget-death-keeps-growth-canary"]
 # Plan item 7 canary of `wait.rs`, declared for the same reason, never enabled.
 kill-reblock-canary = []

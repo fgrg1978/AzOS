@@ -2636,6 +2636,23 @@ pub fn memobj_exec(tid: u32) {
     }
 }
 
+/// Frames the objects charged to the Domain `key` hold now: the pages of each
+/// active region it is charged for, less the pages that are out (they gave their
+/// charge back when they left). What an exec keeps in the budget, because the
+/// objects' references outlive the image (`memobj_exec`).
+pub fn memobj_charged_pages(key: u32) -> u32 {
+    if key == 0 {
+        return 0;
+    }
+    let regions = MEMOBJS.lock();
+    regions
+        .regions
+        .iter()
+        .filter(|r| r.active && r.charge_key == key)
+        .map(|r| (r.page_count as u32).saturating_sub(r.out.count_ones()))
+        .fold(0u32, u32::saturating_add)
+}
+
 /// Get info about a shared memory region: (page_count, references saturated at `u32::MAX`, perms).
 pub fn memobj_info(shm_id: u32) -> Option<(usize, u32, MemPerms)> {
     if shm_id as usize >= MAX_MEMOBJS {
@@ -6353,6 +6370,31 @@ mod tests {
         assert_eq!(memobj_info(LAYOUT.idx(r)), None, "the sender's references moved: nothing keeps it");
         assert_eq!(azos_sched::shim_charged(B), 0);
         assert_eq!(azos_mm::shim_pages_in_use(), 0);
+    }
+
+    /// **What an exec keeps in the budget is what the objects hold.**
+    /// `memobj_charged_pages` is the frames the objects charged to a Domain hold
+    /// now: it equals what the Domain was charged for them, follows a MOVE to the
+    /// receiver's Domain, and is 0 once the objects are released, so an exec that
+    /// keeps that many pages in the count and a later release land on 0 together.
+    /// **Canary** `budget-exec-zeroes-canary` (`sched-wake-tests`): the exec keeps none.
+    #[test]
+    fn the_pages_an_exec_keeps_are_the_pages_the_objects_were_charged() {
+        let _g = setup();
+        let _h = Hooks::install();
+        let (ka, kb) = (cap_store::domain_key_of(A), cap_store::domain_key_of(B));
+        azos_sched::shim_set_current(A, 0x1000);
+        let cap_a = memobj_create_cap(A, 4, &MemSpec::anon(MemPerms::ReadWrite)).unwrap();
+        let cap_a2 = memobj_create_cap(A, 3, &MemSpec::anon(MemPerms::ReadWrite)).unwrap();
+        assert_eq!(memobj_charged_pages(ka), 7);
+        assert_eq!(memobj_charged_pages(ka), azos_sched::shim_charged(A));
+        assert_eq!(memobj_charged_pages(kb), 0);
+        assert_eq!(memobj_charged_pages(0), 0, "no Domain, nothing");
+        let cap_b = transfer(A, B, cap_a, false, None).expect("the capability moves");
+        assert_eq!((memobj_charged_pages(ka), memobj_charged_pages(kb)), (3, 4), "the charge follows the holder");
+        release(B, cap_b).expect("released");
+        release(A, cap_a2).expect("released");
+        assert_eq!((memobj_charged_pages(ka), memobj_charged_pages(kb)), (0, 0));
     }
 
     /// **KMEM-CHARGE.** A region's metadata is kernel memory kept for the
